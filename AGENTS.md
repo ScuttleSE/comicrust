@@ -50,7 +50,7 @@ These rules are absolute. Break none of them. If you break them, you waste the u
 Update this section at the **end of every work session**. The next agent must know the exact state of the work.
 
 - **Current phase:** Phase 0 — not started
-- **Completed:** feasibility analysis, port plan, agent docs, agent working rules, ASD-STE100 rewrite of all docs (planning stage only, no code)
+- **Completed:** feasibility analysis, port plan, agent docs, agent working rules, ASD-STE100 rewrite of all docs, Gitea Actions CI pipeline (planning stage only, no code)
 - **In progress:** —
 - **Next up:** workspace scaffold per `docs/phase-0-kickoff.md`
 - **Blockers / open questions:** —
@@ -128,6 +128,7 @@ Crate layout (to be scaffolded in Phase 0 — see `docs/port-plan.md`):
 
 ## Verification workflow
 
+- CI: Gitea Actions on the hemmalab runner (label `debian-go`, host has Rust + GTK4 dev libs, no sudo). See `.gitea/workflows/ci.yaml`. It runs fmt, clippy, and tests on every push to main.
 - `cargo fmt --check` and `cargo clippy -- -D warnings` must pass before every commit.
 - `cargo test` — golden-file round-trip tests for ComicDb.xml are the phase gate for Phases 0-2 (see `docs/phase-0-kickoff.md`).
 - `cr-cli` subcommands (`info <file>`, `db-dump <ComicDb.xml>`) are the manual verification tools against real data.

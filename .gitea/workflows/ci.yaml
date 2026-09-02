@@ -1,0 +1,68 @@
+name: CI
+
+# Runs on every push to main and on manual dispatch. Checks only:
+# fmt, clippy, test. No build, no releases, no mirror.
+# The runner host (label debian-go, container: null) has a Rust toolchain
+# and GTK4 dev libraries installed. It has no passwordless sudo. Do not
+# apt-get here.
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-main
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    name: fmt, clippy, test
+    runs-on: debian-go
+    container: null
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up toolchain PATH
+        run: |
+          # The runner host already has a Rust toolchain installed. Make
+          # cargo findable, then verify.
+          for d in "$HOME/.cargo/bin" /usr/local/cargo/bin /root/.cargo/bin \
+                   /home/scuttle/.cargo/bin; do
+            if [ -x "$d/cargo" ]; then echo "$d" >> "$GITHUB_PATH"; fi
+          done
+
+      - name: Verify prerequisites
+        run: |
+          command -v cargo >/dev/null 2>&1 || { echo "cargo not found on runner"; exit 1; }
+          cargo --version
+
+      - name: Detect workspace
+        id: workspace
+        run: |
+          # The workspace scaffold (Phase 0) does not exist yet. The checks
+          # below activate on their own once Cargo.toml lands.
+          if [ -f Cargo.toml ]; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+            echo "No Cargo.toml — workspace not scaffolded, skipping Rust checks"
+          fi
+
+      - name: rustfmt
+        if: steps.workspace.outputs.present == 'true'
+        run: cargo fmt --check --all
+
+      - name: clippy
+        if: steps.workspace.outputs.present == 'true'
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Test
+        if: steps.workspace.outputs.present == 'true'
+        run: cargo test --workspace
