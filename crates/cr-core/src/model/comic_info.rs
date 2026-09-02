@@ -191,6 +191,19 @@ impl ComicInfo {
         Ok(())
     }
 
+    /// Writes the standalone `ComicInfo.xml` document bytes:
+    /// declaration, root with the ComicRack `xsd`/`xsi` namespaces,
+    /// body (`ComicInfo.Serialize`).
+    pub fn serialize_bytes(&self) -> std::io::Result<Vec<u8>> {
+        let mut out = Vec::new();
+        let mut e = Emitter::new(&mut out)?;
+        e.root("ComicInfo")?;
+        self.write_xml(&mut e)?;
+        e.end()?;
+        e.finish()?;
+        Ok(out)
+    }
+
     /// Reads ComicInfo child elements. `end_name` is the element name
     /// that terminates the struct (ComicInfo, or Book for ComicBook).
     /// Returns on the matching end token (consumed).

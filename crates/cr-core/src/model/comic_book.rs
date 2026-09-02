@@ -95,6 +95,13 @@ impl Default for ComicBook {
 impl ComicBook {
     pub fn write_xml<W: Write>(&self, e: &mut Emitter<W>) -> std::io::Result<()> {
         e.start("Book")?;
+        self.write_body(e)?;
+        e.end()
+    }
+
+    /// Attributes and child elements, shared by the `<Book>` database
+    /// entry and the standalone `ComicBook.xml` root.
+    fn write_body<W: Write>(&self, e: &mut Emitter<W>) -> std::io::Result<()> {
         // Attributes: Id, Checked, File, IsDynamicSource
         if !self.id.is_empty() {
             e.attr("Id", &self.id.to_d_string())?;
@@ -195,117 +202,172 @@ impl ComicBook {
         if !self.custom_values_store.is_empty() {
             e.text_elem("CustomValuesStore", &self.custom_values_store)?;
         }
-        e.end()
+        Ok(())
+    }
+
+    /// `ComicBook.Serialize` (ComicBook.cs:2743) — the sidecar
+    /// document: file-derived and library-related fields are stripped
+    /// on a clone so the caller's object is not modified.
+    pub fn serialize_bytes(&self) -> std::io::Result<Vec<u8>> {
+        let mut cb = self.clone();
+        cb.id = CrGuid::EMPTY;
+        cb.file_path = String::new();
+        cb.file_modified_time = CrDateTime::min_value();
+        cb.file_creation_time = CrDateTime::min_value();
+        cb.file_size = -1;
+        cb.last_opened_from_list_id = CrGuid::EMPTY;
+        cb.custom_thumbnail_key = None;
+        cb.comic_info_is_dirty = false;
+        cb.comic_book_is_dirty = false;
+        cb.extra_sync_information = None;
+        cb.new_pages = 0;
+        cb.is_dynamic_source = false;
+        cb.enable_dynamic_update = true;
+        cb.serialize_full_bytes()
+    }
+
+    /// `ComicBook.SerializeFull` — the whole object.
+    pub fn serialize_full_bytes(&self) -> std::io::Result<Vec<u8>> {
+        let mut out = Vec::new();
+        let mut e = Emitter::new(&mut out)?;
+        e.root("ComicBook")?;
+        self.write_body(&mut e)?;
+        e.end()?;
+        e.finish()?;
+        Ok(out)
     }
 
     /// Parses `<Book>` (attrs consumed, children follow).
     pub fn read_xml(start: &Start, r: &mut crate::xml::XmlReader<'_>) -> XmlResult<ComicBook> {
         let mut b = ComicBook::default();
-        for (k, v) in &start.attrs {
-            match k.as_str() {
-                "Id" => b.id = CrGuid::parse(v)?,
-                "Checked" => b.checked = parse_bool(v, "Checked")?,
-                "File" => b.file_path = v.clone(),
-                "IsDynamicSource" => b.is_dynamic_source = parse_bool(v, "IsDynamicSource")?,
+        read_attrs(start, &mut b)?;
+        read_children(&mut b, "Book", r)?;
+        Ok(b)
+    }
+
+    /// Parses a standalone `ComicBook.xml` document (root
+    /// `<ComicBook>`).
+    pub fn parse_root(r: &mut crate::xml::XmlReader<'_>) -> XmlResult<ComicBook> {
+        loop {
+            match r.next_tok()? {
+                Tok::Start(s) if s.name == "ComicBook" => {
+                    let mut b = ComicBook::default();
+                    read_attrs(&s, &mut b)?;
+                    read_children(&mut b, "ComicBook", r)?;
+                    return Ok(b);
+                }
+                Tok::Eof => return Err(XmlError("no ComicBook root".into())),
                 _ => {}
             }
         }
-        loop {
-            match r.next_tok()? {
-                Tok::Eof => return Err(XmlError("eof in Book".into())),
-                Tok::End(n) if n == "Book" => return Ok(b),
-                Tok::Start(s) => {
-                    if read_info_elem(r, &s, &mut b.info)? {
-                        continue;
-                    }
-                    match s.name.as_str() {
-                        "Added" => b.added_time = read_dt(r, "Added")?,
-                        "Released" => b.released_time = read_dt(r, "Released")?,
-                        "Opened" => b.opened_time = read_dt(r, "Opened")?,
-                        "OpenCount" => b.opened_count = read_i32(r, "OpenCount")?,
-                        "CurrentPage" => b.current_page = read_i32(r, "CurrentPage")?,
-                        "LastPageRead" => b.last_page_read = read_i32(r, "LastPageRead")?,
-                        "Rating" => {
-                            let v = r.text_content("Rating")?;
-                            b.rating = v
-                                .trim()
-                                .parse()
-                                .map_err(|_| XmlError(format!("bad Rating: {v}")))?;
-                            if !(0.0..=5.0).contains(&b.rating) {
-                                return Err(XmlError(format!("Rating out of range: {v}")));
-                            }
-                        }
-                        "ColorAdjustment" => {
-                            b.color_adjustment = read_color_adjustment(r)?;
-                        }
-                        "EnableProposed" => b.enable_proposed = parse_bool_v(r, "EnableProposed")?,
-                        "SeriesComplete" => {
-                            let v = r.text_content("SeriesComplete")?;
-                            b.series_complete = YesNo::from_xml(&v)
-                                .ok_or_else(|| XmlError(format!("bad YesNo: {v}")))?;
-                        }
-                        "EnableDynamicUpdate" => {
-                            b.enable_dynamic_update = parse_bool_v(r, "EnableDynamicUpdate")?
-                        }
-                        "LastOpenedFromListId" => {
-                            let v = r.text_content("LastOpenedFromListId")?;
-                            b.last_opened_from_list_id = CrGuid::parse(&v)?;
-                        }
-                        "ComicInfoIsDirty" => {
-                            b.comic_info_is_dirty = parse_bool_v(r, "ComicInfoIsDirty")?
-                        }
-                        "ComicBookIsDirty" => {
-                            b.comic_book_is_dirty = parse_bool_v(r, "ComicBookIsDirty")?
-                        }
-                        "FileSize" => {
-                            let v = r.text_content("FileSize")?;
-                            b.file_size = v
-                                .trim()
-                                .parse()
-                                .map_err(|_| XmlError(format!("bad FileSize: {v}")))?;
-                        }
-                        "FileModifiedTime" => {
-                            b.file_modified_time = read_dt(r, "FileModifiedTime")?
-                        }
-                        "FileCreationTime" => {
-                            b.file_creation_time = read_dt(r, "FileCreationTime")?
-                        }
-                        "CustomThumbnailKey" => {
-                            let v = r.text_content("CustomThumbnailKey")?;
-                            b.custom_thumbnail_key = Some(v);
-                        }
-                        "BookPrice" => {
-                            let v = r.text_content("BookPrice")?;
-                            b.book_price = v
-                                .trim()
-                                .parse()
-                                .map_err(|_| XmlError(format!("bad BookPrice: {v}")))?;
-                        }
-                        "BookAge" => b.book_age = r.text_content("BookAge")?,
-                        "BookCondition" => b.book_condition = r.text_content("BookCondition")?,
-                        "BookStore" => b.book_store = r.text_content("BookStore")?,
-                        "BookOwner" => b.book_owner = r.text_content("BookOwner")?,
-                        "BookCollectionStatus" => {
-                            b.book_collection_status = r.text_content("BookCollectionStatus")?
-                        }
-                        "BookNotes" => b.book_notes = r.text_content("BookNotes")?,
-                        "BookLocation" => b.book_location = r.text_content("BookLocation")?,
-                        "ISBN" => b.isbn = r.text_content("ISBN")?,
-                        "NewPages" => b.new_pages = read_i32(r, "NewPages")?,
-                        "ExtraSyncInformation" => {
-                            b.extra_sync_information = Some(read_extra_sync(r)?);
-                        }
-                        "CustomValuesStore" => {
-                            b.custom_values_store = r.text_content("CustomValuesStore")?
-                        }
-                        // Unknown elements are captured by the inherited
-                        // [XmlAnyElement] UnparsedElements.
-                        _ => b.info.unparsed_elements.push(r.capture_raw(&s)?),
-                    }
+    }
+}
+
+fn read_attrs(start: &Start, b: &mut ComicBook) -> XmlResult<()> {
+    for (k, v) in &start.attrs {
+        match k.as_str() {
+            "Id" => b.id = CrGuid::parse(v)?,
+            "Checked" => b.checked = parse_bool(v, "Checked")?,
+            "File" => b.file_path = v.clone(),
+            "IsDynamicSource" => b.is_dynamic_source = parse_bool(v, "IsDynamicSource")?,
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn read_children(b: &mut ComicBook, end: &str, r: &mut crate::xml::XmlReader<'_>) -> XmlResult<()> {
+    loop {
+        match r.next_tok()? {
+            Tok::Eof => return Err(XmlError(format!("eof in {end}"))),
+            Tok::End(n) if n == end => return Ok(()),
+            Tok::Start(s) => {
+                if read_info_elem(r, &s, &mut b.info)? {
+                    continue;
                 }
-                Tok::Text(_) => return Err(XmlError("unexpected text in Book".into())),
-                _ => {}
+                match s.name.as_str() {
+                    "Added" => b.added_time = read_dt(r, "Added")?,
+                    "Released" => b.released_time = read_dt(r, "Released")?,
+                    "Opened" => b.opened_time = read_dt(r, "Opened")?,
+                    "OpenCount" => b.opened_count = read_i32(r, "OpenCount")?,
+                    "CurrentPage" => b.current_page = read_i32(r, "CurrentPage")?,
+                    "LastPageRead" => b.last_page_read = read_i32(r, "LastPageRead")?,
+                    "Rating" => {
+                        let v = r.text_content("Rating")?;
+                        b.rating = v
+                            .trim()
+                            .parse()
+                            .map_err(|_| XmlError(format!("bad Rating: {v}")))?;
+                        if !(0.0..=5.0).contains(&b.rating) {
+                            return Err(XmlError(format!("Rating out of range: {v}")));
+                        }
+                    }
+                    "ColorAdjustment" => {
+                        b.color_adjustment = read_color_adjustment(r)?;
+                    }
+                    "EnableProposed" => b.enable_proposed = parse_bool_v(r, "EnableProposed")?,
+                    "SeriesComplete" => {
+                        let v = r.text_content("SeriesComplete")?;
+                        b.series_complete = YesNo::from_xml(&v)
+                            .ok_or_else(|| XmlError(format!("bad YesNo: {v}")))?;
+                    }
+                    "EnableDynamicUpdate" => {
+                        b.enable_dynamic_update = parse_bool_v(r, "EnableDynamicUpdate")?
+                    }
+                    "LastOpenedFromListId" => {
+                        let v = r.text_content("LastOpenedFromListId")?;
+                        b.last_opened_from_list_id = CrGuid::parse(&v)?;
+                    }
+                    "ComicInfoIsDirty" => {
+                        b.comic_info_is_dirty = parse_bool_v(r, "ComicInfoIsDirty")?
+                    }
+                    "ComicBookIsDirty" => {
+                        b.comic_book_is_dirty = parse_bool_v(r, "ComicBookIsDirty")?
+                    }
+                    "FileSize" => {
+                        let v = r.text_content("FileSize")?;
+                        b.file_size = v
+                            .trim()
+                            .parse()
+                            .map_err(|_| XmlError(format!("bad FileSize: {v}")))?;
+                    }
+                    "FileModifiedTime" => b.file_modified_time = read_dt(r, "FileModifiedTime")?,
+                    "FileCreationTime" => b.file_creation_time = read_dt(r, "FileCreationTime")?,
+                    "CustomThumbnailKey" => {
+                        let v = r.text_content("CustomThumbnailKey")?;
+                        b.custom_thumbnail_key = Some(v);
+                    }
+                    "BookPrice" => {
+                        let v = r.text_content("BookPrice")?;
+                        b.book_price = v
+                            .trim()
+                            .parse()
+                            .map_err(|_| XmlError(format!("bad BookPrice: {v}")))?;
+                    }
+                    "BookAge" => b.book_age = r.text_content("BookAge")?,
+                    "BookCondition" => b.book_condition = r.text_content("BookCondition")?,
+                    "BookStore" => b.book_store = r.text_content("BookStore")?,
+                    "BookOwner" => b.book_owner = r.text_content("BookOwner")?,
+                    "BookCollectionStatus" => {
+                        b.book_collection_status = r.text_content("BookCollectionStatus")?
+                    }
+                    "BookNotes" => b.book_notes = r.text_content("BookNotes")?,
+                    "BookLocation" => b.book_location = r.text_content("BookLocation")?,
+                    "ISBN" => b.isbn = r.text_content("ISBN")?,
+                    "NewPages" => b.new_pages = read_i32(r, "NewPages")?,
+                    "ExtraSyncInformation" => {
+                        b.extra_sync_information = Some(read_extra_sync(r)?);
+                    }
+                    "CustomValuesStore" => {
+                        b.custom_values_store = r.text_content("CustomValuesStore")?
+                    }
+                    // Unknown elements are captured by the inherited
+                    // [XmlAnyElement] UnparsedElements.
+                    _ => b.info.unparsed_elements.push(r.capture_raw(&s)?),
+                }
             }
+            Tok::Text(_) => return Err(XmlError(format!("unexpected text in {end}"))),
+            _ => {}
         }
     }
 }
