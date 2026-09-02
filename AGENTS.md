@@ -51,9 +51,40 @@ Update this section at the **end of every work session**. The next agent must kn
 
 ### State summary
 
-- **Phase:** 0 (core model and data compatibility). Tasks T0-T4 are built. The phase exit review is not done.
-- **State:** `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` are green. 31 tests pass.
-- **Gate status:** byte-stable ComicDb.xml round-trip is proven on all three synthetic fixtures AND on the real-world database `tests/realworld/ComicDb.xml` (255 books, 584 KB, 2026-09-02, user-approved commit). Acceptance criteria #2 and #3 are met. The remaining exit items are the settings port, default lists, MetronInfo, and the exit review.
+- **Phase:** 1 (IO + images). Phase 0 T0-T4 are built. The Phase 0 exit review is not done; the settings port, default lists, and exit review stay open (MetronInfo moved into Phase 1 T2).
+- **State:** `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` are green. 58 tests pass.
+- **Phase 0 gate status:** byte-stable ComicDb.xml round-trip is proven on all three synthetic fixtures AND on the real-world database `tests/realworld/ComicDb.xml` (255 books, 584 KB, 2026-09-02, user-approved commit). Acceptance criteria #2 and #3 are met.
+
+### Phase 1 progress (this session, 2026-09-02)
+
+T1 is done except web comics. Provider framework in `cr-io` ported
+from `ComicRack.Engine/IO/Provider/`: format registry (`formats.rs`,
+deterministic registration order; `.cbr`/`.rar` map to CBR first, both
+route to the same accessor), `ExtendedStringComparer` IgnoreCase
+natural-sort port (`extended_compare.rs` — this defines page order),
+`ComicProvider` (filter + sort page list, `CreateHashFromImageList`
+SHA-1/Base32 hash in `hash.rs`), accessors for CBZ/CBT (pure Rust
+`zip`/`tar`), CB7/CBR/RAR5 (`sevenzip.rs`, `7z` subprocess, list via
+`l -slt` blocks, read via `e -so`), PDF (`pdf.rs`, pdfium-render,
+`CalculateSize` port verified: 612x792pt page renders 1920x2484),
+DjVu (`djvu.rs`, `djvm`/`ddjvu` subprocess, PPM instead of TIFF
+intermediate), and folder comics (FOLDER id 100, recursive). PDF/DjVu
+use the whole-file SHA-1 hash and the raw page list (no filter/sort),
+per their C# provider classes. `cr-cli` has `pages` and `extract`
+(raw bytes; decode arrives with T3).
+
+Known gaps / decisions:
+- WebComicProvider (`.cbw`, dynamic) and the WebP/JXL/HEIF/AVIF/J2K
+  normalize-to-JPEG conversion chain (`ImageProvider.RetrieveSourceByteImage`)
+  are deferred into T3 (cr-image decode chain) — they are
+  decode/encode work.
+- Subprocess-format tests are gated: `CR_FORMAT_TESTS=1` for 7z,
+  `CR_PDFIUM=<libpdfium.so>` for PDF, djvulibre tools on `PATH` for
+  DjVu. CI runs them only if the tools exist.
+- 7z/DjVu/pdfium binaries are discovered on `PATH` with env overrides
+  (`CR_SEVENZIP`, `CR_PDFIUM`, `CR_DJVULIBRE`).
+- Missing external tools degrade to an empty page list (C# parse
+  try/catch parity), not an error.
 
 ### Real-world validation record (2026-09-02)
 
@@ -75,7 +106,15 @@ Do not edit or reformat that fixture; byte identity is the test.
 | `crates/cr-core/src/model/` | `comic_info.rs`, `comic_book.rs` (+ `values_store` codec), `comic_page_info.rs`, `enums.rs` (macro-generated, exact member names), `bitmap_adjustment.rs`, `comic_name_info.rs`. |
 | `crates/cr-core/src/database/` | `comic_database.rs` (load, save with `.bak` rotation, `open_with_fallback` with `.restore` → main → `.bak` → quarantine chain), `list_items.rs` (ComicLists tree, matchers with `xsi:type` passthrough), `display_config.rs` (the `<Display>` subtree). |
 | `crates/cr-core/src/registry.rs` | Property registry: C# property name → typed getter/setter on `ComicBook`. Entry point for matchers, columns, remote updates. |
-| `crates/cr-cli/src/main.rs` | `info` (filename proposal or ComicInfo.xml), `db-dump` (JSON summary), `db-roundtrip` (byte-diff report). |
+| `crates/cr-io/src/formats.rs` | Format registry (`KnownFileFormats` + `FileFormat`), extension lookup, signatures. |
+| `crates/cr-io/src/extended_compare.rs` | `ExtendedStringComparer` IgnoreCase port — defines page order. |
+| `crates/cr-io/src/provider.rs` | `ComicAccessor` trait, `ProviderImageInfo`, `ComicProvider` (filter/sort/read/hash), folder accessor. |
+| `crates/cr-io/src/accessors.rs` | Zip (`ZipSharpZipEngine`) and tar (`TarSharpZipEngine`) accessors, signature check. |
+| `crates/cr-io/src/sevenzip.rs` | CB7/CBR/RAR5 via `7z` subprocess (ADR-007). |
+| `crates/cr-io/src/pdf.rs` | PDF via pdfium-render; `CalculateSize` port; JPEG out (q75). |
+| `crates/cr-io/src/djvu.rs` | DjVu via `djvm`/`ddjvu` subprocess; PPM→JPEG (q75). |
+| `crates/cr-io/src/hash.rs` | `CreateHashFromImageList` (BinaryWriter layout, SHA-1, cYo Base32) + file hash for PDF/DjVu. |
+| `crates/cr-cli/src/main.rs` | `info` (filename proposal or ComicInfo.xml), `db-dump` (JSON summary), `db-roundtrip` (byte-diff report), `pages`, `extract`. |
 
 Tests: `crates/cr-core/tests/golden_roundtrip.rs`, `crates/cr-cli/tests/cli.rs`. Fixtures: `tests/golden/` (read `tests/golden/README.md` before you touch the XML layer).
 
@@ -88,7 +127,14 @@ cargo test --workspace
 cargo run -p cr-cli -- db-roundtrip <ComicDb.xml>
 cargo run -p cr-cli -- db-dump <ComicDb.xml>
 cargo run -p cr-cli -- info <comic-file>
+cargo run -p cr-cli -- pages <comic-file>
+cargo run -p cr-cli -- extract <comic-file> <page> -o <out>
 ```
+
+Subprocess-format tests: `CR_FORMAT_TESTS=1 cargo test -p cr-io` runs
+the 7z suite when `7z` is installed; PDF needs `CR_PDFIUM=<path to
+libpdfium.so>`; DjVu needs the djvulibre tools (`c44`, `djvm`,
+`ddjvu`) on `PATH`.
 
 Re-bless the `db-large.xml` snapshot after a deliberate model change: `CR_BLESS=1 cargo test -p cr-core --test golden_roundtrip`. Re-blessing changes fixture bytes. Review the diff before you commit it.
 
