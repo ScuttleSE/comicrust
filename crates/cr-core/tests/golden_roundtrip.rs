@@ -132,6 +132,7 @@ fn large_db() -> ComicDatabase {
                 match_value: "3".into(),
                 match_value_2: "5".into(),
                 match_operator: 2,
+                ..Default::default()
             }),
             ComicBookMatcher::Group(cr_core::database::list_items::GroupMatcher {
                 not: true,

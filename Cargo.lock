@@ -308,6 +308,9 @@ dependencies = [
 [[package]]
 name = "cr-engine"
 version = "0.1.0"
+dependencies = [
+ "cr-core",
+]
 
 [[package]]
 name = "cr-image"

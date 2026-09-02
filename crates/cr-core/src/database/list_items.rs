@@ -15,7 +15,7 @@ use std::io::Write;
 /// A leaf matcher. In C# every concrete matcher serializes only the base
 /// members; the concrete type is carried by `xsi:type`. The type name is
 /// kept verbatim so unknown/third-party matchers round-trip.
-#[derive(Clone, Debug, PartialEq, Default)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ValueMatcher {
     pub type_name: String,
     pub not: bool,
@@ -24,6 +24,26 @@ pub struct ValueMatcher {
     pub match_value: String,
     pub match_value_2: String,
     pub match_operator: i32,
+    /// `ComicBookStringMatcher.IgnoreCase` ([DefaultValue(true)]: only
+    /// written when false, as `IgnoreCase="false"`). Matchers without
+    /// the member (numeric, date, ...) never carry it; a `true` here is
+    /// indistinguishable from the default and never written.
+    pub ignore_case: bool,
+}
+
+impl Default for ValueMatcher {
+    fn default() -> Self {
+        ValueMatcher {
+            type_name: String::new(),
+            not: false,
+            name: String::new(),
+            match_value: String::new(),
+            match_value_2: String::new(),
+            match_operator: 0,
+            // C# ComicBookStringMatcher.IgnoreCase default.
+            ignore_case: true,
+        }
+    }
 }
 
 /// `ComicBookGroupMatcher`: nested matcher set.
@@ -67,6 +87,9 @@ impl ComicBookMatcher {
                 }
                 if v.match_operator != 0 {
                     e.attr("MatchOperator", &v.match_operator.to_string())?;
+                }
+                if !v.ignore_case {
+                    e.attr("IgnoreCase", "false")?;
                 }
                 e.text_elem("MatchValue", &v.match_value)?;
                 if !v.match_value_2.is_empty() {
@@ -147,6 +170,7 @@ impl ComicBookMatcher {
                 match_value: String::new(),
                 match_value_2: String::new(),
                 match_operator: 0,
+                ignore_case: true,
             };
             for (k, val) in &s.attrs {
                 match k.as_str() {
@@ -158,6 +182,7 @@ impl ComicBookMatcher {
                             .parse()
                             .map_err(|_| XmlError(format!("bad MatchOperator: {val}")))?
                     }
+                    "IgnoreCase" => v.ignore_case = !(val.trim() == "false" || val.trim() == "0"),
                     _ => {}
                 }
             }

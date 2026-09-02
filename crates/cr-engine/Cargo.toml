@@ -4,6 +4,7 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+cr-core = { path = "../cr-core" }
 
 [lints]
 workspace = true
