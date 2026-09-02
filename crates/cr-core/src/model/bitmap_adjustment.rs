@@ -23,6 +23,45 @@ impl BitmapAdjustment {
         *self == BitmapAdjustment::default()
     }
 
+    /// `HasColorTransformations` — any of the three scales (epsilon
+    /// compare) or a non-black/white white point.
+    pub fn has_color_transformations(&self) -> bool {
+        let eps = |v: f32| v.abs() < 1e-5;
+        if eps(self.contrast) && eps(self.saturation) && eps(self.brightness) {
+            let (r, g, b) = self.white_point_rgb();
+            return !matches!((r, g, b), (0, 0, 0) | (255, 255, 255));
+        }
+        true
+    }
+
+    /// The 8-bit RGB of the white point (`Color.FromArgb(argb)`), or
+    /// `None` for the unset forms (0 and -1 map to black).
+    pub fn white_point_rgb(&self) -> (u8, u8, u8) {
+        if self.white_point_argb == 0 || self.white_point_argb == -1 {
+            return (0, 0, 0);
+        }
+        (
+            ((self.white_point_argb >> 16) & 0xff) as u8,
+            ((self.white_point_argb >> 8) & 0xff) as u8,
+            (self.white_point_argb & 0xff) as u8,
+        )
+    }
+
+    /// `HasAutoContrast`.
+    pub fn has_auto_contrast(&self) -> bool {
+        (self.options.0 & 1) != 0 // BitmapAdjustmentOptions.AutoContrast
+    }
+
+    /// `HasSharpening`.
+    pub fn has_sharpening(&self) -> bool {
+        self.sharpen != 0
+    }
+
+    /// `HasGamma`.
+    pub fn has_gamma(&self) -> bool {
+        self.gamma.abs() >= 1e-5
+    }
+
     pub fn write_xml<W: Write>(&self, e: &mut Emitter<W>) -> std::io::Result<()> {
         e.start("ColorAdjustment")?;
         if self.saturation != 0.0 {

@@ -6,6 +6,7 @@ edition.workspace = true
 [dependencies]
 cr-core.workspace = true
 cr-io.workspace = true
+cr-image.workspace = true
 anyhow.workspace = true
 serde_json.workspace = true
 clap.workspace = true

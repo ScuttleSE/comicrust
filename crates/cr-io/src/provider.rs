@@ -146,15 +146,20 @@ impl ComicProvider {
     }
 
     /// `ArchiveComicProvider.GetFile` + `OnRetrieveSourceByteImage`,
-    /// or `PdfComicProvider.OnRetrieveSourceByteImage`. The
-    /// DjVu/WebP/HEIF/J2K/JXL normalize-to-JPEG conversion chain lands
-    /// with the cr-image decode work (T3).
+    /// or `PdfComicProvider.OnRetrieveSourceByteImage`, including the
+    /// normalize-to-JPEG conversion chain
+    /// (`ImageProvider.RetrieveSourceByteImage`): WebP/JXL/HEIF/J2K
+    /// page bytes become JPEG. Decoding itself is cr-image work; the
+    /// DjVu/WebP conversions of the C# live in `cr_image::normalize_to_jpeg`.
     pub fn read_page(&self, index: usize) -> Option<Vec<u8>> {
         let info = self.pages.get(index)?;
-        if self.format.id == formats::ids::FOLDER {
-            return FolderAccessor.read_byte_image(&self.source, info);
-        }
-        crate::accessors::accessor_for(self.format.id)?.read_byte_image(&self.source, info)
+        let accessor = if self.format.id == formats::ids::FOLDER {
+            Box::new(FolderAccessor) as Box<dyn ComicAccessor>
+        } else {
+            crate::accessors::accessor_for(self.format.id)?
+        };
+        let raw = accessor.read_byte_image(&self.source, info)?;
+        Some(cr_image::normalize_to_jpeg(&raw).unwrap_or(raw))
     }
 
     /// `ArchiveComicProvider.CreateHash` — the archive's cache key.

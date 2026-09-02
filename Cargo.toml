@@ -26,6 +26,10 @@ zip = { version = "2", default-features = false, features = ["deflate", "deflate
 tar = "0.4"
 sha1 = "0.10"
 xattr = "1"
+image = { version = "0.25", default-features = false, features = ["png", "gif", "tiff", "bmp", "webp"] }
+zune-jpeg = "0.4"
+zune-core = "0.4"
+jxl-oxide = "0.8"
 
 [workspace.lints.rust]
 unsafe_code = "deny"

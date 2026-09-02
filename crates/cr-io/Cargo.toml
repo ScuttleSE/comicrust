@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 cr-core.workspace = true
+cr-image.workspace = true
 thiserror.workspace = true
 zip.workspace = true
 tar.workspace = true

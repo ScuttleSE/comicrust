@@ -46,6 +46,18 @@ enum Command {
         /// Output path; omit for stdout.
         #[arg(short, long)]
         output: Option<String>,
+        /// Decode the page (raw bytes are normalized to JPEG; this
+        /// fully decodes and re-encodes as JPEG).
+        #[arg(long)]
+        decode: bool,
+    },
+    /// Generate the page-0 thumbnail (512px height, JPEG q60) and
+    /// write it out.
+    Thumb {
+        file: String,
+        /// Output path; omit for stdout.
+        #[arg(short, long)]
+        output: Option<String>,
     },
 }
 
@@ -66,7 +78,13 @@ fn run(command: Command) -> Result<ExitCode> {
         Command::DbDump { file } => cmd_db_dump(&file),
         Command::DbRoundtrip { file } => cmd_db_roundtrip(&file),
         Command::Pages { file } => cmd_pages(&file),
-        Command::Extract { file, page, output } => cmd_extract(&file, page, output.as_deref()),
+        Command::Extract {
+            file,
+            page,
+            output,
+            decode,
+        } => cmd_extract(&file, page, output.as_deref(), decode),
+        Command::Thumb { file, output } => cmd_thumb(&file, output.as_deref()),
     }
 }
 
@@ -212,12 +230,18 @@ fn cmd_pages(file: &str) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-fn cmd_extract(file: &str, page: usize, output: Option<&str>) -> Result<ExitCode> {
+fn cmd_extract(file: &str, page: usize, output: Option<&str>, decode: bool) -> Result<ExitCode> {
     let provider =
         ComicProvider::open(Path::new(file)).with_context(|| format!("opening comic {file}"))?;
     let data = provider
         .read_page(page)
         .with_context(|| format!("reading page {page} of {file}"))?;
+    let data = if decode {
+        let image = cr_image::decode(&data).context("decoding page image")?;
+        cr_image::encode_jpeg(&image, 75).context("encoding page image")?
+    } else {
+        data
+    };
     match output {
         Some(path) => {
             std::fs::write(path, &data).with_context(|| format!("writing {path}"))?;
@@ -226,6 +250,28 @@ fn cmd_extract(file: &str, page: usize, output: Option<&str>) -> Result<ExitCode
             std::io::stdout()
                 .write_all(&data)
                 .context("writing page bytes to stdout")?;
+        }
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn cmd_thumb(file: &str, output: Option<&str>) -> Result<ExitCode> {
+    let provider =
+        ComicProvider::open(Path::new(file)).with_context(|| format!("opening comic {file}"))?;
+    let data = provider
+        .read_page(0)
+        .with_context(|| format!("reading page 0 of {file}"))?;
+    let image = cr_image::decode(&data).context("decoding page image")?;
+    let thumb = cr_image::thumbnail_from_image(&image, (image.width, image.height))
+        .context("rendering thumbnail")?;
+    match output {
+        Some(path) => {
+            std::fs::write(path, &thumb.data).with_context(|| format!("writing {path}"))?;
+        }
+        None => {
+            std::io::stdout()
+                .write_all(&thumb.data)
+                .context("writing thumbnail bytes to stdout")?;
         }
     }
     Ok(ExitCode::SUCCESS)
