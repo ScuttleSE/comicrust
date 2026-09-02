@@ -8,7 +8,7 @@ use cr_core::model::bitmap_adjustment::BitmapAdjustment;
 use cr_core::model::enums::ImageRotation;
 
 /// `ImageKey` — the identity of a cached image.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ImageKey {
     /// The provider source (the file path for file comics; a URL or
     /// id for dynamic sources).
@@ -100,7 +100,7 @@ impl PageKey {
 }
 
 /// `ThumbnailKey` source kinds (`ResourceKey`/`FileKey`/`CustomKey`).
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub enum ThumbnailSource {
     /// A plain file-backed thumbnail (the common case).
     #[default]
@@ -115,7 +115,7 @@ pub enum ThumbnailSource {
 }
 
 /// `ThumbnailKey` — an `ImageKey` plus the thumbnail source kind.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct ThumbnailKey {
     pub key: ImageKey,
     pub source_kind: ThumbnailSource,
@@ -146,6 +146,27 @@ impl ThumbnailKey {
             };
         }
         ThumbnailKey::new(key)
+    }
+}
+
+// ---------- queue identity ----------
+//
+// The ProcessingQueue de-duplicates by key; PageKey carries the
+// BitmapAdjustment with f32 fields, so Eq/Hash compare the floats by
+// bit pattern (field equality, like the C# Equals).
+
+impl Eq for PageKey {}
+
+impl std::hash::Hash for PageKey {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.key.hash(state);
+        self.adjustment.saturation.to_bits().hash(state);
+        self.adjustment.contrast.to_bits().hash(state);
+        self.adjustment.brightness.to_bits().hash(state);
+        self.adjustment.gamma.to_bits().hash(state);
+        self.adjustment.white_point_argb.hash(state);
+        self.adjustment.options.hash(state);
+        self.adjustment.sharpen.hash(state);
     }
 }
 

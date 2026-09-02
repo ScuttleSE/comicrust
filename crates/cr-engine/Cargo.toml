@@ -6,6 +6,7 @@ edition.workspace = true
 [dependencies]
 cr-core = { path = "../cr-core" }
 cr-io = { path = "../cr-io" }
+cr-image = { path = "../cr-image" }
 chrono.workspace = true
 fancy-regex = "0.14"
 

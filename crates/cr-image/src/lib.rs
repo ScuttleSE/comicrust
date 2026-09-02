@@ -54,3 +54,63 @@ impl Image {
         })
     }
 }
+
+/// `BitmapExtensions.Rotate` — 90/180/270 degree rotation of the RGBA
+/// buffer. `ImageRotation::None` returns a clone.
+pub fn rotate(image: &Image, rotation: cr_core::model::enums::ImageRotation) -> Result<Image> {
+    use cr_core::model::enums::ImageRotation as R;
+    let w = image.width as usize;
+    let h = image.height as usize;
+    let pixel = |x: usize, y: usize| -> [u8; 4] {
+        let o = (y * w + x) * 4;
+        [
+            image.rgba[o],
+            image.rgba[o + 1],
+            image.rgba[o + 2],
+            image.rgba[o + 3],
+        ]
+    };
+    match rotation {
+        R::None => Ok(image.clone()),
+        R::Rotate90 => {
+            // 90° clockwise: (x, y) → (h - 1 - y, x).
+            let (nw, nh) = (h, w);
+            let mut out = vec![0u8; w * h * 4];
+            for y in 0..h {
+                for x in 0..w {
+                    let p = pixel(x, y);
+                    let (nx, ny) = (h - 1 - y, x);
+                    let o = (ny * nw + nx) * 4;
+                    out[o..o + 4].copy_from_slice(&p);
+                }
+            }
+            Image::new(nw as u32, nh as u32, out)
+        }
+        R::Rotate180 => {
+            let mut out = vec![0u8; w * h * 4];
+            for y in 0..h {
+                for x in 0..w {
+                    let p = pixel(x, y);
+                    let (nx, ny) = (w - 1 - x, h - 1 - y);
+                    let o = (ny * w + nx) * 4;
+                    out[o..o + 4].copy_from_slice(&p);
+                }
+            }
+            Image::new(image.width, image.height, out)
+        }
+        R::Rotate270 => {
+            // 270° clockwise (= 90° counter-clockwise): (x, y) → (y, w - 1 - x).
+            let (nw, nh) = (h, w);
+            let mut out = vec![0u8; w * h * 4];
+            for y in 0..h {
+                for x in 0..w {
+                    let p = pixel(x, y);
+                    let (nx, ny) = (y, w - 1 - x);
+                    let o = (ny * nw + nx) * 4;
+                    out[o..o + 4].copy_from_slice(&p);
+                }
+            }
+            Image::new(nw as u32, nh as u32, out)
+        }
+    }
+}
