@@ -1,7 +1,7 @@
 //! Archive accessors — ports of `ZipSharpZipEngine.cs` and
-//! `TarSharpZipEngine.cs`. The 7z/RAR subprocess accessor
-//! (`SevenZipEngine`) and the PDF/DjVu providers are separate T1
-//! follow-ups (docs/phase-1-kickoff.md).
+//! `TarSharpZipEngine.cs`. The 7z/RAR subprocess accessor lives in
+//! `sevenzip.rs`; PDF/DjVu are separate T1 follow-ups
+//! (docs/phase-1-kickoff.md).
 
 use std::fs::File;
 use std::io::Read;
@@ -111,7 +111,7 @@ impl ComicAccessor for TarAccessor {
 /// Shared signature check (`FileBasedAccessor.IsFormat`). `on_error`
 /// encodes the C# difference between engines: signature engines
 /// return `true` on open errors, the tar engine returns `false`.
-fn is_signature(source: &Path, sig: &[u8], on_error: bool) -> bool {
+pub(crate) fn is_signature(source: &Path, sig: &[u8], on_error: bool) -> bool {
     match File::open(source) {
         Err(_) => on_error,
         Ok(mut file) => {
@@ -131,6 +131,9 @@ pub fn accessor_for(format: i32) -> Option<Box<dyn ComicAccessor>> {
     match format {
         ids::CBZ => Some(Box::new(ZipAccessor)),
         ids::CBT => Some(Box::new(TarAccessor)),
+        ids::CB7 | ids::CBR | ids::RAR5 => {
+            Some(Box::new(crate::sevenzip::SevenZipAccessor::new(format)))
+        }
         _ => None,
     }
 }

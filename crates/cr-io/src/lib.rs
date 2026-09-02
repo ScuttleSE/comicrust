@@ -34,6 +34,7 @@ pub mod extended_compare;
 pub mod formats;
 pub mod hash;
 pub mod provider;
+pub mod sevenzip;
 
 pub use error::{Error, Result};
 pub use formats::FileFormat;
