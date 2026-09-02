@@ -6,6 +6,7 @@ pub mod comic_info;
 pub mod comic_name_info;
 pub mod comic_page_info;
 pub mod enums;
+pub mod metron_info;
 
 pub use comic_book::ComicBook;
 pub use comic_info::ComicInfo;

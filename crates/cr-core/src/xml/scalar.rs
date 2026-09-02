@@ -179,6 +179,16 @@ impl CrDateTime {
         })
     }
 
+    /// Parses an `xs:date` form (`yyyy-MM-dd`) at midnight.
+    pub fn parse_date(s: &str) -> Result<Self, ScalarError> {
+        let t = s.trim();
+        // Accept a plain date; delegate anything with a time part.
+        if t.contains('T') {
+            return Self::parse(t);
+        }
+        Self::parse(&format!("{t}T00:00:00"))
+    }
+
     /// Writes the `XmlConvert` sortable form with kind suffix.
     pub fn to_xml(&self) -> String {
         let d = self.naive.date();
@@ -219,6 +229,13 @@ impl CrDateTime {
             naive: self.naive.date().and_hms_opt(0, 0, 0).expect("midnight"),
             kind: self.kind,
         }
+    }
+
+    /// Writes the `xs:date` form (`yyyy-MM-dd`) — the text shape of
+    /// members declared with `DataType = "date"`.
+    pub fn to_date_xml(&self) -> String {
+        let d = self.naive.date();
+        format!("{:04}-{:02}-{:02}", d.year(), d.month(), d.day())
     }
 }
 
