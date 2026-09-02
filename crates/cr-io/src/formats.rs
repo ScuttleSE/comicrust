@@ -155,7 +155,14 @@ pub const FORMATS: &[FileFormat] = &[
         supports_update: false,
         dynamic: false,
     },
-    // PDF, DjVu, and web-comic providers land with their accessors;
+    FileFormat {
+        name: "PDF Document (PDF)",
+        id: ids::PDF,
+        extensions: &[".pdf"],
+        supports_update: false,
+        dynamic: false,
+    },
+    // DjVu and web-comic providers land with their accessors;
     // see docs/phase-1-kickoff.md T1.
 ];
 

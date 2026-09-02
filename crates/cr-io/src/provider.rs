@@ -87,7 +87,6 @@ pub struct ComicProvider {
     format: &'static FileFormat,
     pages: Vec<ProviderImageInfo>,
 }
-
 impl ComicProvider {
     /// Provider factory + open: pick the format by extension
     /// (`ProviderFactory.CreateSourceProvider`), build the accessor,
@@ -97,6 +96,10 @@ impl ComicProvider {
     /// *reader* provider class (folder comics flow through the
     /// library's file-system lists); this gives the same observable
     /// page behavior under the `FOLDER` format id (100).
+    ///
+    /// PDF bypasses the archive page logic entirely
+    /// (`PdfComicProvider` extends `ComicProvider`, not
+    /// `ArchiveComicProvider`): the accessor's page list is used as-is.
     pub fn open(source: &Path) -> Result<ComicProvider> {
         let (format, accessor): (&'static FileFormat, Box<dyn ComicAccessor>) = if source.is_dir() {
             (&FOLDER_FORMAT, Box::new(FolderAccessor))
@@ -112,10 +115,9 @@ impl ComicProvider {
             format,
             pages: Vec::new(),
         };
-        provider.parse(&*accessor);
+        provider.parse(&*accessor, format.id == formats::ids::PDF);
         Ok(provider)
     }
-
     pub fn format(&self) -> &FileFormat {
         self.format
     }
@@ -133,31 +135,42 @@ impl ComicProvider {
     }
 
     /// `ArchiveComicProvider.GetFile` + `OnRetrieveSourceByteImage`,
-    /// minus the DjVu/WebP/HEIF/J2K/JXL normalize-to-JPEG conversion
-    /// chain (that lands with the cr-image decode work, T3).
+    /// or `PdfComicProvider.OnRetrieveSourceByteImage`. The
+    /// DjVu/WebP/HEIF/J2K/JXL normalize-to-JPEG conversion chain lands
+    /// with the cr-image decode work (T3).
     pub fn read_page(&self, index: usize) -> Option<Vec<u8>> {
         let info = self.pages.get(index)?;
-        if self.format.id == crate::formats::ids::FOLDER {
+        if self.format.id == formats::ids::FOLDER {
             return FolderAccessor.read_byte_image(&self.source, info);
         }
         crate::accessors::accessor_for(self.format.id)?.read_byte_image(&self.source, info)
     }
 
     /// `ArchiveComicProvider.CreateHash` — the archive's cache key.
+    /// PDF overrides it with a SHA-1 of the whole file
+    /// (`PdfComicProvider.CreateHash`).
     pub fn create_hash(&self) -> String {
-        hash::create_hash_from_image_list(&self.pages)
+        if self.format.id == formats::ids::PDF {
+            hash::file_hash(&self.source)
+        } else {
+            hash::create_hash_from_image_list(&self.pages)
+        }
     }
 
-    /// `ArchiveComicProvider.OnParse`: take the accessor's entry
-    /// list, keep supported images, and sort by natural order
-    /// (`ExtendedStringComparer`, IgnoreCase).
-    fn parse(&mut self, accessor: &dyn ComicAccessor) {
-        let mut list: Vec<ProviderImageInfo> = accessor
-            .get_entry_list(&self.source)
-            .unwrap_or_default()
+    /// `ArchiveComicProvider.OnParse` / `PdfComicProvider.OnParse`:
+    /// archive sources take the accessor's entry list, keep supported
+    /// images, and sort by natural order (`ExtendedStringComparer`,
+    /// IgnoreCase); PDF sources take the page list as-is.
+    fn parse(&mut self, accessor: &dyn ComicAccessor, raw_page_list: bool) {
+        let entries = accessor.get_entry_list(&self.source).unwrap_or_default();
+        if raw_page_list {
+            self.pages = entries;
+            return;
+        }
+        let mut list = entries
             .into_iter()
             .filter(|ii| is_supported_image(&ii.name))
-            .collect();
+            .collect::<Vec<_>>();
         list.sort_by(|a, b| extended_compare_ignore_case(&a.name, &b.name));
         self.pages = list;
     }

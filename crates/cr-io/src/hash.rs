@@ -98,6 +98,18 @@ pub fn create_hash_from_image_list(images: &[ProviderImageInfo]) -> String {
     base32(&sha.finalize())
 }
 
+/// `PdfComicProvider.CreateHash` — SHA-1 of the whole file, Base32
+/// encoded. Empty on read failure (the C# lets the exception fly; the
+/// provider layer swallows it).
+pub fn file_hash(path: &std::path::Path) -> String {
+    let Ok(data) = std::fs::read(path) else {
+        return String::new();
+    };
+    let mut sha = Sha1::new();
+    sha.update(&data);
+    base32(&sha.finalize())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
