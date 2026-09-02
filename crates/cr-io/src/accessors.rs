@@ -52,6 +52,23 @@ impl ComicAccessor for ZipAccessor {
         entry.read_to_end(&mut data).ok()?;
         Some(data)
     }
+
+    /// `ZipSharpZipEngine.Read`: case-insensitive full-name entry
+    /// search (`zipFile.FindEntry(s, ignoreCase: true)`).
+    fn read_info_file(&self, source: &Path, filename: &str) -> Option<Vec<u8>> {
+        let file = File::open(source).ok()?;
+        let mut archive = zip::ZipArchive::new(file).ok()?;
+        let index = (0..archive.len()).find(|i| {
+            archive
+                .by_index_raw(*i)
+                .map(|f| f.name().eq_ignore_ascii_case(filename))
+                .unwrap_or(false)
+        })?;
+        let mut entry = archive.by_index(index).ok()?;
+        let mut data = Vec::new();
+        entry.read_to_end(&mut data).ok()?;
+        Some(data)
+    }
 }
 
 /// `TarSharpZipEngine` — CBT/TAR.
@@ -106,6 +123,26 @@ impl ComicAccessor for TarAccessor {
         }
         None
     }
+
+    /// `TarSharpZipEngine.Read`: match the entry *basename*
+    /// case-insensitively (`Path.GetFileName` comparison).
+    fn read_info_file(&self, source: &Path, filename: &str) -> Option<Vec<u8>> {
+        let file = File::open(source).ok()?;
+        let mut archive = tar::Archive::new(file);
+        let mut entries = archive.entries().ok()?;
+        for entry in entries.by_ref() {
+            let Ok(entry) = entry else { return None };
+            let name = entry.path().ok()?.to_string_lossy().into_owned();
+            let basename = name.rsplit('/').next().unwrap_or(&name);
+            if basename.eq_ignore_ascii_case(filename) {
+                let mut data = Vec::new();
+                let mut entry = entry;
+                entry.read_to_end(&mut data).ok()?;
+                return Some(data);
+            }
+        }
+        None
+    }
 }
 
 /// Shared signature check (`FileBasedAccessor.IsFormat`). `on_error`
@@ -136,6 +173,7 @@ pub fn accessor_for(format: i32) -> Option<Box<dyn ComicAccessor>> {
         }
         ids::PDF => Some(Box::new(crate::pdf::PdfAccessor)),
         ids::DJVU => Some(Box::new(crate::djvu::DjVuAccessor)),
+        ids::FOLDER => Some(Box::new(crate::provider::FolderAccessor)),
         _ => None,
     }
 }

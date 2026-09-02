@@ -103,6 +103,17 @@ impl ComicAccessor for SevenZipAccessor {
             None
         }
     }
+
+    /// `SevenZipEngine.Read`: exact-name extraction via `e -so`.
+    fn read_info_file(&self, source: &Path, filename: &str) -> Option<Vec<u8>> {
+        let source_str = source.to_string_lossy();
+        let out = run_7z(&["e", "-so", "-y", &source_str, filename]).ok()?;
+        if out.status.success() {
+            Some(out.stdout)
+        } else {
+            None
+        }
+    }
 }
 
 /// Parses `7z l -slt` output: blank-line separated blocks, each with

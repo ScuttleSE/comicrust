@@ -237,6 +237,34 @@ impl ComicBook {
         Ok(out)
     }
 
+    /// `ComicBook.IsSameContent` — `ComicInfo.IsSameContent` plus the
+    /// book-state chain from ComicBook.cs:2697 (file-derived fields
+    /// excluded, matching the C# commented-out comparisons).
+    pub fn is_same_content(&self, other: &ComicBook, with_pages: bool) -> bool {
+        self.info.is_same_content(&other.info, with_pages)
+            && self.added_time == other.added_time
+            && self.released_time == other.released_time
+            && self.opened_time == other.opened_time
+            && self.opened_count == other.opened_count
+            && self.current_page == other.current_page
+            && self.last_page_read == other.last_page_read
+            && self.rating == other.rating
+            && self.color_adjustment == other.color_adjustment
+            && self.enable_proposed == other.enable_proposed
+            && self.series_complete == other.series_complete
+            && self.checked == other.checked
+            && self.custom_values_store == other.custom_values_store
+            && self.book_store == other.book_store
+            && self.book_price == other.book_price
+            && self.isbn == other.isbn
+            && self.book_age == other.book_age
+            && self.book_condition == other.book_condition
+            && self.book_owner == other.book_owner
+            && self.book_location == other.book_location
+            && self.book_collection_status == other.book_collection_status
+            && self.book_notes == other.book_notes
+    }
+
     /// Parses `<Book>` (attrs consumed, children follow).
     pub fn read_xml(start: &Start, r: &mut crate::xml::XmlReader<'_>) -> XmlResult<ComicBook> {
         let mut b = ComicBook::default();

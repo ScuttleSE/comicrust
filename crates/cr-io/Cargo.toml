@@ -9,6 +9,7 @@ thiserror.workspace = true
 zip.workspace = true
 tar.workspace = true
 sha1.workspace = true
+xattr.workspace = true
 pdfium-render = "0.8"
 jpeg-encoder = "0.6"
 

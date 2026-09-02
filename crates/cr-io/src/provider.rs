@@ -45,6 +45,14 @@ pub trait ComicAccessor {
     /// entry, looked up by name; `None` on any failure (the C#
     /// engines swallow exceptions into `null`).
     fn read_byte_image(&self, source: &Path, info: &ProviderImageInfo) -> Option<Vec<u8>>;
+
+    /// `IComicAccessor.ReadInfo` data access — raw bytes of a named
+    /// entry (the `DeserializeAll` delegate). Name matching follows
+    /// the C# engines: zip uses a case-insensitive full-name search,
+    /// tar matches the entry basename case-insensitively, 7z passes
+    /// the exact name to `e -so`. PDF/DjVu return `None` (their C#
+    /// ReadInfo is null).
+    fn read_info_file(&self, source: &Path, filename: &str) -> Option<Vec<u8>>;
 }
 
 /// The image extensions `ComicProvider.supportedTypes` accepts, in
@@ -200,6 +208,20 @@ impl ComicAccessor for FolderAccessor {
 
     fn read_byte_image(&self, source: &Path, info: &ProviderImageInfo) -> Option<Vec<u8>> {
         fs::read(source.join(&info.name)).ok()
+    }
+
+    fn read_info_file(&self, source: &Path, filename: &str) -> Option<Vec<u8>> {
+        // Case-insensitive directory scan (the C# folder flow matches
+        // file names without case sensitivity on Windows).
+        let wanted = filename.to_ascii_lowercase();
+        for entry in fs::read_dir(source).ok()? {
+            let entry = entry.ok()?;
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.to_ascii_lowercase() == wanted {
+                return fs::read(entry.path()).ok();
+            }
+        }
+        None
     }
 }
 

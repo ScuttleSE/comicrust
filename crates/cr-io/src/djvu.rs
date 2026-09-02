@@ -121,6 +121,11 @@ impl ComicAccessor for DjVuAccessor {
             .ok()?;
         Some(jpeg)
     }
+
+    /// `DjvuComicProvider` has no in-archive info support.
+    fn read_info_file(&self, _source: &Path, _filename: &str) -> Option<Vec<u8>> {
+        None
+    }
 }
 
 /// Parses `djvm -l` output. Both the header line ("PAGE #1") and

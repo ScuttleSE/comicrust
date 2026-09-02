@@ -93,6 +93,11 @@ impl ComicAccessor for PdfAccessor {
             .ok()?;
         Some(jpeg)
     }
+
+    /// `PdfiumReaderEngine.ReadInfo` returns null.
+    fn read_info_file(&self, _source: &Path, _filename: &str) -> Option<Vec<u8>> {
+        None
+    }
 }
 
 /// Binds to a pdfium library without ever panicking (the

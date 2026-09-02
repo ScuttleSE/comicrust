@@ -204,6 +204,52 @@ impl ComicInfo {
         Ok(out)
     }
 
+    /// `ComicInfo.IsSameContent` — the exact C# field list (note the
+    /// absent CommunityRating/PreferredFrontCover), with pages.
+    pub fn is_same_content(&self, other: &ComicInfo, with_pages: bool) -> bool {
+        self.writer == other.writer
+            && self.publisher == other.publisher
+            && self.imprint == other.imprint
+            && self.inker == other.inker
+            && self.penciller == other.penciller
+            && self.title == other.title
+            && self.number == other.number
+            && self.count == other.count
+            && self.summary == other.summary
+            && self.series == other.series
+            && self.volume == other.volume
+            && self.alternate_series == other.alternate_series
+            && self.alternate_number == other.alternate_number
+            && self.alternate_count == other.alternate_count
+            && self.story_arc == other.story_arc
+            && self.series_group == other.series_group
+            && self.year == other.year
+            && self.month == other.month
+            && self.day == other.day
+            && self.notes == other.notes
+            && self.review == other.review
+            && self.genre == other.genre
+            && self.colorist == other.colorist
+            && self.editor == other.editor
+            && self.translator == other.translator
+            && self.letterer == other.letterer
+            && self.cover_artist == other.cover_artist
+            && self.web == other.web
+            && self.language_iso == other.language_iso
+            && self.page_count == other.page_count
+            && self.format == other.format
+            && self.age_rating == other.age_rating
+            && self.black_and_white == other.black_and_white
+            && self.manga == other.manga
+            && self.characters == other.characters
+            && self.teams == other.teams
+            && self.main_character_or_team == other.main_character_or_team
+            && self.locations == other.locations
+            && self.scan_information == other.scan_information
+            && self.tags == other.tags
+            && (!with_pages || self.pages == other.pages)
+    }
+
     /// Reads ComicInfo child elements. `end_name` is the element name
     /// that terminates the struct (ComicInfo, or Book for ComicBook).
     /// Returns on the matching end token (consumed).

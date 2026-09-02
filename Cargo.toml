@@ -25,6 +25,7 @@ clap = { version = "4", features = ["derive"] }
 zip = { version = "2", default-features = false, features = ["deflate", "deflate64"] }
 tar = "0.4"
 sha1 = "0.10"
+xattr = "1"
 
 [workspace.lints.rust]
 unsafe_code = "deny"

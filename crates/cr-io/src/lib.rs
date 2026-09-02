@@ -34,6 +34,7 @@ pub mod error;
 pub mod extended_compare;
 pub mod formats;
 pub mod hash;
+pub mod info;
 pub mod pdf;
 pub mod provider;
 pub mod sevenzip;
