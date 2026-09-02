@@ -9,9 +9,12 @@
 //! - `series`: series-statistics values for the `SmartListSeries*`
 //!   matchers.
 
+pub mod book_view;
+pub mod eval;
 pub mod query;
 pub mod series;
 pub mod spec;
+pub mod text_number;
 pub mod tree;
 
 pub use query::{parse_smart_list_query, render_smart_list_query, SmartListQuery};

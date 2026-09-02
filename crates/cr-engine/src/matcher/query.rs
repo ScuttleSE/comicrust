@@ -99,6 +99,7 @@ fn create_matcher_from_query(t: &mut Tokenizer<'_>) -> Result<Matcher, ParseErro
         value2: String::new(),
         name: String::new(),
         ignore_case: true,
+        option: None,
     };
     for i in 0..spec.argument_count(op) {
         let arg = t.take_string()?;

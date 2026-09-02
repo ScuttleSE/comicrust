@@ -29,6 +29,11 @@ pub struct ValueMatcher {
     /// the member (numeric, date, ...) never carry it; a `true` here is
     /// indistinguishable from the default and never written.
     pub ignore_case: bool,
+    /// `<Option>` child element (`ComicBookAllPropertiesMatcher.Option`
+    /// enum name: All/Series/Writer/Artists/Descriptive/File/Catalog).
+    /// The C# XmlSerializer writes it on that matcher class; other
+    /// matchers never carry it.
+    pub option: Option<String>,
 }
 
 impl Default for ValueMatcher {
@@ -42,6 +47,7 @@ impl Default for ValueMatcher {
             match_operator: 0,
             // C# ComicBookStringMatcher.IgnoreCase default.
             ignore_case: true,
+            option: None,
         }
     }
 }
@@ -94,6 +100,9 @@ impl ComicBookMatcher {
                 e.text_elem("MatchValue", &v.match_value)?;
                 if !v.match_value_2.is_empty() {
                     e.text_elem("MatchValue2", &v.match_value_2)?;
+                }
+                if let Some(o) = &v.option {
+                    e.text_elem("Option", o)?;
                 }
             }
             ComicBookMatcher::Group(g) => {
@@ -171,6 +180,7 @@ impl ComicBookMatcher {
                 match_value_2: String::new(),
                 match_operator: 0,
                 ignore_case: true,
+                option: None,
             };
             for (k, val) in &s.attrs {
                 match k.as_str() {
@@ -193,6 +203,7 @@ impl ComicBookMatcher {
                     Tok::Start(s2) => match s2.name.as_str() {
                         "MatchValue" => v.match_value = r.text_content("MatchValue")?,
                         "MatchValue2" => v.match_value_2 = r.text_content("MatchValue2")?,
+                        "Option" => v.option = Some(r.text_content("Option")?),
                         _ => r.skip_element(&s2.name)?,
                     },
                     Tok::Text(_) => {}

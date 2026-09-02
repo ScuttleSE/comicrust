@@ -202,7 +202,7 @@ fn get_number(text: &str) -> String {
 
 /// `Path.GetFileNameWithoutExtension` (Windows semantics; both
 /// separators tolerated).
-fn file_name_without_extension(path: &str) -> String {
+pub fn file_name_without_extension(path: &str) -> String {
     let name = {
         let idx = path.rfind(['/', '\\']).map(|i| i + 1).unwrap_or(0);
         &path[idx..]
@@ -214,7 +214,7 @@ fn file_name_without_extension(path: &str) -> String {
 }
 
 /// `Path.GetDirectoryName` (Windows semantics).
-fn directory_name(path: &str) -> String {
+pub fn directory_name(path: &str) -> String {
     match path.rfind(['/', '\\']) {
         Some(i) if i > 0 => path[..i].to_string(),
         Some(0) => path[..1].to_string(),

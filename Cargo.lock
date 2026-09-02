@@ -309,7 +309,10 @@ dependencies = [
 name = "cr-engine"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "cr-core",
+ "cr-io",
+ "fancy-regex",
 ]
 
 [[package]]

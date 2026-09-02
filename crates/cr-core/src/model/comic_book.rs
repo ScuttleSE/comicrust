@@ -33,6 +33,8 @@ pub struct ComicBook {
     pub comic_info_is_dirty: bool,
     pub comic_book_is_dirty: bool,
     pub file_size: i64,
+    /// `FileIsMissing`; serialized as `<Missing>` (false → not written).
+    pub file_is_missing: bool,
     pub file_modified_time: CrDateTime,
     pub file_creation_time: CrDateTime,
     pub custom_thumbnail_key: Option<String>,
@@ -73,6 +75,7 @@ impl Default for ComicBook {
             comic_info_is_dirty: false,
             comic_book_is_dirty: false,
             file_size: -1,
+            file_is_missing: false,
             file_modified_time: CrDateTime::min_value(),
             file_creation_time: CrDateTime::min_value(),
             custom_thumbnail_key: None,
@@ -166,6 +169,9 @@ impl ComicBook {
         }
         if self.file_size != -1 {
             e.text_elem("FileSize", &self.file_size.to_string())?;
+        }
+        if self.file_is_missing {
+            e.text_elem("Missing", "true")?;
         }
         if !self.file_modified_time.is_min_value() {
             e.text_elem("FileModifiedTime", &self.file_modified_time.to_xml())?;
@@ -351,6 +357,10 @@ fn read_children(b: &mut ComicBook, end: &str, r: &mut crate::xml::XmlReader<'_>
                     }
                     "ComicBookIsDirty" => {
                         b.comic_book_is_dirty = parse_bool_v(r, "ComicBookIsDirty")?
+                    }
+                    "Missing" => {
+                        let v = r.text_content("Missing")?;
+                        b.file_is_missing = v.trim() == "true" || v.trim() == "1";
                     }
                     "FileSize" => {
                         let v = r.text_content("FileSize")?;
