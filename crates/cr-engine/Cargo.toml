@@ -9,6 +9,10 @@ cr-io = { path = "../cr-io" }
 cr-image = { path = "../cr-image" }
 chrono.workspace = true
 fancy-regex = "0.14"
+notify = "6"
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+zip = "2"
