@@ -17,7 +17,10 @@
 
 pub mod adjust;
 pub mod decode;
+pub mod disk;
 pub mod error;
+pub mod keys;
+pub mod memory;
 pub mod resize;
 pub mod thumbnail;
 
