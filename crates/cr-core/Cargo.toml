@@ -9,6 +9,7 @@ quick-xml.workspace = true
 thiserror.workspace = true
 regex.workspace = true
 chrono.workspace = true
+fancy-regex = "0.14"
 
 [lints]
 workspace = true
