@@ -39,7 +39,14 @@ impl<'a> MatchContext<'a> {
             .iter()
             .map(|b| ((*b) as *const ComicBook, book_view::proposed(b)))
             .collect();
-        let stats = series::create(books, &|b| book_view::proposed(b));
+        // The statistics reuse the parsed proposed values (the parse is
+        // expensive; each book appears in one series group).
+        let stats = series::create(books, &|b| {
+            props
+                .get(&(b as *const ComicBook))
+                .cloned()
+                .unwrap_or_else(|| book_view::proposed(b))
+        });
         let now = chrono::Local::now().naive_local();
         MatchContext {
             now: CrDateTime {

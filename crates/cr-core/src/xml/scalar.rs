@@ -22,6 +22,30 @@ impl CrGuid {
         &self.0
     }
 
+    /// `Guid.NewGuid()` — a v4 random Guid (16 bytes from the OS entropy
+    /// source, version and variant bits set).
+    pub fn new_random() -> Self {
+        use std::io::Read;
+        let mut bytes = [0u8; 16];
+        let mut filled = false;
+        if let Ok(mut f) = std::fs::File::open("/dev/urandom") {
+            filled = f.read_exact(&mut bytes).is_ok();
+        }
+        if !filled {
+            // Fallback: nanosecond entropy split over the bytes.
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0);
+            for (i, b) in bytes.iter_mut().enumerate() {
+                *b = (nanos >> (i % 16 * 8)) as u8;
+            }
+        }
+        bytes[6] = (bytes[6] & 0x0f) | 0x40;
+        bytes[8] = (bytes[8] & 0x3f) | 0x80;
+        CrGuid(bytes)
+    }
+
     /// Parses the common .NET Guid forms (`d`, `n`, braced). Mixed case ok.
     pub fn parse(s: &str) -> Result<Self, ScalarError> {
         let t = s.trim().trim_start_matches('{').trim_end_matches('}');

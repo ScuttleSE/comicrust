@@ -91,3 +91,54 @@ fn realworld_matcher_specs_are_known() {
     }
     assert!(count > 0);
 }
+
+// ---------- T3 acceptance: evaluate the saved smart lists ----------
+//
+// `CacheStorage` in ComicDb.xml is the book-id list the C# computed at
+// its last run (`ComicListItem.RetrieveCache` splits it into Guids).
+// Lists saved with `Custom` use a cache mode that persists no id list
+// and are skipped. The sets below are the C# ground truth.
+
+use cr_engine::smart_list::evaluate_smart_list;
+
+#[test]
+fn realworld_smart_lists_evaluate_to_cached_csharp_results() {
+    let db = comic_database::load(REALWORLD_DB.as_ref()).expect("load real-world DB");
+    let books: Vec<&cr_core::model::comic_book::ComicBook> = db.books.iter().collect();
+    let lists = smart_lists(&db);
+    assert!(lists.len() >= 7);
+
+    for list in lists {
+        let name = list.base.name.as_deref().unwrap_or("");
+        let cache_storage = match &list.base.cache_storage {
+            // Absent or "Custom": the list uses a cache mode that
+            // persists no id list — no ground truth to compare.
+            None => continue,
+            Some(c) if c == "Custom" => continue,
+            Some(c) => c,
+        };
+        // An empty CacheStorage element is a valid empty result set.
+        let cache: Vec<String> = cache_storage
+            .split(',')
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .collect();
+        // Normalize the ground truth: only guids that are real books.
+        let expected: std::collections::HashSet<String> = {
+            let book_ids: std::collections::HashSet<String> =
+                books.iter().map(|b| b.id.to_d_string()).collect();
+            cache
+                .into_iter()
+                .filter(|g| book_ids.contains(g.to_lowercase().as_str()) || book_ids.contains(g))
+                .collect()
+        };
+
+        let result = evaluate_smart_list(list, &books, None);
+        let got: std::collections::HashSet<String> =
+            result.iter().map(|b| b.id.to_d_string()).collect();
+        assert_eq!(
+            got, expected,
+            "smart list {name:?} evaluation differs from the C# cache"
+        );
+    }
+}

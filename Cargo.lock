@@ -285,6 +285,7 @@ dependencies = [
  "anyhow",
  "clap",
  "cr-core",
+ "cr-engine",
  "cr-image",
  "cr-io",
  "serde_json",

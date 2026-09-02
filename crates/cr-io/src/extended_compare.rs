@@ -28,6 +28,52 @@ fn compare_chars(c1: char, c2: char, ignore_case: bool) -> Ordering {
 
 /// Port of `ExtendedStringComparer.Compare(s1, s2, IgnoreCase)`.
 pub fn extended_compare_ignore_case(s1: &str, s2: &str) -> Ordering {
+    scan_extended(s1, s2, 0, 0, Ordering::Equal)
+}
+
+/// `StringUtility.IndexAfterArticle` with the default article list (the
+/// value shipped in ComicRack.ini; the C# reads the ini-configured
+/// list, which defaults to unset — a state the duplicate/group paths
+/// of the reference app cannot run in, since `IsArticle` would throw).
+fn index_after_article(s: &str) -> usize {
+    const ARTICLES_WITH_SPACES: [&str; 8] =
+        ["the ", "der ", "die ", "das ", "le ", "la ", "les ", "l'"];
+    let lower = s.to_lowercase();
+    for article in ARTICLES_WITH_SPACES {
+        if lower.starts_with(article) {
+            return article.len();
+        }
+    }
+    0
+}
+
+/// Port of `ExtendedStringComparer.Compare(s1, s2, IgnoreArticles |
+/// IgnoreCase)` — the mode the `ComicBookSeriesComparer` uses. Note the
+/// C# compares the skipped-prefix lengths first and returns that
+/// verdict when both strings exhaust together.
+pub fn extended_compare_ignore_articles_case(s1: &str, s2: &str) -> Ordering {
+    if s1.is_empty() {
+        return if s2.is_empty() {
+            Ordering::Equal
+        } else {
+            Ordering::Less
+        };
+    }
+    if s2.is_empty() {
+        return Ordering::Greater;
+    }
+    if s1 == s2 {
+        return Ordering::Equal;
+    }
+    let i1 = index_after_article(s1);
+    let i2 = index_after_article(s2);
+    let result = i1.cmp(&i2);
+    scan_extended(s1, s2, i1, i2, result)
+}
+
+/// The shared `Compare` scan body (default mode is i1=i2=0 with
+/// `Ordering::Equal` on simultaneous exhaustion).
+fn scan_extended(s1: &str, s2: &str, start1: usize, start2: usize, on_equal: Ordering) -> Ordering {
     if s1.is_empty() {
         return if s2.is_empty() {
             Ordering::Equal
@@ -45,13 +91,13 @@ pub fn extended_compare_ignore_case(s1: &str, s2: &str) -> Ordering {
     let v1: Vec<char> = s1.chars().collect();
     let v2: Vec<char> = s2.chars().collect();
     let (len1, len2) = (v1.len(), v2.len());
-    let mut i1 = 0usize;
-    let mut i2 = 0usize;
+    let mut i1 = start1.min(len1 - 1);
+    let mut i2 = start2.min(len2 - 1);
 
     // Leading letter-or-digit gate: a letter-or-digit start sorts
     // after a non-letter-or-digit start.
-    let lod1 = v1[0].is_alphanumeric();
-    let lod2 = v2[0].is_alphanumeric();
+    let lod1 = v1[i1].is_alphanumeric();
+    let lod2 = v2[i2].is_alphanumeric();
     if lod1 && !lod2 {
         return Ordering::Greater;
     }
@@ -104,11 +150,7 @@ pub fn extended_compare_ignore_case(s1: &str, s2: &str) -> Ordering {
         i2 += 1;
 
         if i1 >= len1 {
-            return if i2 >= len2 {
-                Ordering::Equal
-            } else {
-                Ordering::Less
-            };
+            return if i2 >= len2 { on_equal } else { Ordering::Less };
         }
         if i2 >= len2 {
             return Ordering::Greater;

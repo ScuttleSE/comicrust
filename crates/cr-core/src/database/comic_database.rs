@@ -2,7 +2,10 @@
 //! `.bak` rotation and the corrupt-file fallback chain of
 //! `DatabaseManager.Open`.
 
-use crate::database::list_items::{ComicListItem, WatchFolder};
+use crate::database::list_items::{
+    ComicBookMatcher, ComicListItem, FolderItem, LibraryListItem, ListItemBase, SmartListItem,
+    ValueMatcher, WatchFolder,
+};
 use crate::model::comic_book::ComicBook;
 use crate::xml::reader::{XmlError, XmlResult};
 use crate::xml::scalar::CrGuid;
@@ -290,6 +293,94 @@ pub fn round_trip(path: &Path) -> Result<(Vec<u8>, Vec<u8>), DbError> {
 /// `ComicDatabase.CreateNew` — Phase 0 note: the C# version seeds the
 /// default smart lists (`InitializeDefaultLists`); that is deferred and
 /// needs the localized names plus the matcher registry.
+/// A fresh database with the C# default list tree
+/// (`ComicLibrary.InitializeDefaultLists`, English names — the TR
+/// localized names are a Phase 5 concern).
 pub fn create_new() -> ComicDatabase {
-    ComicDatabase::default()
+    let mut db = ComicDatabase {
+        id: CrGuid::new_random(),
+        ..Default::default()
+    };
+
+    let library = ComicListItem::Library(LibraryListItem {
+        base: ListItemBase {
+            id: CrGuid::new_random(),
+            name: Some("Library".into()),
+            ..Default::default()
+        },
+    });
+
+    // The "Smart Lists" folder children, in InitializeDefaultLists
+    // order, with the engine-configuration default values
+    // (IsRecentInDays 14, IsRead 95, IsNotRead 10).
+    let smart = |name: &str, matchers: Vec<ComicBookMatcher>| {
+        ComicListItem::Smart(SmartListItem {
+            base: ListItemBase {
+                id: CrGuid::new_random(),
+                name: Some(name.into()),
+                ..Default::default()
+            },
+            matchers,
+            ..Default::default()
+        })
+    };
+    let value_matcher = |type_name: &str, op: i32, v1: &str, v2: &str| {
+        ComicBookMatcher::Value(ValueMatcher {
+            type_name: type_name.into(),
+            match_operator: op,
+            match_value: v1.into(),
+            match_value_2: v2.into(),
+            ..Default::default()
+        })
+    };
+
+    let items = vec![
+        smart(
+            "My Favorites",
+            vec![value_matcher("ComicBookRatingMatcher", 1, "3", "")],
+        ),
+        smart(
+            "Recently Added",
+            vec![value_matcher("ComicBookAddedMatcher", 3, "14", "")],
+        ),
+        smart(
+            "Recently Read",
+            vec![value_matcher("ComicBookOpenedMatcher", 3, "14", "")],
+        ),
+        smart(
+            "Never Read",
+            vec![value_matcher("ComicBookReadPercentageMatcher", 2, "10", "")],
+        ),
+        smart(
+            "Reading",
+            vec![value_matcher(
+                "ComicBookReadPercentageMatcher",
+                3,
+                "10",
+                "95",
+            )],
+        ),
+        smart(
+            "Read",
+            vec![value_matcher("ComicBookReadPercentageMatcher", 1, "95", "")],
+        ),
+        smart(
+            "Files to update",
+            vec![value_matcher("ComicBookModifiedInfoMatcher", 0, "", "")],
+        ),
+    ];
+
+    let folder = ComicListItem::Folder(FolderItem {
+        base: ListItemBase {
+            id: CrGuid::new_random(),
+            name: Some("Smart Lists".into()),
+            ..Default::default()
+        },
+        items,
+        ..Default::default()
+    });
+
+    db.comic_lists.push(library);
+    db.comic_lists.push(folder);
+    db
 }

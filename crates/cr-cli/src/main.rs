@@ -66,6 +66,10 @@ enum Command {
     /// Parse MetronInfo.xml from a comic file and print the
     /// MetronInfo-to-ComicInfo mapping as JSON.
     Metron { file: String },
+    /// Evaluate every smart list in a ComicDb.xml against its books.
+    /// Prints list name, evaluated book count, and (when present) the
+    /// count of the C#-cached id list for comparison.
+    Lists { file: String },
 }
 
 fn main() -> ExitCode {
@@ -94,7 +98,52 @@ fn run(command: Command) -> Result<ExitCode> {
         Command::Thumb { file, output } => cmd_thumb(&file, output.as_deref()),
         Command::Rewrite { file } => cmd_rewrite(&file),
         Command::Metron { file } => cmd_metron(&file),
+        Command::Lists { file } => cmd_lists(&file),
     }
+}
+
+fn cmd_lists(file: &str) -> Result<ExitCode> {
+    let db = load(Path::new(file)).with_context(|| format!("loading {file}"))?;
+    let books: Vec<&ComicBook> = db.books.iter().collect();
+
+    fn walk<'a>(
+        items: &'a [cr_core::database::list_items::ComicListItem],
+        out: &mut Vec<(&'a str, &'a cr_core::database::list_items::SmartListItem)>,
+    ) {
+        use cr_core::database::list_items::ComicListItem;
+        for item in items {
+            match item {
+                ComicListItem::Smart(s) => out.push((s.base.name.as_deref().unwrap_or(""), s)),
+                ComicListItem::Folder(f) => walk(&f.items, out),
+                _ => {}
+            }
+        }
+    }
+    let mut lists = Vec::new();
+    walk(&db.comic_lists, &mut lists);
+
+    println!(
+        "{:<20} {:>8} {:>10} {:>8}",
+        "list", "matched", "cached", "delta"
+    );
+    for (name, list) in lists {
+        let result = cr_engine::smart_list::evaluate_smart_list(list, &books, None);
+        let cached = list
+            .base
+            .cache_storage
+            .as_deref()
+            .filter(|c| !c.is_empty() && *c != "Custom")
+            .map_or(0, |c| c.split(',').filter(|g| !g.trim().is_empty()).count());
+        let delta = result.len() as i64 - cached as i64;
+        println!(
+            "{:<20} {:>8} {:>10} {:>8}",
+            name,
+            result.len(),
+            cached,
+            delta
+        );
+    }
+    Ok(ExitCode::SUCCESS)
 }
 
 fn prop_json(v: &PropValue) -> Value {

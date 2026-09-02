@@ -7,6 +7,7 @@ edition.workspace = true
 cr-core.workspace = true
 cr-io.workspace = true
 cr-image.workspace = true
+cr-engine = { path = "../cr-engine" }
 anyhow.workspace = true
 serde_json.workspace = true
 clap.workspace = true
