@@ -219,6 +219,20 @@ fn round_trip_all_fixtures_byte_identical() {
 }
 
 #[test]
+fn round_trip_realworld_db_byte_identical() {
+    // Real-world regression fixture (user-approved commit; provenance in
+    // tests/realworld/README.md). Skipped when the file is absent.
+    let path = golden_dir().parent().unwrap().join("realworld/ComicDb.xml");
+    if !path.exists() {
+        return;
+    }
+    let original = std::fs::read(&path).unwrap();
+    let db = load(&path).unwrap_or_else(|e| panic!("load realworld db: {e}"));
+    let out = save_bytes(&db).unwrap();
+    assert_eq!(out, original, "realworld db: round-trip bytes differ");
+}
+
+#[test]
 fn large_fixture_is_snapshot_of_code() {
     let path = golden_dir().join("db-large.xml");
     let bytes = save_bytes(&large_db()).unwrap();

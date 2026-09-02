@@ -36,20 +36,22 @@ struct Elem {
 
 impl<W: Write> Emitter<W> {
     /// Creates an emitter and writes the XML declaration (no newline;
-    /// the first element start supplies the line break).
+    /// the first element start supplies the line break). The real
+    /// ComicRack declaration has no `encoding` attribute, and the root
+    /// namespaces are `xsd` first.
     pub fn new(mut out: W) -> io::Result<Self> {
-        out.write_all(b"<?xml version=\"1.0\" encoding=\"utf-8\"?>")?;
+        out.write_all(b"<?xml version=\"1.0\"?>")?;
         Ok(Emitter {
             out,
             stack: Vec::new(),
         })
     }
 
-    /// Starts the root element with the default `xsi`/`xsd` namespaces.
+    /// Starts the root element with the default `xsd`/`xsi` namespaces.
     pub fn root(&mut self, name: &str) -> io::Result<()> {
         self.start(name)?;
-        self.attr("xmlns:xsi", "http://www.w3.org/2001/XMLSchema-instance")?;
-        self.attr("xmlns:xsd", "http://www.w3.org/2001/XMLSchema")
+        self.attr("xmlns:xsd", "http://www.w3.org/2001/XMLSchema")?;
+        self.attr("xmlns:xsi", "http://www.w3.org/2001/XMLSchema-instance")
     }
 
     fn indent(&mut self) -> io::Result<()> {
@@ -83,8 +85,13 @@ impl<W: Write> Emitter<W> {
         write!(self.out, " {}=\"{}\"", name, escape_attr(value))
     }
 
-    /// Writes text content of the currently open element.
+    /// Writes text content of the currently open element. Empty text
+    /// writes nothing, so the element closes as `<Name />` — exactly
+    /// like `XmlTextWriter` after `WriteString("")`.
     pub fn text(&mut self, text: &str) -> io::Result<()> {
+        if text.is_empty() {
+            return Ok(());
+        }
         let elem = self.stack.last_mut().expect("text outside element");
         if !elem.has_children && !elem.has_text {
             self.out.write_all(b">")?;
@@ -189,9 +196,9 @@ mod tests {
         });
         assert_eq!(
             out,
-            "<?xml version=\"1.0\" encoding=\"utf-8\"?>\r\n\
-             <ComicDatabase xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" \
-             xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\" />"
+            "<?xml version=\"1.0\"?>\r\n\
+             <ComicDatabase xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\" \
+             xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" />"
         );
     }
 
@@ -209,9 +216,9 @@ mod tests {
         });
         assert_eq!(
             out,
-            "<?xml version=\"1.0\" encoding=\"utf-8\"?>\r\n\
-             <R xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" \
-             xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\" Id=\"x\">\r\n  \
+            "<?xml version=\"1.0\"?>\r\n\
+             <R xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\" \
+             xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" Id=\"x\">\r\n  \
              <A>\r\n    <B>hi</B>\r\n    <C />\r\n  </A>\r\n</R>"
         );
     }
@@ -223,18 +230,12 @@ mod tests {
             e.text("a<b>&c\"d")?;
             e.end()
         });
-        assert_eq!(
-            out,
-            "<?xml version=\"1.0\" encoding=\"utf-8\"?>\r\n<T>a&lt;b&gt;&amp;c\"d</T>"
-        );
+        assert_eq!(out, "<?xml version=\"1.0\"?>\r\n<T>a&lt;b&gt;&amp;c\"d</T>");
         let out = emit(|e| {
             e.start("T")?;
             e.attr("a", "x\"y&z")?;
             e.end()
         });
-        assert_eq!(
-            out,
-            "<?xml version=\"1.0\" encoding=\"utf-8\"?>\r\n<T a=\"x&quot;y&amp;z\" />"
-        );
+        assert_eq!(out, "<?xml version=\"1.0\"?>\r\n<T a=\"x&quot;y&amp;z\" />");
     }
 }

@@ -1,5 +1,5 @@
-<?xml version="1.0" encoding="utf-8"?>
-<ComicDatabase xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" Id="11111111-2222-3333-4444-555555555555" Name="Large">
+<?xml version="1.0"?>
+<ComicDatabase xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" Id="11111111-2222-3333-4444-555555555555" Name="Large">
   <Books>
     <Book Id="1b259acd-2369-4a30-be47-c8c8ff0ffb5e" Checked="false" File="C:\Documents and Settings\Books\Amazing Adventures #12 (1999) - AC Publisher.cbz">
       <Series>Amazing Adventures</Series>
@@ -32,8 +32,8 @@
       <Rating>3.5</Rating>
       <ComicInfoIsDirty>true</ComicInfoIsDirty>
       <FileSize>12345678</FileSize>
-      <FileModified>2021-11-01T09:08:07Z</FileModified>
-      <FileCreation>2005-01-01T00:00:00</FileCreation>
+      <FileModifiedTime>2021-11-01T09:08:07Z</FileModifiedTime>
+      <FileCreationTime>2005-01-01T00:00:00</FileCreationTime>
       <CustomThumbnailKey>thumbkey</CustomThumbnailKey>
       <BookPrice>4.5</BookPrice>
       <BookAge>Modern</BookAge>

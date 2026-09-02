@@ -52,8 +52,18 @@ Update this section at the **end of every work session**. The next agent must kn
 ### State summary
 
 - **Phase:** 0 (core model and data compatibility). Tasks T0-T4 are built. The phase exit review is not done.
-- **State:** `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` are green. 30 tests pass.
-- **Gate status:** byte-stable ComicDb.xml round-trip works on all three fixtures. Acceptance criterion #2 (summary of a real user database) waits for a user-provided ComicDb.xml. Do not commit user data.
+- **State:** `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` are green. 31 tests pass.
+- **Gate status:** byte-stable ComicDb.xml round-trip is proven on all three synthetic fixtures AND on the real-world database `tests/realworld/ComicDb.xml` (255 books, 584 KB, 2026-09-02, user-approved commit). Acceptance criteria #2 and #3 are met. The remaining exit items are the settings port, default lists, MetronInfo, and the exit review.
+
+### Real-world validation record (2026-09-02)
+
+`tests/realworld/ComicDb.xml` round-trips byte-identically. The first
+run found five writer defects that all synthetic fixtures missed. All
+fixed: declaration without `encoding` attribute, `xmlns:xsd` before
+`xmlns:xsi`, element names `FileModifiedTime`/`FileCreationTime`, no
+`<Size>` wrapper in `ThumbnailSize`/`TileSize`, and empty-text elements
+serialize self-closing. Full record in `tests/realworld/README.md`.
+Do not edit or reformat that fixture; byte identity is the test.
 
 ### What exists (cr-core module map)
 
@@ -85,10 +95,9 @@ Re-bless the `db-large.xml` snapshot after a deliberate model change: `CR_BLESS=
 ### Remaining Phase 0 work (in order)
 
 1. **Settings port (T2 tail).** Port `IniFile` (`cYo.Common/Runtime/IniFile.cs`), `EngineConfiguration` (`ComicRack.Engine/EngineConfiguration.cs`), and `SystemPaths` (`ComicRack.Engine/SystemPaths.cs`) into `cr-core`. Add settings tests. Note: `ComicNameInfo` currently hard-codes `OfValues = "of,von,de"` and the legacy-parser flag; wire these to `EngineConfiguration` when it lands.
-2. **Fresh-DB default lists.** Port `ComicLibrary.InitializeDefaultLists` (`ComicRack.Engine/Database/ComicLibrary.cs:254`). This needs the localized names (English defaults are acceptable first) and the matcher type names for `xsi:type` (`ComicBookRatingMatcher`, `ComicBookReadPercentageMatcher`, `ComicBookModifiedInfoMatcher`, and the default lists in the same file). `create_new()` in `database/comic_database.rs` is the entry point.
+2. **Fresh-DB default lists.** Port `ComicLibrary.InitializeDefaultLists` (`ComicRack.Engine/Database/ComicLibrary.cs:254`). This needs the localized names (English defaults are acceptable first) and the matcher type names for `xsi:type` (`ComicBookRatingMatcher`, `ComicBookReadPercentageMatcher`, `ComicBookModifiedInfoMatcher`, and the default lists in the same file). `create_new()` in `database/comic_database.rs` is the entry point. The real-world fixture shows the exact default list set (My Favorites, Recently Added, Recently Read, Never Read, Reading, Read, Files to update, Temporary Lists).
 3. **MetronInfo mapping (T1 remainder).** Deferred by agreement. Rationale and scope in `tests/golden/README.md`. Needed before Phase 1 (in-archive read/write).
-4. **Real-world validation (acceptance #2).** Blocked on the user. See Blockers.
-5. **Phase 0 exit review.** Confirm all acceptance criteria in `docs/phase-0-kickoff.md`. Record anything learned in `docs/decisions.md`.
+4. **Phase 0 exit review.** Confirm all acceptance criteria in `docs/phase-0-kickoff.md` (criteria #2 and #3 are already met — see the real-world validation record above). Record anything learned in `docs/decisions.md`.
 
 ### Lessons from Phase 0 (do not re-learn these)
 
@@ -97,12 +106,13 @@ Re-bless the `db-large.xml` snapshot after a deliberate model change: `CR_BLESS=
 - .NET `RegexOptions.RightToLeft` means "take the last match". `ComicNameInfo` emulates this with `last_match`.
 - The reader treats whitespace-only text as indentation. A whitespace-only element value does not survive a round-trip. This is a documented tolerance.
 - The captured .NET reference output had two errors against the C# source: no `<Display />` in list items, and an `ExtraSyncInformation` with 2 of 6 members. The C# source wins. The fixture was corrected; details in `tests/golden/README.md`.
+- The real-world database corrected five more writer assumptions. See the "Real-world validation record" above and `tests/realworld/README.md`. When a .NET replica run and the C# source disagree, a real ComicRack file decides.
 - Git normalizes CRLF to LF in the upstream repo (`* text=auto`). Never trust checked-out line endings as format evidence. Read the blob or reason from the writer.
 - `cr-cli` panics on `Broken pipe` when output goes through `head`. Cosmetic. Fix when you touch the CLI.
 
 ### Blockers / open questions
 
-Acceptance criterion #2 needs a ComicDb.xml from a real ComicRack install. The user must provide it. Not committed to the repo.
+None. The real-world database is committed under `tests/realworld/` with user permission (see `tests/realworld/README.md`; remove it first if the repo ever goes public).
 
 ---
 

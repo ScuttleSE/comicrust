@@ -161,10 +161,10 @@ impl ComicBook {
             e.text_elem("FileSize", &self.file_size.to_string())?;
         }
         if !self.file_modified_time.is_min_value() {
-            e.text_elem("FileModified", &self.file_modified_time.to_xml())?;
+            e.text_elem("FileModifiedTime", &self.file_modified_time.to_xml())?;
         }
         if !self.file_creation_time.is_min_value() {
-            e.text_elem("FileCreation", &self.file_creation_time.to_xml())?;
+            e.text_elem("FileCreationTime", &self.file_creation_time.to_xml())?;
         }
         if let Some(k) = &self.custom_thumbnail_key {
             e.text_elem("CustomThumbnailKey", k)?;
@@ -264,8 +264,12 @@ impl ComicBook {
                                 .parse()
                                 .map_err(|_| XmlError(format!("bad FileSize: {v}")))?;
                         }
-                        "FileModified" => b.file_modified_time = read_dt(r, "FileModified")?,
-                        "FileCreation" => b.file_creation_time = read_dt(r, "FileCreation")?,
+                        "FileModifiedTime" => {
+                            b.file_modified_time = read_dt(r, "FileModifiedTime")?
+                        }
+                        "FileCreationTime" => {
+                            b.file_creation_time = read_dt(r, "FileCreationTime")?
+                        }
                         "CustomThumbnailKey" => {
                             let v = r.text_content("CustomThumbnailKey")?;
                             b.custom_thumbnail_key = Some(v);

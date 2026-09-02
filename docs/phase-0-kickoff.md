@@ -38,11 +38,11 @@ Progress notes (2026-09-02): T0-T4 are built and green. Items marked [x] are don
 
 ## Acceptance criteria (phase exit)
 
-Status as of 2026-09-02:
+Status as of 2026-09-02 (after real-world validation):
 
-1. [x] `cargo test` green, including golden round-trip on all fixtures (30 tests green as of this date)
-2. [ ] `cr-cli db-dump` on a real-world database (user-provided, not committed) produces a sane summary — **blocked: the user must supply a ComicDb.xml**
-3. [x] `cr-cli db-roundtrip` byte-identical on fixtures, any diffs enumerated and justified in a `tests/golden/README.md`
+1. [x] `cargo test` green, including golden round-trip on all fixtures (31 tests green as of this date)
+2. [x] `cr-cli db-dump` on a real-world database produces a sane summary — validated on the user-supplied `tests/realworld/ComicDb.xml` (255 books; committed with user permission)
+3. [x] `cr-cli db-roundtrip` byte-identical on fixtures — including the real-world database, byte for byte; findings in `tests/realworld/README.md` and `tests/golden/README.md`
 4. [ ] CI green, ADRs updated with anything learned about the XML format that contradicts planning — CI runs on push (local runs green); ADR-011 records the XML-layer reality; the exit review closes this item
 
 ## Explicitly deferred (not Phase 0)

@@ -1,5 +1,5 @@
-<?xml version="1.0" encoding="utf-8"?>
-<ComicDatabase xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" Id="11111111-2222-3333-4444-555555555555" Name="TestDB">
+<?xml version="1.0"?>
+<ComicDatabase xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" Id="11111111-2222-3333-4444-555555555555" Name="TestDB">
   <Books>
     <Book Id="1b259acd-2369-4a30-be47-c8c8ff0ffb5e" Checked="false" IsDynamicSource="true">
       <Title>T1</Title>

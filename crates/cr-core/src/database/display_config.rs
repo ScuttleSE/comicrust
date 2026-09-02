@@ -39,11 +39,12 @@ pub struct Size {
 }
 
 impl Size {
+    /// Writes only Width/Height — the caller's element (e.g.
+    /// `<ThumbnailSize>`) is the wrapper; System.Drawing.Size adds no
+    /// `<Size>` element of its own.
     fn write_xml<W: Write>(&self, e: &mut Emitter<W>) -> std::io::Result<()> {
-        e.start("Size")?;
         e.text_elem("Width", &self.width.to_string())?;
-        e.text_elem("Height", &self.height.to_string())?;
-        e.end()
+        e.text_elem("Height", &self.height.to_string())
     }
 
     fn from_start(s: &Start, r: &mut crate::xml::XmlReader<'_>) -> XmlResult<Self> {
