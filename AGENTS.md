@@ -2,7 +2,7 @@
 
 You are working on **comicrust**. This project is a from-scratch port of **ComicRack Community Edition** (a Windows C# WinForms comic library manager/reader). The target is a **Linux-native Rust + GTK4 application** with **full 1:1 feature parity**.
 
-Read this file first. Then read `docs/port-plan.md` (architecture and roadmap) and `docs/decisions.md` (locked decisions). Do not challenge a locked decision without explicit user approval.
+Read this file first. Then read `docs/port-plan.md` (architecture and roadmap), `docs/decisions.md` (locked decisions), and the current phase's kickoff doc (`docs/phase-<N>-kickoff.md` — the status section below names the active one). Do not challenge a locked decision without explicit user approval.
 
 ---
 
@@ -51,7 +51,7 @@ Update this section at the **end of every work session**. The next agent must kn
 
 ### State summary
 
-- **Phase:** 1 (IO + images), tasks T1-T6 built. The Phase 0 exit review is not done; the settings port and default lists stay open (MetronInfo moved into Phase 1 T2 and is done).
+- **Phase:** 1 (IO + images) COMPLETE except the WebComicProvider and the PDF/DjVu writers — both tracked in `docs/phase-1-kickoff.md`. **Next: Phase 2 (engine) — read `docs/phase-2-kickoff.md` and start at T1.** The Phase 0 exit review is not done; the settings port stays open (default lists moved into Phase 2 T3).
 - **State:** `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` are green. 92 tests pass.
 - **Phase 0 gate status:** byte-stable ComicDb.xml round-trip is proven on all three synthetic fixtures AND on the real-world database `tests/realworld/ComicDb.xml` (255 books, 584 KB, 2026-09-02, user-approved commit). Acceptance criteria #2 and #3 are met.
 
@@ -200,9 +200,9 @@ Re-bless the `db-large.xml` snapshot after a deliberate model change: `CR_BLESS=
 
 ### Remaining Phase 0 work (in order)
 
-1. **Settings port (T2 tail).** Port `IniFile` (`cYo.Common/Runtime/IniFile.cs`), `EngineConfiguration` (`ComicRack.Engine/EngineConfiguration.cs`), and `SystemPaths` (`ComicRack.Engine/SystemPaths.cs`) into `cr-core`. Add settings tests. Note: `ComicNameInfo` currently hard-codes `OfValues = "of,von,de"` and the legacy-parser flag; wire these to `EngineConfiguration` when it lands.
-2. **Fresh-DB default lists.** Port `ComicLibrary.InitializeDefaultLists` (`ComicRack.Engine/Database/ComicLibrary.cs:254`). This needs the localized names (English defaults are acceptable first) and the matcher type names for `xsi:type` (`ComicBookRatingMatcher`, `ComicBookReadPercentageMatcher`, `ComicBookModifiedInfoMatcher`, and the default lists in the same file). `create_new()` in `database/comic_database.rs` is the entry point. The real-world fixture shows the exact default list set (My Favorites, Recently Added, Recently Read, Never Read, Reading, Read, Files to update, Temporary Lists).
-3. **MetronInfo mapping (T1 remainder).** Deferred by agreement. Rationale and scope in `tests/golden/README.md`. Needed before Phase 1 (in-archive read/write).
+1. **Settings port (T2 tail).** Port `IniFile` (`cYo.Common/Runtime/IniFile.cs`), `EngineConfiguration` (`ComicRack.Engine/EngineConfiguration.cs`), and `SystemPaths` (`ComicRack.Engine/SystemPaths.cs`) into `cr-core`. Add settings tests. Note: `ComicNameInfo` currently hard-codes `OfValues = "of,von,de"` and the legacy-parser flag; wire these to `EngineConfiguration` when it lands. NOT a Phase 2 blocker — the C# defaults are hard-coded in the Phase 1/2 ports with comments.
+2. **Fresh-DB default lists.** NOW A PHASE 2 TASK — folded into `docs/phase-2-kickoff.md` T3 (it needs the matcher types from T1/T2).
+3. ~~**MetronInfo mapping (T1 remainder).**~~ DONE in Phase 1 (`cr-core/model/metron_info.rs`).
 4. **Phase 0 exit review.** Confirm all acceptance criteria in `docs/phase-0-kickoff.md` (criteria #2 and #3 are already met — see the real-world validation record above). Record anything learned in `docs/decisions.md`.
 
 ### Lessons from Phase 0 (do not re-learn these)
@@ -215,6 +215,20 @@ Re-bless the `db-large.xml` snapshot after a deliberate model change: `CR_BLESS=
 - The real-world database corrected five more writer assumptions. See the "Real-world validation record" above and `tests/realworld/README.md`. When a .NET replica run and the C# source disagree, a real ComicRack file decides.
 - Git normalizes CRLF to LF in the upstream repo (`* text=auto`). Never trust checked-out line endings as format evidence. Read the blob or reason from the writer.
 - `cr-cli` panics on `Broken pipe` when output goes through `head`. Cosmetic. Fix when you touch the CLI.
+
+### Lessons from Phase 1 (do not re-learn these)
+
+- The C# `IsImageThumbnailFolder` literals include backslashes (".DS_Store\\", "__MACOSX\\") — a plain ".DS_Store" entry passes that filter and is then rejected by the extension check (the .NET `Path.GetExtension` leading-dot rule: ".DS_Store" is all extension).
+- .NET `Path.GetExtension` treats a leading-dot filename as all extension (".gitignore" → ".gitignore"). The cr-io port encodes this; extension comparisons carry the dot.
+- The cYo `ExtendedStringComparer` sorts "007" before "07" before "7" (equal values: more leading zeros first — total-length tiebreak). It is the page-order spec; see `cr-io/src/extended_compare.rs`.
+- The cYo custom 5x5 adjust matrices are ROW-vector (`out = c · M`, additive row 3) — transposed relative to the GDI+ `ColorMatrix` they get stuffed into. The cr-image port applies them directly; do not "fix" the order.
+- The C# scale path (`Size.ToRectangle`, default mode) also scales UP — thumbnails of an 8px page are 512px. Only explicit `OnlyShrink` shrinks-only.
+- ComicRack CE writes metadata into zip/tar through `7z u` subprocesses; our port preserves the behavior (only metadata entries change) with native zip/tar rewrites instead of the mechanism.
+- The ComicBook.xml sidecar is written in the STRIPPED form (`ComicBook.Serialize`) but read with the FULL deserializer (`DeserializeFull`). The xattr streams behave the same way.
+- The C# `LoadInfo`/`LoadBook` chain: stored (NTFS ADS → our xattrs) → sidecar (`<file>.xml`, then extension swapped) → in-archive (Fast returns the first hit; Slow prefers in-archive). `DisableNTFS`/`DisableSidecar` are engine options not yet wired (settings port).
+- `7z l -slt` blocks and `djvm -l` lines are the two subprocess listing formats; both parse to `ProviderImageInfo` with index 0 (name is the read key). Missing subprocess binaries degrade to an empty page list (C# parse try/catch parity).
+- The real `ComicRack` files show `xsd` before `xsi` on roots even though net48 `XmlSerializer` defaults to xsi-first — the Emitter root() is xsd-first by evidence, keep it.
+- Clippy pedantry that will bite every new file: `as_chunks::<N>()` over `chunks_exact(N)`, no `format!` without args, no redundant field names, no identity ops in tests. Run `cargo clippy --workspace --all-targets -- -D warnings` before every commit.
 
 ### Blockers / open questions
 
@@ -252,7 +266,7 @@ None. The real-world database is committed under `tests/realworld/` with user pe
 
 ## This repo
 
-Crate layout (all eight crates exist. `cr-core` and `cr-cli` are active. The rest are empty stubs — see `docs/port-plan.md`):
+Crate layout (all eight crates exist. `cr-core`, `cr-io`, `cr-image`, and `cr-cli` are active; `cr-engine` is the Phase 2 target; `cr-script`, `cr-ui`, `cr-app` are still empty stubs — see `docs/port-plan.md`):
 
 | Crate | Contents |
 |---|---|

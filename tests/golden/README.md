@@ -59,7 +59,8 @@ one.
 - Fresh-database default smart lists (`InitializeDefaultLists`) are not
   seeded yet; `open_with_fallback` currently returns an empty database
   for the new-empty path.
-- The `.crplugin`/zip backup restore path (`ComicDatabase.Backup`) needs
-  zip support from `cr-io` (Phase 1).
-- MetronInfo.xml mapping is deferred (in-archive metadata, consumed in
-  Phase 1 with the archive providers).
+- The `.crplugin`/zip backup restore path (`ComicDatabase.Backup`): zip
+  support now exists in `cr-io` (Phase 1); the restore flow itself is
+  still open (Phase 2 backup-manager work).
+- MetronInfo.xml: done in Phase 1 (schema, serializer, parser, and the
+  `MetronInfo` → `ComicInfo` mapping in `cr-core/model/metron_info.rs`).

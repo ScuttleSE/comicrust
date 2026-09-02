@@ -15,7 +15,7 @@ Progress notes (2026-09-02): T0-T4 are built and green. Items marked [x] are don
 - [x] Map `ComicInfo` (~40 fields, `ComicRack.Engine/ComicInfo.cs`) field-by-field, with exact `[DefaultValue]` suppression (element `model/comic_info.rs`)
 - [x] Map `ComicBook` (+~30 state fields, `ComicBook.cs`) — Guid id, timestamps (all three kind suffixes), file info, book* fields, `ValuesStore` custom values codec, sync info, `BitmapAdjustment` color adjustment (element `model/comic_book.rs`, `model/bitmap_adjustment.rs`)
 - [x] Map `ComicPageInfo` + the `<Pages>` collection, with the `short`-truncating setters and the `Image`/`Type` renames (element `model/comic_page_info.rs`)
-- [ ] `MetronInfo` (generated schema, 1,789 LOC) — deferred by agreement; scope in `tests/golden/README.md`. Needed before Phase 1.
+- [x] `MetronInfo` (generated schema, 1,789 LOC) — done in Phase 1 (`cr-core/model/metron_info.rs`, byte-stable round-trip tested).
 - [x] **Property registry**: string-name → typed getter/setter for ComicBook properties (element `registry.rs`; foundation for matchers/columns/remote — see risk #7)
 - [x] `ComicNameInfo.FromFilePath` regex port + unit tests (element `model/comic_name_info.rs`; NewParser + LegacyParser, RightToLeft emulated)
 
