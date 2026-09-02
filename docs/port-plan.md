@@ -68,4 +68,7 @@ Every phase ends shippable and testable. Phases 0-2 are fully headless. They de-
 
 ## 5. Kickoff
 
-Phase 0 task breakdown with acceptance criteria: `phase-0-kickoff.md`.
+Phase task breakdowns with acceptance criteria:
+
+- Phase 0: `phase-0-kickoff.md` — built and validated (see `AGENTS.md` status).
+- Phase 1: `phase-1-kickoff.md`.
