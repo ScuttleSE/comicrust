@@ -1,0 +1,13 @@
+[package]
+name = "cr-cli"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+cr-core.workspace = true
+anyhow.workspace = true
+serde_json.workspace = true
+clap.workspace = true
+
+[lints]
+workspace = true

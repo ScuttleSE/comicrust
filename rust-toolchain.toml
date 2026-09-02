@@ -1,0 +1,6 @@
+# Pin the stable channel so local (Arch) and CI (Debian) builds agree.
+# If the CI runner has no rustup, this file is inert and the system
+# toolchain is used. Keep code compatible with a conservative MSRV.
+[toolchain]
+channel = "stable"
+components = ["rustfmt", "clippy"]

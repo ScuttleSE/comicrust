@@ -1,0 +1,14 @@
+[package]
+name = "cr-core"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+serde.workspace = true
+quick-xml.workspace = true
+thiserror.workspace = true
+regex.workspace = true
+chrono.workspace = true
+
+[lints]
+workspace = true
