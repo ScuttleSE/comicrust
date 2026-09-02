@@ -98,3 +98,66 @@ fn db_roundtrip_fails_on_corrupt_file() {
     std::fs::remove_file(&tmp).ok();
     assert_eq!(out.status.code(), Some(2), "error exit code");
 }
+
+#[test]
+fn pages_and_extract_on_cbz() {
+    let dir = std::env::temp_dir().join("comicrust-cli-cbz");
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("book.cbz");
+    {
+        let file = std::fs::File::create(&path).unwrap();
+        let mut zip = zip::ZipWriter::new(file);
+        let options: zip::write::SimpleFileOptions = Default::default();
+        for (name, data) in [
+            ("c.jpg", b"page-c".as_slice()),
+            ("b.jpg", b"page-b".as_slice()),
+            ("a.jpg", b"page-a".as_slice()),
+            ("ComicInfo.xml", b"<ComicInfo />".as_slice()),
+        ] {
+            zip.start_file(name, options).unwrap();
+            std::io::Write::write_all(&mut zip, data).unwrap();
+        }
+        zip.finish().unwrap();
+    }
+
+    let out = Command::new(env!("CARGO_BIN_EXE_cr-cli"))
+        .args(["pages", &path.to_string_lossy()])
+        .output()
+        .expect("cr-cli runs");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let v: serde_json::Value =
+        serde_json::from_str(&String::from_utf8_lossy(&out.stdout)).expect("valid JSON");
+    assert_eq!(v["Format"], "eComic (ZIP)");
+    assert_eq!(v["PageCount"], 3);
+    let names: Vec<&str> = v["Pages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|p| p["Name"].as_str().unwrap())
+        .collect();
+    assert_eq!(names, ["a.jpg", "b.jpg", "c.jpg"]);
+
+    let out_path = dir.join("page.bin");
+    let out = Command::new(env!("CARGO_BIN_EXE_cr-cli"))
+        .args([
+            "extract",
+            &path.to_string_lossy(),
+            "1",
+            "-o",
+            &out_path.to_string_lossy(),
+        ])
+        .output()
+        .expect("cr-cli runs");
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert_eq!(std::fs::read(&out_path).unwrap(), b"page-b");
+
+    std::fs::remove_dir_all(&dir).ok();
+}

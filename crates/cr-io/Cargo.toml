@@ -4,6 +4,11 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+cr-core.workspace = true
+thiserror.workspace = true
+zip.workspace = true
+tar.workspace = true
+sha1.workspace = true
 
 [lints]
 workspace = true

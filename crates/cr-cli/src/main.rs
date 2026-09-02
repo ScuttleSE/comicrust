@@ -1,5 +1,7 @@
-//! Headless verification tooling: `info`, `db-dump`, `db-roundtrip`.
+//! Headless verification tooling: `info`, `db-dump`, `db-roundtrip`,
+//! `pages`, `extract`.
 
+use std::io::Write;
 use std::path::Path;
 use std::process::ExitCode;
 
@@ -12,6 +14,7 @@ use cr_core::model::comic_book::ComicBook;
 use cr_core::model::comic_name_info;
 use cr_core::registry::{self, PropValue};
 use cr_core::xml::XmlReader;
+use cr_io::ComicProvider;
 
 #[derive(Parser)]
 #[command(name = "cr-cli", about = "comicrust headless verification tools")]
@@ -30,6 +33,20 @@ enum Command {
     DbDump { file: String },
     /// Load and re-serialize a ComicDb.xml; report byte differences.
     DbRoundtrip { file: String },
+    /// Enumerate the pages of a comic file: index, byte size, entry
+    /// name, in provider page order.
+    Pages { file: String },
+    /// Extract one page's raw bytes (no decode yet; the decode chain
+    /// lands with cr-image in T3). Prints to stdout unless -o is set.
+    Extract {
+        file: String,
+        /// Zero-based page index.
+        #[arg(default_value_t = 0)]
+        page: usize,
+        /// Output path; omit for stdout.
+        #[arg(short, long)]
+        output: Option<String>,
+    },
 }
 
 fn main() -> ExitCode {
@@ -48,6 +65,8 @@ fn run(command: Command) -> Result<ExitCode> {
         Command::Info { file } => cmd_info(&file),
         Command::DbDump { file } => cmd_db_dump(&file),
         Command::DbRoundtrip { file } => cmd_db_roundtrip(&file),
+        Command::Pages { file } => cmd_pages(&file),
+        Command::Extract { file, page, output } => cmd_extract(&file, page, output.as_deref()),
     }
 }
 
@@ -172,6 +191,43 @@ fn cmd_db_dump(file: &str) -> Result<ExitCode> {
         })).collect::<Vec<_>>(),
     });
     println!("{summary:#}");
+    Ok(ExitCode::SUCCESS)
+}
+
+fn cmd_pages(file: &str) -> Result<ExitCode> {
+    let provider =
+        ComicProvider::open(Path::new(file)).with_context(|| format!("opening comic {file}"))?;
+    let summary = json!({
+        "File": file,
+        "Format": provider.format().name,
+        "PageCount": provider.page_count(),
+        "Hash": provider.create_hash(),
+        "Pages": provider.pages().iter().enumerate().map(|(i, p)| json!({
+            "Index": i,
+            "Size": p.size,
+            "Name": p.name,
+        })).collect::<Vec<_>>(),
+    });
+    println!("{summary:#}");
+    Ok(ExitCode::SUCCESS)
+}
+
+fn cmd_extract(file: &str, page: usize, output: Option<&str>) -> Result<ExitCode> {
+    let provider =
+        ComicProvider::open(Path::new(file)).with_context(|| format!("opening comic {file}"))?;
+    let data = provider
+        .read_page(page)
+        .with_context(|| format!("reading page {page} of {file}"))?;
+    match output {
+        Some(path) => {
+            std::fs::write(path, &data).with_context(|| format!("writing {path}"))?;
+        }
+        None => {
+            std::io::stdout()
+                .write_all(&data)
+                .context("writing page bytes to stdout")?;
+        }
+    }
     Ok(ExitCode::SUCCESS)
 }
 
