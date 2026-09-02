@@ -1,7 +1,7 @@
 //! Headless verification tooling: `info`, `db-dump`, `db-roundtrip`,
 //! `pages`, `extract`.
 
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::Path;
 use std::process::ExitCode;
 
@@ -59,6 +59,13 @@ enum Command {
         #[arg(short, long)]
         output: Option<String>,
     },
+    /// Read the metadata of a comic file and write it back
+    /// (in-archive ComicInfo.xml/ComicBook.xml + xattrs), then
+    /// verify: only metadata entries may change.
+    Rewrite { file: String },
+    /// Parse MetronInfo.xml from a comic file and print the
+    /// MetronInfo-to-ComicInfo mapping as JSON.
+    Metron { file: String },
 }
 
 fn main() -> ExitCode {
@@ -85,6 +92,8 @@ fn run(command: Command) -> Result<ExitCode> {
             decode,
         } => cmd_extract(&file, page, output.as_deref(), decode),
         Command::Thumb { file, output } => cmd_thumb(&file, output.as_deref()),
+        Command::Rewrite { file } => cmd_rewrite(&file),
+        Command::Metron { file } => cmd_metron(&file),
     }
 }
 
@@ -274,6 +283,144 @@ fn cmd_thumb(file: &str, output: Option<&str>) -> Result<ExitCode> {
                 .context("writing thumbnail bytes to stdout")?;
         }
     }
+    Ok(ExitCode::SUCCESS)
+}
+
+fn cmd_rewrite(file: &str) -> Result<ExitCode> {
+    let path = Path::new(file);
+    // Entry content fingerprints before the write.
+    let before = entry_hashes(path);
+    let provider = ComicProvider::open(path).with_context(|| format!("opening comic {file}"))?;
+    // Read metadata; with nothing found anywhere there is nothing to
+    // write back (writing defaults would destroy file metadata).
+    // A found ComicInfo (without a ComicBook) becomes the book's info
+    // part, mirroring what the C# caller passes to StoreInfo.
+    let book = match provider.load_book(cr_io::info::InfoLoadingMethod::Slow) {
+        Some(book) => Some(book),
+        None => provider
+            .load_info(cr_io::info::InfoLoadingMethod::Slow)
+            .map(|info| ComicBook {
+                info,
+                ..Default::default()
+            }),
+    };
+    let mut report = serde_json::Map::new();
+    report.insert("File".into(), json!(file));
+    let Some(book) = book else {
+        report.insert("Wrote".into(), json!(false));
+        report.insert("NoMetadataFound".into(), json!(true));
+        report.insert("OnlyMetadataChanged".into(), json!(true));
+        println!("{:#}", Value::Object(report));
+        return Ok(ExitCode::SUCCESS);
+    };
+    let written = provider.store_info(&book);
+    let after = entry_hashes(path);
+
+    let mut only_metadata_changed = true;
+    report.insert("Wrote".into(), json!(written));
+    let mut changed = Vec::new();
+    let mut added = Vec::new();
+    let mut removed = Vec::new();
+    for (name, hash) in &after {
+        if !before.contains_key(name) {
+            added.push(name.clone());
+            if !is_metadata_entry(name) {
+                only_metadata_changed = false;
+            }
+        } else if before.get(name) != Some(hash) {
+            changed.push(name.clone());
+            if !is_metadata_entry(name) {
+                only_metadata_changed = false;
+            }
+        }
+    }
+    for name in before.keys() {
+        if !after.contains_key(name) {
+            removed.push(name.clone());
+            only_metadata_changed = false;
+        }
+    }
+    report.insert("Changed".into(), json!(changed));
+    report.insert("Added".into(), json!(added));
+    report.insert("Removed".into(), json!(removed));
+    report.insert("OnlyMetadataChanged".into(), json!(only_metadata_changed));
+    println!("{:#}", Value::Object(report));
+    Ok(ExitCode::SUCCESS)
+}
+
+fn is_metadata_entry(name: &str) -> bool {
+    let base = name.rsplit('/').next().unwrap_or(name);
+    base.eq_ignore_ascii_case("ComicInfo.xml") || base.eq_ignore_ascii_case("ComicBook.xml")
+}
+
+/// SHA-1 of every entry's decompressed content, keyed by entry name.
+fn entry_hashes(path: &Path) -> std::collections::BTreeMap<String, String> {
+    let mut out = std::collections::BTreeMap::new();
+    let Ok(file) = std::fs::File::open(path) else {
+        return out;
+    };
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let sha = |data: &[u8]| {
+        use sha1::{Digest, Sha1};
+        let mut h = Sha1::new();
+        h.update(data);
+        format!("{:x}", h.finalize())
+    };
+    match ext.as_str() {
+        "cbz" | "zip" => {
+            let Ok(mut archive) = zip::ZipArchive::new(file) else {
+                return out;
+            };
+            for i in 0..archive.len() {
+                let Ok(mut entry) = archive.by_index(i) else {
+                    continue;
+                };
+                let mut data = Vec::new();
+                if entry.read_to_end(&mut data).is_ok() {
+                    out.insert(entry.name().to_string(), sha(&data));
+                }
+            }
+        }
+        "cbt" | "tar" => {
+            let mut archive = tar::Archive::new(file);
+            if let Ok(entries) = archive.entries() {
+                for entry in entries.flatten() {
+                    let mut entry = entry;
+                    let Ok(name) = entry.path().map(|p| p.to_string_lossy().into_owned()) else {
+                        continue;
+                    };
+                    let mut data = Vec::new();
+                    if entry.read_to_end(&mut data).is_ok() {
+                        out.insert(name, sha(&data));
+                    }
+                }
+            }
+        }
+        _ => {}
+    }
+    out
+}
+
+fn cmd_metron(file: &str) -> Result<ExitCode> {
+    let provider =
+        ComicProvider::open(Path::new(file)).with_context(|| format!("opening comic {file}"))?;
+    let bytes = provider
+        .read_info_file("MetronInfo.xml")
+        .context("no MetronInfo.xml in source")?;
+    let mut cursor = std::io::Cursor::new(&bytes);
+    let mut reader = cr_core::xml::XmlReader::new(&mut cursor);
+    let metron = cr_core::model::metron_info::MetronInfo::parse_root(&mut reader)
+        .context("parsing MetronInfo.xml")?;
+    let info = metron.to_comic_info();
+    let book = ComicBook {
+        info,
+        ..Default::default()
+    };
+    println!("{:#}", book_json(&book));
     Ok(ExitCode::SUCCESS)
 }
 

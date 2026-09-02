@@ -288,6 +288,8 @@ dependencies = [
  "cr-image",
  "cr-io",
  "serde_json",
+ "sha1",
+ "tar",
  "zip",
 ]
 

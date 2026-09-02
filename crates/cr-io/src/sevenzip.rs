@@ -27,7 +27,7 @@ use crate::formats;
 use crate::provider::{ComicAccessor, ProviderImageInfo};
 
 /// Locates the 7z console executable.
-fn find_7z() -> Option<PathBuf> {
+pub fn find_7z() -> Option<PathBuf> {
     if let Ok(path) = std::env::var("CR_SEVENZIP") {
         let p = PathBuf::from(path);
         if p.is_file() {
@@ -47,14 +47,19 @@ fn find_7z() -> Option<PathBuf> {
     None
 }
 
-fn run_7z(args: &[&str]) -> Result<std::process::Output> {
-    let exe = find_7z().ok_or_else(|| {
-        Error::Access("7z executable not found (install p7zip, or set CR_SEVENZIP)".to_string())
-    })?;
+/// Runs the given 7z executable with arguments.
+pub fn run_7z_at(exe: &Path, args: &[&str]) -> Result<std::process::Output> {
     Command::new(exe)
         .args(args)
         .output()
         .map_err(|e| Error::Access(format!("running 7z failed: {e}")))
+}
+
+fn run_7z(args: &[&str]) -> Result<std::process::Output> {
+    let exe = find_7z().ok_or_else(|| {
+        Error::Access("7z executable not found (install p7zip, or set CR_SEVENZIP)".to_string())
+    })?;
+    run_7z_at(&exe, args)
 }
 
 /// Reads CB7, CBR (RAR4), and RAR5 through the 7z subprocess.

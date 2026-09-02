@@ -197,7 +197,7 @@ fn parse_metron_bytes(bytes: &[u8]) -> Option<cr_core::model::metron_info::Metro
 
 impl ComicProvider {
     /// Raw named-entry access for the info chain.
-    pub(crate) fn read_info_file(&self, filename: &str) -> Option<Vec<u8>> {
+    pub fn read_info_file(&self, filename: &str) -> Option<Vec<u8>> {
         let accessor = accessor_for(self.format().id)?;
         accessor.read_info_file(self.source(), filename)
     }
@@ -223,10 +223,24 @@ impl ComicProvider {
         in_archive_comic_book(self).or(stored)
     }
 
-    /// `ComicProvider.StoreInfo` — writes the xattr streams only;
-    /// the in-archive write-back arrives with the T5 writers.
-    /// Returns whether anything was written.
+    /// `ComicProvider.StoreInfo` — in-archive write-back when the
+    /// format supports updating (`UpdateEnabled`), then the stored
+    /// xattr streams (`NtfsInfoStorage.StoreInfo`). Returns whether
+    /// anything was written.
     pub fn store_info(&self, book: &ComicBook) -> bool {
-        store_stored_info(self.source(), book)
+        let mut written = false;
+        if self.format().supports_update {
+            match crate::write::store_info(self, book) {
+                Ok(w) => written = w || written,
+                // `OnStoreInfo` maps WriteErrorException to an error
+                // event; without event plumbing we keep the store
+                // going (the C# returns false on failure).
+                Err(e) => eprintln!("archive store failed: {e}"),
+            }
+        }
+        if store_stored_info(self.source(), book) {
+            written = true;
+        }
+        written
     }
 }

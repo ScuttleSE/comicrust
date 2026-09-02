@@ -31,6 +31,7 @@
 pub mod accessors;
 pub mod djvu;
 pub mod error;
+pub mod export;
 pub mod extended_compare;
 pub mod formats;
 pub mod hash;
@@ -38,6 +39,7 @@ pub mod info;
 pub mod pdf;
 pub mod provider;
 pub mod sevenzip;
+pub mod write;
 
 pub use error::{Error, Result};
 pub use formats::FileFormat;

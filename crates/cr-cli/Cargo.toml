@@ -10,9 +10,10 @@ cr-image.workspace = true
 anyhow.workspace = true
 serde_json.workspace = true
 clap.workspace = true
+sha1.workspace = true
+tar.workspace = true
+zip.workspace = true
 
 [lints]
 workspace = true
 
-[dev-dependencies]
-zip.workspace = true
