@@ -29,6 +29,7 @@
 //!   reserved characters it sanitizes.
 
 pub mod accessors;
+pub mod djvu;
 pub mod error;
 pub mod extended_compare;
 pub mod formats;

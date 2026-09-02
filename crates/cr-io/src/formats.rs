@@ -162,8 +162,15 @@ pub const FORMATS: &[FileFormat] = &[
         supports_update: false,
         dynamic: false,
     },
-    // DjVu and web-comic providers land with their accessors;
-    // see docs/phase-1-kickoff.md T1.
+    FileFormat {
+        name: "DjVu Document",
+        id: ids::DJVU,
+        extensions: &[".djvu"],
+        supports_update: false,
+        dynamic: false,
+    },
+    // Web-comic provider (.cbw, dynamic) lands with the T3 decode
+    // chain; see docs/phase-1-kickoff.md T1.
 ];
 
 /// `ProviderFactory.GetSourceProviderInfo` — first registered format

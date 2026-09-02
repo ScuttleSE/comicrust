@@ -135,6 +135,7 @@ pub fn accessor_for(format: i32) -> Option<Box<dyn ComicAccessor>> {
             Some(Box::new(crate::sevenzip::SevenZipAccessor::new(format)))
         }
         ids::PDF => Some(Box::new(crate::pdf::PdfAccessor)),
+        ids::DJVU => Some(Box::new(crate::djvu::DjVuAccessor)),
         _ => None,
     }
 }

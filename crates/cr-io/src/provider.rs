@@ -115,7 +115,10 @@ impl ComicProvider {
             format,
             pages: Vec::new(),
         };
-        provider.parse(&*accessor, format.id == formats::ids::PDF);
+        provider.parse(
+            &*accessor,
+            format.id == formats::ids::PDF || format.id == formats::ids::DJVU,
+        );
         Ok(provider)
     }
     pub fn format(&self) -> &FileFormat {
@@ -147,20 +150,21 @@ impl ComicProvider {
     }
 
     /// `ArchiveComicProvider.CreateHash` — the archive's cache key.
-    /// PDF overrides it with a SHA-1 of the whole file
-    /// (`PdfComicProvider.CreateHash`).
+    /// PDF and DjVu override it with a SHA-1 of the whole file
+    /// (`PdfComicProvider.CreateHash` / `DjvuComicProvider.CreateHash`).
     pub fn create_hash(&self) -> String {
-        if self.format.id == formats::ids::PDF {
+        if self.format.id == formats::ids::PDF || self.format.id == formats::ids::DJVU {
             hash::file_hash(&self.source)
         } else {
             hash::create_hash_from_image_list(&self.pages)
         }
     }
 
-    /// `ArchiveComicProvider.OnParse` / `PdfComicProvider.OnParse`:
-    /// archive sources take the accessor's entry list, keep supported
-    /// images, and sort by natural order (`ExtendedStringComparer`,
-    /// IgnoreCase); PDF sources take the page list as-is.
+    /// `ArchiveComicProvider.OnParse` / `PdfComicProvider.OnParse` /
+    /// `DjvuComicProvider.OnParse`: archive sources take the
+    /// accessor's entry list, keep supported images, and sort by
+    /// natural order (`ExtendedStringComparer`, IgnoreCase); PDF and
+    /// DjVu sources take the page list as-is.
     fn parse(&mut self, accessor: &dyn ComicAccessor, raw_page_list: bool) {
         let entries = accessor.get_entry_list(&self.source).unwrap_or_default();
         if raw_page_list {
