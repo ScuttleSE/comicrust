@@ -49,11 +49,60 @@ These rules are absolute. Break none of them. If you break them, you waste the u
 
 Update this section at the **end of every work session**. The next agent must know the exact state of the work.
 
-- **Current phase:** Phase 0 — mostly done (T0-T4 built; see below)
-- **Completed:** T0 workspace scaffold (8 crates, `rust-toolchain.toml`, deny.toml, CI activates on Cargo.toml). T1 data model in `cr-core`: `ComicInfo`, `ComicBook`, `ComicPageInfo`, enums, `BitmapAdjustment`, `ExtraSyncInformation`, `ValuesStore` codec, property registry (`registry.rs`, string-name access), `ComicNameInfo` port (fancy-regex, RightToLeft emulated via last-match + lookbehind guards). T2 database layer: byte-exact XmlSerializer emitter/reader (`xml/`), ComicLists tree (list items, matchers with `xsi:type` passthrough, Display config subtree), `ComicDatabase` load/save (`.bak` rotation, `.restore` consumption, corrupt quarantine, `OpenStatus` messages). T3 golden harness: 3 fixtures under `tests/golden/` (incl. captured .NET output), byte-stable round-trip tests, negative tests, `.bak`/`.restore` fallback tests. T4 `cr-cli`: `info`, `db-dump`, `db-roundtrip` + integration tests. Emitter rules + deviations documented in `tests/golden/README.md`.
-- **In progress:** —
-- **Next up (remaining Phase 0):** `ComicRack.ini`/`IniFile`/`EngineConfiguration`/`SystemPaths` port (T2 tail); MetronInfo mapping (T1, deferred — rationale in `tests/golden/README.md`); fresh-DB default smart lists (`InitializeDefaultLists`, needs localized names + matcher names); validate `db-dump`/`db-roundtrip` on a real user ComicDb.xml (acceptance #2); then Phase 0 exit review.
-- **Blockers / open questions:** Acceptance criterion #2 (real-world database summary) needs a ComicDb.xml from a real ComicRack install, user-provided, not committed.
+### State summary
+
+- **Phase:** 0 (core model and data compatibility). Tasks T0-T4 are built. The phase exit review is not done.
+- **State:** `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` are green. 30 tests pass.
+- **Gate status:** byte-stable ComicDb.xml round-trip works on all three fixtures. Acceptance criterion #2 (summary of a real user database) waits for a user-provided ComicDb.xml. Do not commit user data.
+
+### What exists (cr-core module map)
+
+| Path | Contents |
+|---|---|
+| `crates/cr-core/src/xml/mod.rs` | `Emitter` — hand-rolled writer that reproduces net48 `XmlSerializer.Serialize(Stream)` byte for byte. Rules in `tests/golden/README.md`. |
+| `crates/cr-core/src/xml/reader.rs` | `XmlReader` — token reader over quick-xml. Order-tolerant. Captures unknown elements raw. |
+| `crates/cr-core/src/xml/scalar.rs` | `CrGuid` (lowercase "d" form), `CrDateTime` (.NET kind suffixes), `net_f32` (.NET float text). |
+| `crates/cr-core/src/model/` | `comic_info.rs`, `comic_book.rs` (+ `values_store` codec), `comic_page_info.rs`, `enums.rs` (macro-generated, exact member names), `bitmap_adjustment.rs`, `comic_name_info.rs`. |
+| `crates/cr-core/src/database/` | `comic_database.rs` (load, save with `.bak` rotation, `open_with_fallback` with `.restore` → main → `.bak` → quarantine chain), `list_items.rs` (ComicLists tree, matchers with `xsi:type` passthrough), `display_config.rs` (the `<Display>` subtree). |
+| `crates/cr-core/src/registry.rs` | Property registry: C# property name → typed getter/setter on `ComicBook`. Entry point for matchers, columns, remote updates. |
+| `crates/cr-cli/src/main.rs` | `info` (filename proposal or ComicInfo.xml), `db-dump` (JSON summary), `db-roundtrip` (byte-diff report). |
+
+Tests: `crates/cr-core/tests/golden_roundtrip.rs`, `crates/cr-cli/tests/cli.rs`. Fixtures: `tests/golden/` (read `tests/golden/README.md` before you touch the XML layer).
+
+### How to verify
+
+```sh
+cargo fmt --all
+cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace
+cargo run -p cr-cli -- db-roundtrip <ComicDb.xml>
+cargo run -p cr-cli -- db-dump <ComicDb.xml>
+cargo run -p cr-cli -- info <comic-file>
+```
+
+Re-bless the `db-large.xml` snapshot after a deliberate model change: `CR_BLESS=1 cargo test -p cr-core --test golden_roundtrip`. Re-blessing changes fixture bytes. Review the diff before you commit it.
+
+### Remaining Phase 0 work (in order)
+
+1. **Settings port (T2 tail).** Port `IniFile` (`cYo.Common/Runtime/IniFile.cs`), `EngineConfiguration` (`ComicRack.Engine/EngineConfiguration.cs`), and `SystemPaths` (`ComicRack.Engine/SystemPaths.cs`) into `cr-core`. Add settings tests. Note: `ComicNameInfo` currently hard-codes `OfValues = "of,von,de"` and the legacy-parser flag; wire these to `EngineConfiguration` when it lands.
+2. **Fresh-DB default lists.** Port `ComicLibrary.InitializeDefaultLists` (`ComicRack.Engine/Database/ComicLibrary.cs:254`). This needs the localized names (English defaults are acceptable first) and the matcher type names for `xsi:type` (`ComicBookRatingMatcher`, `ComicBookReadPercentageMatcher`, `ComicBookModifiedInfoMatcher`, and the default lists in the same file). `create_new()` in `database/comic_database.rs` is the entry point.
+3. **MetronInfo mapping (T1 remainder).** Deferred by agreement. Rationale and scope in `tests/golden/README.md`. Needed before Phase 1 (in-archive read/write).
+4. **Real-world validation (acceptance #2).** Blocked on the user. See Blockers.
+5. **Phase 0 exit review.** Confirm all acceptance criteria in `docs/phase-0-kickoff.md`. Record anything learned in `docs/decisions.md`.
+
+### Lessons from Phase 0 (do not re-learn these)
+
+- `chrono::NaiveDateTime::MIN` is not .NET `DateTime.MinValue`. Build the min value from year 1 (see `CrDateTime::min_value`).
+- fancy-regex rejects variable-length lookbehind (`LookBehindNotConst`). `ComicNameInfo` emulates those with prefix guards (see `last_match_guard` in `model/comic_name_info.rs`).
+- .NET `RegexOptions.RightToLeft` means "take the last match". `ComicNameInfo` emulates this with `last_match`.
+- The reader treats whitespace-only text as indentation. A whitespace-only element value does not survive a round-trip. This is a documented tolerance.
+- The captured .NET reference output had two errors against the C# source: no `<Display />` in list items, and an `ExtraSyncInformation` with 2 of 6 members. The C# source wins. The fixture was corrected; details in `tests/golden/README.md`.
+- Git normalizes CRLF to LF in the upstream repo (`* text=auto`). Never trust checked-out line endings as format evidence. Read the blob or reason from the writer.
+- `cr-cli` panics on `Broken pipe` when output goes through `head`. Cosmetic. Fix when you touch the CLI.
+
+### Blockers / open questions
+
+Acceptance criterion #2 needs a ComicDb.xml from a real ComicRack install. The user must provide it. Not committed to the repo.
 
 ---
 
@@ -87,7 +136,7 @@ Update this section at the **end of every work session**. The next agent must kn
 
 ## This repo
 
-Crate layout (to be scaffolded in Phase 0 — see `docs/port-plan.md`):
+Crate layout (all eight crates exist. `cr-core` and `cr-cli` are active. The rest are empty stubs — see `docs/port-plan.md`):
 
 | Crate | Contents |
 |---|---|

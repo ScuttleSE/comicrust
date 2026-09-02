@@ -73,3 +73,10 @@ Append new ADRs at the end. Never rewrite the decision content of an existing en
 - **Context:** Localization is already data-driven: 19 languages × ~72 XML files keyed by form/widget name, loaded via `TR.Load("Form")["Key", "Default"]`.
 - **Decision:** Port the `TR` loader and consume the existing XML files unchanged. Do not convert to gettext.
 - **Consequences:** This gives instant 19-language support. Widget names in cr-ui should mirror the C# control names where translations must hit.
+
+## ADR-011: The ComicDb.xml layer is a hand-rolled writer, not serde
+
+- **Status:** accepted (2026-09-02)
+- **Context:** ADR-002 planned "serde + quick-xml". Implementation showed that serde cannot express the net48 `XmlSerializer` behaviors the byte-compat gate needs: per-member default-value suppression, base-class-first member order, `[XmlAnyElement]` raw passthrough at a fixed position, `xsi:type` passthrough for matcher types the code does not know, and the exact empty-element and indentation forms. Decorated derive structs would fight every one of these rules.
+- **Decision:** Keep quick-xml for reading (event-based `XmlReader`, order-tolerant). Write XML with the hand-rolled `Emitter` in `cr-core/src/xml/mod.rs`. It reproduces `XmlSerializer.Serialize(Stream)` on .NET Framework 4.8 directly. Model types are plain structs. Each type has an explicit `write_xml` and an explicit read function. The emission rules live in `tests/golden/README.md`. Golden round-trip tests enforce them.
+- **Consequences:** A new serialized member needs a manual write+read pair. The round-trip tests catch a missing pair. serde stays available for other uses (JSON output in cr-cli, future settings files). The goal of ADR-002 (exact format fidelity) is unchanged.

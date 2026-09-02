@@ -4,41 +4,46 @@ Goal: prove the hardest compat surface (the library database) with zero UI. Exit
 
 ## Task list
 
+Progress notes (2026-09-02): T0-T4 are built and green. Items marked [x] are done. Deferred items keep `[ ]` with a reason.
+
 ### T0. Workspace scaffold
-- [ ] Cargo workspace with crates: `cr-core`, `cr-io`, `cr-image`, `cr-engine`, `cr-script`, `cr-ui`, `cr-cli`, `cr-app` (empty stubs — only `cr-core` + `cr-cli` are worked this phase)
-- [ ] CI: fmt check, clippy `-D warnings`, test job (GitHub Actions or Hemmalab equivalent)
-- [ ] `rust-toolchain.toml`, workspace lints, deny.toml (license/advisory inventory — feeds ADR-009)
+- [x] Cargo workspace with crates: `cr-core`, `cr-io`, `cr-image`, `cr-engine`, `cr-script`, `cr-ui`, `cr-cli`, `cr-app` (empty stubs — only `cr-core` + `cr-cli` are worked this phase)
+- [x] CI: fmt check, clippy `-D warnings`, test job (Gitea Actions, `.gitea/workflows/ci.yaml`; the checks activate on their own once `Cargo.toml` landed)
+- [x] `rust-toolchain.toml`, workspace lints, deny.toml (license/advisory inventory — feeds ADR-009)
 
 ### T1. Data model (`cr-core`)
-- [ ] Map `ComicInfo` (~40 fields, `ComicRack.Engine/ComicInfo.cs`) field-by-field to serde structs, note XML element/attribute choice per field
-- [ ] Map `ComicBook` (+~60 state fields, `ComicBook.cs`) — Guid id, timestamps, file info, book* fields, `ValuesStore` custom values, sync info, `BitmapAdjustment` color adjustment
-- [ ] Map `ComicPageInfo` + `ComicPageInfoCollection`, `MetronInfo` (generated schema, 1,789 LOC)
-- [ ] **Property registry**: string-name → typed getter/setter for every ComicBook property (foundation for matchers/columns/remote — see risk #7)
-- [ ] `ComicNameInfo.FromFilePath` regex port + unit tests
+- [x] Map `ComicInfo` (~40 fields, `ComicRack.Engine/ComicInfo.cs`) field-by-field, with exact `[DefaultValue]` suppression (element `model/comic_info.rs`)
+- [x] Map `ComicBook` (+~30 state fields, `ComicBook.cs`) — Guid id, timestamps (all three kind suffixes), file info, book* fields, `ValuesStore` custom values codec, sync info, `BitmapAdjustment` color adjustment (element `model/comic_book.rs`, `model/bitmap_adjustment.rs`)
+- [x] Map `ComicPageInfo` + the `<Pages>` collection, with the `short`-truncating setters and the `Image`/`Type` renames (element `model/comic_page_info.rs`)
+- [ ] `MetronInfo` (generated schema, 1,789 LOC) — deferred by agreement; scope in `tests/golden/README.md`. Needed before Phase 1.
+- [x] **Property registry**: string-name → typed getter/setter for ComicBook properties (element `registry.rs`; foundation for matchers/columns/remote — see risk #7)
+- [x] `ComicNameInfo.FromFilePath` regex port + unit tests (element `model/comic_name_info.rs`; NewParser + LegacyParser, RightToLeft emulated)
 
 ### T2. Database layer (`cr-core`)
-- [ ] `ComicDatabase`/`ComicLibrary`/`ComicBookContainer` hierarchy + ComicLists tree (folders, smart lists, their config)
-- [ ] Load: plain XML, save: `.bak` → copy-over-main rotation, corrupt-file quarantine ("Corrupt Database Backup [date].xml") + fresh-DB fallback, `.restore` handling
-- [ ] Optional BZip2-compressed variant (SharpZipLib compat)
-- [ ] Settings: `ComicRack.ini` / `IniFile` port, `EngineConfiguration`, portable-mode paths (`SystemPaths.cs`)
+- [x] `ComicDatabase`/`ComicLibrary`/`ComicBookContainer` hierarchy + ComicLists tree (folders, smart lists, their config) — element `database/list_items.rs`, `database/display_config.rs`, `database/comic_database.rs`
+- [x] Load: plain XML, save: `.bak` → copy-over-main rotation, corrupt-file quarantine ("Corrupt Database Backup [date].xml") + fresh-DB fallback, `.restore` handling — element `database/comic_database.rs` (`open_with_fallback`, `OpenStatus`)
+- [ ] Optional BZip2-compressed variant (SharpZipLib compat) — deferred; only the in-memory `ToByteArray/FromByteArray` path uses it. Low priority.
+- [ ] Settings: `ComicRack.ini` / `IniFile` port, `EngineConfiguration`, portable-mode paths (`SystemPaths.cs`) — not started. This is the largest remaining Phase 0 item.
 
 ### T3. Golden-file test harness
-- [ ] Synthesize/anonymize 3+ fixture libraries (small/medium/large, with smart lists, custom values, missing files) under `tests/golden/` — **never commit real user data**
-- [ ] Byte-stable round-trip test: load → save → byte-compare (modulo documented, justified diffs)
-- [ ] Schema-snapshot test: dumped element/attribute inventory diffed against C#-written reference output
-- [ ] Negative tests: truncated file, garbage bytes, zip-of-xml (backup restore path)
+- [x] 3 fixtures under `tests/golden/`: `db-small.xml` (hand-written), `db-large.xml` (code snapshot, full surface), `db-net-reference.xml` (captured .NET output, corrected against source) — **no real user data committed**
+- [x] Byte-stable round-trip test: load → save → byte-compare (`crates/cr-core/tests/golden_roundtrip.rs`), byte-identical on all three fixtures
+- [x] Schema-snapshot test: element/attribute inventory check on the large fixture (light form: presence assertions; a full inventory diff can replace it later)
+- [x] Negative tests: truncated file, garbage bytes, empty file, wrong root. Zip-of-xml (backup restore path) waits for zip support in `cr-io`.
 
 ### T4. `cr-cli` verification tools
-- [ ] `cr-cli info <comic-file>` — print parsed ComicBook (proposed-from-filename + metadata) as JSON
-- [ ] `cr-cli db-dump <ComicDb.xml>` — validate + pretty-print database summary (book count, lists, custom values)
-- [ ] `cr-cli db-roundtrip <ComicDb.xml>` — load/save in place to temp, byte-diff report
+- [x] `cr-cli info <comic-file>` — prints parsed ComicBook (proposed-from-filename + metadata) as JSON. ComicInfo.xml input works; archive metadata waits for `cr-io`.
+- [x] `cr-cli db-dump <ComicDb.xml>` — validate + JSON summary (book count, list tree, custom values)
+- [x] `cr-cli db-roundtrip <ComicDb.xml>` — load/save, byte-diff report (exit 0 identical, exit 1 different, exit 2 error)
 
 ## Acceptance criteria (phase exit)
 
-1. `cargo test` green, including golden round-trip on all fixtures
-2. `cr-cli db-dump` on a real-world database (user-provided, not committed) produces a sane summary
-3. `cr-cli db-roundtrip` byte-identical on fixtures, any diffs enumerated and justified in a `tests/golden/README.md`
-4. CI green, ADRs updated with anything learned about the XML format that contradicts planning
+Status as of 2026-09-02:
+
+1. [x] `cargo test` green, including golden round-trip on all fixtures (30 tests green as of this date)
+2. [ ] `cr-cli db-dump` on a real-world database (user-provided, not committed) produces a sane summary — **blocked: the user must supply a ComicDb.xml**
+3. [x] `cr-cli db-roundtrip` byte-identical on fixtures, any diffs enumerated and justified in a `tests/golden/README.md`
+4. [ ] CI green, ADRs updated with anything learned about the XML format that contradicts planning — CI runs on push (local runs green); ADR-011 records the XML-layer reality; the exit review closes this item
 
 ## Explicitly deferred (not Phase 0)
 
