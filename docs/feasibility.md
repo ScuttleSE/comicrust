@@ -16,11 +16,11 @@ Total: **1,348 .cs files, ~193,000 LOC** (~164k hand-written, ~28k designer-gene
 | ComicRack.Engine.Display.Forms | 10 | 7,660 | all UI (reader controls) |
 | ComicRack.Plugins | 21 | 1,946 | scripting host |
 
-**Estimate: ~65-75% of Engine + cYo.Common is UI-free portable logic.** The dominant cost is the WinForms/GDI+/Shell UI shell, which a GTK4 rewrite replaces wholesale anyway.
+**Estimate: ~65-75% of Engine + cYo.Common is UI-free portable logic.** The dominant cost is the WinForms/GDI+/Shell UI. A GTK4 rewrite replaces it wholesale anyway.
 
 ## 2. Windows-coupling audit
 
-### P/Invoke & COM (148 `DllImport` sites in ~45 files; 48 `ComImport` interfaces)
+### P/Invoke & COM (148 `DllImport` sites in ~45 files, 48 `ComImport` interfaces)
 
 | Dependency | What it provides | Linux replacement |
 |---|---|---|
@@ -35,7 +35,7 @@ Total: **1,348 .cs files, ~193,000 LOC** (~164k hand-written, ~28k designer-gene
 | IFileOperation/IShellFolder | shell copy/delete/trash | GIO trash |
 | OLE IDataObject | drag-drop of virtual in-archive files | GTK DnD with content providers |
 | MSHTML WebBrowser | plugin HTML panels, News dialog | WebKitGTK |
-| **WCF net.tcp** | remote library server (Android protocol), wireless sync, single-instance | new HTTP API (compat dropped); zbus for single-instance |
+| **WCF net.tcp** | remote library server (Android protocol), wireless sync, single-instance | new HTTP API (compat dropped), zbus for single-instance |
 
 ### Bundled native codecs (paths hard-baked, `SetDllDirectory` loading)
 
@@ -51,41 +51,41 @@ Registry (file associations, Ghostscript discovery), SystemEvents (display/power
 
 | Area | Reference | Rust assessment |
 |---|---|---|
-| Archives | `IComicAccessor` + `ArchiveComicProvider` + 3 engine backends (7z COM / SharpCompress / SharpZipLib) | **Easy** — zip/tar crates; RAR via 7z/libarchive subprocess (unrar licensing) |
-| Image decode | normalize-to-JPEG chain: DjVu (exe), WebP/JXL/HEIF/AVIF (P/Invoke), JPEG2000 (CSJ2K managed), PDF (pdfium ≤1920×2540) | **Moderate** — image crate + zune-jpeg/image-webp/jxl-oxide/libheif-rs/pdfium-render; djvulibre subprocess (already how it works) |
+| Archives | `IComicAccessor` + `ArchiveComicProvider` + 3 engine backends (7z COM / SharpCompress / SharpZipLib) | **Easy** — zip/tar crates, RAR via 7z/libarchive subprocess (unrar licensing) |
+| Image decode | normalize-to-JPEG chain: DjVu (exe), WebP/JXL/HEIF/AVIF (P/Invoke), JPEG2000 (CSJ2K managed), PDF (pdfium ≤1920×2540) | **Moderate** — image crate + zune-jpeg/image-webp/jxl-oxide/libheif-rs/pdfium-render, djvulibre subprocess (already how it works) |
 | Image processing | `ImageProcessing.cs` 1,557 LOC unsafe resizers (nearest/bilinear/bicubic/HQ box), `BitmapAdjustment` brightness/contrast/gamma (the reader color filter), convolution, histogram | **Moderate** — direct port of ~2k LOC of pixel loops |
-| Page/thumb caches | `ImagePool` (5 queues), `ImageManagerBase` LRU + `DiskCache` (BinaryFormatter `cache.idx`) | **Easy** — channels+LRU; cache format is disposable, no compat needed |
-| Database | single `ComicDb.xml` (XmlSerializer), `.bak`/`.restore` rotation, corrupt-file quarantine, zip backup; optional MySQL/MSSQL shared library (XML blobs + change counters) | **Easy** — serde + quick-xml with exact name fidelity; sqlx for shared mode |
-| Data model | `ComicInfo` ~40 fields, `ComicBook` +60 state fields (3,076 LOC), `ComicPageInfo`, `MetronInfo` (1,789 LOC), `ValuesStore` custom values | **Moderate** — mechanical serde; reflection-by-name needs a registry |
+| Page/thumb caches | `ImagePool` (5 queues), `ImageManagerBase` LRU + `DiskCache` (BinaryFormatter `cache.idx`) | **Easy** — channels+LRU, cache format is disposable, no compat needed |
+| Database | single `ComicDb.xml` (XmlSerializer), `.bak`/`.restore` rotation, corrupt-file quarantine, zip backup, optional MySQL/MSSQL shared library (XML blobs + change counters) | **Easy** — serde + quick-xml with exact name fidelity, sqlx for shared mode |
+| Data model | `ComicInfo` ~40 fields, `ComicBook` +60 state fields (3,076 LOC), `ComicPageInfo`, `MetronInfo` (1,789 LOC), `ValuesStore` custom values | **Moderate** — mechanical serde, reflection-by-name needs a registry |
 | Smart lists | custom query tokenizer, 76 matchers / 73 comparers / 65 groupers / 24 series matchers, `MatcherSet` AND/OR/NOT, dependency-tracked caches | **Moderate** — self-contained parser port, no external deps |
 | Filename parsing | `ComicNameInfo.FromFilePath` regexes → proposed metadata | **Moderate** — port regexes + tests |
-| Remote server | WCF net.tcp + message security + X509, UDP broadcast discovery (BZip2 XML, 10s ping) | **Hard if protocol-compat; Easy if new HTTP/JSON** (compat dropped — see decisions) |
-| Device sync | wireless raw TCP protocol (ports 7614/7615/7620+, SSL pinned certs), USB copy, MTP (WPD COM) | **Moderate** — TCP protocol portable; libmtp for MTP |
+| Remote server | WCF net.tcp + message security + X509, UDP broadcast discovery (BZip2 XML, 10s ping) | **Hard if protocol-compat, easy if new HTTP/JSON** (compat dropped — see decisions) |
+| Device sync | wireless raw TCP protocol (ports 7614/7615/7620+, SSL pinned certs), USB copy, MTP (WPD COM) | **Moderate** — TCP protocol portable, libmtp for MTP |
 | Job model | `ProcessingQueue` (460 LOC dedicated-thread queues) × QueueManager (5 queues), ComicScanner thread, no async/await | **Easy** — crossbeam channels + worker threads |
-| Scripting | IronPython 2.7.4 DLR host, `#@Directive` discovery, ~40-method host API, hot-reload, `.crplugin` packages | **Moderate** — PyO3 + CPython 3 shim; Python 2→3 migration burden on scripts |
+| Scripting | IronPython 2.7.4 DLR host, `#@Directive` discovery, ~40-method host API, hot-reload, `.crplugin` packages | **Moderate** — PyO3 + CPython 3 shim, Python 2→3 migration burden on scripts |
 
 ## 4. UI surface (GTK4 target)
 
 | Subsystem | LOC | GTK4 approach |
 |---|---|---|
-| Reader rendering (`ComicDisplayControl`/`ImageDisplayControl`/`ComicDisplay`) | ~9,500 | custom `GtkWidget` + `GtkGLArea` (glow), `Gtk.EventController*` for pan/zoom/gestures, frame-clock animations, cairo pattern MULTIPLY for paper texture; cairo fallback first |
-| Browser list (`ItemView` + `CoverViewItem` + renderers) | ~9,000 | **custom widget** — virtualized thumbnail/tile/detail modes, grouping, stacking, column machinery; nothing in GTK4 comes close |
-| Main shell (`MainForm`/`MainView`/`TabBar`/auto-hide/undock) | ~11,000 | `GtkApplicationWindow` + `GtkPaned` + custom tab strip + `Gtk.Revealer`; behavior matrix is the work |
-| Dialogs (~50: book editor, bulk edit, preferences, smart-list editor, export, devices…) | ~25,000 | `GtkDialog` + builder; reflection options panels need a serde-driven builder |
+| Reader rendering (`ComicDisplayControl`/`ImageDisplayControl`/`ComicDisplay`) | ~9,500 | custom `GtkWidget` + `GtkGLArea` (glow), `Gtk.EventController*` for pan/zoom/gestures, frame-clock animations, cairo pattern MULTIPLY for paper texture, cairo fallback first |
+| Browser list (`ItemView` + `CoverViewItem` + renderers) | ~9,000 | **custom widget** — virtualized thumbnail/tile/detail modes, grouping, stacking, column machinery, nothing in GTK4 comes close |
+| Main shell (`MainForm`/`MainView`/`TabBar`/auto-hide/undock) | ~11,000 | `GtkApplicationWindow` + `GtkPaned` + custom tab strip + `Gtk.Revealer`, behavior matrix is the work |
+| Dialogs (~50: book editor, bulk edit, preferences, smart-list editor, export, devices…) | ~25,000 | `GtkDialog` + builder, reflection options panels need a serde-driven builder |
 | Workspace/layout persistence | ~2,500 | JSON/GSettings + restore module |
 | Theming/dark mode | ~3,500 | GTK CSS providers, native dark preference |
 | Localization | small code, ~1,269 XMLs × 19 langs | port `TR` loader over existing XMLs as-is |
 
-Designer files are only 15% of UI code; the three flagship surfaces are 80-90% hand-written behavior — a Builder file will not shortcut any of it.
+Designer files are only 15% of UI code. The three flagship surfaces are 80-90% hand-written behavior. A Builder file will not shortcut any of it.
 
 ## 5. Plugin/scripting architecture
 
 - **No native DLL plugins exist.** The entire extensibility is file-based: `.py` (IronPython 2.7) with `#@` comment directives, `.xml` manifests, `.crplugin` packages (zip + `package.ini`).
 - Hooks: `Startup`, `Shutdown`, `BookOpened`, `ReaderResized`, `ParseComicPath`, `NetSearch`, `NewBooks`/`Books`/`Library`/`Editor` commands, `ComicInfoHtml/ComicInfoUI`, `QuickOpenHtml/QuickOpenUI`, `DrawThumbnailOverlay`, `ConfigScript`, `CreateBookList`.
-- Host API = `IPluginEnvironment` (~40 methods) injected as global `ComicRack`; scripts mutate live `ComicBook` objects in-process.
-- **Unportable as-is:** scripts that build WinForms controls (`ComicInfoUI`/`QuickOpenUI`) and GDI+ overlay drawing — need a WebKitGTK/HTML or GTK replacement API.
+- Host API = `IPluginEnvironment` (~40 methods) injected as global `ComicRack`. Scripts mutate live `ComicBook` objects in-process.
+- **Unportable as-is:** scripts that build WinForms controls (`ComicInfoUI`/`QuickOpenUI`) and GDI+ overlay drawing. These need a WebKitGTK/HTML or GTK replacement API.
 - Expression matchers in smart lists compile Python one-liners — preserved via PyO3 with a per-book shim object (or a Rust expr-language with saved-list compat risk).
 
 ## 6. Verdict
 
-**Feasible, no architectural blockers.** Full 1:1 parity is a **~75-90 working-week (~18-22 month) solo effort** across 9 phases. The engine core is cleanly separable (Phases 0-2 validate data compat headlessly); the risk concentrates in the two flagship custom widgets (reader, browser), the ~50-dialog surface, and Python plugin migration. See `port-plan.md` and `risk-register.md`.
+**Feasible, no architectural blockers.** Full 1:1 parity is a **~75-90 working-week (~18-22 month) solo effort** across 9 phases. The engine core is cleanly separable (Phases 0-2 validate data compat headlessly). The risk concentrates in the two flagship custom widgets (reader, browser), the ~50-dialog surface, and Python plugin migration. See `port-plan.md` and `risk-register.md`.

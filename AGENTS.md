@@ -1,8 +1,8 @@
 # AGENTS.md — Agent Onboarding
 
-You are working on **comicrust**: a from-scratch port of **ComicRack Community Edition** (a Windows C# WinForms comic library manager/reader) to a **Linux-native Rust + GTK4 application**, targeting **full 1:1 feature parity**.
+You are working on **comicrust**. This project is a from-scratch port of **ComicRack Community Edition** (a Windows C# WinForms comic library manager/reader). The target is a **Linux-native Rust + GTK4 application** with **full 1:1 feature parity**.
 
-Read this file first, then `docs/port-plan.md` (architecture + roadmap) and `docs/decisions.md` (locked decisions — do not relitigate them without explicit user sign-off).
+Read this file first. Then read `docs/port-plan.md` (architecture and roadmap) and `docs/decisions.md` (locked decisions). Do not challenge a locked decision without explicit user approval.
 
 ---
 
@@ -47,7 +47,7 @@ These rules are absolute. Break none of them. If you break them, you waste the u
 
 ## Current status (KEEP UPDATED)
 
-Update this section at the **end of every work session** so the next agent knows exactly where things stand.
+Update this section at the **end of every work session**. The next agent must know the exact state of the work.
 
 - **Current phase:** Phase 0 — not started
 - **Completed:** feasibility analysis, port plan, agent docs, agent working rules, ASD-STE100 rewrite of all docs (planning stage only, no code)
@@ -61,8 +61,8 @@ Update this section at the **end of every work session** so the next agent knows
 
 - **Local checkout:** `/home/scuttle/Downloads/repo/ComicRackCE` (if this path is stale, locate the checkout and update this file)
 - **Upstream:** https://github.com/maforget/ComicRackCE (branch `master`)
-- **Golden rule:** the C# source is the specification. Before implementing any behavior, **find and read the corresponding C# code**. Never guess from names, screenshots, or memory of "how ComicRack works".
-- **Decompiled caveat:** the reference was produced by decompilation. Expect dead `using`s, odd names, swallowed exceptions, and dead code (e.g. `UseWPF=true` is vestigial — there is no WPF). The target is *behavior*, not style.
+- **Golden rule:** the C# source is the specification. Before you implement any behavior, **find and read the corresponding C# code**. Never guess from names, screenshots, or memory of "how ComicRack works".
+- **Decompiled caveat:** decompilation produced the reference. Expect dead `using`s, odd names, swallowed exceptions, and dead code. Example: `UseWPF=true` is vestigial. There is no WPF. The target is *behavior*, not style.
 
 ### Source project map
 
@@ -78,8 +78,8 @@ Update this section at the **end of every work session** so the next agent knows
 
 ### Key formats/locations in the reference
 
-- Library database: single XML at `%APPDATA%\cYo\ComicRack Community Edition\ComicDb\ComicDb.xml` — see `Engine/SystemPaths.cs`, `DatabaseManager.cs` (`.bak`/`.restore` rotation, corruption fallback)
-- Localization: `ComicRack/Output/Languages/<lang>/*.xml` — **19 languages, reused as-is**; lookup pattern `TR.Load("FormName")["Key", "Default"]`
+- Library database: single XML at `%APPDATA%\cYo\ComicRack Community Edition\ComicDb\ComicDb.xml`. See `Engine/SystemPaths.cs` and `DatabaseManager.cs` (`.bak`/`.restore` rotation, corruption fallback).
+- Localization: `ComicRack/Output/Languages/<lang>/*.xml`. **19 languages, reused as-is.** Lookup pattern: `TR.Load("FormName")["Key", "Default"]`.
 - Sample scripts: `ComicRack/Output/Scripts/*.py`
 - Reader paper textures: `ComicRack/Output/Resources/Textures/Papers`
 
@@ -104,25 +104,25 @@ Crate layout (to be scaffolded in Phase 0 — see `docs/port-plan.md`):
 
 ## Compatibility invariants (DO NOT BREAK)
 
-1. **ComicDb.xml read/write.** Element/attribute names and structure must match the C# `XmlSerializer` output exactly (attribute/element names, casing, the ComicLists tree, custom values store). Verified by golden-file round-trip tests. The database is the one thing users cannot lose.
-2. **Metadata schema compat:** `ComicInfo.xml` (Anansi standard), ComicRack's `ComicBook.xml`, `MetronInfo.xml` — read AND write in-archive.
+1. **ComicDb.xml read/write.** Element and attribute names, casing, and structure must match the C# `XmlSerializer` output exactly (the ComicLists tree, the custom values store). Golden-file round-trip tests verify this. The database is the one artifact users cannot lose.
+2. **Metadata schema compat:** `ComicInfo.xml` (Anansi standard), ComicRack's `ComicBook.xml`, and `MetronInfo.xml` — read AND write in-archive.
 3. **Plugin file formats:** `.py` scripts with `#@Name/#@Hook/#@Key/#@Description/#@PCount/#@Enabled/#@Image` comment directives + one command per `def` (see `PythonPluginInitializer.cs`), XML manifests, `.crplugin` = zip with `package.ini`.
-4. **Smart-list query language** must parse and match identically (saved lists contain these queries; see `ComicSmartListItem.cs`, `ComicBookGroupMatcher.cs`).
-5. **Caches are disposable; the database is not.** Thumbnail/image caches (`DiskCache` `cache.idx`, BinaryFormatter-serialized) have NO compat requirement — design fresh formats freely.
+4. **Smart-list query language** must parse and match identically (saved lists contain these queries — see `ComicSmartListItem.cs` and `ComicBookGroupMatcher.cs`).
+5. **Caches are disposable. The database is not.** Thumbnail/image caches (`DiskCache` `cache.idx`, BinaryFormatter-serialized) have NO compat requirement. Design fresh formats freely.
 
 ---
 
 ## Critical gotchas
 
-- **IronPython 2.7 = Python 2 semantics** (scripts use `print '...'` statements). We target PyO3/CPython 3: existing ecosystem scripts need a 2to3 pass. The host API (`IPluginEnvironment`, ~40 methods) is the shim surface.
-- **unrar license is GPL-incompatible**: use subprocess/7z or libarchive for RAR, never static-link unrar.
-- **WCF net.tcp remote protocol is NOT being preserved** (see decisions.md) — the Android app protocol compat was explicitly dropped.
+- **IronPython 2.7 = Python 2 semantics** (scripts use `print '...'` statements). We target PyO3/CPython 3, so existing ecosystem scripts need a 2to3 pass. The host API (`IPluginEnvironment`, ~40 methods) is the shim surface.
+- **unrar license is GPL-incompatible.** Use subprocess/7z or libarchive for RAR. Never static-link unrar.
+- **The WCF net.tcp remote protocol is NOT preserved** (see `docs/decisions.md`). Android app protocol compat was explicitly dropped.
 - **NTFS ADS metadata → Linux xattrs** (`user.comicrack.*`) with sidecar fallback.
-- **Reflection-based property access by string name** is load-bearing in the C# (matchers, columns, remote `UpdateComic`, `FormUtility` options panels). In Rust this needs an explicit property registry — plan for it early in `cr-core`.
-- **Windows paths are baked into user data** (workspace paper textures point at install paths); be lenient when loading.
-- **Tao.OpenGL is legacy GL**; the reader targets GL 3.2 core via `glow`, with a cairo fallback first (the C# app itself falls back to GDI+).
-- **32-bit JPEG EXIF quirk** in decode path (`BitmapExtensions.BitmapFromBytes`) — preserve the fix.
-- Localization is data-driven per-widget-name; port the `TR` lookup, don't gettext-ify.
+- **Reflection-based property access by string name** is load-bearing in the C# (matchers, columns, remote `UpdateComic`, `FormUtility` options panels). Rust needs an explicit property registry for this. Plan for it early in `cr-core`.
+- **Windows paths are baked into user data** (workspace paper textures point at install paths). Be lenient when you load.
+- **Tao.OpenGL is legacy GL.** The reader targets GL 3.2 core via `glow`, with a cairo fallback first (the C# app itself falls back to GDI+).
+- **32-bit JPEG EXIF quirk** in the decode path (`BitmapExtensions.BitmapFromBytes`). Preserve the fix.
+- Localization is data-driven per widget name. Port the `TR` lookup. Do not gettext-ify.
 
 ---
 
