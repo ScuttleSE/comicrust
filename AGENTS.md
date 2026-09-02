@@ -51,13 +51,13 @@ Update this section at the **end of every work session**. The next agent must kn
 
 ### State summary
 
-- **Phase:** 1 (IO + images). Phase 0 T0-T4 are built. The Phase 0 exit review is not done; the settings port, default lists, and exit review stay open (MetronInfo moved into Phase 1 T2).
-- **State:** `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` are green. 58 tests pass.
+- **Phase:** 1 (IO + images), tasks T1-T6 built. The Phase 0 exit review is not done; the settings port and default lists stay open (MetronInfo moved into Phase 1 T2 and is done).
+- **State:** `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` are green. 92 tests pass.
 - **Phase 0 gate status:** byte-stable ComicDb.xml round-trip is proven on all three synthetic fixtures AND on the real-world database `tests/realworld/ComicDb.xml` (255 books, 584 KB, 2026-09-02, user-approved commit). Acceptance criteria #2 and #3 are met.
 
-### Phase 1 progress (this session, 2026-09-02)
+### Phase 1 progress (sessions of 2026-09-02)
 
-T1 is done except web comics. Provider framework in `cr-io` ported
+T1 done except web comics. Provider framework in `cr-io` ported
 from `ComicRack.Engine/IO/Provider/`: format registry (`formats.rs`,
 deterministic registration order; `.cbr`/`.rar` map to CBR first, both
 route to the same accessor), `ExtendedStringComparer` IgnoreCase
@@ -70,14 +70,65 @@ SHA-1/Base32 hash in `hash.rs`), accessors for CBZ/CBT (pure Rust
 DjVu (`djvu.rs`, `djvm`/`ddjvu` subprocess, PPM instead of TIFF
 intermediate), and folder comics (FOLDER id 100, recursive). PDF/DjVu
 use the whole-file SHA-1 hash and the raw page list (no filter/sort),
-per their C# provider classes. `cr-cli` has `pages` and `extract`
-(raw bytes; decode arrives with T3).
+per their C# provider classes.
+
+T2 done. `cr-core`: MetronInfo schema + serializer + parser +
+`to_comic_info` mapping (`model/metron_info.rs`, byte-stable
+round-trip tested; `MetronInfoProvider.ToXml` port including the
+RoleValues substring quirks and LocalizeEnum English defaults);
+`ComicInfo::serialize_bytes`, `ComicBook::serialize_bytes` (stripped
+sidecar form) + `serialize_full_bytes`; `ComicBook::parse_root` for
+the `<ComicBook>` root; `is_same_content` chains. `cr-io`
+(`info.rs`): load chain xattrs → sidecar (`<file>.xml`, then
+extension-swapped) → in-archive (ComicInfo.xml order 0, MetronInfo.xml
+order 1 mapped; ComicBook.xml for books), `InfoLoadingMethod`
+Fast/Slow; `NtfsInfoStorage` port to xattrs `user.comicrack.ComicRackInfo`
+/ `user.comicrack.ComicRackBook` (ADR-006) with skip-on-same-content.
+
+T3 done. `cr-image`: `Image` RGBA8 currency, decode chain
+(`decode.rs`: zune-jpeg with the `JpegFile.RemoveExif` APPn-strip
+retry (the 32-bit EXIF quirk preserved), png/gif/tiff/bmp/webp via
+`image`, jxl via jxl-oxide; HEIF/AVIF/J2K report UnsupportedFormat —
+they need system libs, documented gap), `normalize_to_jpeg` (the
+`RetrieveSourceByteImage` conversion chain, wired into
+`ComicProvider::read_page`), JPEG encode q75. `adjust.rs`: port of
+`ApplyAdjustment` — histogram black/white point scan, color matrix
+(ROW-vector convention: out_r = r·m00 + g·m10 + b·m20 + m30; the
+custom 5x5 matrices transposed relative to GDI+ ColorMatrix),
+gamma LUT, sharpen convolution with border preservation. `resize.rs`:
+fit-to-box scale (GetScale semantics, scales UP too), filter mapping
+(Triangle ≈ bilinear, CatmullRom ≈ bicubic). `thumbnail.rs`:
+`ThumbnailImage` port (MaxHeight 512, JPEG q60, FastBilinear,
+size+data serialization).
+
+T4 done. `keys.rs` (ImageKey/PageKey/ThumbnailKey with `IsSameFile`,
+resource locator `type:\\...` parsing), `memory.rs` (LRU pool with
+item + byte budgets, C# defaults 5 pages / 20 thumbs + 5 MB),
+`disk.rs` (fresh format: one file per entry, FNV-1a name, header with
+key text for verification, atomic writes, index rebuilt by scan).
+The ProcessingQueue machinery stays for Phase 2 (QueueManager).
+
+T5/T6 done. `write.rs`: write-back — CBZ/CBT native full rewrite
+(same entry order, content identical, temp file + atomic rename),
+CB7 via `7z u` subprocess (C# UpdateComicInfos parity), folder direct
+files; failure errors surface, not silent. `export.rs`: skeleton
+(ExportImageContainer, compression levels, page-order CBZ packing;
+parallel/spill/progress open until Phase 5 dialogs). `cr-cli` has
+`pages`, `extract` (`--decode`), `thumb`, `rewrite` (verifies only
+metadata entries change; never writes when no metadata found —
+writing defaults would destroy file metadata), `metron`.
 
 Known gaps / decisions:
-- WebComicProvider (`.cbw`, dynamic) and the WebP/JXL/HEIF/AVIF/J2K
-  normalize-to-JPEG conversion chain (`ImageProvider.RetrieveSourceByteImage`)
-  are deferred into T3 (cr-image decode chain) — they are
-  decode/encode work.
+- WebComicProvider (`.cbw`, dynamic) is the ONE remaining Phase 1
+  item. Measured rationale: it needs the 853-LOC `WebComic.cs`
+  (URL template + regex PagePart engine over fetched HTML),
+  compositing, HTTP fetch (`HttpAccess.ReadBinary`) and `FileCache`
+  interplay. Headless verification needs a small local HTTP fixture
+  server; port it as a standalone task (start with the .cbw XML
+  config schema and `GetParsedImages`, test with a std TcpListener
+  server).
+- HEIF/AVIF/J2K page decode returns UnsupportedFormat (needs
+  libheif/openjpeg; decide at packaging time). WebP/JXL decode works.
 - Subprocess-format tests are gated: `CR_FORMAT_TESTS=1` for 7z,
   `CR_PDFIUM=<libpdfium.so>` for PDF, djvulibre tools on `PATH` for
   DjVu. CI runs them only if the tools exist.
@@ -114,7 +165,16 @@ Do not edit or reformat that fixture; byte identity is the test.
 | `crates/cr-io/src/pdf.rs` | PDF via pdfium-render; `CalculateSize` port; JPEG out (q75). |
 | `crates/cr-io/src/djvu.rs` | DjVu via `djvm`/`ddjvu` subprocess; PPM→JPEG (q75). |
 | `crates/cr-io/src/hash.rs` | `CreateHashFromImageList` (BinaryWriter layout, SHA-1, cYo Base32) + file hash for PDF/DjVu. |
-| `crates/cr-cli/src/main.rs` | `info` (filename proposal or ComicInfo.xml), `db-dump` (JSON summary), `db-roundtrip` (byte-diff report), `pages`, `extract`. |
+| `crates/cr-io/src/info.rs` | Metadata load chain (xattrs → sidecar → in-archive), xattr store, `InfoLoadingMethod`. |
+| `crates/cr-io/src/write.rs` | Write-back: CBZ/CBT native rewrite, CB7 `7z u`, folder files. |
+| `crates/cr-io/src/export.rs` | Export skeleton (ExportImageContainer, CBZ packing). |
+| `crates/cr-image/src/decode.rs` | Decode chain + `normalize_to_jpeg` + JPEG encode + EXIF-strip retry. |
+| `crates/cr-image/src/adjust.rs` | `ApplyAdjustment` port (histogram, color matrix, gamma, sharpen). |
+| `crates/cr-image/src/resize.rs` | Fit-to-box scale, filter mapping. |
+| `crates/cr-image/src/thumbnail.rs` | `ThumbnailImage` port (512px, JPEG q60, serialization). |
+| `crates/cr-image/src/keys.rs` | ImageKey/PageKey/ThumbnailKey. |
+| `crates/cr-image/src/memory.rs`, `disk.rs` | LRU pools + fresh-format disk cache. |
+| `crates/cr-cli/src/main.rs` | `info`, `db-dump`, `db-roundtrip`, `pages`, `extract`, `thumb`, `rewrite`, `metron`. |
 
 Tests: `crates/cr-core/tests/golden_roundtrip.rs`, `crates/cr-cli/tests/cli.rs`. Fixtures: `tests/golden/` (read `tests/golden/README.md` before you touch the XML layer).
 
