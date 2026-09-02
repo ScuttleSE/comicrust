@@ -29,6 +29,8 @@ pub struct ValueMatcher {
 /// `ComicBookGroupMatcher`: nested matcher set.
 #[derive(Clone, Debug, PartialEq)]
 pub struct GroupMatcher {
+    /// Inherited from ComicBookMatcher (`Not` attribute).
+    pub not: bool,
     pub matcher_mode: MatcherMode,
     pub collapsed: bool,
     pub matchers: Vec<ComicBookMatcher>,
@@ -37,6 +39,7 @@ pub struct GroupMatcher {
 impl Default for GroupMatcher {
     fn default() -> Self {
         GroupMatcher {
+            not: false,
             matcher_mode: MatcherMode::And,
             collapsed: false,
             matchers: Vec::new(),
@@ -72,6 +75,9 @@ impl ComicBookMatcher {
             }
             ComicBookMatcher::Group(g) => {
                 e.attr("xsi:type", "ComicBookGroupMatcher")?;
+                if g.not {
+                    e.attr("Not", "true")?;
+                }
                 if g.matcher_mode != MatcherMode::And {
                     e.attr("MatcherMode", &g.matcher_mode.to_xml())?;
                 }
@@ -94,12 +100,14 @@ impl ComicBookMatcher {
             .ok_or_else(|| XmlError("matcher without xsi:type".into()))?;
         if xsi == "ComicBookGroupMatcher" {
             let mut g = GroupMatcher {
+                not: false,
                 matcher_mode: MatcherMode::And,
                 collapsed: false,
                 matchers: Vec::new(),
             };
             for (k, v) in &s.attrs {
                 match k.as_str() {
+                    "Not" => g.not = v.trim() == "true" || v.trim() == "1",
                     "MatcherMode" => {
                         g.matcher_mode = MatcherMode::from_xml(v)
                             .ok_or_else(|| XmlError(format!("bad MatcherMode: {v}")))?
@@ -411,12 +419,15 @@ impl ComicListItem {
         if let Some(c) = &b.cache_storage {
             e.text_elem("CacheStorage", c)?;
         }
-        // Display is a non-null class field in C#: always written.
-        e.start("Display")?;
-        if let Some(d) = &b.display {
-            d.write_xml(e)?;
+        // DisplayListConfig::write_xml emits the `<Display>` element
+        // itself; the C# field is never null so the wrapper is always
+        // written (empty config → `<Display />`).
+        match &b.display {
+            Some(d) => d.write_xml(e)?,
+            None => {
+                DisplayListConfig::default().write_xml(e)?;
+            }
         }
-        e.end()?;
         Ok(())
     }
 

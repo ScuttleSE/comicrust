@@ -49,11 +49,11 @@ These rules are absolute. Break none of them. If you break them, you waste the u
 
 Update this section at the **end of every work session**. The next agent must know the exact state of the work.
 
-- **Current phase:** Phase 0 — not started
-- **Completed:** feasibility analysis, port plan, agent docs, agent working rules, ASD-STE100 rewrite of all docs, Gitea Actions CI pipeline (planning stage only, no code)
+- **Current phase:** Phase 0 — mostly done (T0-T4 built; see below)
+- **Completed:** T0 workspace scaffold (8 crates, `rust-toolchain.toml`, deny.toml, CI activates on Cargo.toml). T1 data model in `cr-core`: `ComicInfo`, `ComicBook`, `ComicPageInfo`, enums, `BitmapAdjustment`, `ExtraSyncInformation`, `ValuesStore` codec, property registry (`registry.rs`, string-name access), `ComicNameInfo` port (fancy-regex, RightToLeft emulated via last-match + lookbehind guards). T2 database layer: byte-exact XmlSerializer emitter/reader (`xml/`), ComicLists tree (list items, matchers with `xsi:type` passthrough, Display config subtree), `ComicDatabase` load/save (`.bak` rotation, `.restore` consumption, corrupt quarantine, `OpenStatus` messages). T3 golden harness: 3 fixtures under `tests/golden/` (incl. captured .NET output), byte-stable round-trip tests, negative tests, `.bak`/`.restore` fallback tests. T4 `cr-cli`: `info`, `db-dump`, `db-roundtrip` + integration tests. Emitter rules + deviations documented in `tests/golden/README.md`.
 - **In progress:** —
-- **Next up:** workspace scaffold per `docs/phase-0-kickoff.md`
-- **Blockers / open questions:** —
+- **Next up (remaining Phase 0):** `ComicRack.ini`/`IniFile`/`EngineConfiguration`/`SystemPaths` port (T2 tail); MetronInfo mapping (T1, deferred — rationale in `tests/golden/README.md`); fresh-DB default smart lists (`InitializeDefaultLists`, needs localized names + matcher names); validate `db-dump`/`db-roundtrip` on a real user ComicDb.xml (acceptance #2); then Phase 0 exit review.
+- **Blockers / open questions:** Acceptance criterion #2 (real-world database summary) needs a ComicDb.xml from a real ComicRack install, user-provided, not committed.
 
 ---
 

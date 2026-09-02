@@ -93,13 +93,15 @@ impl<W: Write> Emitter<W> {
         self.out.write_all(escape_text(text).as_bytes())
     }
 
-    /// Writes a pre-formed XML fragment (for `[XmlAnyElement]` capture).
+    /// Writes a pre-formed XML fragment (for `[XmlAnyElement]` capture),
+    /// indented like a child element.
     pub fn raw(&mut self, xml: &str) -> io::Result<()> {
         let elem = self.stack.last_mut().expect("raw outside element");
         if !elem.has_children && !elem.has_text {
             self.out.write_all(b">")?;
         }
         elem.has_children = true;
+        self.indent()?;
         self.out.write_all(xml.as_bytes())
     }
 

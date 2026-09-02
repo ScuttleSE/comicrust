@@ -1,0 +1,92 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ComicDatabase xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" Id="11111111-2222-3333-4444-555555555555" Name="TestDB">
+  <Books>
+    <Book Id="1b259acd-2369-4a30-be47-c8c8ff0ffb5e" Checked="false" IsDynamicSource="true">
+      <Title>T1</Title>
+      <Series>My Series</Series>
+      <Number>3</Number>
+      <Volume>2</Volume>
+      <Year>1999</Year>
+      <Writer>W</Writer>
+      <PageCount>3</PageCount>
+      <Pages>
+        <Page Image="0" ImageWidth="800" ImageHeight="1200" />
+        <Page Image="1" Bookmark="mark" />
+      </Pages>
+      <Rating>3.5</Rating>
+      <ColorAdjustment>
+        <Saturation>0.5</Saturation>
+        <Brightness>0.25</Brightness>
+      </ColorAdjustment>
+      <ExtraSyncInformation>
+        <ReadingStateChanged>true</ReadingStateChanged>
+        <InformationChanged>false</InformationChanged>
+        <BookmarksChanged>false</BookmarksChanged>
+        <PageTypesChanged>false</PageTypesChanged>
+        <CheckChanged>false</CheckChanged>
+        <DataChanged>false</DataChanged>
+      </ExtraSyncInformation>
+      <CustomValuesStore>a=1,b=2</CustomValuesStore>
+    </Book>
+    <Book Id="9e79eab2-ec18-4a30-a0b2-b87d8df96834">
+      <Pages />
+    </Book>
+  </Books>
+  <ComicLists>
+    <Item xsi:type="ComicLibraryListItem" Id="b1ccc930-f5af-402a-9ebc-cab71ba61cbe" Name="Lib">
+      <Display />
+    </Item>
+    <Item xsi:type="ComicListItemFolder" Id="f53972bf-66ef-4c09-a7c3-68cc8336b74d" Name="Folder" Favorite="true" QuickOpen="true" Collapsed="true" CombineMode="And">
+      <Description>D</Description>
+      <Display />
+      <Items>
+        <Item xsi:type="ComicSmartListItem" Id="69212cc2-fba3-497a-94fe-dfcbe0c356f4" Name="Smart" MatcherMode="Or">
+          <BookCount>5</BookCount>
+          <NewBookCount>1</NewBookCount>
+          <NewBookCountDate>2020-05-06T07:08:09Z</NewBookCountDate>
+          <UnreadBookCount>4</UnreadBookCount>
+          <CacheStorage>id1,id2</CacheStorage>
+          <Display />
+          <Matchers>
+            <ComicBookMatcher xsi:type="ComicBookGroupMatcher" Not="true" Collapsed="true">
+              <Matchers>
+                <ComicBookMatcher xsi:type="ComicBookAddedMatcher" Not="true" MatchOperator="2">
+                  <MatchValue>abc</MatchValue>
+                  <MatchValue2>def</MatchValue2>
+                </ComicBookMatcher>
+              </Matchers>
+            </ComicBookMatcher>
+            <ComicBookMatcher xsi:type="ComicBookAddedMatcher" Not="true" MatchOperator="2">
+              <MatchValue>abc</MatchValue>
+              <MatchValue2>def</MatchValue2>
+            </ComicBookMatcher>
+          </Matchers>
+          <Limit>true</Limit>
+          <LimitType>MB</LimitType>
+          <LimitValue>10</LimitValue>
+          <LimitSelectionType>Position</LimitSelectionType>
+          <LimitRandomSeed>7</LimitRandomSeed>
+          <BaseListId>aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee</BaseListId>
+          <NotInBaseList>true</NotInBaseList>
+          <FilteredIds>
+            <guid>cccccccc-1111-2222-3333-444444444444</guid>
+          </FilteredIds>
+          <ShowFiltered>true</ShowFiltered>
+        </Item>
+        <Item xsi:type="ComicIdListItem" Id="ed61e8ee-4982-47a1-a9c7-f0de997cc710" Name="Ids">
+          <Display />
+          <BookIds>
+            <guid>dddddddd-0000-0000-0000-000000000001</guid>
+          </BookIds>
+        </Item>
+      </Items>
+    </Item>
+  </ComicLists>
+  <WatchFolders>
+    <WatchFolder Folder="C:\path" Watch="true" />
+    <WatchFolder Folder="C:\p2" />
+  </WatchFolders>
+  <BlackList>
+    <File>C:\skip</File>
+  </BlackList>
+</ComicDatabase>

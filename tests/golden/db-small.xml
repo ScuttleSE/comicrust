@@ -1,0 +1,21 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ComicDatabase xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:xsd="http://www.w3.org/2001/XMLSchema" Id="11111111-2222-3333-4444-555555555555" Name="Small">
+  <Books>
+    <Book Id="1b259acd-2369-4a30-be47-c8c8ff0ffb5e">
+      <Series>Small Series</Series>
+      <Number>1</Number>
+      <Volume>1</Volume>
+      <Year>2001</Year>
+      <Pages>
+        <Page Image="0" ImageWidth="800" ImageHeight="1200" Type="FrontCover" />
+      </Pages>
+    </Book>
+  </Books>
+  <ComicLists>
+    <Item xsi:type="ComicLibraryListItem" Id="b1ccc930-f5af-402a-9ebc-cab71ba61cbe" Name="Library">
+      <Display />
+    </Item>
+  </ComicLists>
+  <WatchFolders />
+  <BlackList />
+</ComicDatabase>

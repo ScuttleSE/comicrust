@@ -7,7 +7,7 @@ use crate::xml::reader::{XmlError, XmlResult};
 use crate::xml::{Emitter, Tok};
 use std::io::Write;
 
-#[derive(Clone, Debug, PartialEq, Default)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct ComicInfo {
     pub title: String,
     pub series: String,
@@ -55,6 +55,59 @@ pub struct ComicInfo {
     pub unparsed_elements: Vec<String>,
     /// Wrapper `<Pages>` is always written (lazy non-null getter in C#).
     pub pages: Vec<ComicPageInfo>,
+}
+
+impl Default for ComicInfo {
+    fn default() -> Self {
+        // Field initializer defaults from ComicInfo.cs: the "unknown"
+        // count/volume/date fields are -1, not 0.
+        ComicInfo {
+            title: String::new(),
+            series: String::new(),
+            number: String::new(),
+            count: -1,
+            volume: -1,
+            alternate_series: String::new(),
+            alternate_number: String::new(),
+            story_arc: String::new(),
+            series_group: String::new(),
+            alternate_count: -1,
+            summary: String::new(),
+            notes: String::new(),
+            review: String::new(),
+            year: -1,
+            month: -1,
+            day: -1,
+            writer: String::new(),
+            penciller: String::new(),
+            inker: String::new(),
+            colorist: String::new(),
+            letterer: String::new(),
+            cover_artist: String::new(),
+            editor: String::new(),
+            translator: String::new(),
+            publisher: String::new(),
+            imprint: String::new(),
+            genre: String::new(),
+            web: String::new(),
+            page_count: 0,
+            language_iso: String::new(),
+            format: String::new(),
+            age_rating: String::new(),
+            black_and_white: YesNo::Unknown,
+            manga: MangaYesNo::Unknown,
+            preferred_front_cover: 0,
+            characters: String::new(),
+            teams: String::new(),
+            main_character_or_team: String::new(),
+            locations: String::new(),
+            community_rating: 0.0,
+            scan_information: String::new(),
+            tags: String::new(),
+            unparsed_elements: Vec::new(),
+            pages: Vec::new(),
+        }
+    }
 }
 
 impl ComicInfo {
@@ -236,6 +289,22 @@ pub fn read_info_elem(
         _ => return Ok(false),
     }
     Ok(true)
+}
+
+/// Parses a standalone `<ComicInfo>` document (the in-archive metadata
+/// file; used by cr-cli and later cr-io).
+pub fn parse_root(reader: &mut crate::xml::XmlReader<'_>) -> XmlResult<ComicInfo> {
+    let start = match reader.next_tok()? {
+        Tok::Start(s) => s,
+        Tok::Eof => return Err(XmlError("empty document".into())),
+        _ => return Err(XmlError("unexpected token before root".into())),
+    };
+    if start.name != "ComicInfo" {
+        return Err(XmlError(format!("unexpected root <{}>", start.name)));
+    }
+    let mut info = ComicInfo::default();
+    ComicInfo::read_children(reader, "ComicInfo", &mut info)?;
+    Ok(info)
 }
 
 fn read_i32(r: &mut crate::xml::XmlReader<'_>, elem: &str) -> XmlResult<i32> {

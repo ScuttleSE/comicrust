@@ -294,8 +294,9 @@ impl ComicBook {
                         "CustomValuesStore" => {
                             b.custom_values_store = r.text_content("CustomValuesStore")?
                         }
-                        // Unknown elements/attributes are dropped (C#).
-                        _ => r.skip_element(&s.name)?,
+                        // Unknown elements are captured by the inherited
+                        // [XmlAnyElement] UnparsedElements.
+                        _ => b.info.unparsed_elements.push(r.capture_raw(&s)?),
                     }
                 }
                 Tok::Text(_) => return Err(XmlError("unexpected text in Book".into())),

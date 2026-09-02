@@ -117,11 +117,14 @@ impl<'a> XmlReader<'a> {
                         .unescape()
                         .map_err(|e| XmlError(format!("text decode: {e}")))?
                         .into_owned();
-                    // Skip whitespace-only text between elements.
-                    if self.after_start || !text.trim().is_empty() {
-                        self.after_start = false;
-                        return Ok(Tok::Text(text));
+                    // Whitespace-only text is indentation between
+                    // elements (ComicRack output never has
+                    // whitespace-only element values inline).
+                    if text.trim().is_empty() {
+                        continue;
                     }
+                    self.after_start = false;
+                    return Ok(Tok::Text(text));
                 }
                 Event::CData(t) => {
                     self.after_start = false;

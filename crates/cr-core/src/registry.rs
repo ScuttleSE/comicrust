@@ -135,173 +135,182 @@ macro_rules! push_int_book {
     };
 }
 
-/// The string-name → property table (ComicInfo + ComicBook scalars).
+/// The ordered property table (ComicInfo + ComicBook scalars). Order is
+/// the C# declaration order, kept stable for serialization output.
+pub fn entries() -> &'static Vec<(&'static str, PropertyDef)> {
+    static ENTRIES: OnceLock<Vec<(&'static str, PropertyDef)>> = OnceLock::new();
+    ENTRIES.get_or_init(build_entries)
+}
+
+/// The string-name → property map.
 pub fn registry() -> &'static HashMap<&'static str, PropertyDef> {
     static REG: OnceLock<HashMap<&'static str, PropertyDef>> = OnceLock::new();
-    REG.get_or_init(|| {
-        let mut entries: Vec<(&'static str, PropertyDef)> = Vec::new();
-        push_str_info!(entries;
-            "Title" => title,
-            "Series" => series,
-            "Number" => number,
-            "AlternateSeries" => alternate_series,
-            "AlternateNumber" => alternate_number,
-            "StoryArc" => story_arc,
-            "SeriesGroup" => series_group,
-            "Summary" => summary,
-            "Notes" => notes,
-            "Review" => review,
-            "Writer" => writer,
-            "Penciller" => penciller,
-            "Inker" => inker,
-            "Colorist" => colorist,
-            "Letterer" => letterer,
-            "CoverArtist" => cover_artist,
-            "Editor" => editor,
-            "Translator" => translator,
-            "Publisher" => publisher,
-            "Imprint" => imprint,
-            "Genre" => genre,
-            "Web" => web,
-            "LanguageISO" => language_iso,
-            "Format" => format,
-            "AgeRating" => age_rating,
-            "Characters" => characters,
-            "Teams" => teams,
-            "MainCharacterOrTeam" => main_character_or_team,
-            "Locations" => locations,
-            "ScanInformation" => scan_information,
-            "Tags" => tags,
-        );
-        push_str_book!(entries;
-            "FilePath" => file_path,
-            "BookAge" => book_age,
-            "BookCondition" => book_condition,
-            "BookStore" => book_store,
-            "BookOwner" => book_owner,
-            "BookCollectionStatus" => book_collection_status,
-            "BookNotes" => book_notes,
-            "BookLocation" => book_location,
-            "ISBN" => isbn,
-        );
-        push_int_info!(entries;
-            "Count" => count,
-            "Volume" => volume,
-            "AlternateCount" => alternate_count,
-            "Year" => year,
-            "Month" => month,
-            "Day" => day,
-            "PageCount" => page_count,
-            "PreferredFrontCover" => preferred_front_cover,
-        );
-        push_int_book!(entries;
-            "OpenCount" => opened_count,
-            "CurrentPage" => current_page,
-            "LastPageRead" => last_page_read,
-            "NewPages" => new_pages,
-        );
-        entries.push((
-            "FileSize",
-            PropertyDef {
-                get: |b| PropValue::Int(b.file_size),
-                set: |b, v| {
-                    b.file_size = expect_int(v)?;
-                    Ok(())
-                },
+    REG.get_or_init(|| entries().iter().copied().collect())
+}
+
+fn build_entries() -> Vec<(&'static str, PropertyDef)> {
+    let mut entries: Vec<(&'static str, PropertyDef)> = Vec::new();
+    push_str_info!(entries;
+        "Title" => title,
+        "Series" => series,
+        "Number" => number,
+        "AlternateSeries" => alternate_series,
+        "AlternateNumber" => alternate_number,
+        "StoryArc" => story_arc,
+        "SeriesGroup" => series_group,
+        "Summary" => summary,
+        "Notes" => notes,
+        "Review" => review,
+        "Writer" => writer,
+        "Penciller" => penciller,
+        "Inker" => inker,
+        "Colorist" => colorist,
+        "Letterer" => letterer,
+        "CoverArtist" => cover_artist,
+        "Editor" => editor,
+        "Translator" => translator,
+        "Publisher" => publisher,
+        "Imprint" => imprint,
+        "Genre" => genre,
+        "Web" => web,
+        "LanguageISO" => language_iso,
+        "Format" => format,
+        "AgeRating" => age_rating,
+        "Characters" => characters,
+        "Teams" => teams,
+        "MainCharacterOrTeam" => main_character_or_team,
+        "Locations" => locations,
+        "ScanInformation" => scan_information,
+        "Tags" => tags,
+    );
+    push_str_book!(entries;
+        "FilePath" => file_path,
+        "BookAge" => book_age,
+        "BookCondition" => book_condition,
+        "BookStore" => book_store,
+        "BookOwner" => book_owner,
+        "BookCollectionStatus" => book_collection_status,
+        "BookNotes" => book_notes,
+        "BookLocation" => book_location,
+        "ISBN" => isbn,
+    );
+    push_int_info!(entries;
+        "Count" => count,
+        "Volume" => volume,
+        "AlternateCount" => alternate_count,
+        "Year" => year,
+        "Month" => month,
+        "Day" => day,
+        "PageCount" => page_count,
+        "PreferredFrontCover" => preferred_front_cover,
+    );
+    push_int_book!(entries;
+        "OpenCount" => opened_count,
+        "CurrentPage" => current_page,
+        "LastPageRead" => last_page_read,
+        "NewPages" => new_pages,
+    );
+    entries.push((
+        "FileSize",
+        PropertyDef {
+            get: |b| PropValue::Int(b.file_size),
+            set: |b, v| {
+                b.file_size = expect_int(v)?;
+                Ok(())
             },
-        ));
-        entries.push((
-            "Rating",
-            PropertyDef {
-                get: |b| PropValue::Float(b.rating),
-                set: |b, v| {
-                    b.rating = expect_f32(v)?.clamp(0.0, 5.0);
-                    Ok(())
-                },
+        },
+    ));
+    entries.push((
+        "Rating",
+        PropertyDef {
+            get: |b| PropValue::Float(b.rating),
+            set: |b, v| {
+                b.rating = expect_f32(v)?.clamp(0.0, 5.0);
+                Ok(())
             },
-        ));
-        entries.push((
-            "CommunityRating",
-            PropertyDef {
-                get: |b| PropValue::Float(b.info.community_rating),
-                set: |b, v| {
-                    b.info.community_rating = expect_f32(v)?.clamp(0.0, 5.0);
-                    Ok(())
-                },
+        },
+    ));
+    entries.push((
+        "CommunityRating",
+        PropertyDef {
+            get: |b| PropValue::Float(b.info.community_rating),
+            set: |b, v| {
+                b.info.community_rating = expect_f32(v)?.clamp(0.0, 5.0);
+                Ok(())
             },
-        ));
-        entries.push((
-            "Id",
-            PropertyDef {
-                get: |b| PropValue::Guid(b.id),
-                set: |b, v| {
-                    b.id = expect_guid(v)?;
-                    Ok(())
-                },
+        },
+    ));
+    entries.push((
+        "Id",
+        PropertyDef {
+            get: |b| PropValue::Guid(b.id),
+            set: |b, v| {
+                b.id = expect_guid(v)?;
+                Ok(())
             },
-        ));
-        entries.push((
-            "AddedTime",
-            PropertyDef {
-                get: |b| PropValue::Date(b.added_time),
-                set: |b, v| {
-                    b.added_time = expect_date(v)?;
-                    Ok(())
-                },
+        },
+    ));
+    entries.push((
+        "AddedTime",
+        PropertyDef {
+            get: |b| PropValue::Date(b.added_time),
+            set: |b, v| {
+                b.added_time = expect_date(v)?;
+                Ok(())
             },
-        ));
-        entries.push((
-            "ReleasedTime",
-            PropertyDef {
-                get: |b| PropValue::Date(b.released_time),
-                set: |b, v| {
-                    b.released_time = expect_date(v)?;
-                    Ok(())
-                },
+        },
+    ));
+    entries.push((
+        "ReleasedTime",
+        PropertyDef {
+            get: |b| PropValue::Date(b.released_time),
+            set: |b, v| {
+                b.released_time = expect_date(v)?;
+                Ok(())
             },
-        ));
-        entries.push((
-            "OpenedTime",
-            PropertyDef {
-                get: |b| PropValue::Date(b.opened_time),
-                set: |b, v| {
-                    b.opened_time = expect_date(v)?;
-                    Ok(())
-                },
+        },
+    ));
+    entries.push((
+        "OpenedTime",
+        PropertyDef {
+            get: |b| PropValue::Date(b.opened_time),
+            set: |b, v| {
+                b.opened_time = expect_date(v)?;
+                Ok(())
             },
-        ));
-        entries.push((
-            "Checked",
-            PropertyDef {
-                get: |b| PropValue::Bool(b.checked),
-                set: |b, v| {
-                    b.checked = expect_bool(v)?;
-                    Ok(())
-                },
+        },
+    ));
+    entries.push((
+        "Checked",
+        PropertyDef {
+            get: |b| PropValue::Bool(b.checked),
+            set: |b, v| {
+                b.checked = expect_bool(v)?;
+                Ok(())
             },
-        ));
-        entries.push((
-            "EnableProposed",
-            PropertyDef {
-                get: |b| PropValue::Bool(b.enable_proposed),
-                set: |b, v| {
-                    b.enable_proposed = expect_bool(v)?;
-                    Ok(())
-                },
+        },
+    ));
+    entries.push((
+        "EnableProposed",
+        PropertyDef {
+            get: |b| PropValue::Bool(b.enable_proposed),
+            set: |b, v| {
+                b.enable_proposed = expect_bool(v)?;
+                Ok(())
             },
-        ));
-        entries.push((
-            "EnableDynamicUpdate",
-            PropertyDef {
-                get: |b| PropValue::Bool(b.enable_dynamic_update),
-                set: |b, v| {
-                    b.enable_dynamic_update = expect_bool(v)?;
-                    Ok(())
-                },
+        },
+    ));
+    entries.push((
+        "EnableDynamicUpdate",
+        PropertyDef {
+            get: |b| PropValue::Bool(b.enable_dynamic_update),
+            set: |b, v| {
+                b.enable_dynamic_update = expect_bool(v)?;
+                Ok(())
             },
-        ));
-        entries.into_iter().collect()
-    })
+        },
+    ));
+    entries
 }
 
 /// Gets a property by C# name. Unknown names return `None` (the C#
