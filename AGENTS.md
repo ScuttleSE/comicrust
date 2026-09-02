@@ -6,12 +6,51 @@ Read this file first, then `docs/port-plan.md` (architecture + roadmap) and `doc
 
 ---
 
+## Agent working rules (hard limits)
+
+These rules are absolute. Break none of them. If you break them, you waste the user's time and tokens.
+
+### Rule 1: No loops
+- Do not guess in a loop. Do not repeat actions that give no new information.
+- If the cause of a problem is not clear after two or three file reads, stop.
+- Ask the user one question that targets the problem. Then wait for the answer.
+- Do not chain guesses. Do not say "let me check one more thing" again and again.
+- If you start to loop, or if you repeat searches without a clear answer, stop immediately.
+- Do not wait until you notice the loop. Do not start a loop.
+- You can continue after a loop only if you ask the user first. There is no other way.
+
+### Rule 2: Short answers first
+- Give the short answer first. Then stop. Do not write a long block of text.
+- When you ask the user to do a task, write only the task. Then wait for the result.
+- Do not add a plan, a hypothesis, or a "what I am looking for" section to a request for action.
+- Do not restate the plan after each step. The user reads the plan one time.
+- Keep each reply short. Add detail only if the user asks for it.
+
+### Rule 3: Evidence before claims
+- Find the true cause before you state a cause.
+- Do not blame or clear a change without evidence. Get a measurement first.
+- Do not assume the user's environment. The user runs the binary on a different machine.
+- Local disk state, tools, and timing do not transfer to that machine.
+- Trust the trace over the theory. If strace or gdb data conflicts with your reading of the code, the data wins.
+- A "window did not appear" symptom means the main thread blocks. Find the main-thread stall (the futex or syscall gap). Do not look only at background workers.
+- Confirm that the fix solves the measured problem. Do not stop at "it builds".
+
+### Rule 4: Commit and push
+- After you complete a change, commit all changes. Then push.
+- Do not leave work uncommitted. A push starts CI.
+
+### Rule 5: Language
+- Write all communication and documentation in Simplified Technical English (ASD-STE100).
+- Use the asd-ste100 skill for new text and for rewrites.
+
+---
+
 ## Current status (KEEP UPDATED)
 
 Update this section at the **end of every work session** so the next agent knows exactly where things stand.
 
 - **Current phase:** Phase 0 — not started
-- **Completed:** feasibility analysis, port plan, agent docs (planning stage only, no code)
+- **Completed:** feasibility analysis, port plan, agent docs, agent working rules, ASD-STE100 rewrite of all docs (planning stage only, no code)
 - **In progress:** —
 - **Next up:** workspace scaffold per `docs/phase-0-kickoff.md`
 - **Blockers / open questions:** —
@@ -97,5 +136,6 @@ Crate layout (to be scaffolded in Phase 0 — see `docs/port-plan.md`):
 ## Conventions
 
 - Commits: imperative mood, concise subject (`Add ComicDb.xml round-trip test`).
-- Add decisions to `docs/decisions.md` as new ADRs — append, never rewrite history.
+- Add decisions to `docs/decisions.md` as new ADRs. Append only. Language-only rewrites (ASD-STE100) are allowed.
+- Commit and push all changes after each completed task (see Agent working rules).
 - Update the **Current status** section at the top of this file every session.
