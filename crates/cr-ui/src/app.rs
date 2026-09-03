@@ -7,13 +7,14 @@
 use std::cell::RefCell;
 use std::path::Path;
 
-use gtk4::gio;
 use gtk4::prelude::*;
+use gtk4::{gio, glib};
 use gtk4::{
     Application, ApplicationWindow, Button, FileChooserAction, FileChooserNative, FileFilter,
     ResponseType, Window,
 };
 
+use crate::library;
 use crate::reader_window::{self, ReaderWindow};
 use crate::theme;
 
@@ -38,6 +39,27 @@ pub fn run(args: Vec<String>) {
         .flags(gio::ApplicationFlags::NON_UNIQUE | gio::ApplicationFlags::HANDLES_OPEN)
         .build();
     let _ = args;
+
+    // The library session (`Program.DatabaseManager.Open` at startup).
+    match library::initialize() {
+        Ok(message) => set_open_message(message),
+        Err(err) => set_open_message(Some(format!(
+            "There was an error opening the Database:\n{err}"
+        ))),
+    }
+
+    // `DatabaseBackgroundSaving` (default 600 s): the periodic save
+    // while the library is dirty.
+    glib::timeout_add_local(
+        std::time::Duration::from_secs(cr_engine::library::BACKGROUND_SAVE_INTERVAL_SECS),
+        || {
+            if let Err(err) = library::save_if_dirty() {
+                eprintln!("background save failed: {err}");
+            }
+            glib::ControlFlow::Continue
+        },
+    );
+
     app.connect_activate(show_shell);
     app.connect_open(|app, files, _| {
         for file in files {
@@ -49,6 +71,18 @@ pub fn run(args: Vec<String>) {
     app.run();
 }
 
+// The `DatabaseManager.OpenMessage` — captured at startup, shown
+// with the shell (the C# shows it in an attention box on the main
+// form; a dialog built before the GApplication `startup` signal
+// warns "New application windows must be added...").
+thread_local! {
+    static OPEN_MESSAGE: RefCell<Option<String>> = const { RefCell::new(None) };
+}
+
+fn set_open_message(message: Option<String>) {
+    OPEN_MESSAGE.with(|cell| *cell.borrow_mut() = message);
+}
+
 /// The empty shell (no browser yet — Phase 4): a bare window with an
 /// Open button so the app is usable.
 fn show_shell(app: &Application) {
@@ -58,14 +92,30 @@ fn show_shell(app: &Application) {
         .default_width(480)
         .default_height(240)
         .build();
-    let button = Button::with_label("Open…");
-    button.set_margin_top(24);
-    button.set_margin_bottom(24);
-    button.set_margin_start(24);
-    button.set_margin_end(24);
+    if let Some(message) = OPEN_MESSAGE.with(|cell| cell.borrow().clone()) {
+        show_attention_dialog(&win, &message);
+    }
+    let buttons = gtk4::Box::new(gtk4::Orientation::Vertical, 12);
+    buttons.set_margin_top(24);
+    buttons.set_margin_bottom(24);
+    buttons.set_margin_start(24);
+    buttons.set_margin_end(24);
+    buttons.set_valign(gtk4::Align::Center);
+    buttons.set_halign(gtk4::Align::Center);
+
+    let open = Button::with_label("Open…");
     let win_clone = win.clone();
-    button.connect_clicked(move |_| open_file_dialog(&win_clone));
-    win.set_child(Some(&button));
+    open.connect_clicked(move |_| open_file_dialog(&win_clone));
+    buttons.append(&open);
+
+    // `AddFolderToLibrary` (the browser command; the launcher is the
+    // only host until the browser lands in Phase 4 T5).
+    let add_folder = Button::with_label("Add Folder to Library…");
+    let win_clone = win.clone();
+    add_folder.connect_clicked(move |_| add_folder_dialog(&win_clone));
+    buttons.append(&add_folder);
+
+    win.set_child(Some(&buttons));
     win.present();
 }
 
@@ -104,6 +154,64 @@ pub fn open_file_dialog(parent: &impl IsA<Window>) {
         }
     });
     chooser.show();
+}
+
+/// `AddFolderToLibrary`: folder chooser → a recursive scan into the
+/// library. The launcher shows the scan result (the C# browser would
+/// refresh its list instead).
+fn add_folder_dialog(parent: &impl IsA<Window>) {
+    let chooser = FileChooserNative::builder()
+        .title("Add Folder to Library")
+        .action(FileChooserAction::SelectFolder)
+        .transient_for(parent)
+        .modal(true)
+        .build();
+    let parent_window: Window = parent.clone().upcast();
+    chooser.connect_response(move |chooser, response| {
+        if response != ResponseType::Accept {
+            return;
+        }
+        let Some(path) = chooser.file().and_then(|f| f.path()) else {
+            return;
+        };
+        let result = library::add_folder_to_library(&path);
+        let parent_window = parent_window.clone();
+        let message = if result.added.is_empty() && result.updated.is_empty() {
+            format!("No books found in {}", path.display())
+        } else {
+            format!(
+                "{} book(s) added, {} updated",
+                result.added.len(),
+                result.updated.len()
+            )
+        };
+        let dialog = gtk4::MessageDialog::builder()
+            .transient_for(&parent_window)
+            .modal(true)
+            .title("comicrust")
+            .text(message)
+            .message_type(gtk4::MessageType::Info)
+            .buttons(gtk4::ButtonsType::Close)
+            .build();
+        dialog.connect_response(|dialog, _| dialog.destroy());
+        dialog.present();
+    });
+    chooser.show();
+}
+
+/// The C# shows `DatabaseManager.OpenMessage` in an attention box on
+/// the main form (restored-from-backup, fresh database).
+fn show_attention_dialog(parent: &impl IsA<Window>, message: &str) {
+    let dialog = gtk4::MessageDialog::builder()
+        .transient_for(parent)
+        .modal(true)
+        .title("comicrust")
+        .text(message)
+        .message_type(gtk4::MessageType::Warning)
+        .buttons(gtk4::ButtonsType::Close)
+        .build();
+    dialog.connect_response(|dialog, _| dialog.destroy());
+    dialog.present();
 }
 
 // The session reader window (the C# single main form): every open

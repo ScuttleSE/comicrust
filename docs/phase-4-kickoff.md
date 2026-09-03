@@ -72,27 +72,53 @@ Order: T1 (session) and T3 (ItemView core) are the critical path;
 T3 is the largest single build — start it early and keep it pure
 (geometry unit tests like the reader's).
 
-### T1. The library session (`cr-ui` app wiring + `cr-engine`)
+### T1. The library session (`cr-ui` app wiring + `cr-engine`) — COMPLETE (2026-09-03)
 
-- [ ] `ComicDatabase::open_with_fallback` at startup (the
+- [x] `ComicDatabase::open_with_fallback` at startup (the
       `.restore` → main → `.bak` chain exists); the in-memory
       library state: books + list tree + display config.
-- [ ] Save on exit through the C# `DatabaseManager` semantics
+      Done: `cr_engine::library::Library` (ADR-022); the app opens
+      it at the ADR-022 default path. Fixed on the way: the
+      `NewEmpty` fallback now uses `create_new()` (default list
+      tree, C# parity), and a MISSING file is a new silent
+      `OpenStatus::FreshEmpty` (only a CORRUPT file shows the
+      "problem" message).
+- [x] Save on exit through the C# `DatabaseManager` semantics
       (`.bak` rotation, temp-file atomicity — the writer is proven,
       wire the lifecycle). The byte-stable round-trip gate MUST stay
-      green with a saved real-world DB.
-- [ ] Scanner integration: the stored watch folders + a manual
+      green with a saved real-world DB. Done: the reader window's
+      close-request saves (`DatabaseManager.Dispose` → `Save`
+      parity); the 600 s background save (`save_if_dirty`) matches
+      `DatabaseBackgroundSaving`. Unmutated real-world re-save is
+      byte-identical (acceptance test).
+- [x] Scanner integration: the stored watch folders + a manual
       "Add folder" flow → `scanner::scan_database` → new/removed
       books appear. File-info refresh through the ComicBook queues
-      (`queue_manager.rs`).
-- [ ] Reading-state persistence: the Phase 3 session-only
+      (`queue_manager.rs`). Done: the launcher's "Add Folder to
+      Library…" → `scan_file_or_folder` (the C# `AddFolderToLibrary`
+      is exactly this scan); watch events debounce into rescans of
+      the affected roots (`remove_missing: false`). Deviations: the
+      scan runs synchronously (the C# uses a low-priority worker;
+      ADR-022), and the per-book file-info refresh on open calls the
+      sync `scanner::refresh_file_info` directly (the queue
+      callback's `&BookRef` cannot mutate — the C# refresh also runs
+      inside the scan flow, not on the ComicBook queues).
+- [x] Reading-state persistence: the Phase 3 session-only
       write-back (`OpenedTime`/`OpenedCount`/`CurrentPage`/
       `LastPageRead`) now lands in the saved DB. The Phase 2
       ground truth (Never Read = all 255) must flip correctly as
-      the user reads.
-- [ ] Verify headless first: a `cr-cli`-style integration test
+      the user reads. Done: comics found in the library reuse the
+      stored book (`ComicBookFactory.Create` parity — refresh, open
+      stamps, dirty); page turns mirror into it by path; the save
+      persists it. The acceptance test flips Never Read 255 → 254
+      and Read 0 → 1. Non-library comics keep session-only state
+      (C# `AddToTemporary` parity). Also ported: a same-path open
+      focuses the existing tab (`NavigatorManager.Open` slot
+      lookup).
+- [x] Verify headless first: a `cr-cli`-style integration test
       loads the real-world DB, scans a synthetic folder, saves,
-      round-trips byte-stable on the XML.
+      round-trips byte-stable on the XML. Done:
+      `crates/cr-engine/tests/library.rs` (4 tests).
 
 ### T2. The list navigator pane (`cr-ui`)
 
@@ -254,3 +280,23 @@ C# spec: `PagesView.cs` (833), `ComicPagesView.cs` (241),
   model changes only — review the diff before committing).
 - Update the **Current status** section of `AGENTS.md` at the end
   of every session, and commit+push per task (working rules).
+
+## Progress (2026-09-03)
+
+- **T1 COMPLETE.** The library session: `cr-engine/src/library.rs`
+  (`Library`: open/save/dirty/scan/watch + QueueManager) behind
+  `cr-ui/src/library.rs` (the `Program.DatabaseManager` session).
+  The DB lives at `~/.local/share/comicrust/ComicDb/ComicDb.xml`
+  (ADR-022; a minimal `cr-core::paths` `SystemPaths` slice — the
+  settings port stays open). The reader reuses library books
+  (`ComicBookFactory.Create` parity), stamps
+  `OpenedTime`/`OpenedCount`, mirrors page turns, and the exit save
+  persists the reading state; same-path opens focus the existing
+  tab. Fresh DBs carry the default list tree (`create_new` on the
+  fallback path — fixed); a missing DB file starts silently
+  (`OpenStatus::FreshEmpty`). Watch events rescan the affected
+  roots. Acceptance: `crates/cr-engine/tests/library.rs` (fresh-tree,
+  real-world session lifecycle incl. the Never Read 255→254 flip +
+  byte-stable saves, scan add/missing, watch→rescan). Headless Xvfb
+  smoke test: launcher renders with Open + Add Folder, fresh DB
+  silent, no criticals.

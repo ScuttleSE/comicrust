@@ -149,14 +149,20 @@ pub enum OpenStatus {
     Loaded,
     RestoredFromRestore,
     RestoredFromBak,
+    /// The database file was corrupt (and no `.bak` existed) — a new
+    /// empty database replaced it. The C# shows the "problem"
+    /// message for this case.
     NewEmpty,
+    /// The database file does not exist yet (a fresh install): the
+    /// C# `LoadXml` returns `CreateNew()` with no message.
+    FreshEmpty,
 }
 
 impl OpenStatus {
     /// The exact C# `TR.Messages` default strings.
     pub fn message(self) -> Option<&'static str> {
         match self {
-            OpenStatus::Loaded => None,
+            OpenStatus::Loaded | OpenStatus::FreshEmpty => None,
             OpenStatus::RestoredFromRestore => Some(
                 "A previous database backup has been successfully restored!",
             ),
@@ -269,7 +275,10 @@ pub fn open_with_fallback(path: &Path) -> Result<(ComicDatabase, OpenStatus), Db
             return Ok((db, OpenStatus::RestoredFromBak));
         }
     }
-    // 4. quarantine + fresh DB
+    // 4. quarantine + fresh DB — the C# fallback uses
+    // `ComicDatabase.CreateNew()` (the default list tree). A missing
+    // file is a silent fresh start (`LoadXml` returns `CreateNew()`);
+    // only a corrupt file shows the "problem" message.
     if path.exists() {
         let now = chrono::Local::now();
         let name = format!(
@@ -278,8 +287,10 @@ pub fn open_with_fallback(path: &Path) -> Result<(ComicDatabase, OpenStatus), Db
         );
         let parent = path.parent().unwrap_or_else(|| Path::new("."));
         let _ = std::fs::copy(path, parent.join(name));
+        Ok((create_new(), OpenStatus::NewEmpty))
+    } else {
+        Ok((create_new(), OpenStatus::FreshEmpty))
     }
-    Ok((ComicDatabase::default(), OpenStatus::NewEmpty))
 }
 
 /// Round-trip helper: load, re-serialize, byte-compare. Returns the

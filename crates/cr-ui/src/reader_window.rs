@@ -5,8 +5,10 @@
 //! Shell duties ported from `MainForm`:
 //! - reading-state write-back (`OnBookOpened` stamps
 //!   `OpenedTime`/`OpenedCount`; `TrackCurrentPage` mirrors every
-//!   page change into `ComicBook.CurrentPage`/`LastPageRead`). State
-//!   lives in the session — the ComicDb wiring is Phase 4.
+//!   page change into `ComicBook.CurrentPage`/`LastPageRead`).
+//!   Library comics write back into the database book (Phase 4 T1);
+//!   non-library comics keep session-only state (the C# temporary
+//!   books are memory-only).
 //! - `Tab`/`Shift+Tab` slot switching (`OpenBooks.NextSlot`/
 //!   `PreviousSlot`), closable tabs.
 //! - `D` undocks the current reader into its own window and back
@@ -32,6 +34,7 @@ use gtk4::{glib, Application, ApplicationWindow, HeaderBar, Label, Notebook, Ori
 use cr_core::model::comic_book::ComicBook;
 use cr_engine::image_pool::ImagePool;
 
+use crate::library;
 use crate::reader::page_view::PageView;
 
 /// Default reader window size (the C# persists its own window layout;
@@ -211,6 +214,11 @@ impl ReaderWindow {
                         undocked.window.close();
                     }
                 }
+                // The exit save (`DatabaseManager.Dispose` → `Save`).
+                // The C# swallows save errors — log instead.
+                if let Err(err) = library::save() {
+                    eprintln!("library save failed: {err}");
+                }
                 glib::Propagation::Proceed
             });
         }
@@ -220,26 +228,49 @@ impl ReaderWindow {
     }
 
     /// Adds a comic as a new tab (the C# `OpenComic` into a free
-    /// slot).
+    /// slot). A comic already open in another tab is focused instead
+    /// (the C# `NavigatorManager.Open` finds the existing slot).
     pub fn open_comic(&self, path: &Path) -> anyhow::Result<()> {
+        // Same-path open → switch to the existing slot (the C# `Open`
+        // slot lookup by book identity).
+        let existing = {
+            let st = self.state.borrow();
+            st.tabs.iter().position(|t| t.path == path)
+        };
+        if let Some(pos) = existing {
+            let notebook = self.state.borrow().notebook.clone();
+            notebook.set_current_page(Some(pos as u32));
+            return Ok(());
+        }
+
         let provider = cr_io::ComicProvider::open(path)
             .with_context(|| format!("Unsupported or unreadable comic: {}", path.display()))?;
         let page_count = provider.page_count();
 
-        // The session book — the C# keeps these in the library
-        // database (`Program.Library`); persistence arrives in
-        // Phase 4.
-        let mut book = ComicBook {
-            file_path: path.to_string_lossy().into_owned(),
-            ..ComicBook::default()
+        // The C# `ComicBookFactory.Create` (`AddToLibraryOnOpen`
+        // defaults to false): a comic in the library reuses the
+        // stored book — the file-info refresh and the open stamps
+        // land in the database, so the resume position and read
+        // progress survive the save. Anything else stays a temporary
+        // session book whose reading state is not persisted (the C#
+        // `AddToTemporary` books are memory-only).
+        let mut book = match library::open_book(&path.to_string_lossy()) {
+            Some(book) => book,
+            None => {
+                let mut book = ComicBook {
+                    file_path: path.to_string_lossy().into_owned(),
+                    ..ComicBook::default()
+                };
+                // `OnBookOpened` + the navigator `Opened` handler
+                // (`TrackCurrentPage` gates both stamps).
+                if TRACK_CURRENT_PAGE {
+                    book.opened_time = cr_core::xml::scalar::CrDateTime::now();
+                    book.opened_count += 1;
+                    book.new_pages = 0;
+                }
+                book
+            }
         };
-        // `OnBookOpened` + the navigator `Opened` handler
-        // (`TrackCurrentPage` gates both stamps).
-        if TRACK_CURRENT_PAGE {
-            book.opened_time = cr_core::xml::scalar::CrDateTime::now();
-            book.opened_count += 1;
-            book.new_pages = 0;
-        }
         // `ProviderIndexRetrievalCompleted`: resume position and
         // read-progress clamp to the real page count.
         let resume = book.current_page.clamp(0, page_count as i32 - 1).max(0) as usize;
@@ -255,7 +286,9 @@ impl ReaderWindow {
 
             // Reading-state write-back: every logical page change
             // lands in the book (`ComicBookNavigator.CurrentPage`
-            // setter).
+            // setter) and mirrors into the library book by path so
+            // the state survives the save. Temporary books have no
+            // library entry — the mirror is a no-op for them.
             {
                 let st_weak = Rc::downgrade(&self.state);
                 view.set_page_callback(Some(Box::new(move |page, count| {
@@ -265,6 +298,8 @@ impl ReaderWindow {
                     let mut s = sh.borrow_mut();
                     if let Some(book) = s.books.get_mut(&slot) {
                         book.set_current_page(page as i32);
+                        let file = book.file_path.clone();
+                        library::record_page_change(&file, page as i32);
                     }
                     if s.current_slot() == Some(slot) {
                         s.subtitle.set_text(&page_subtitle(page, count));
