@@ -2,6 +2,7 @@
 //! backup, sync, and the remote server.
 
 pub mod backup;
+pub mod group;
 pub mod image_pool;
 pub mod matcher;
 pub mod queue;
