@@ -357,3 +357,12 @@ C# spec: `PagesView.cs` (833), `ComicPagesView.cs` (241),
   255-book fixture. `select_next`/`select_by_name` exposed for the
   keyboard/restore paths. A probe lesson: the widget's Rc must
   outlive the window (the host holds it).
+  **T2 USER-TESTED, ALL PASS (2026-09-03).** The tree, the debounced
+  evaluation with the live reading-state flip (T2.2), and the
+  create/rename/delete flows (T2.3, persisted across restart) all
+  verified on the user's machine with their 255-book library.
+  Lesson: the New Smart List query needs the exact C# form —
+  `Match [Series] contains "Batman"` (`Match` keyword, matcher name
+  in brackets, operator word, quoted value; the grammar is in
+  `cr-engine/src/matcher/query.rs`). The dialog example was
+  corrected; the full editor UI is Phase 5.

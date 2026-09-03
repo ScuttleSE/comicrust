@@ -199,11 +199,15 @@ fn run_list_command(
         ListCommand::NewSmartList => {
             let dialog = entry_dialog(parent, "New Smart List", "Name", "New Smart List");
             if let Some(name) = dialog {
+                // The C# query form: `Match` + `[matcher name]`
+                // operator "value" (the editor UI is Phase 5; the C#
+                // SmartListDialog generates this text via
+                // `ComicSmartListItem.ToString()`).
                 let query_dialog = entry_dialog(
                     parent,
                     "New Smart List",
-                    "Match query",
-                    "[Series] [contains ]",
+                    "Match query  (Match [Name] contains \"text\")",
+                    "Match [Series] contains \"Batman\"",
                 );
                 let query = query_dialog.unwrap_or_default();
                 if let Err(err) = library::new_smart_list(target.as_ref(), &name, &query) {
