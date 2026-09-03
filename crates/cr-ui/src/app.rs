@@ -131,6 +131,19 @@ fn show_shell(app: &Application) {
     buttons.append(&add_folder);
 
     win.set_child(Some(&buttons));
+
+    // The launcher is the app's main window until the browser lands:
+    // closing it is app exit — save the library
+    // (`MainFormFormClosed` → `CleanUp` parity). Without this, a scan
+    // or reading session that never opened a reader window would be
+    // discarded.
+    win.connect_close_request(|_| {
+        if let Err(err) = library::save() {
+            eprintln!("library save failed: {err}");
+        }
+        glib::Propagation::Proceed
+    });
+
     win.present();
 }
 
@@ -199,14 +212,26 @@ fn add_folder_dialog(parent: &impl IsA<Window>, button: &Button) {
         library::add_folder_to_library(&path, move |result| {
             button.set_sensitive(true);
             button.set_label("Add Folder to Library…");
-            let message = if result.added.is_empty() && result.updated.is_empty() {
+            // The scan result counts every diff kind: a re-link
+            // (`moved` — the same-name+size recovery) is a success,
+            // not "no books found".
+            let mut parts = Vec::new();
+            if !result.added.is_empty() {
+                parts.push(format!("{} added", result.added.len()));
+            }
+            if !result.updated.is_empty() {
+                parts.push(format!("{} updated", result.updated.len()));
+            }
+            if !result.moved.is_empty() {
+                parts.push(format!("{} re-linked", result.moved.len()));
+            }
+            if !result.removed.is_empty() {
+                parts.push(format!("{} removed", result.removed.len()));
+            }
+            let message = if parts.is_empty() {
                 format!("No books found in {path_display}")
             } else {
-                format!(
-                    "{} book(s) added, {} updated",
-                    result.added.len(),
-                    result.updated.len()
-                )
+                parts.join(", ")
             };
             show_info_dialog(&window, &message);
         });

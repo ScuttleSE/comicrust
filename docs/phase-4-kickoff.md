@@ -309,3 +309,12 @@ C# spec: `PagesView.cs` (833), `ComicPagesView.cs` (241),
   in-flight scan (a mid-scan save would write the taken, empty book
   list). A headless probe measured a 705 µs max main-loop gap during
   a scan. The watch-event poll timer (1 s) is wired in `app.rs`.
+  Second user-test finding (the "no books found" report): the scan
+  had actually re-linked all 23 books (same-name+size recovery from
+  the `Z:\` Windows paths to the Linux mount) — the result dialog
+  only counted added/updated and misreported it, and the launcher
+  window had no save-on-close, so the re-link was discarded on exit.
+  Both fixed: the dialog reports added/updated/re-linked/removed,
+  and the launcher saves on close (`MainFormFormClosed` → `CleanUp`
+  parity). Probes: the app-shaped scan (real 255-book storage + the
+  user's folder) yields moved=23 with reading state kept.
