@@ -4,6 +4,11 @@ version.workspace = true
 edition.workspace = true
 
 [dependencies]
+cr-core.workspace = true
+cr-io.workspace = true
+cr-image.workspace = true
+cr-engine.workspace = true
+cr-ui.workspace = true
 
 [lints]
 workspace = true
