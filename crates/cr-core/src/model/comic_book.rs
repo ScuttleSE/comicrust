@@ -96,6 +96,17 @@ impl Default for ComicBook {
 }
 
 impl ComicBook {
+    /// The C# `CurrentPage` setter: advancing past `LastPageRead`
+    /// carries it along (`ComicBook.CurrentPage`).
+    pub fn set_current_page(&mut self, page: i32) {
+        if page != self.current_page {
+            self.current_page = page;
+            if self.current_page > self.last_page_read {
+                self.last_page_read = page;
+            }
+        }
+    }
+
     pub fn write_xml<W: Write>(&self, e: &mut Emitter<W>) -> std::io::Result<()> {
         e.start("Book")?;
         self.write_body(e)?;
@@ -548,6 +559,19 @@ pub mod values_store {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn set_current_page_carries_last_page_read() {
+        // `ComicBook.CurrentPage` setter: LastPageRead follows the
+        // high-water mark; backward moves keep it.
+        let mut b = ComicBook::default();
+        b.set_current_page(5);
+        assert_eq!((b.current_page, b.last_page_read), (5, 5));
+        b.set_current_page(2);
+        assert_eq!((b.current_page, b.last_page_read), (2, 5));
+        b.set_current_page(2); // no-op on same value
+        assert_eq!((b.current_page, b.last_page_read), (2, 5));
+    }
 
     #[test]
     fn values_store_round_trip() {

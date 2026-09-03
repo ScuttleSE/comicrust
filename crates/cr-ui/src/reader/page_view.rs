@@ -143,6 +143,10 @@ struct TransitionAnim {
 
 type PageCallback = Box<dyn Fn(usize, usize)>;
 
+/// Shell command forwarder (`NextTab`, `PrevTab`,
+/// `ToggleUndockReader`, `ToggleMenu`).
+type CommandCallback = Rc<dyn Fn(&str)>;
+
 /// A finished background page load. Raw RGBA travels across threads;
 /// the cairo surface is built on the main thread.
 struct LoadedPage {
@@ -307,6 +311,9 @@ struct ViewState {
     /// a drag).
     pending_click: Option<glib::SourceId>,
     exit_callback: Option<Box<dyn Fn()>>,
+    /// Shell-level commands the widget cannot serve itself (tab
+    /// switching, undock) — forwarded to the reader window.
+    command_callback: Option<CommandCallback>,
 }
 
 impl ViewState {
@@ -734,6 +741,7 @@ impl PageView {
             zoom_drag: None,
             pending_click: None,
             exit_callback: None,
+            command_callback: None,
         }));
 
         let view = PageView {
@@ -770,14 +778,29 @@ impl PageView {
 
     /// Attaches a comic and loads its first page.
     pub fn open(&self, provider: ComicProvider, path: &Path) -> Result<(), String> {
+        self.open_with_state(provider, path, 0, 0)
+    }
+
+    /// Attaches a comic and resumes at `page` with the `last_read`
+    /// high-water mark (the C# `OpenComic`/`TrackCurrentPage` flow;
+    /// the navigator clamps both to the page count).
+    pub fn open_with_state(
+        &self,
+        provider: ComicProvider,
+        path: &Path,
+        page: usize,
+        last_read: usize,
+    ) -> Result<(), String> {
         let page_count = provider.page_count();
+        let page = page.min(page_count.saturating_sub(1));
+        let last_read = last_read.min(page_count.saturating_sub(1));
         {
             let mut st = self.state.borrow_mut();
             st.provider = Some(provider);
             st.source = path.to_string_lossy().into_owned();
-            st.page = 0;
+            st.page = page;
             st.page_count = page_count;
-            st.last_read = 0;
+            st.last_read = last_read;
             st.loaded.clear();
             st.continuous = None;
             st.continuous_page_sizes.clear();
@@ -802,9 +825,9 @@ impl PageView {
             self.notify_page();
             return Ok(());
         }
-        // Bypass the same-page guard: page 0 is the logical page but
-        // has no image yet — request it regardless.
-        self.request_and_go(0, false);
+        // Bypass the same-page guard: the resume page is the logical
+        // page but has no image yet — request it regardless.
+        self.request_and_go(page, false);
         Ok(())
     }
 
@@ -1861,8 +1884,14 @@ impl PageView {
             }
             // Bookmarks need the per-book bookmark list (later phase).
             "MoveToPrevBookmark" | "MoveToNextBookmark" => {}
-            // Reader tabs land in T5.
-            "PrevTab" | "NextTab" => {}
+            // Reader slots and the minimal-GUI toggle are shell
+            // state — forwarded to the window.
+            "PrevTab" | "NextTab" | "ToggleUndockReader" | "ToggleMenu" => {
+                let cb = self.state.borrow().command_callback.clone();
+                if let Some(cb) = cb {
+                    cb(id);
+                }
+            }
             "MoveToPrevPageSingle" => self.display_previous_page(false, false),
             "MoveToNextPageSingle" => self.display_next_page(false, false),
             "MovePrevPart" => self.display_previous_page_or_part(false),
@@ -1900,13 +1929,11 @@ impl PageView {
                 let lines = self.state.borrow().scroll_lines;
                 self.scroll_right(lines);
             }
-            // The reader undocks into a window in T5.
-            "ToggleUndockReader" => {}
             "ToggleFullScreen" => self.toggle_full_screen(),
             "ToggleTwoPages" => self.toggle_page_layout(),
             "ToggleRealisticPages" => self.toggle_realistic_pages(),
-            // The magnifier is T6; the menu/chrome toggle is T5.
-            "ToggleMagnify" | "ToggleMenu" => {}
+            // The magnifier is T6.
+            "ToggleMagnify" => {}
             "Original" => self.set_fit_mode(ImageFitMode::Original),
             // `SetPageFitAll`/`SetPageFitHeight` skip in continuous mode.
             "FitAll" => {
@@ -2005,6 +2032,13 @@ impl PageView {
     /// `ControlExit` closes the main form).
     pub fn set_exit_callback(&self, callback: Box<dyn Fn()>) {
         self.state.borrow_mut().exit_callback = Some(callback);
+    }
+
+    /// Forwards shell-level commands (`NextTab`, `PrevTab`,
+    /// `ToggleUndockReader`) to the reader window — the C# binds
+    /// them to `OpenBooks`/`MainForm` methods.
+    pub fn set_command_callback(&self, callback: Rc<dyn Fn(&str)>) {
+        self.state.borrow_mut().command_callback = Some(callback);
     }
 
     fn schedule_click(&self) {

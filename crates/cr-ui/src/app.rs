@@ -4,6 +4,7 @@
 //! and the full browser shell arrive in later phases; the app runs
 //! `NON_UNIQUE` until then.
 
+use std::cell::RefCell;
 use std::path::Path;
 
 use gtk4::gio;
@@ -13,7 +14,7 @@ use gtk4::{
     ResponseType, Window,
 };
 
-use crate::reader_window;
+use crate::reader_window::{self, ReaderWindow};
 use crate::theme;
 
 pub const APP_ID: &str = "org.comicrust.ComicRust";
@@ -105,12 +106,30 @@ pub fn open_file_dialog(parent: &impl IsA<Window>) {
     chooser.show();
 }
 
-/// Opens a comic path into a reader window; failures surface as a
-/// dialog (the C# shows an error box from `MainForm.OpenComic`).
+// The session reader window (the C# single main form): every open
+// — command line, `open` signal, or the launcher dialog — becomes a
+// tab in this window.
+thread_local! {
+    static READER: RefCell<Option<reader_window::ReaderWindow>> =
+        const { RefCell::new(None) };
+}
+
+/// Opens a comic path into the session reader window; failures
+/// surface as a dialog (the C# shows an error box from
+/// `MainForm.OpenComic`).
 pub fn open_reader(app: &Application, path: &Path) {
-    match reader_window::ReaderWindow::open(app, path) {
-        Ok(win) => win.present(),
-        Err(err) => show_error_dialog(app, &path.to_string_lossy(), &err.to_string()),
+    let result = READER.with(|cell| {
+        let mut reader = cell.borrow_mut();
+        match reader.as_mut() {
+            Some(win) => win.open_comic(path),
+            None => ReaderWindow::open(app, path).map(|win| {
+                win.present();
+                *reader = Some(win);
+            }),
+        }
+    });
+    if let Err(err) = result {
+        show_error_dialog(app, &path.to_string_lossy(), &format!("{err:#}"));
     }
 }
 

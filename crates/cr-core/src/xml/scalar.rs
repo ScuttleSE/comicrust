@@ -141,6 +141,16 @@ impl CrDateTime {
         *self == Self::min_value()
     }
 
+    /// .NET `DateTime.Now` — local wall-clock time, unspecified kind
+    /// (the database stores local times; e.g. the reader's
+    /// `OpenedTime` stamp).
+    pub fn now() -> Self {
+        CrDateTime {
+            naive: chrono::Local::now().naive_local(),
+            kind: DateKind::Unspecified,
+        }
+    }
+
     /// Parses the `XmlConvert` sortable forms:
     /// `yyyy-MM-ddTHH:mm:ss[.f...]` plus optional `Z` or `±HH:mm`.
     pub fn parse(s: &str) -> Result<Self, ScalarError> {
