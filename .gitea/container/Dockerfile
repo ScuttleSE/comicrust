@@ -20,7 +20,9 @@ ENV DEBIAN_FRONTEND=noninteractive
 # libgtk-4-dev pulls in glib/gdk/cairo/pango dev libraries for cr-ui.
 # p7zip-full and djvulibre-bin enable the gated cr-io format tests
 # (CR_FORMAT_TESTS=1 / tools on PATH). PDF tests stay ungated-off:
-# they need a libpdfium.so we do not ship.
+# they need a libpdfium.so we do not ship. nodejs runs JavaScript
+# actions (actions/checkout): the runner execs them with the job
+# container's own node.
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         build-essential \
@@ -30,6 +32,7 @@ RUN apt-get update \
         ca-certificates \
         jq \
         xz-utils \
+        nodejs \
         libgtk-4-dev \
         p7zip-full \
         djvulibre-bin \
