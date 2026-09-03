@@ -48,8 +48,9 @@ Acceptance evidence: the user's daily-driver reading session on a
 fullscreen) passed; headless Xvfb probes verified rendering and the
 undock/tab mechanics; 206 tests across 28 suites stay green. Phase 3
 open items carried forward: NONE blocking — the reader-side gaps
-(GL transitions per ADR-008, `ToggleMenu` overlay polish) are
-enhancements, recorded here for later phases.
+(GL transitions per ADR-008, `ToggleMenu` overlay polish, touch
+gestures — no C# desktop binding) are enhancements, recorded here
+for later phases.
 
 ## Status history (T1-T3, 2026-09-03)
 
@@ -121,47 +122,47 @@ Render with **cairo first** (GDK-paintable / GtkSnapshot + cairo), keep the rend
 
 ### T1. `cr-ui` skeleton + `cr-app` wiring
 
-- [ ] `cr-ui`: app class, main window, menubar-less header bar; `cr-app`: main binary wiring (phases 7 adds D-Bus single instance — skip now).
-- [ ] GTK CSS theming skeleton (dark-mode-friendly, no libadwaita).
-- [ ] Open-a-file dialog → `ComicProvider::open` → first page on screen via cairo. This alone is the "walking skeleton" — get it green before anything else.
-- [ ] Verify: `cargo run -p cr-app -- <file.cbz>` shows a page.
+- [x] `cr-ui`: app class, main window, menubar-less header bar; `cr-app`: main binary wiring (phases 7 adds D-Bus single instance — skip now).
+- [x] GTK CSS theming skeleton (dark-mode-friendly, no libadwaita).
+- [x] Open-a-file dialog → `ComicProvider::open` → first page on screen via cairo. This alone is the "walking skeleton" — get it green before anything else.
+- [x] Verify: `cargo run -p cr-app -- <file.cbz>` shows a page.
 
 ### T2. Reader widget: `ImageDisplayControl` port
 
 The C# spec: `ComicRack.Engine.Display.Forms/ImageDisplayControl.cs` (2,632 LOC).
 
-- [ ] Renderer abstraction trait (cairo implementation first).
-- [ ] Layout modes: single page, double page, adaptive (per the C# `ImageLayout` logic).
-- [ ] Fit modes (`ImageFit`: width, height, best-fit, original, fullscreen width/height), zoom + pan (scroll/kinetic).
-- [ ] Rotation (90/180/270) applied through the page-key pipeline (cr-engine `image_pool` already applies key rotation).
-- [ ] Right-to-left / manga reading order.
+- [x] Renderer abstraction trait (cairo implementation first).
+- [x] Layout modes: single page, double page, adaptive (per the C# `ImageLayout` logic).
+- [x] Fit modes (`ImageFit`: width, height, best-fit, original, fullscreen width/height), zoom + pan (scroll/kinetic).
+- [x] Rotation (90/180/270) applied through the page-key pipeline (cr-engine `image_pool` already applies key rotation).
+- [x] Right-to-left / manga reading order.
 
 ### T3. `ComicDisplayControl` port (the comic shell around pages)
 
 C# spec: `ComicDisplayControl.cs` (3,514 LOC) and `Engine/Display/ComicDisplay.cs` (2,018 LOC).
 
-- [ ] Continuous scroll mode.
-- [ ] Page transitions (paper flip fade/slide; the GL renderer may defer the fancy ones).
-- [ ] Paper texture background (`ComicRack/Output/Resources/Textures/Papers`).
-- [ ] Dual-page binding edge logic, blank-page insertion on wide spreads.
+- [x] Continuous scroll mode.
+- [x] Page transitions (paper flip fade/slide; the GL renderer may defer the fancy ones).
+- [x] Paper texture background (`ComicRack/Output/Resources/Textures/Papers`).
+- [x] Dual-page binding edge logic, blank-page insertion on wide spreads. (Blank slots via the cover-right rule and the forced-double slot in `compose_spread`.)
 
 ### T4. Input: keyboard, gestures, mouse
 
-- [ ] Keyboard map matching the C# `MainForm` reader accelerators (arrow/pgup/dn, home/end, R rotate, +/- zoom, 1-6 fit modes...). Copy the bindings from `MainForm.cs` and the localization keys — do not invent new ones.
-- [ ] Mouse: wheel = page or scroll, drag = pan, double-click = fit toggle, middle-drag = kinetic scroll.
-- [ ] Gestures (GTK4 gesture controllers): pinch zoom, two-finger pan.
+- [x] Keyboard map matching the C# `MainForm` reader accelerators (arrow/pgup/dn, home/end, R rotate, +/- zoom, 1-6 fit modes...). Copy the bindings from `MainForm.cs` and the localization keys — do not invent new ones.
+- [x] Mouse: wheel = page or scroll, drag = pan, double-click = fit toggle, middle-drag = kinetic scroll.
+- [ ] Gestures (GTK4 gesture controllers): pinch zoom, two-finger pan. NOT DONE — deferred. The C# desktop input map has no touch bindings (the gesture/touch-only commands are unbound; see `keys.rs`), so this stays open as an enhancement for a later phase.
 
 ### T5. Fullscreen, tabs, undocked reader
 
-- [ ] Fullscreen + overlay chrome auto-hide (C# `AeroFullScreen` handling is Windows-only; port the behavior, not the workaround).
-- [ ] Multiple reader tabs (the C# opens comics in the main browser view or undocked reader windows; decide tab shell per `MainForm`).
-- [ ] Reading state: store `CurrentPage`/`LastPageRead`/`OpenedTime`/`OpenedCount` back into the ComicBook (cr-core) on navigation.
+- [x] Fullscreen + overlay chrome auto-hide (C# `AeroFullScreen` handling is Windows-only; port the behavior, not the workaround).
+- [x] Multiple reader tabs (the C# opens comics in the main browser view or undocked reader windows; decide tab shell per `MainForm`).
+- [x] Reading state: store `CurrentPage`/`LastPageRead`/`OpenedTime`/`OpenedCount` back into the ComicBook (cr-core) on navigation.
 
 ### T6. Reader polish
 
-- [ ] Magnifier (GL later; cairo magnifier = second scaled draw — acceptable first pass).
-- [ ] Error page + error thumbnail (the C# `CreateErrorPage`/`CreateErrorThumbnail`; cr-image can render them).
-- [ ] Page pre-caching through the Phase 2 `ImagePool` queues (fast/slow page queues with AddToTop already implement the C# semantics).
+- [x] Magnifier (GL later; cairo magnifier = second scaled draw — acceptable first pass).
+- [x] Error page + error thumbnail (the C# `CreateErrorPage`/`CreateErrorThumbnail`; cr-image can render them).
+- [x] Page pre-caching through the Phase 2 `ImagePool` queues (fast/slow page queues with AddToTop already implement the C# semantics).
 
 ## Non-goals for Phase 3
 
