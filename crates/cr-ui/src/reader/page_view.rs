@@ -311,7 +311,9 @@ impl PageView {
             self.notify_page();
             return Ok(());
         }
-        self.goto_page(0, false);
+        // Bypass the same-page guard: page 0 is the logical page but
+        // has no image yet — request it regardless.
+        self.request_and_go(0, false);
         Ok(())
     }
 
