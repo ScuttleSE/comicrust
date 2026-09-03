@@ -5,6 +5,7 @@ pub mod backup;
 pub mod group;
 pub mod image_pool;
 pub mod library;
+pub mod lists;
 pub mod matcher;
 pub mod queue;
 pub mod queue_manager;

@@ -4,6 +4,7 @@
 //! browser, dialogs, and i18n wiring arrive in Phases 4/5/7.
 
 pub mod app;
+pub mod browser;
 pub mod library;
 pub mod reader;
 pub mod reader_window;

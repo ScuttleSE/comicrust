@@ -10,7 +10,7 @@ use std::rc::Rc;
 
 use cr_core::database::comic_database::OpenStatus;
 use cr_core::model::comic_book::ComicBook;
-use cr_core::xml::scalar::CrDateTime;
+use cr_core::xml::scalar::{CrDateTime, CrGuid};
 use cr_engine::library::Library;
 use cr_engine::scanner::{refresh_file_info, scan_sync, ScanItem, ScanResult};
 use glib::ControlFlow;
@@ -221,4 +221,178 @@ pub fn save_if_dirty() -> Result<bool, cr_core::database::DbError> {
 
 fn scan_in_flight() -> bool {
     SCAN_IN_FLIGHT.with(|cell| *cell.borrow())
+}
+
+// ---------- The list navigator (Phase 4 T2) ----------
+
+/// A clone of the ComicLists tree for the navigator widget.
+pub fn comic_lists_snapshot() -> Vec<cr_core::database::list_items::ComicListItem> {
+    session().borrow().database().comic_lists.clone()
+}
+
+/// Evaluates one tree node: (name, book ids, count).
+pub fn evaluate_list(id: &CrGuid) -> Option<(String, Vec<CrGuid>, usize)> {
+    let lib = session();
+    let l = lib.borrow();
+    let item = cr_engine::lists::find_list_item(&l.database().comic_lists, id)?;
+    let books = cr_engine::lists::evaluate_list(&item, l.database());
+    let name = item.base().name.clone().unwrap_or_default();
+    Some((name, books.iter().map(|b| b.id).collect(), books.len()))
+}
+
+/// Inserts a list item after the selection (the C#
+/// `GetCurrentNodeComicListCollection` + `IndexOf(current) + 1`): a
+/// selected folder takes the item as its first child, a selected
+/// list inserts after it in its container, nothing selected appends
+/// at the root.
+pub fn insert_list_item(
+    after: Option<&CrGuid>,
+    item: cr_core::database::list_items::ComicListItem,
+) {
+    let lib = session();
+    let mut l = lib.borrow_mut();
+    let lists = &mut l.database_mut().comic_lists;
+    match after {
+        Some(id) => {
+            // A selected folder takes the new item as its first child.
+            if let Some(folder) = find_folder_mut(lists, id) {
+                folder.items.insert(0, item);
+            } else if let Some(container) = find_container(lists, id) {
+                let pos = container
+                    .iter()
+                    .position(|i| i.base().id == *id)
+                    .map_or(container.len(), |p| p + 1);
+                container.insert(pos, item);
+            }
+        }
+        None => lists.push(item),
+    }
+    l.mark_dirty();
+}
+
+/// `NewSmartList`: name + a hand-written `Match` query (the editor
+/// dialog is Phase 5; the query parses through the Phase 2 matcher
+/// language). An empty query matches every book (the C# default).
+pub fn new_smart_list(after: Option<&CrGuid>, name: &str, query: &str) -> Result<(), String> {
+    let matchers = if query.trim().is_empty() {
+        Vec::new()
+    } else {
+        let mut t = cr_engine::tokenizer::Tokenizer::new(query);
+        let group =
+            cr_engine::matcher::query::parse_group_query(&mut t).map_err(|e| format!("{e}"))?;
+        group
+            .matchers
+            .iter()
+            .map(cr_engine::matcher::tree::Matcher::to_raw)
+            .collect()
+    };
+    let item = cr_core::database::list_items::ComicListItem::Smart(
+        cr_core::database::list_items::SmartListItem {
+            base: cr_core::database::list_items::ListItemBase {
+                id: CrGuid::new_random(),
+                name: Some(name.to_string()),
+                ..Default::default()
+            },
+            matchers,
+            matcher_mode: cr_core::model::enums::MatcherMode::And,
+            ..Default::default()
+        },
+    );
+    insert_list_item(after, item);
+    Ok(())
+}
+
+/// `NewFolder` — created in the selection's container.
+pub fn new_folder(after: Option<&CrGuid>, name: &str) {
+    let item = cr_core::database::list_items::ComicListItem::Folder(
+        cr_core::database::list_items::FolderItem {
+            base: cr_core::database::list_items::ListItemBase {
+                id: CrGuid::new_random(),
+                name: Some(name.to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        },
+    );
+    insert_list_item(after, item);
+}
+
+/// Rename (the C# `AfterLabelEdit` → `comicListItem.Name = label`).
+pub fn rename_list(id: &CrGuid, name: &str) {
+    let lib = session();
+    let mut l = lib.borrow_mut();
+    let lists = &mut l.database_mut().comic_lists;
+    if let Some(base) = find_base_mut(lists, id) {
+        base.name = Some(name.to_string());
+        l.mark_dirty();
+    }
+}
+
+/// `RemoveListOrFolder` — the Library root is protected.
+pub fn remove_list(id: &CrGuid) {
+    let lib = session();
+    let mut l = lib.borrow_mut();
+    let lists = &mut l.database_mut().comic_lists;
+    if let Some(container) = find_container(lists, id) {
+        let is_library = container.iter().any(|i| {
+            i.base().id == *id
+                && matches!(i, cr_core::database::list_items::ComicListItem::Library(_))
+        });
+        if is_library {
+            return;
+        }
+        container.retain(|i| i.base().id != *id);
+        l.mark_dirty();
+    }
+}
+
+fn find_container<'a>(
+    items: &'a mut Vec<cr_core::database::list_items::ComicListItem>,
+    id: &CrGuid,
+) -> Option<&'a mut Vec<cr_core::database::list_items::ComicListItem>> {
+    if items.iter().any(|i| i.base().id == *id) {
+        return Some(items);
+    }
+    for item in items.iter_mut() {
+        if let cr_core::database::list_items::ComicListItem::Folder(f) = item {
+            if let Some(c) = find_container(&mut f.items, id) {
+                return Some(c);
+            }
+        }
+    }
+    None
+}
+
+fn find_folder_mut<'a>(
+    items: &'a mut [cr_core::database::list_items::ComicListItem],
+    id: &CrGuid,
+) -> Option<&'a mut cr_core::database::list_items::FolderItem> {
+    for item in items.iter_mut() {
+        if let cr_core::database::list_items::ComicListItem::Folder(f) = item {
+            if f.base.id == *id {
+                return Some(f);
+            }
+            if let Some(found) = find_folder_mut(&mut f.items, id) {
+                return Some(found);
+            }
+        }
+    }
+    None
+}
+
+fn find_base_mut<'a>(
+    items: &'a mut [cr_core::database::list_items::ComicListItem],
+    id: &CrGuid,
+) -> Option<&'a mut cr_core::database::list_items::ListItemBase> {
+    for item in items.iter_mut() {
+        if item.base().id == *id {
+            return Some(item.base_mut());
+        }
+        if let cr_core::database::list_items::ComicListItem::Folder(f) = item {
+            if let Some(b) = find_base_mut(&mut f.items, id) {
+                return Some(b);
+            }
+        }
+    }
+    None
 }

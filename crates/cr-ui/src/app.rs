@@ -6,6 +6,7 @@
 
 use std::cell::RefCell;
 use std::path::Path;
+use std::rc::Rc;
 
 use gtk4::prelude::*;
 use gtk4::{gio, glib};
@@ -14,6 +15,9 @@ use gtk4::{
     ResponseType, Window,
 };
 
+use cr_core::xml::scalar::CrGuid;
+
+use crate::browser;
 use crate::library;
 use crate::reader_window::{self, ReaderWindow};
 use crate::theme;
@@ -93,44 +97,78 @@ fn set_open_message(message: Option<String>) {
     OPEN_MESSAGE.with(|cell| *cell.borrow_mut() = message);
 }
 
-/// The empty shell (no browser yet — Phase 4): a bare window with an
-/// Open button so the app is usable.
+/// The app shell — the future browser window (Phase 4 T5 replaces
+/// the placeholder center pane with the ItemView): the list navigator
+/// on the left, a placeholder that shows the evaluated list on the
+/// right, and the file commands in the header.
 fn show_shell(app: &Application) {
     let win = ApplicationWindow::builder()
         .application(app)
         .title("comicrust")
-        .default_width(480)
-        .default_height(240)
+        .default_width(1100)
+        .default_height(700)
         .build();
     if let Some(message) = OPEN_MESSAGE.with(|cell| cell.borrow().clone()) {
         show_attention_dialog(&win, &message);
     }
-    let buttons = gtk4::Box::new(gtk4::Orientation::Vertical, 12);
-    buttons.set_margin_top(24);
-    buttons.set_margin_bottom(24);
-    buttons.set_margin_start(24);
-    buttons.set_margin_end(24);
-    buttons.set_valign(gtk4::Align::Center);
-    buttons.set_halign(gtk4::Align::Center);
 
+    let header = gtk4::HeaderBar::new();
     let open = Button::with_label("Open…");
     let win_clone = win.clone();
     open.connect_clicked(move |_| open_file_dialog(&win_clone));
-    buttons.append(&open);
+    header.pack_start(&open);
 
-    // `AddFolderToLibrary` (the browser command; the launcher is the
-    // only host until the browser lands in Phase 4 T5).
+    // `AddFolderToLibrary` (the browser command).
     let add_folder = Button::with_label("Add Folder to Library…");
+    let win_for_click = win.clone();
+    add_folder.connect_clicked(move |_| {
+        add_folder_dialog(&win_for_click);
+    });
+    header.pack_start(&add_folder);
+    win.set_titlebar(Some(&header));
+
+    // Navigator pane + placeholder (the ItemView arrives in T3).
+    let paned = gtk4::Paned::new(gtk4::Orientation::Horizontal);
+    let navigator = browser::navigator::Navigator::new();
+    paned.set_start_child(Some(navigator.widget()));
+    paned.set_shrink_start_child(false);
+    paned.set_position(280);
+
+    let placeholder = gtk4::Label::new(None);
+    placeholder.set_valign(gtk4::Align::Center);
+    placeholder.set_halign(gtk4::Align::Center);
+    placeholder.set_hexpand(true);
+    placeholder.set_vexpand(true);
+    paned.set_end_child(Some(&placeholder));
+    paned.set_shrink_end_child(false);
+    win.set_child(Some(&paned));
+
+    // Selection → evaluate the list (debounced inside the widget);
+    // the placeholder shows what the browser would display.
+    navigator.connect_selected(move |_id, name| {
+        let result = library::evaluate_list(_id);
+        let text = match result {
+            Some((list_name, _ids, count)) => {
+                format!("{list_name}\n{count} book(s)")
+            }
+            None => String::new(),
+        };
+        placeholder.set_text(&text);
+        let _ = name;
+    });
+
+    // Context-menu commands (the C# navigator commands, dialogs are
+    // Phase 5 — bare entry dialogs here).
     {
-        let button_for_click = add_folder.clone();
-        let win_for_click = win.clone();
-        add_folder.connect_clicked(move |_| {
-            add_folder_dialog(&win_for_click, &button_for_click);
+        let nav = navigator.clone();
+        let win_for_cmds = win.clone();
+        navigator.connect_command(move |command, target| {
+            run_list_command(&win_for_cmds, &nav, command, target);
         });
     }
-    buttons.append(&add_folder);
 
-    win.set_child(Some(&buttons));
+    // Fill the tree from the session DB.
+    navigator.refill(&library::comic_lists_snapshot());
 
     // The launcher is the app's main window until the browser lands:
     // closing it is app exit — save the library
@@ -145,6 +183,104 @@ fn show_shell(app: &Application) {
     });
 
     win.present();
+}
+
+/// The navigator context-menu commands (`NewSmartList`, `NewFolder`,
+/// `RenameNode`, `RemoveListOrFolder`). Small entry dialogs instead of
+/// the Phase 5 editors.
+fn run_list_command(
+    parent: &ApplicationWindow,
+    nav: &Rc<browser::navigator::Navigator>,
+    command: browser::navigator::ListCommand,
+    target: Option<CrGuid>,
+) {
+    use browser::navigator::ListCommand;
+    match command {
+        ListCommand::NewSmartList => {
+            let dialog = entry_dialog(parent, "New Smart List", "Name", "New Smart List");
+            if let Some(name) = dialog {
+                let query_dialog = entry_dialog(
+                    parent,
+                    "New Smart List",
+                    "Match query",
+                    "[Series] [contains ]",
+                );
+                let query = query_dialog.unwrap_or_default();
+                if let Err(err) = library::new_smart_list(target.as_ref(), &name, &query) {
+                    show_attention_dialog(parent, &format!("Bad query: {err}"));
+                }
+                nav.refill(&library::comic_lists_snapshot());
+            }
+        }
+        ListCommand::NewFolder => {
+            if let Some(name) = entry_dialog(parent, "New Folder", "Name", "New Folder") {
+                library::new_folder(target.as_ref(), &name);
+                nav.refill(&library::comic_lists_snapshot());
+            }
+        }
+        ListCommand::Rename => {
+            if let Some(id) = target {
+                if let Some(name) = entry_dialog(parent, "Rename", "Name", "") {
+                    library::rename_list(&id, &name);
+                    nav.refill(&library::comic_lists_snapshot());
+                }
+            }
+        }
+        ListCommand::Delete => {
+            if let Some(id) = target {
+                library::remove_list(&id);
+                nav.refill(&library::comic_lists_snapshot());
+            }
+        }
+    }
+}
+
+/// A one-field prompt. Returns the entered text, or `None` when the
+/// dialog was cancelled. (The C# inline label edit lands with the
+/// Phase 5 dialogs; this is the T2 stand-in.)
+fn entry_dialog(
+    parent: &ApplicationWindow,
+    title: &str,
+    label: &str,
+    initial: &str,
+) -> Option<String> {
+    let dialog = gtk4::Dialog::builder()
+        .title(title)
+        .transient_for(parent)
+        .modal(true)
+        .build();
+    dialog.add_button("Cancel", gtk4::ResponseType::Cancel);
+    dialog.add_button("OK", gtk4::ResponseType::Ok);
+    dialog.set_default_response(gtk4::ResponseType::Ok);
+    let content = dialog.content_area();
+    content.set_margin_top(12);
+    content.set_margin_bottom(12);
+    content.set_margin_start(12);
+    content.set_margin_end(12);
+    content.set_spacing(6);
+    let label = gtk4::Label::with_mnemonic(label);
+    content.append(&label);
+    let entry = gtk4::Entry::new();
+    entry.set_text(initial);
+    entry.set_activates_default(true);
+    content.append(&entry);
+    // The response closure cannot return out — park the result in a
+    // cell the wait loop reads back.
+    let result: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
+    let r = result.clone();
+    dialog.connect_response(move |d, response| {
+        if response == gtk4::ResponseType::Ok {
+            *r.borrow_mut() = Some(entry.text().into());
+        }
+        d.destroy();
+    });
+    dialog.show();
+    // Nested iteration until the dialog closes (a modal prompt).
+    while dialog.is_visible() {
+        glib::MainContext::default().iteration(true);
+    }
+    let out = result.borrow().clone();
+    out
 }
 
 pub fn open_file_dialog(parent: &impl IsA<Window>) {
@@ -186,16 +322,15 @@ pub fn open_file_dialog(parent: &impl IsA<Window>) {
 
 /// `AddFolderToLibrary`: folder chooser → a recursive scan into the
 /// library on the scan worker (the UI stays responsive; the C# shows
-/// the scan progress in the status strip). The button disables for
-/// the scan duration and the result dialog reports the scan.
-fn add_folder_dialog(parent: &impl IsA<Window>, button: &Button) {
+/// the scan progress in the status strip). The result dialog reports
+/// the scan.
+fn add_folder_dialog(parent: &impl IsA<Window>) {
     let chooser = FileChooserNative::builder()
         .title("Add Folder to Library")
         .action(FileChooserAction::SelectFolder)
         .transient_for(parent)
         .modal(true)
         .build();
-    let button = button.clone();
     let window: Window = parent.clone().upcast();
     chooser.connect_response(move |chooser, response| {
         if response != ResponseType::Accept {
@@ -204,14 +339,9 @@ fn add_folder_dialog(parent: &impl IsA<Window>, button: &Button) {
         let Some(path) = chooser.file().and_then(|f| f.path()) else {
             return;
         };
-        button.set_sensitive(false);
-        button.set_label("Scanning…");
-        let button = button.clone();
         let window = window.clone();
         let path_display = path.display().to_string();
         library::add_folder_to_library(&path, move |result| {
-            button.set_sensitive(true);
-            button.set_label("Add Folder to Library…");
             // The scan result counts every diff kind: a re-link
             // (`moved` — the same-name+size recovery) is a success,
             // not "no books found".

@@ -22,11 +22,13 @@ pub fn bind_matcher(raw: &ComicBookMatcher) -> Option<Matcher> {
 ///
 /// `base_list` is the pre-computed book set of the list's `BaseListId`
 /// (the C# resolves it through the library's list tree); `None` means
-/// "all books". Returns the books in the C# pipeline order.
+/// "all books". The slice references may be shorter-lived than the
+/// items — the returned refs all carry the item lifetime `'a`.
+/// Returns the books in the C# pipeline order.
 pub fn evaluate_smart_list<'a>(
     list: &SmartListItem,
-    library: &'a [&'a ComicBook],
-    base_list: Option<&'a [&'a ComicBook]>,
+    library: &[&'a ComicBook],
+    base_list: Option<&[&'a ComicBook]>,
 ) -> Vec<&'a ComicBook> {
     let mut items: Vec<&ComicBook> = match base_list {
         Some(base) => base.to_vec(),
