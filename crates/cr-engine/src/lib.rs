@@ -1,6 +1,7 @@
 //! Smart-list parser and matchers, queue manager, scanner, watch folders,
 //! backup, sync, and the remote server.
 
+pub mod backup;
 pub mod image_pool;
 pub mod matcher;
 pub mod queue;

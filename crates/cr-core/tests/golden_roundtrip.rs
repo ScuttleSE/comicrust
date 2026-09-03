@@ -350,7 +350,7 @@ fn restore_file_is_consumed() {
     let tmp = std::env::temp_dir().join("comicrust-restore-test");
     std::fs::create_dir_all(&tmp).unwrap();
     let main = tmp.join("ComicDb.xml");
-    let restore = tmp.join("ComicDb.xml.restore");
+    let restore = tmp.join("ComicDb.restore");
     std::fs::write(
         &main,
         std::fs::read(golden_dir().join("db-small.xml")).unwrap(),

@@ -248,8 +248,9 @@ fn path_with_suffix(path: &Path, suffix: &str) -> PathBuf {
 /// quarantine the corrupt file as `Corrupt Database Backup [<now>].xml`
 /// and start with an empty database.
 pub fn open_with_fallback(path: &Path) -> Result<(ComicDatabase, OpenStatus), DbError> {
-    // 1. .restore
-    let restore = path_with_suffix(path, "restore");
+    // 1. .restore — the C# `DatabaseFile + ".restore"`: the database
+    // file name WITHOUT the ".xml" (`ComicDb.restore`).
+    let restore = path.with_extension("restore");
     if restore.exists() {
         let loaded = load(&restore);
         let _ = std::fs::remove_file(&restore);
@@ -290,9 +291,8 @@ pub fn round_trip(path: &Path) -> Result<(Vec<u8>, Vec<u8>), DbError> {
     Ok((original, save_bytes(&db)?))
 }
 
-/// `ComicDatabase.CreateNew` — Phase 0 note: the C# version seeds the
-/// default smart lists (`InitializeDefaultLists`); that is deferred and
-/// needs the localized names plus the matcher registry.
+/// `ComicDatabase.CreateNew` — a fresh database with the default list
+/// tree (the localized names are English defaults; TR lands in Phase 5).
 /// A fresh database with the C# default list tree
 /// (`ComicLibrary.InitializeDefaultLists`, English names — the TR
 /// localized names are a Phase 5 concern).

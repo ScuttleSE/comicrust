@@ -7,6 +7,7 @@ edition.workspace = true
 cr-core = { path = "../cr-core" }
 cr-io = { path = "../cr-io" }
 cr-image = { path = "../cr-image" }
+zip.workspace = true
 chrono.workspace = true
 fancy-regex = "0.14"
 notify = "6"
