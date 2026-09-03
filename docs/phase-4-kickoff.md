@@ -120,22 +120,40 @@ T3 is the largest single build — start it early and keep it pure
       round-trips byte-stable on the XML. Done:
       `crates/cr-engine/tests/library.rs` (4 tests).
 
-### T2. The list navigator pane (`cr-ui`)
+### T2. The list navigator pane (`cr-ui`) — COMPLETE (2026-09-03)
 
 C# spec: `NavigatorManager.cs`, `ComicListNavigator` usage in
 `MainForm.cs`, the tree skin in `ComicRack/Controls/LibraryTreeSkin.cs`.
 
-- [ ] The ComicLists tree as a GTK4 tree view: Library root,
+- [x] The ComicLists tree as a GTK4 tree view: Library root,
       smart lists, folders, the default-list icons, nested lists.
       Custom thumbnails on list items are Phase 5 polish.
-- [ ] Selection → evaluation: the selected list's books via
+      Done: `cr-ui/src/browser/navigator.rs` (TreeView + TreeStore,
+      kind icons from the GTK theme; expansion + selection kept
+      across refills by item id; select reveals ancestors like the
+      WinForms `SelectedNode` setter).
+- [x] Selection → evaluation: the selected list's books via
       `cr-engine/smart_list::evaluate_smart_list` (the matcher
       binding exists). Evaluation runs on selection change; large
-      sets debounce.
-- [ ] "New smart list" creates a list with a `Match` string (the
+      sets debounce. Done: the full tree evaluator
+      `cr-engine/src/lists.rs` (`evaluate_list`: Library = all,
+      folder Or = union / And = intersect / Empty, id lists,
+      recursive base-list resolution with a cycle guard — the C#
+      `OnGetBooks` family); the widget debounces 200 ms (the C#
+      `updateTimer`).
+- [x] "New smart list" creates a list with a `Match` string (the
       editor UI itself is Phase 5 — a bare list with a hand-written
       query is enough here); folders create/rename/delete.
-- [ ] The list's evaluation result feeds T3/T5's book set.
+      Done: the context menu (right-click selects the row under the
+      cursor, `tvQueries_MouseDown` parity) → bare entry dialogs;
+      insertion after the selection into the selection's container
+      (`GetCurrentNodeComicListCollection` parity); Library renames
+      but never removes (`RemoveListOrFolder` guard); the query
+      parses through the Phase 2 matcher language
+      (`parse_group_query` → `Matcher::to_raw`).
+- [x] The list's evaluation result feeds T3/T5's book set.
+      Done: `library::evaluate_list(id) -> (name, ids, count)` —
+      T3 consumes the id set.
 
 ### T3. The ItemView core (`cr-ui/src/browser/`) — the long pole
 
@@ -325,3 +343,17 @@ C# spec: `PagesView.cs` (833), `ComicPagesView.cs` (241),
   user's machine. Note: closing the reader window currently closes
   the whole app (the browser pane is T5) — expected, the exit save
   runs there.
+- **T2 COMPLETE (2026-09-03).** The navigator pane:
+  `cr-engine/src/lists.rs` (the tree evaluator, unit-tested incl.
+  combine modes, id lists, recursion guard, and the real-world
+  default tree) + `cr-ui/src/browser/navigator.rs` (the tree widget,
+  debounced selection evaluation, context-menu CRUD through bare
+  entry dialogs). The launcher became the browser-skeleton window
+  (navigator left, placeholder right showing the evaluated list and
+  book count; T5 replaces the placeholder with the ItemView).
+  Headless probes: the widget fires debounced selection events with
+  correct evaluations (Library 255, Never Read 255 on the fixture);
+  screenshots show the tree with icons for both a fresh DB and the
+  255-book fixture. `select_next`/`select_by_name` exposed for the
+  keyboard/restore paths. A probe lesson: the widget's Rc must
+  outlive the window (the host holds it).
