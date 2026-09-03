@@ -1,18 +1,17 @@
-//! The reader window shell around the page view.
-//!
-//! Phase 3 T1 keeps this to the walking skeleton: open a comic, put
-//! page 0 on screen through a GDK paintable (ADR-008 names the
-//! GDK-paintable/cairo path as the first renderer). Layout modes, fit
-//! modes, zoom/pan arrive in T2/T3 as the `ImageDisplayControl` port.
+//! The reader window shell around the page view. The page widget is
+//! the `ImageDisplayControl` port (`reader::page_view`); this window
+//! supplies the chrome (header, page indicator).
 
 use std::path::Path;
+use std::sync::Arc;
 
 use anyhow::Context;
-use gtk4::gdk;
 use gtk4::prelude::*;
-use gtk4::{glib, Application, ApplicationWindow, HeaderBar, Label, Picture};
+use gtk4::{Application, ApplicationWindow, HeaderBar, Label};
 
-use cr_io::ComicProvider;
+use cr_engine::image_pool::ImagePool;
+
+use crate::reader::page_view::PageView;
 
 /// Default reader window size (the C# persists its own window layout;
 /// workspace persistence arrives in Phase 7).
@@ -28,10 +27,9 @@ impl ReaderWindow {
     /// (the app shows a dialog) — the C# treats an unopenable comic
     /// the same way.
     pub fn open(app: &Application, path: &Path) -> anyhow::Result<Self> {
-        let provider = ComicProvider::open(path)
+        let provider = cr_io::ComicProvider::open(path)
             .with_context(|| format!("Unsupported or unreadable comic: {}", path.display()))?;
         let page_count = provider.page_count();
-        let texture = load_page_texture(&provider, 0);
 
         let window = ApplicationWindow::builder()
             .application(app)
@@ -42,14 +40,26 @@ impl ReaderWindow {
             .build();
 
         let header = HeaderBar::new();
-        let subtitle = Label::builder()
-            .label(Self::page_subtitle(0, page_count))
-            .css_classes(["placeholder-label"])
-            .build();
+        let subtitle = Label::builder().css_classes(["placeholder-label"]).build();
         header.pack_end(&subtitle);
         window.set_titlebar(Some(&header));
 
-        window.set_child(Some(&Self::page_area(texture.as_ref(), path)));
+        // One render pool per reader window (memory-only until the
+        // settings port decides the cache location).
+        let pool = Arc::new(ImagePool::new(None));
+        let page_view = PageView::new(pool);
+        page_view
+            .open(provider, path)
+            .map_err(|e| anyhow::anyhow!(e))?;
+        {
+            let subtitle = subtitle.clone();
+            page_view.set_page_callback(Some(Box::new(move |page, count| {
+                subtitle.set_text(&page_subtitle(page, count));
+            })));
+        }
+        subtitle.set_text(&page_subtitle(0, page_count));
+        window.set_child(Some(page_view.widget()));
+        page_view.widget().grab_focus();
 
         Ok(ReaderWindow { window })
     }
@@ -63,64 +73,12 @@ impl ReaderWindow {
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| "comicrust".into())
     }
-
-    fn page_subtitle(page: usize, page_count: usize) -> String {
-        if page_count == 0 {
-            "No pages".into()
-        } else {
-            format!("Page {} of {}", page + 1, page_count)
-        }
-    }
-
-    /// The centered page area: black background (reader style), the
-    /// page scaled to fit (`ContentFit::Contain` matches the C#
-    /// default `ImageFitMode.Fit` behavior closely enough for the
-    /// skeleton; exact fit-mode math lands with T2).
-    fn page_area(texture: Option<&gdk::MemoryTexture>, path: &Path) -> gtk4::Box {
-        let area = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
-        area.set_css_classes(&["reader-page-area"]);
-        area.set_hexpand(true);
-        area.set_vexpand(true);
-        match texture {
-            Some(texture) => {
-                // `can_shrink` + the Picture default (keep aspect
-                // ratio) give fit-inside behavior, the cairo-first
-                // stand-in for the C# default `ImageFitMode.Fit`.
-                let picture = Picture::for_paintable(texture);
-                picture.set_can_shrink(true);
-                picture.set_hexpand(true);
-                picture.set_vexpand(true);
-                area.append(&picture);
-            }
-            None => {
-                let label = Label::builder()
-                    .label(format!("Cannot display page 1 of {}", path.display()))
-                    .css_classes(["placeholder-label"])
-                    .vexpand(true)
-                    .valign(gtk4::Align::Center)
-                    .build();
-                area.append(&label);
-            }
-        }
-        area
-    }
 }
 
-/// Loads and decodes page `index` into a paintable texture; `None`
-/// when the page is missing or not decodable (cr-image reports
-/// UnsupportedFormat for HEIF/AVIF/J2K — the placeholder shows).
-fn load_page_texture(provider: &ComicProvider, index: usize) -> Option<gdk::MemoryTexture> {
-    let bytes = provider.read_page(index)?;
-    let image = cr_image::decode::decode(&bytes).ok()?;
-    Some(texture_from_image(&image))
-}
-
-fn texture_from_image(image: &cr_image::Image) -> gdk::MemoryTexture {
-    gdk::MemoryTexture::new(
-        image.width as i32,
-        image.height as i32,
-        gdk::MemoryFormat::R8g8b8a8,
-        &glib::Bytes::from(&image.rgba),
-        (image.width * 4) as usize,
-    )
+fn page_subtitle(page: usize, page_count: usize) -> String {
+    if page_count == 0 {
+        "No pages".into()
+    } else {
+        format!("Page {} of {}", page + 1, page_count)
+    }
 }
