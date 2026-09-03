@@ -167,6 +167,28 @@ impl Mat {
             x * self.e[1] + y * self.e[3] + self.e[5],
         )
     }
+
+    /// `DisplayOutput.Transform` inverse — `ClientToImage` support.
+    /// Returns `None` for singular matrices.
+    pub fn invert(&self) -> Option<Mat> {
+        let [m11, m12, m21, m22, dx, dy] = self.e;
+        let det = m11 * m22 - m12 * m21;
+        if det.abs() < f32::EPSILON {
+            return None;
+        }
+        let (i11, i12, i21, i22) = (m22 / det, -m12 / det, -m21 / det, m11 / det);
+        // Inverse of p·L + t is p·L⁻¹ - t·L⁻¹.
+        Some(Mat {
+            e: [
+                i11,
+                i12,
+                i21,
+                i22,
+                -(dx * i11 + dy * i21),
+                -(dx * i12 + dy * i22),
+            ],
+        })
+    }
 }
 
 /// `MatrixUtility.GetRotationMatrix`: rotate around `anchor`.

@@ -15,12 +15,13 @@
 use std::cell::RefCell;
 use std::path::Path;
 use std::rc::Rc;
-use std::sync::Arc;
+use std::sync::{Arc, Condvar, Mutex};
 
 use gtk4::cairo;
 use gtk4::prelude::*;
 use gtk4::{gdk, glib, DrawingArea, EventControllerKey, EventControllerScroll, GestureDrag};
 
+use cr_core::model::bitmap_adjustment::BitmapAdjustment;
 use cr_core::model::enums::ImageRotation;
 use cr_engine::image_pool::ImagePool;
 use cr_io::ComicProvider;
@@ -45,8 +46,78 @@ const ZOOM_STEP: f32 = 1.25;
 
 type PageCallback = Box<dyn Fn(usize, usize)>;
 
+/// A finished background page load (`PageImage` analog). Raw RGBA
+/// travels across threads; the cairo surface is built on the main
+/// thread.
+struct LoadedPage {
+    source: String,
+    page: usize,
+    size: (i32, i32),
+    rgba: Option<Vec<u8>>,
+}
+
+/// Latest-wins page decode mailbox: rapid page turns collapse to at
+/// most one render in flight plus one queued request — the C#
+/// `AddToTop` queue behavior in miniature until T6 wires the full
+/// queues.
+type PageMailbox = Arc<(Mutex<Option<(usize, String)>>, Condvar)>;
+
+struct PageWorker {
+    mailbox: PageMailbox,
+}
+
+impl PageWorker {
+    fn spawn(pool: Arc<ImagePool>, tx: std::sync::mpsc::Sender<LoadedPage>) -> PageWorker {
+        let mailbox: PageMailbox = Arc::new((Mutex::new(None), Condvar::new()));
+        let mb = Arc::clone(&mailbox);
+        let _ = std::thread::Builder::new()
+            .name("page-worker".into())
+            .spawn(move || loop {
+                let request = {
+                    let (lock, cvar) = &*mb;
+                    let mut pending = lock.lock().expect("page worker lock");
+                    if pending.is_none() {
+                        pending = cvar.wait(pending).expect("page worker wait");
+                    }
+                    pending.take()
+                };
+                let Some((page, source)) = request else {
+                    continue;
+                };
+                let key = cr_image::keys::ImageKey::from_file(
+                    source.clone(),
+                    Path::new(&source),
+                    page,
+                    ImageRotation::None,
+                );
+                let page_key = cr_image::keys::PageKey::new(key, BitmapAdjustment::default());
+                let loaded = match pool.render_page(&page_key) {
+                    Some(image) => LoadedPage {
+                        source: source.clone(),
+                        page,
+                        size: (image.width as i32, image.height as i32),
+                        rgba: Some(image.rgba),
+                    },
+                    None => LoadedPage {
+                        source: source.clone(),
+                        page,
+                        size: (0, 0),
+                        rgba: None,
+                    },
+                };
+                let _ = tx.send(loaded);
+            });
+        PageWorker { mailbox }
+    }
+
+    fn request(&self, page: usize, source: &str) {
+        let (lock, cvar) = &*self.mailbox;
+        *lock.lock().expect("page request lock") = Some((page, source.to_owned()));
+        cvar.notify_one();
+    }
+}
+
 struct ViewState {
-    pool: Arc<ImagePool>,
     provider: Option<ComicProvider>,
     /// The comic path as a string — the cache-key location.
     source: String,
@@ -68,6 +139,14 @@ struct ViewState {
     /// Cached resolution; rebuilt when the config or view size moves.
     cache: Option<(DisplayConfig, DisplayOutput)>,
     page_callback: Option<PageCallback>,
+    /// Last drag position — GestureDrag reports offsets cumulative
+    /// from the press, `MovePart` consumes per-update deltas.
+    drag_last: Option<(f64, f64)>,
+    /// The page a background decode is running for (latest wins).
+    pending_page: Option<usize>,
+    /// Worker + result channel for background page loads.
+    worker: PageWorker,
+    page_rx: std::sync::mpsc::Receiver<LoadedPage>,
 }
 
 impl ViewState {
@@ -151,8 +230,15 @@ impl PageView {
         area.set_hexpand(true);
         area.set_vexpand(true);
         area.set_focusable(true);
+
+        // Background page decode: one worker, latest request wins.
+        // Results pump into the main loop with a 10 ms poll while a
+        // load is pending (glib 0.22 has no cross-thread channel;
+        // a std mpsc + local timeout keeps the dependency surface
+        // small).
+        let (tx, rx) = std::sync::mpsc::channel::<LoadedPage>();
+        let worker = PageWorker::spawn(Arc::clone(&pool), tx);
         let state = Rc::new(RefCell::new(ViewState {
-            pool,
             provider: None,
             source: String::new(),
             page: 0,
@@ -170,6 +256,10 @@ impl PageView {
             visible: ImagePartInfo::EMPTY,
             cache: None,
             page_callback: None,
+            drag_last: None,
+            pending_page: None,
+            worker,
+            page_rx: rx,
         }));
 
         let view = PageView {
@@ -181,6 +271,8 @@ impl PageView {
         area.set_draw_func(move |_, ctx, width, height| {
             draw_frame(ctx, width, height, &draw_state);
         });
+
+        // Finished loads land here (main thread); stale ones drop.
         view.install_key_controller();
         view.install_scroll_controller();
         view.install_pan_controller();
@@ -230,46 +322,71 @@ impl PageView {
     /// Loads page `page` through the ImagePool render chain
     /// (`pagePool.GetPage` parity; synchronous until the queue-backed
     /// pre-caching lands in T6).
+    /// Requests page `page` from the background worker
+    /// (`pagePool.GetPage` parity: the UI keeps painting the old page
+    /// until the new one arrives).
     fn load_page(&self, page: usize) {
         let mut st = self.state.borrow_mut();
-        if st.provider.is_none() {
+        if st.provider.is_none() || page >= st.page_count {
             return;
         }
-        if page >= st.page_count {
-            return;
+        let needs_pump = st.pending_page.is_none();
+        st.pending_page = Some(page);
+        st.invalidate();
+        let source = st.source.clone();
+        st.worker.request(page, &source);
+        drop(st);
+        if needs_pump {
+            self.start_pump();
         }
-        let key = cr_image::keys::ImageKey::from_file(
-            st.source.clone(),
-            Path::new(&st.source),
-            page,
-            ImageRotation::None,
-        );
-        let page_key = cr_image::keys::PageKey::new(key, Default::default());
-        let rendered = st.pool.render_page(&page_key);
-        match rendered {
-            Some(image) => {
-                st.image_size = (image.width as i32, image.height as i32);
-                st.surface = Some(image_surface_from_rgba(
-                    &image.rgba,
-                    image.width,
-                    image.height,
-                ));
-                st.page = page;
-                st.visible = ImagePartInfo::EMPTY;
-                st.image_zoom = 1.0;
-                st.invalidate();
-                drop(st);
-                self.area.queue_draw();
+    }
+
+    /// Polls the worker channel until the pending load lands.
+    fn start_pump(&self) {
+        let view = self.clone();
+        glib::timeout_add_local(std::time::Duration::from_millis(10), move || {
+            let mut received = false;
+            loop {
+                // Bind first: a `while let` scrutinee borrow would
+                // live through the body and conflict with
+                // `on_page_loaded`'s mutable borrow.
+                let received_now = view.state.borrow().page_rx.try_recv();
+                match received_now {
+                    Ok(loaded) => {
+                        received = true;
+                        view.on_page_loaded(loaded);
+                    }
+                    Err(_) => break,
+                }
             }
-            None => {
-                st.surface = None;
-                st.image_size = (0, 0);
-                st.page = page;
-                st.invalidate();
-                drop(st);
-                self.area.queue_draw();
+            if received || view.state.borrow().pending_page.is_some() {
+                glib::ControlFlow::Continue
+            } else {
+                glib::ControlFlow::Break
             }
+        });
+    }
+
+    /// Applies a finished background load. Stale results (older
+    /// requests, other comics) drop.
+    fn on_page_loaded(&self, loaded: LoadedPage) {
+        {
+            let mut st = self.state.borrow_mut();
+            if st.pending_page != Some(loaded.page) || st.source != loaded.source {
+                return;
+            }
+            st.pending_page = None;
+            st.page = loaded.page;
+            st.image_size = loaded.size;
+            st.surface = loaded.rgba.map(|rgba| {
+                image_surface_from_rgba(&rgba, loaded.size.0 as u32, loaded.size.1 as u32)
+            });
+            st.visible = ImagePartInfo::EMPTY;
+            st.image_zoom = 1.0;
+            st.invalidate();
         }
+        self.area.queue_draw();
+        self.notify_page();
     }
 
     fn load_current_page(&self) {
@@ -421,16 +538,23 @@ impl PageView {
         if display.is_empty() {
             return;
         }
+        // The C# zooms around `ClientToImage(location)` — the view
+        // point in image space (through the inverse transform).
+        let inverse = match display.mat.invert() {
+            Some(inv) => inv,
+            None => return,
+        };
+        let (cx, cy) = inverse.transform_point(center.0 as f32, center.1 as f32);
         let bounds = display.part_bounds;
-        let fx = (center.0 - bounds.x) as f32 / bounds.w as f32;
-        let fy = (center.1 - bounds.y) as f32 / bounds.h as f32;
+        let fx = (cx - bounds.x as f32) / bounds.w as f32;
+        let fy = (cy - bounds.y as f32) / bounds.h as f32;
         st.image_zoom = zoom;
         let part0 = display.get_part(0);
         let anchor = (
             part0.x + (part0.w as f32 * fx) as i32,
             part0.y + (part0.h as f32 * fy) as i32,
         );
-        st.visible = ImagePartInfo::new(0, (center.0 - anchor.0, center.1 - anchor.1));
+        st.visible = ImagePartInfo::new(0, (cx as i32 - anchor.0, cy as i32 - anchor.1));
         st.invalidate();
         drop(st);
         self.area.queue_draw();
@@ -569,10 +693,29 @@ impl PageView {
     fn install_pan_controller(&self) {
         let controller = GestureDrag::new();
         let view = self.clone();
-        controller.connect_drag_update(move |gesture, dx, dy| {
+        controller.connect_drag_begin(move |gesture, x, y| {
+            let view = view.clone();
+            view.state.borrow_mut().drag_last = Some((x, y));
+            gesture.set_state(gtk4::EventSequenceState::Claimed);
+        });
+        let view = self.clone();
+        controller.connect_drag_update(move |gesture, x, y| {
             let view = view.clone();
             let _ = gesture.start_point();
-            view.move_part((dx as i32, dy as i32));
+            let mut st = view.state.borrow_mut();
+            let Some((lx, ly)) = st.drag_last else {
+                return;
+            };
+            st.drag_last = Some((x, y));
+            drop(st);
+            // GestureDrag reports positions cumulative from the
+            // press; MovePart consumes deltas.
+            view.move_part(((x - lx) as i32, (y - ly) as i32));
+        });
+        let view = self.clone();
+        controller.connect_drag_end(move |_gesture, _x, _y| {
+            let view = view.clone();
+            view.state.borrow_mut().drag_last = None;
         });
         self.area.add_controller(controller);
     }
@@ -625,6 +768,12 @@ fn draw_frame(ctx: &cairo::Context, width: i32, height: i32, state: &Rc<RefCell<
     let Some(surface) = &st.surface else {
         return;
     };
+    // The C# render chain draws the PART SOURCE rectangle through
+    // the transform (`RenderImage`: DrawImage(destination, source)
+    // with source = Display.PartBounds). The matrix positions the
+    // part; the pattern is offset so image pixel (part.x, part.y)
+    // sits at user-space origin.
+    let bounds = display.part_bounds;
     let m = &display.mat;
     ctx.set_matrix(cairo::Matrix::new(
         f64::from(m.e[0]),
@@ -634,7 +783,9 @@ fn draw_frame(ctx: &cairo::Context, width: i32, height: i32, state: &Rc<RefCell<
         f64::from(m.e[4]),
         f64::from(m.e[5]),
     ));
-    ctx.set_source_surface(surface, 0.0, 0.0).ok();
-    let _ = ctx.paint();
+    ctx.set_source_surface(surface, -f64::from(bounds.x), -f64::from(bounds.y))
+        .ok();
+    ctx.rectangle(0.0, 0.0, f64::from(bounds.w), f64::from(bounds.h));
+    let _ = ctx.fill();
     ctx.identity_matrix();
 }
