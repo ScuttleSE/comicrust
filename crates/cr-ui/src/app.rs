@@ -60,6 +60,16 @@ pub fn run(args: Vec<String>) {
         },
     );
 
+    // The watch-folder poll: debounced watch events map back to the
+    // stored watch roots and each root rescans on the scan worker
+    // (`remove_missing: false` — vanished files flag as missing).
+    glib::timeout_add_local(std::time::Duration::from_secs(1), || {
+        for root in library::take_watch_folder_rescans() {
+            library::add_folder_to_library(Path::new(&root), |_| {});
+        }
+        glib::ControlFlow::Continue
+    });
+
     app.connect_activate(show_shell);
     app.connect_open(|app, files, _| {
         for file in files {
@@ -111,8 +121,13 @@ fn show_shell(app: &Application) {
     // `AddFolderToLibrary` (the browser command; the launcher is the
     // only host until the browser lands in Phase 4 T5).
     let add_folder = Button::with_label("Add Folder to Library…");
-    let win_clone = win.clone();
-    add_folder.connect_clicked(move |_| add_folder_dialog(&win_clone));
+    {
+        let button_for_click = add_folder.clone();
+        let win_for_click = win.clone();
+        add_folder.connect_clicked(move |_| {
+            add_folder_dialog(&win_for_click, &button_for_click);
+        });
+    }
     buttons.append(&add_folder);
 
     win.set_child(Some(&buttons));
@@ -157,16 +172,18 @@ pub fn open_file_dialog(parent: &impl IsA<Window>) {
 }
 
 /// `AddFolderToLibrary`: folder chooser → a recursive scan into the
-/// library. The launcher shows the scan result (the C# browser would
-/// refresh its list instead).
-fn add_folder_dialog(parent: &impl IsA<Window>) {
+/// library on the scan worker (the UI stays responsive; the C# shows
+/// the scan progress in the status strip). The button disables for
+/// the scan duration and the result dialog reports the scan.
+fn add_folder_dialog(parent: &impl IsA<Window>, button: &Button) {
     let chooser = FileChooserNative::builder()
         .title("Add Folder to Library")
         .action(FileChooserAction::SelectFolder)
         .transient_for(parent)
         .modal(true)
         .build();
-    let parent_window: Window = parent.clone().upcast();
+    let button = button.clone();
+    let window: Window = parent.clone().upcast();
     chooser.connect_response(move |chooser, response| {
         if response != ResponseType::Accept {
             return;
@@ -174,29 +191,42 @@ fn add_folder_dialog(parent: &impl IsA<Window>) {
         let Some(path) = chooser.file().and_then(|f| f.path()) else {
             return;
         };
-        let result = library::add_folder_to_library(&path);
-        let parent_window = parent_window.clone();
-        let message = if result.added.is_empty() && result.updated.is_empty() {
-            format!("No books found in {}", path.display())
-        } else {
-            format!(
-                "{} book(s) added, {} updated",
-                result.added.len(),
-                result.updated.len()
-            )
-        };
-        let dialog = gtk4::MessageDialog::builder()
-            .transient_for(&parent_window)
-            .modal(true)
-            .title("comicrust")
-            .text(message)
-            .message_type(gtk4::MessageType::Info)
-            .buttons(gtk4::ButtonsType::Close)
-            .build();
-        dialog.connect_response(|dialog, _| dialog.destroy());
-        dialog.present();
+        button.set_sensitive(false);
+        button.set_label("Scanning…");
+        let button = button.clone();
+        let window = window.clone();
+        let path_display = path.display().to_string();
+        library::add_folder_to_library(&path, move |result| {
+            button.set_sensitive(true);
+            button.set_label("Add Folder to Library…");
+            let message = if result.added.is_empty() && result.updated.is_empty() {
+                format!("No books found in {path_display}")
+            } else {
+                format!(
+                    "{} book(s) added, {} updated",
+                    result.added.len(),
+                    result.updated.len()
+                )
+            };
+            show_info_dialog(&window, &message);
+        });
     });
     chooser.show();
+}
+
+/// The scan result (an info box; the C# browser refreshes its list
+/// instead).
+fn show_info_dialog(parent: &impl IsA<Window>, message: &str) {
+    let dialog = gtk4::MessageDialog::builder()
+        .transient_for(parent)
+        .modal(true)
+        .title("comicrust")
+        .text(message)
+        .message_type(gtk4::MessageType::Info)
+        .buttons(gtk4::ButtonsType::Close)
+        .build();
+    dialog.connect_response(|dialog, _| dialog.destroy());
+    dialog.present();
 }
 
 /// The C# shows `DatabaseManager.OpenMessage` in an attention box on
