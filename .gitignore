@@ -7,3 +7,4 @@
 .vscode/
 *.swp
 .DS_Store
+tests/testfiles/
