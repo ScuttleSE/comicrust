@@ -51,9 +51,81 @@ Update this section at the **end of every work session**. The next agent must kn
 
 ### State summary
 
-- **Phase:** 1 (IO + images) COMPLETE except the WebComicProvider and the PDF/DjVu writers — both tracked in `docs/phase-1-kickoff.md`. **Next: Phase 2 (engine) — read `docs/phase-2-kickoff.md` and start at T1.** The Phase 0 exit review is not done; the settings port stays open (default lists moved into Phase 2 T3).
-- **State:** `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` are green. 92 tests pass.
-- **Phase 0 gate status:** byte-stable ComicDb.xml round-trip is proven on all three synthetic fixtures AND on the real-world database `tests/realworld/ComicDb.xml` (255 books, 584 KB, 2026-09-02, user-approved commit). Acceptance criteria #2 and #3 are met.
+- **Phase:** 2 (engine) COMPLETE (2026-09-03) — all of T1-T7. **Next: Phase 3 (reader UI) — read `docs/phase-3-kickoff.md` and start at T1 (the cairo walking skeleton).** Phase 1 gaps that remain open: WebComicProvider and the PDF/DjVu writers (tracked in `docs/phase-1-kickoff.md`). Phase 0 tail still open: the settings port (`IniFile`/`EngineConfiguration`/`SystemPaths`); the default-lists tail item closed in Phase 2 T3. The Phase 0 exit review remains not done.
+- **State:** `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` are green. 172 tests pass across 28 suites.
+- **Phase 0 gate status:** byte-stable ComicDb.xml round-trip proven on all three synthetic fixtures AND the real-world database `tests/realworld/ComicDb.xml` (255 books, 584 KB, 2026-09-02, user-approved commit).
+- **Phase 2 gate status:** every saved smart list in the real-world DB (a) binds to the matcher registry, (b) renders to a `Match` query string that re-parses and re-renders byte-identically, and (c) evaluates to the SAME book sets the C# cached in `CacheStorage` (Never Read = all 255, Files to update = the 3 dirty books, Reading/Read = empty). Evidence: `crates/cr-engine/tests/realworld_query.rs`.
+
+### Phase 2 progress (session of 2026-09-03)
+
+T1 done. `cr-engine/src/tokenizer.rs` — scan-based port of the
+`ComicSmartListItem.rxTokenizer` regex (fancy-regex rejects the
+variable-length lookbehind; the scanner reproduces .NET semantics:
+unclosed quotes end at line end, `(?<=\]\s+)` multi-word operator
+tokens, backslash-escape quirks). `text.rs` — Escape/Unescape/Intent
+(sequential-replace order is load-bearing; NL is "\r\n", the C#
+Windows reference). `matcher/spec.rs` — the registry of all 97
+concrete matchers (class name + English description + kind); kinds
+decide operator lists and argument counts. `matcher/query.rs` —
+`Match` string parse (`ConvertQueryToParamerters` +
+`CreateMatcherFromQuery`) and render (`ConvertParametersToQuery` +
+`ComicSmartListItem.ToString` Name/In prelude).
+
+T2 done. `matcher/book_view.rs` — the ComicBook computed properties
+(Shadow* with proposed-name fallbacks, Published clamping, Week
+(FirstDay+Monday), ReadPercentage, LanguageAsText ISO table, custom
+values). `matcher/text_number.rs` — TextNumberFloat/
+ComicTextNumberFloat ("1/2" → 0.5, first-float prefix). `matcher/
+eval.rs` — MatcherSet pipeline (And filters, Or appends, Not via
+Except), per-item families (string/numeric/date/yesno/manga/custom/
+all-properties), series-statistics matchers, the duplicate matcher
+with the C# ternary quirk preserved (ADR-013 #1). `matcher/series.rs`
+— ComicBookSeriesStatistics (count/page/read/gaps/averages/complete/
+last-times). cr-core: ValueMatcher gained `ignore_case` +
+`option` (`<Option>` of the AllProperties matcher) and ComicBook
+gained `file_is_missing` (`<Missing>`).
+
+T3 done. `smart_list.rs` — evaluation of saved lists (limits
+Count/MB/GB, selection Position/SortedBySeries/Random, FilteredIds,
+NotInBaseList). cr-core `create_new()` now seeds the C# default list
+tree (Library + Smart Lists folder with My Favorites/Recently Added/
+Recently Read/Never Read/Reading/Read/Files to update using the
+engine-configuration defaults 14/95/10); `CrGuid::new_random()`
+(/dev/urandom v4). `sort.rs` — .NET Framework Random port
+(`DotNetRandom`, vectors verified against an independent
+transliteration of `CompatPrng`), `guid_compare` (LE u32/u16 field
+order), series comparer family. Acceptance: the real-world evaluation
+test (see gate status above).
+
+T4 done. `queue.rs` — ProcessingQueue port (dedup with callback keys,
+AddToTop/Bottom moves, Trim-from-back, claim-inside-lock — ADR-014,
+Stop(abort)/graceful drain, no thread aborts). `image_pool.rs` — the
+five ImagePool queues with the exact C# names/priorities/sizes/
+AddToTop, render chain wired to cr-image (decode → adjust → rotate →
+memory+disk caches); `Image::rotate` added to cr-image. `queue_manager.rs` — the ComicBook queues (dynamic update/export/read-info/
+write-info with update-threads count).
+
+T5 done. `scanner.rs` — ComicScanner parity: recursive walk honoring
+`comicrackscanner.ini` (IgnoreFolder/IgnoreSubFolders), per-file
+decisions (existing book refresh; same-name+size recovery for moved
+files; new book with defaults + AddedTime), AutoRemove for vanished
+files, file-info refresh (size/times/page count).
+`watch.rs` — `notify`-based watch folders with debounce (the
+`WatchFolder.Watch` flag drives it). `cr-engine` gained `zip` (dev)
+and `notify` deps.
+
+T6 done. `backup.rs` — `backup_to` (zip: comment "ComicRack Backup",
+`ComicDb.xml` entry + `Thumbnails/*`), `restore_backup` (extracts to
+the `.restore` slot), and the full create → destroy → restore flow
+test. Fixed a Phase 0 deviation: `.restore` is now `ComicDb.restore`
+(C# `DatabaseFile + ".restore"`), not `ComicDb.xml.restore` (ADR-013
+#4).
+
+T7 done. `group.rs` — grouper ladders with exact C# captions and sort
+keys (date ladder, count buckets, rating groups, alphabet groups,
+name groups incl. compressed form), plus `groupers()`/
+`compare_by_column()` registry tables. Full per-column groupers are
+completed in Phase 4 as the browser consumes them.
 
 ### Phase 1 progress (sessions of 2026-09-02)
 
@@ -174,9 +246,18 @@ Do not edit or reformat that fixture; byte identity is the test.
 | `crates/cr-image/src/thumbnail.rs` | `ThumbnailImage` port (512px, JPEG q60, serialization). |
 | `crates/cr-image/src/keys.rs` | ImageKey/PageKey/ThumbnailKey. |
 | `crates/cr-image/src/memory.rs`, `disk.rs` | LRU pools + fresh-format disk cache. |
-| `crates/cr-cli/src/main.rs` | `info`, `db-dump`, `db-roundtrip`, `pages`, `extract`, `thumb`, `rewrite`, `metron`. |
+| `crates/cr-engine/src/tokenizer.rs`, `text.rs` | `Tokenizer` + `rxTokenizer` scan port; Escape/Unescape/Intent. |
+| `crates/cr-engine/src/matcher/spec.rs` | All 97 concrete matchers: class name ↔ description ↔ kind (operators, argument count). |
+| `crates/cr-engine/src/matcher/query.rs` | `Match` string parse/render (byte-stable round trip). |
+| `crates/cr-engine/src/matcher/eval.rs`, `book_view.rs`, `series.rs`, `text_number.rs` | Matcher evaluation over `ComicBook` sets; computed properties; series statistics. |
+| `crates/cr-engine/src/smart_list.rs` | Smart-list evaluation (limits, filtered ids, base lists). |
+| `crates/cr-engine/src/sort.rs`, `group.rs` | .NET Random/Guid order, series comparers; grouper ladders + registry tables. |
+| `crates/cr-engine/src/queue.rs`, `queue_manager.rs`, `image_pool.rs` | ProcessingQueue port, ComicBook queues, the five ImagePool queues + render chain. |
+| `crates/cr-engine/src/scanner.rs`, `watch.rs` | Library scanner (add/move/remove parity) + notify watch folders. |
+| `crates/cr-engine/src/backup.rs` | Backup zip create/restore + the `.restore` flow. |
+| `crates/cr-cli/src/main.rs` | `info`, `db-dump`, `db-roundtrip`, `pages`, `extract`, `thumb`, `rewrite`, `metron`, `lists`. |
 
-Tests: `crates/cr-core/tests/golden_roundtrip.rs`, `crates/cr-cli/tests/cli.rs`. Fixtures: `tests/golden/` (read `tests/golden/README.md` before you touch the XML layer).
+Tests: `crates/cr-core/tests/golden_roundtrip.rs`, `crates/cr-engine/tests/realworld_query.rs` (the Phase 2 gate), `crates/cr-engine/tests/eval.rs`, `crates/cr-engine/tests/queues.rs`, `crates/cr-engine/tests/image_pool.rs`, `crates/cr-engine/tests/scanner_lib.rs`, `crates/cr-cli/tests/cli.rs`. Fixtures: `tests/golden/` (read `tests/golden/README.md` before you touch the XML layer). Fixtures: `tests/golden/` (read `tests/golden/README.md` before you touch the XML layer).
 
 ### How to verify
 
@@ -186,6 +267,7 @@ cargo clippy --workspace --all-targets -- -D warnings
 cargo test --workspace
 cargo run -p cr-cli -- db-roundtrip <ComicDb.xml>
 cargo run -p cr-cli -- db-dump <ComicDb.xml>
+cargo run -p cr-cli -- lists <ComicDb.xml>
 cargo run -p cr-cli -- info <comic-file>
 cargo run -p cr-cli -- pages <comic-file>
 cargo run -p cr-cli -- extract <comic-file> <page> -o <out>
@@ -201,7 +283,7 @@ Re-bless the `db-large.xml` snapshot after a deliberate model change: `CR_BLESS=
 ### Remaining Phase 0 work (in order)
 
 1. **Settings port (T2 tail).** Port `IniFile` (`cYo.Common/Runtime/IniFile.cs`), `EngineConfiguration` (`ComicRack.Engine/EngineConfiguration.cs`), and `SystemPaths` (`ComicRack.Engine/SystemPaths.cs`) into `cr-core`. Add settings tests. Note: `ComicNameInfo` currently hard-codes `OfValues = "of,von,de"` and the legacy-parser flag; wire these to `EngineConfiguration` when it lands. NOT a Phase 2 blocker — the C# defaults are hard-coded in the Phase 1/2 ports with comments.
-2. **Fresh-DB default lists.** NOW A PHASE 2 TASK — folded into `docs/phase-2-kickoff.md` T3 (it needs the matcher types from T1/T2).
+2. ~~**Fresh-DB default lists.**~~ DONE in Phase 2 T3 (`create_new()` seeds the default tree).
 3. ~~**MetronInfo mapping (T1 remainder).**~~ DONE in Phase 1 (`cr-core/model/metron_info.rs`).
 4. **Phase 0 exit review.** Confirm all acceptance criteria in `docs/phase-0-kickoff.md` (criteria #2 and #3 are already met — see the real-world validation record above). Record anything learned in `docs/decisions.md`.
 
@@ -229,6 +311,45 @@ Re-bless the `db-large.xml` snapshot after a deliberate model change: `CR_BLESS=
 - `7z l -slt` blocks and `djvm -l` lines are the two subprocess listing formats; both parse to `ProviderImageInfo` with index 0 (name is the read key). Missing subprocess binaries degrade to an empty page list (C# parse try/catch parity).
 - The real `ComicRack` files show `xsd` before `xsi` on roots even though net48 `XmlSerializer` defaults to xsi-first — the Emitter root() is xsd-first by evidence, keep it.
 - Clippy pedantry that will bite every new file: `as_chunks::<N>()` over `chunks_exact(N)`, no `format!` without args, no redundant field names, no identity ops in tests. Run `cargo clippy --workspace --all-targets -- -D warnings` before every commit.
+
+### Lessons from Phase 2 (do not re-learn these)
+
+- The query tokenizer's C# regex (`ComicSmartListItem.rxTokenizer`)
+  uses a variable-length lookbehind — no Rust regex crate accepts it.
+  The scanner in `tokenizer.rs` reproduces .NET semantics: multi-word
+  operators (`equals yes`, `is in the range`) arrive as ONE token via
+  the `(?<=\]\s+)[\w\s]+` run; `Match` after a `]` is alternation 3;
+  unclosed quotes/brackets end at the line end.
+- The C# renders the NEUTRAL (English) operator words in queries, not
+  the localized list ("equals yes", not "is Yes"). The `Intent` and
+  `ToString` newlines: group queries use `\r\n` (Windows), the
+  `Name`/`In` prelude uses literal `\n`.
+- ComicBook inherits ComicInfo in C#: unknown XML elements land in the
+  ComicInfo `UnparsedElements` capture wherever they appear. Matcher
+  leaves carry `IgnoreCase="false"` (only when false) and the
+  AllProperties matcher carries an `<Option>` element.
+- The duplicate matcher's equality has a C# ternary-precedence quirk:
+  with a year on either side only the year compares (ADR-013 #1).
+  Port the compiled behavior, not the intent.
+- `ReadPercentage = ((LastPageRead+1)*100/PageCount).Clamp(1,100)` with
+  0 when PageCount/LastPageRead <= 0; `Week` = CalendarWeekRule.FirstDay
+  with Monday (week 1 starts Jan 1 at its own weekday).
+- The .NET Framework `Random` is fully deterministic and portable —
+  ported as `DotNetRandom`; verify vectors against the dotnet/runtime
+  `CompatPrng` source, not from memory.
+- The real-world DB's `CacheStorage` fields hold the C#'s cached
+  evaluation results (comma-separated book ids; `Custom` = a mode that
+  persists nothing). They are free ground truth for engine tests — but
+  a naive regex over the XML crosses item boundaries; parse the
+  fixture with the cr-core model instead.
+- `notify`-based watch folders work in CI (inotify present); debounce
+  into scan runs, and only watch folders with `Watch="true"`.
+- Backup zip: comment "ComicRack Backup", entry `ComicDb.xml`,
+  `Thumbnails/*` for custom thumbnails; restore writes the
+  `ComicDb.restore` slot that `open_with_fallback` consumes.
+- Clippy: `field_reassign_with_default` fires on any
+  `let mut x = T::default(); x.field = ...` in tests — build struct
+  literals instead. Run the clippy line before every commit.
 
 ### Blockers / open questions
 

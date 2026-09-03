@@ -86,3 +86,37 @@ Append new ADRs at the end. Never rewrite the decision content of an existing en
 - **Context:** ComicRack CE writes `ComicInfo.xml`/`ComicBook.xml` into zip/tar archives through `7z u` subprocesses (`SevenZipEngine.UpdateComicInfos`, even when the reader engine is SharpZipLib). Phase 1 T5 asked for a native rewrite that preserves entry order and page content byte-for-byte.
 - **Decision:** CBZ/CBT write-back is a native full rewrite (same entry order, same decompressed content, temp file + atomic rename). CB7 stays a `7z u` subprocess (C# parity, ADR-007). The observable behavior matches ComicRack: only the metadata entries change.
 - **Consequences:** No `7z` dependency for CBZ/CBT metadata updates. Page content hashes are verified in `cr-cli rewrite`. Compression methods are preserved only where the original entries used Stored/Deflated; other methods re-encode to Deflate. A crash between temp write and rename leaves the original untouched plus a `.rewrite-<pid>` leftover that the next run overwrites.
+
+## ADR-013: The matcher engine keeps decompiled C# quirks as behavior
+
+- **Status:** accepted (2026-09-03)
+- **Context:** Porting the query language and matchers (Phase 2 T1/T2) surfaced several places where the decompiled C# code produces surprising behavior that nevertheless IS the observable behavior of shipped ComicRack.
+- **Decision:** Port the quirks verbatim, each with a comment in the source:
+  1. The duplicate comparer's ternary chain compiles to `yearCond ? yearEq : (monthCond ? monthEq : (dayCond ? dayEq : bwEq))` — when either book has a year, only the year is compared (black-and-white is dropped).
+  2. The series comparer's `IgnoreArticles` compares the SKIPPED-PREFIX lengths first; "The Batman" always sorts after "Batman", never reaching the number compare.
+  3. `List contains` builds the regex from `MatchValue`, so the BOOK value is the list and the match value is the member.
+  4. The `.restore` file is `ComicDb.restore` (no `.xml`), while `.bak` is `ComicDb.xml.bak`; `open_with_fallback` now matches.
+  5. Group headers with zero matchers render as bare `MATCH` and do not re-parse (C# parity).
+  6. The duplicate/grouping article lists use the English defaults shipped in ComicRack.ini (`the, der, die, das, le, la, les, l'`); the C# would throw on a fresh install because the ini value is unset.
+- **Consequences:** When the C# source is ambiguous, the decompiled artifact decides. A future C# fix (upstream) can be ported then, with a fixture test pinning the new behavior.
+
+## ADR-014: Queue identity, priorities, and the Rust threading model
+
+- **Status:** accepted (2026-09-03)
+- **Context:** `ProcessingQueue<K>` de-duplicates by `K` equality. The C# queues carry `ComicBook` instances (reference equality) and `ImageKey`s (field equality). The C# also has a scan-then-claim window where two workers could claim one item, and it sets `ThreadPriority` on Windows.
+- **Decision:** Generic `ProcessingQueue<K: Eq + Hash + Clone + Send>`; ComicBook queues use a pointer-identity `BookRef(Arc<ComicBook>)`. The claimed item is marked running INSIDE the lock (fixes the C# claim race; documented). Thread priorities are stored but not applied — Linux has no portable user-space mapping; the C# defaults are BelowNormal/Lowest. Stop joins workers; there are no thread aborts, so the current item always finishes (the C# flags are checked at the same points).
+- **Consequences:** Queue semantics are deterministic. The UI threads will run at normal priority until Phase 8 decides whether nice values are worth a libc dependency.
+
+## ADR-015: Smart-list random selection uses the .NET Framework Random
+
+- **Status:** accepted (2026-09-03)
+- **Context:** `ComicSmartListItem` persists `LimitRandomSeed` and shuffles with `Random(seed)` after an `OrderBy(Id)`. A different PRNG would select different books from the same database.
+- **Decision:** Port the .NET Framework subtractive generator (`CompatPrng`) and the `Guid.CompareTo` order (LE u32 / LE u16 / LE u16 / bytes) so a persisted seed reproduces the C# selection exactly.
+- **Consequences:** `cr-engine/src/sort.rs` hosts `DotNetRandom` and `guid_compare`; test vectors are pinned against an independent transliteration of the dotnet/runtime source.
+
+## ADR-016: The regex operator uses the regex/fancy-regex crates
+
+- **Status:** accepted (2026-09-03)
+- **Context:** The string matcher's `regex` operator compiles user-supplied .NET regex. A .NET-regex engine is not available in Rust.
+- **Decision:** Use `fancy-regex`; on compile error the matcher reports no match (C# stores null and does the same). Lookbehind-only differences remain a documented tolerance.
+- **Consequences:** Existing .NET patterns with simple syntax match identically; exotic features (e.g. variable-length lookbehind) degrade to no-match instead of failing the load.
