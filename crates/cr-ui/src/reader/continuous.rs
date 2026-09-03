@@ -59,6 +59,7 @@ pub struct ContinuousPageLayout {
     pages: Vec<PageEntry>,
     content_width: i32,
     total_height: i64,
+    preserve_source_size: bool,
 }
 
 impl ContinuousPageLayout {
@@ -112,7 +113,27 @@ impl ContinuousPageLayout {
             pages,
             content_width,
             total_height: top,
+            preserve_source_size,
         }
+    }
+
+    /// True when a rebuild with these inputs would produce the same
+    /// geometry (skip-rebuild check for `RebuildContinuousLayout`).
+    pub fn matches(
+        &self,
+        source_pages: &[SourcePage],
+        content_width: i32,
+        preserve_source_size: bool,
+    ) -> bool {
+        if self.content_width != content_width.max(1)
+            || self.preserve_source_size != preserve_source_size
+            || self.pages.len() != source_pages.len()
+        {
+            return false;
+        }
+        self.pages.iter().zip(source_pages).all(|(entry, source)| {
+            entry.page == source.page && entry.source_size == source.source_size
+        })
     }
 
     /// Full virtual height (may exceed `i32::MAX`).

@@ -220,6 +220,11 @@ struct ViewState {
     composition: Option<Composition>,
     /// Continuous strip layout.
     continuous: Option<ContinuousPageLayout>,
+    /// Last drawn continuous viewport top (virtual coordinates).
+    continuous_viewport_top: i64,
+    /// Cached strip content width (`continuousContentWidth` — reset
+    /// on open, fit change, or a decoded-size mismatch).
+    continuous_content_width: i32,
     /// Known page pixel sizes for the continuous layout.
     continuous_page_sizes: HashMap<usize, (i32, i32)>,
     fit: ImageFitMode,
@@ -297,7 +302,11 @@ impl ViewState {
             };
         }
         let image_size = self.composition.as_ref().map(|c| c.size).unwrap_or((0, 0));
-        let landscape = image_size.0 > image_size.1;
+        // `IsDoubleImage` parity: a composed spread is never treated
+        // as landscape (no auto-rotate, no FlipParts, no paired
+        // part grid — `flag` in the C# DisplayConfig getter).
+        let is_double = self.composition.as_ref().is_some_and(|c| c.pages.len() > 1);
+        let landscape = image_size.0 > image_size.1 && !is_double;
         DisplayConfig {
             view_size: view,
             image_size,
@@ -416,22 +425,38 @@ impl ViewState {
             None => false,
         };
         if !spread {
-            // `ImageInfo` single path: forced double widens a
-            // portrait page in Double layout (an empty slot on the
-            // right).
             let (w, h) = current.size;
-            let mut size = (w, h);
-            if two_page && self.page_layout == PageLayoutMode::Double && h > w {
-                size.0 += (w as f32 * (1.0 - self.double_page_overlap)) as i32;
-            }
-            if size.0 <= 0 || size.1 <= 0 {
+            if w <= 0 || h <= 0 {
                 return None;
             }
+            // `IsForcedDoublePage` (Double mode, portrait page, no
+            // second page): the C# draws the page once at natural
+            // aspect in one slot — right for normal pages, left for
+            // the cover (`a`/`b` flags after the flag3 swap) — the
+            // other slot stays background. No stretching.
+            if two_page && self.page_layout == PageLayoutMode::Double && h > w {
+                let extra = (w as f32 * (1.0 - self.double_page_overlap)) as i32;
+                let comp_w = w + extra;
+                let cover_left = self.page == 0;
+                let dest = if cover_left {
+                    Rect::new(0, 0, w, h)
+                } else {
+                    Rect::new(comp_w - w, 0, w, h)
+                };
+                return Some(Composition {
+                    size: (comp_w, h),
+                    pages: vec![PagePlacement {
+                        page: self.page,
+                        dest,
+                        source: (0, 0, w, h),
+                    }],
+                });
+            }
             return Some(Composition {
-                size,
+                size: (w, h),
                 pages: vec![PagePlacement {
                     page: self.page,
-                    dest: Rect::new(0, 0, size.0, size.1),
+                    dest: Rect::new(0, 0, w, h),
                     source: (0, 0, w, h),
                 }],
             });
@@ -464,9 +489,12 @@ impl ViewState {
             });
         }
         // Original fit keeps native widths (max width is the content
-        // width); other fits scale to the current page's width.
+        // width); other fits scale to the cached content width
+        // (`GetContinuousContentWidth` caches until invalidated).
         let preserve = self.fit == ImageFitMode::Original;
-        let content_width = if preserve {
+        let content_width = if self.continuous_content_width > 0 {
+            self.continuous_content_width
+        } else if preserve {
             sources
                 .iter()
                 .filter(|s| s.source_size.0 > 0)
@@ -480,6 +508,15 @@ impl ViewState {
                 .filter(|w| *w > 0)
                 .unwrap_or(CONTINUOUS_FALLBACK_WIDTH)
         };
+        self.continuous_content_width = content_width;
+        // Rebuilds only when the inputs changed (the C# schedules
+        // rebuilds on a size mismatch; rebuilding per decoded page
+        // would reset the scroll position).
+        if let Some(layout) = &self.continuous {
+            if layout.matches(&sources, content_width, preserve) {
+                return;
+            }
+        }
         let anchor = self.continuous_viewport_anchor();
         let layout = ContinuousPageLayout::new(&sources, content_width, preserve);
         let y = layout.resolve_anchor(anchor);
@@ -489,10 +526,12 @@ impl ViewState {
 
     /// `CaptureContinuousViewportAnchor` — anchored at the viewport
     /// top (the current part offset).
+    /// `CaptureContinuousViewportAnchor` — anchored at the drawn
+    /// viewport top (`base.PagePartBounds` parity: the part position
+    /// carries the scroll, not the offset).
     fn continuous_viewport_anchor(&self) -> super::continuous::Anchor {
         if let Some(layout) = &self.continuous {
-            let top = i64::from(self.visible.offset.1);
-            return layout.capture_anchor(top);
+            return layout.capture_anchor(self.continuous_viewport_top);
         }
         super::continuous::Anchor::new(self.page, 0.0)
     }
@@ -600,6 +639,8 @@ impl PageView {
             wanted: VecDeque::new(),
             composition: None,
             continuous: None,
+            continuous_viewport_top: 0,
+            continuous_content_width: 0,
             continuous_page_sizes: HashMap::new(),
             fit: ImageFitMode::Fit,
             fit_only_if_oversized: false,
@@ -611,7 +652,9 @@ impl PageView {
             background_mode: ImageBackgroundMode::Color,
             paper: None,
             two_page_navigation: true,
-            auto_rotate: true,
+            // `AutoRotate` defaults to false (workspace
+            // `[DefaultValue(false)]`; the MainForm toggles it).
+            auto_rotate: false,
             rotation: ImageRotation::None,
             image_zoom: 1.0,
             visible: ImagePartInfo::EMPTY,
@@ -665,6 +708,7 @@ impl PageView {
             st.loaded.clear();
             st.continuous = None;
             st.continuous_page_sizes.clear();
+            st.continuous_content_width = 0;
             st.composition = None;
             st.visible = ImagePartInfo::EMPTY;
             st.image_zoom = 1.0;
@@ -745,14 +789,45 @@ impl PageView {
         st.invalidate();
         st.queue_for(page);
         st.transition_anim = snapshot;
-        let needs_pump = st.in_flight.is_none();
+        let idle = st.in_flight.is_none();
         drop(st);
-        if needs_pump {
+        if idle {
             self.state.borrow_mut().dispatch_next();
+            let still_idle = self.state.borrow().in_flight.is_none();
+            if still_idle {
+                // Every needed page is already decoded — compose now
+                // (navigating back to cached pages never waits for a
+                // load that will not happen).
+                self.finish_page_setup();
+            }
             self.start_pump();
         }
         self.notify_page();
         true
+    }
+
+    /// Recomposes after the decode set for the current page changed
+    /// (shared by `on_page_loaded` and the already-cached path).
+    fn finish_page_setup(&self) {
+        let enter_at_last = {
+            let mut st = self.state.borrow_mut();
+            st.recompose();
+            let ready = st.composition.is_some();
+            if !ready {
+                false
+            } else {
+                st.enter_at_last && st.page_layout != PageLayoutMode::Continuous
+            }
+        };
+        if enter_at_last {
+            let mut st = self.state.borrow_mut();
+            let (w, h) = (self.area.width(), self.area.height());
+            let count = st.display((w, h)).part_count;
+            st.visible = ImagePartInfo::new(count - 1, (0, 0));
+            st.enter_at_last = false;
+            st.invalidate();
+        }
+        self.area.queue_draw();
     }
 
     /// Applies a finished background load; recomposes and dispatches
@@ -780,20 +855,6 @@ impl PageView {
                         auto_background: loaded.auto_background,
                     },
                 );
-                st.recompose();
-                // Backwards entry lands on the last part of the new
-                // page (`CurrentPageChanged` parity; paged modes
-                // only — continuous stays at the page top).
-                if st.enter_at_last
-                    && st.page_layout != PageLayoutMode::Continuous
-                    && st.composition.is_some()
-                {
-                    let (w, h) = (self.area.width(), self.area.height());
-                    let count = st.display((w, h)).part_count;
-                    st.visible = ImagePartInfo::new(count - 1, (0, 0));
-                    st.enter_at_last = false;
-                    st.invalidate();
-                }
                 // Continuous mode keeps `LastPageRead` ahead.
                 if st.page_layout == PageLayoutMode::Continuous {
                     st.last_read = st.last_read.max(loaded.page);
@@ -801,7 +862,7 @@ impl PageView {
             }
             st.dispatch_next();
         }
-        self.area.queue_draw();
+        self.finish_page_setup();
     }
 
     /// Polls the worker channel until the pending load lands.
@@ -845,6 +906,11 @@ impl PageView {
 
     /// Next part or page. `true` when something moved.
     pub fn next(&self) -> bool {
+        // Continuous mode scrolls one viewport (`DisplayPart(Next)`
+        // with the strip anchor following).
+        if self.state.borrow().page_layout == PageLayoutMode::Continuous {
+            return self.display_part(PartPageToDisplay::Next);
+        }
         let display = self.resolved_display();
         // Empty display: the current page has no image yet (in
         // flight) — keep advancing the book, one page per press.
@@ -855,13 +921,32 @@ impl PageView {
         let visible = self.state.borrow().visible;
         if display.is_end_part(visible) {
             let page = self.state.borrow().page;
-            return self.goto_page(page + 1, false);
+            return self.goto_page(page + self.page_step(), false);
         }
         self.display_part(PartPageToDisplay::Next)
     }
 
+    /// `DisplayNextPage` PagingMode.Double: two pages per turn while
+    /// a spread is displayed, one from a single-page view.
+    fn page_step(&self) -> usize {
+        let st = self.state.borrow();
+        let two_page = matches!(
+            st.page_layout,
+            PageLayoutMode::Double | PageLayoutMode::DoubleAdaptive
+        );
+        let spread = st.composition.as_ref().is_some_and(|c| c.pages.len() > 1);
+        if two_page && spread {
+            2
+        } else {
+            1
+        }
+    }
+
     /// Previous part or page. `true` when something moved.
     pub fn previous(&self) -> bool {
+        if self.state.borrow().page_layout == PageLayoutMode::Continuous {
+            return self.display_part(PartPageToDisplay::Previous);
+        }
         let display = self.resolved_display();
         if display.is_empty() {
             let page = self.state.borrow().page;
@@ -876,7 +961,8 @@ impl PageView {
             if page == 0 {
                 return false;
             }
-            return self.goto_page(page - 1, true);
+            let step = self.page_step();
+            return self.goto_page(page.saturating_sub(step), true);
         }
         self.display_part(PartPageToDisplay::Previous)
     }
@@ -1018,7 +1104,8 @@ impl PageView {
         st.image_zoom = 1.0;
         st.visible = ImagePartInfo::EMPTY;
         // Continuous layouts depend on the fit (Original preserves
-        // source sizes); recompose rebuilds them with the anchor.
+        // source sizes); the content width re-derives.
+        st.continuous_content_width = 0;
         st.recompose();
         drop(st);
         self.area.queue_draw();
@@ -1429,6 +1516,16 @@ fn draw_frame(
             let old = (anim.old.clone(), anim.old_surfaces.clone());
             let old_display = anim.old_display.clone();
             let new_comp = st.composition.clone();
+            let background = match st.background_mode {
+                ImageBackgroundMode::Auto => st
+                    .loaded
+                    .get(&st.page)
+                    .map(|pg| pg.auto_background)
+                    .map(|(r, g, b)| (f64::from(r), f64::from(g), f64::from(b)))
+                    .unwrap_or(DEFAULT_BACKGROUND),
+                _ => DEFAULT_BACKGROUND,
+            };
+            let paper = st.paper.clone();
             drop(st);
 
             draw_transition_frame(
@@ -1442,6 +1539,8 @@ fn draw_frame(
                 effect,
                 backward,
                 p,
+                background,
+                paper.as_ref(),
             );
             if anim_done {
                 state.borrow_mut().transition_anim = None;
@@ -1467,7 +1566,24 @@ fn draw_frame(
             };
             let paper = st.paper.clone();
             let paper_mode = st.background_mode == ImageBackgroundMode::Texture;
-            draw_composition(ctx, &display, &comp, &st.loaded, paper.as_ref(), paper_mode);
+            let background = match st.background_mode {
+                ImageBackgroundMode::Auto => st
+                    .loaded
+                    .get(&st.page)
+                    .map(|pg| pg.auto_background)
+                    .map(|(r, g, b)| (f64::from(r), f64::from(g), f64::from(b)))
+                    .unwrap_or(DEFAULT_BACKGROUND),
+                _ => DEFAULT_BACKGROUND,
+            };
+            draw_composition(
+                ctx,
+                &display,
+                &comp,
+                &st.loaded,
+                paper.as_ref(),
+                paper_mode,
+                background,
+            );
         }
 
         // Continuous: the logical page follows the viewport top.
@@ -1511,6 +1627,7 @@ fn draw_composition(
     loaded: &HashMap<usize, LoadedPageData>,
     paper: Option<&cairo::ImageSurface>,
     paper_mode: bool,
+    background: (f64, f64, f64),
 ) {
     let bounds = display.part_bounds;
     let m = &display.mat;
@@ -1525,6 +1642,12 @@ fn draw_composition(
     // Clip to the part source window.
     ctx.rectangle(0.0, 0.0, f64::from(bounds.w), f64::from(bounds.h));
     ctx.clip();
+    // The frame owns its background (`RenderImageSafe` with
+    // background): blank slots must not show whatever rendered
+    // underneath (the previous frame during transitions).
+    ctx.set_source_rgb(background.0, background.1, background.2);
+    ctx.rectangle(0.0, 0.0, f64::from(bounds.w), f64::from(bounds.h));
+    let _ = ctx.fill();
     for placement in &comp.pages {
         let Some(data) = loaded.get(&placement.page) else {
             continue;
@@ -1570,6 +1693,9 @@ fn draw_continuous(ctx: &cairo::Context, display: &DisplayOutput, st: &mut ViewS
         return;
     };
     let bounds = display.part_bounds;
+    // The viewport top lives in virtual coordinates (part position +
+    // offset) — the anchor for layout rebuilds reads it from here.
+    st.continuous_viewport_top = i64::from(bounds.y);
     let viewport = Rect::new(bounds.x, bounds.y, bounds.w, bounds.h);
     let visible: Vec<(usize, Rect)> = layout
         .get_visible(&viewport)
@@ -1592,7 +1718,13 @@ fn draw_continuous(ctx: &cairo::Context, display: &DisplayOutput, st: &mut ViewS
             continue;
         };
         ctx.save().ok();
-        ctx.translate(f64::from(page_bounds.x), f64::from(page_bounds.y));
+        // The part matrix is part-local: strip coordinates shift by
+        // the part window origin (`DrawContinuousImage` maps the
+        // source-window intersection the same way).
+        ctx.translate(
+            f64::from(page_bounds.x - viewport.x),
+            f64::from(page_bounds.y - viewport.y),
+        );
         let kw = f64::from(page_bounds.w) / f64::from(data.size.0.max(1));
         let kh = f64::from(page_bounds.h) / f64::from(data.size.1.max(1));
         ctx.scale(kw, kh);
@@ -1607,6 +1739,7 @@ fn draw_continuous(ctx: &cairo::Context, display: &DisplayOutput, st: &mut ViewS
 /// One animation frame (`FadeInBlending` / the scroll blends). The
 /// old frame fades/slides out while the new one fades/slides in.
 #[allow(clippy::too_many_arguments)] // mirrors the C# blender signature
+#[allow(clippy::type_complexity)]
 fn draw_transition_frame(
     ctx: &cairo::Context,
     width: i32,
@@ -1618,15 +1751,13 @@ fn draw_transition_frame(
     effect: PageTransitionEffect,
     backward: bool,
     p: f64,
+    background: (f64, f64, f64),
+    paper: Option<&cairo::ImageSurface>,
 ) {
     let (old_comp, old_surfaces) = old;
     // Background.
     ctx.identity_matrix();
-    ctx.set_source_rgb(
-        DEFAULT_BACKGROUND.0,
-        DEFAULT_BACKGROUND.1,
-        DEFAULT_BACKGROUND.2,
-    );
+    ctx.set_source_rgb(background.0, background.1, background.2);
     ctx.rectangle(0.0, 0.0, f64::from(width), f64::from(height));
     let _ = ctx.fill();
 
@@ -1667,12 +1798,28 @@ fn draw_transition_frame(
             };
             ctx.save().ok();
             ctx.translate(dx_old, dy_old);
-            draw_composition(ctx, old_display, old_comp, &old_loaded, None, false);
+            draw_composition(
+                ctx,
+                old_display,
+                old_comp,
+                &old_loaded,
+                paper,
+                false,
+                background,
+            );
             ctx.restore().ok();
             if let (Some(comp), Some(display)) = (new_comp, new_display.as_ref()) {
                 ctx.save().ok();
                 ctx.translate(dx_new, dy_new);
-                draw_composition(ctx, display, comp, &state.borrow().loaded, None, false);
+                draw_composition(
+                    ctx,
+                    display,
+                    comp,
+                    &state.borrow().loaded,
+                    paper,
+                    false,
+                    background,
+                );
                 ctx.restore().ok();
             }
         }
@@ -1680,11 +1827,27 @@ fn draw_transition_frame(
         // Paging (the bow animation needs the GL renderer, ADR-008).
         _ => {
             ctx.save().ok();
-            draw_composition(ctx, old_display, old_comp, &old_loaded, None, false);
+            draw_composition(
+                ctx,
+                old_display,
+                old_comp,
+                &old_loaded,
+                paper,
+                false,
+                background,
+            );
             ctx.restore().ok();
             if let (Some(comp), Some(display)) = (new_comp, new_display.as_ref()) {
                 ctx.push_group();
-                draw_composition(ctx, display, comp, &state.borrow().loaded, None, false);
+                draw_composition(
+                    ctx,
+                    display,
+                    comp,
+                    &state.borrow().loaded,
+                    paper,
+                    false,
+                    background,
+                );
                 ctx.pop_group_to_source().ok();
                 ctx.paint_with_alpha(p).ok();
             }
