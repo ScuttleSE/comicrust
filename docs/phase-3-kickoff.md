@@ -4,6 +4,54 @@ Goal: comicrust opens a comic file in a GTK4 window and renders it comfortably �
 
 Read first: `AGENTS.md` (rules), `docs/port-plan.md` (architecture, tech mapping), `docs/decisions.md` (ADR-004: no libadwaita; ADR-008: cairo first, GL later). Phase 2's kickoff records the engine entry points you will call.
 
+## Status (2026-09-03) — T1-T3 COMPLETE, T4-T6 REMAIN
+
+Done and user-tested (each task ended with a manual user test on the
+user's machine — keep that loop for T4-T6):
+
+- **T1.** `cr-ui` app shell (`app.rs`, `theme.rs`), reader window,
+  `cr-app` wiring. Opens a comic from the command line
+  (GApplication `open` signal) or the file chooser. GTK 4.0-era API
+  only (see ADR-018).
+- **T2.** `reader/display.rs` — the `ImageDisplayControl`
+  `DisplayOutput`/`DisplayOutputConfig` port as pure, unit-tested
+  geometry (fit modes with anamorphic tolerance, part grid,
+  binding-edge logic, RTL, rotation, clamped offsets, interpolate).
+  `reader/page_view.rs` — the page widget: cairo draw through the
+  part transform, background decode worker (latest-wins mailbox +
+  `timeout_add_local` pump), logical-page-ahead navigation, zoom
+  around the inverse-transformed point, pan with drag deltas.
+- **T3.** The `ComicDisplayControl` layer in the same widget:
+  `reader/continuous.rs` (`ContinuousPageLayout` port), spread
+  composition (`compose_spread`: cover-right rule, RTL swap,
+  `DoublePageOverlap` trim, forced-double slot), layout modes
+  Single/Double/DoubleAdaptive/Continuous, Fade/LeftRight/TopDown
+  transitions (Paging degrades to Fade until GL), paper texture
+  (bundled `cr-ui/assets/papers`), Auto/Color/Texture backgrounds.
+  Unit tests for the geometry: part grid, spread rules, anchors,
+  continuous visibility.
+
+Remaining Phase 3 tasks (start at T4; read the lessons in
+`AGENTS.md` first):
+
+- **T4.** Input: port the real `MainForm` reader accelerators and
+  mouse map (the current keys 1/2/3/4, P, F, R, +/-, arrows are
+  documented test hooks, not the C# map).
+- **T5.** Fullscreen + overlay chrome, reader tabs/undocked windows,
+  reading-state write-back (`CurrentPage`/`LastPageRead`/
+  `OpenedTime`/`OpenedCount` into ComicBook; `last_read` already
+  tracks in the widget).
+- **T6.** Magnifier (cairo second-draw pass acceptable), error page +
+  error thumbnail, page pre-caching through the Phase 2 `ImagePool`
+  queues (replace the per-widget latest-wins worker with the real
+  fast/slow queues when it lands).
+
+Architecture notes for T4-T6 (ADR-017): one widget (`PageView`)
+renders one virtual image through the part machinery; the comic layer
+composes pages into that virtual image (single, spread, strip).
+Continuous mode keeps the whole scroll in part 0's offset — do not
+reintroduce part-index stepping there.
+
 ## What exists when you start
 
 | Need | Where |

@@ -120,3 +120,17 @@ Append new ADRs at the end. Never rewrite the decision content of an existing en
 - **Context:** The string matcher's `regex` operator compiles user-supplied .NET regex. A .NET-regex engine is not available in Rust.
 - **Decision:** Use `fancy-regex`; on compile error the matcher reports no match (C# stores null and does the same). Lookbehind-only differences remain a documented tolerance.
 - **Consequences:** Existing .NET patterns with simple syntax match identically; exotic features (e.g. variable-length lookbehind) degrade to no-match instead of failing the load.
+
+## ADR-017: The reader is one virtual image driven by the part machinery
+
+- **Status:** accepted (2026-09-03)
+- **Context:** The C# reader nests `ComicDisplayControl` (page management, spreads, continuous strip) inside `ImageDisplayControl` (one image, fit/zoom/pan/rotation, part grid). Porting two widget layers would duplicate the geometry. The decompiled C# also reveals non-obvious mechanics: the part transform is part-local (source rectangles shift by the part window origin), and continuous mode keeps the whole scroll in part 0's offset (`GetClampedPartOffset` clamps against the full image, not the grid row).
+- **Decision:** One widget (`cr-ui/src/reader/page_view.rs`) renders one *virtual image* through the part machinery from `reader/display.rs`. The comic layer composes pages into that virtual image: a single page, a two-page spread (`compose_spread`, pure and unit-tested), or the continuous strip (`reader/continuous.rs`, the `ContinuousPageLayout` port). The widget never subclasses a GObject; state lives in `Rc<RefCell<ViewState>>` captured by GTK closures (main-thread only). Pages decode on a background worker (latest-wins mailbox + std mpsc + a `timeout_add_local` pump) so the logical page advances per press while images trail, matching the C# book/display split. Cairo renders via `gdk`-independent `ImageSurface` + the `DisplayOutput` matrix (GDI+ element order maps 1:1 onto `cairo::Matrix::new`).
+- **Consequences:** All layout decisions are pure functions with unit tests (fit modes, part grid, spread rules, anchors). The GL renderer (ADR-008) replaces only the draw call behind the same geometry. Widget lifecycle pitfalls (RefCell re-entrancy, glib channel absence) are recorded in the AGENTS.md lessons.
+
+## ADR-018: gtk4-rs stays on the GTK 4.0-era API surface for now
+
+- **Status:** accepted (2026-09-03)
+- **Context:** The CI runner (Debian, `debian-go`) has "GTK4 dev libraries" of unknown version. gtk4-rs 0.11 gates newer APIs (FileDialog, `CssProvider::load_from_string`, `Picture::content-fit`) behind version features; enabling them risks link failures against an older system GTK. The dev machine runs GTK 4.22.
+- **Decision:** Use only the GTK 4.0-era API surface: `FileChooserNative` (not `FileDialog`), `CssProvider::load_from_data` (not `load_from_string`), no `v4_*` cargo features. Revisit when the CI runner's GTK version is confirmed (or the settings port decides the minimum supported GTK); then enable the matching feature flags in one commit.
+- **Consequences:** Some GTK 4.10+ conveniences are off the table for now. Behavior differences between the dev machine (4.22) and CI are possible at runtime; the headless CI cannot run GTK apps anyway (no display), so UI smoke tests stay manual/Xvfb-based.
