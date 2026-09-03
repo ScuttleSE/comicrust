@@ -318,3 +318,10 @@ C# spec: `PagesView.cs` (833), `ComicPagesView.cs` (241),
   and the launcher saves on close (`MainFormFormClosed` → `CleanUp`
   parity). Probes: the app-shaped scan (real 255-book storage + the
   user's folder) yields moved=23 with reading state kept.
+  **T1 USER-TESTED, ALL PASS (2026-09-03).** The re-link flow
+  ("23 re-linked", persisted after launcher close), the reading-state
+  resume on a library comic, the temporary-book reset, and the
+  lists ground truth (Read 1 / Never Read 254) all verified on the
+  user's machine. Note: closing the reader window currently closes
+  the whole app (the browser pane is T5) — expected, the exit save
+  runs there.
