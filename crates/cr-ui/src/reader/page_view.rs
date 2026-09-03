@@ -985,6 +985,55 @@ impl PageView {
         if display.is_empty() {
             return false;
         }
+        // Continuous mode scrolls part 0's offset across the whole
+        // strip (the C# keeps the scroll in the offset; the clamp in
+        // `GetClampedPartOffset` runs against the full image). One
+        // step = one viewport height.
+        if st.page_layout == PageLayoutMode::Continuous {
+            let tile = display.get_part(0).h;
+            let total = st
+                .continuous
+                .as_ref()
+                .map(|l| l.total_height())
+                .unwrap_or(0);
+            let max_top = (total - i64::from(tile)).max(0);
+            // Derive from the visible state (always part 0 in this
+            // model); the drawn-top fallback stays for rebuilds.
+            let current = i64::from(st.visible.offset.1).min(max_top);
+            let top = match ptd {
+                PartPageToDisplay::Next => current + i64::from(tile),
+                PartPageToDisplay::Previous => current - i64::from(tile),
+                PartPageToDisplay::First => 0,
+                PartPageToDisplay::Last => max_top,
+            }
+            .clamp(0, max_top);
+            if top == current {
+                return false;
+            }
+            st.visible = ImagePartInfo::new(0, (0, top as i32));
+            st.invalidate();
+            let layout = st.continuous.as_ref();
+            let hit = layout
+                .and_then(|l| l.hit_test(top))
+                .map(|hit_page| hit_page.page);
+            if let Some(hit) = hit.filter(|hit| *hit != st.page) {
+                st.page = hit;
+                st.last_read = st.last_read.max(hit);
+                st.queue_for(hit);
+                let idle = st.in_flight.is_none();
+                drop(st);
+                if idle {
+                    self.state.borrow_mut().dispatch_next();
+                    self.start_pump();
+                }
+                self.notify_page();
+                self.area.queue_draw();
+                return true;
+            }
+            drop(st);
+            self.area.queue_draw();
+            return true;
+        }
         let visible = st.visible;
         let target = match ptd {
             PartPageToDisplay::First => {
@@ -1016,20 +1065,6 @@ impl PageView {
         };
         st.visible = target;
         st.invalidate();
-        // Continuous mode: the visible page follows the viewport.
-        if st.page_layout == PageLayoutMode::Continuous {
-            let layout = st.continuous.as_ref();
-            let top = i64::from(target.offset.1);
-            let hit = layout.and_then(|l| l.hit_test(top)).map(|h| h.page);
-            if let Some(hit) = hit.filter(|hit| *hit != st.page) {
-                st.page = hit;
-                st.last_read = st.last_read.max(hit);
-                drop(st);
-                self.notify_page();
-                self.area.queue_draw();
-                return true;
-            }
-        }
         drop(st);
         self.area.queue_draw();
         true
@@ -1657,7 +1692,13 @@ fn draw_composition(
             continue;
         }
         ctx.save().ok();
-        ctx.translate(f64::from(placement.dest.x), f64::from(placement.dest.y));
+        // The part matrix is part-local: composition coordinates
+        // shift by the part window origin (same as the continuous
+        // strip placement).
+        ctx.translate(
+            f64::from(placement.dest.x - bounds.x),
+            f64::from(placement.dest.y - bounds.y),
+        );
         ctx.scale(
             f64::from(placement.dest.w) / f64::from(sw),
             f64::from(placement.dest.h) / f64::from(sh),
@@ -1772,6 +1813,9 @@ fn draw_transition_frame(
 
     match effect {
         PageTransitionEffect::LeftRight | PageTransitionEffect::TopDown => {
+            // `PageForward`/`PageBackward`: the old frame stays put;
+            // the new one slides in from the leading edge (right/down
+            // forward, left/up backward).
             let horizontal = effect == PageTransitionEffect::LeftRight;
             let span = if horizontal {
                 f64::from(width)
@@ -1779,25 +1823,12 @@ fn draw_transition_frame(
                 f64::from(height)
             };
             let slide = span * (1.0 - p);
-            // Forward: the old frame exits, the new one enters from
-            // the edge. Backward: reversed (`PageBackward` mirrors
-            // `PageForward`).
-            let (dx_old, dy_old) = match (horizontal, backward) {
-                (true, false) => (-slide, 0.0),
-                (true, true) => (slide, 0.0),
-                (false, false) => (0.0, -slide),
-                (false, true) => (0.0, slide),
+            let (dx_new, dy_new) = match (horizontal, backward) {
+                (true, false) => (slide, 0.0),
+                (true, true) => (-slide, 0.0),
+                (false, false) => (0.0, slide),
+                (false, true) => (0.0, -slide),
             };
-            let (dx_new, dy_new) = if backward {
-                match horizontal {
-                    true => (-slide, 0.0),
-                    false => (0.0, -slide),
-                }
-            } else {
-                (0.0, 0.0)
-            };
-            ctx.save().ok();
-            ctx.translate(dx_old, dy_old);
             draw_composition(
                 ctx,
                 old_display,
@@ -1807,7 +1838,6 @@ fn draw_transition_frame(
                 false,
                 background,
             );
-            ctx.restore().ok();
             if let (Some(comp), Some(display)) = (new_comp, new_display.as_ref()) {
                 ctx.save().ok();
                 ctx.translate(dx_new, dy_new);
@@ -1825,8 +1855,10 @@ fn draw_transition_frame(
         }
         // Fade covers None (no-op at the endpoints) and degrades
         // Paging (the bow animation needs the GL renderer, ADR-008).
+        // Both frames fade — the old one OUT (`FadeInBlending`), so
+        // areas only the old frame covered return to background.
         _ => {
-            ctx.save().ok();
+            ctx.push_group();
             draw_composition(
                 ctx,
                 old_display,
@@ -1836,7 +1868,8 @@ fn draw_transition_frame(
                 false,
                 background,
             );
-            ctx.restore().ok();
+            ctx.pop_group_to_source().ok();
+            ctx.paint_with_alpha(1.0 - p).ok();
             if let (Some(comp), Some(display)) = (new_comp, new_display.as_ref()) {
                 ctx.push_group();
                 draw_composition(
