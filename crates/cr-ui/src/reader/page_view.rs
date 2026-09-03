@@ -987,7 +987,11 @@ impl PageView {
     /// `ComicDisplay.DisplayNextPageOrPart`: next part, at the part
     /// edge the next page (`PagingMode.Double | Walled`).
     pub fn display_next_page_or_part(&self, force_new_page: bool) {
-        if self.state.borrow().page_layout == PageLayoutMode::Continuous {
+        // Borrow hoisted: an `if`-condition borrow would live to the
+        // end of the statement (edition 2021) and collide with the
+        // body's `borrow_mut`.
+        let continuous = self.state.borrow().page_layout == PageLayoutMode::Continuous;
+        if continuous {
             // Continuous mode scrolls one viewport per step
             // (`DisplayPart(Next)` on the strip); page wall does not
             // apply (single part).
@@ -1004,7 +1008,8 @@ impl PageView {
 
     /// `ComicDisplay.DisplayPreviousPageOrPart`.
     pub fn display_previous_page_or_part(&self, force_new_page: bool) {
-        if self.state.borrow().page_layout == PageLayoutMode::Continuous {
+        let continuous = self.state.borrow().page_layout == PageLayoutMode::Continuous;
+        if continuous {
             if !self.eat_scrolling() {
                 self.display_part(PartPageToDisplay::Previous);
             }
@@ -1134,12 +1139,23 @@ impl PageView {
         if self.eat_scrolling() {
             return;
         }
-        if self.state.borrow().page_layout == PageLayoutMode::Continuous {
+        // Borrows hoisted out of the conditions — a condition borrow
+        // would live to the end of the statement and collide with the
+        // calls below.
+        let (continuous, auto, browse) = {
+            let st = self.state.borrow();
+            (
+                st.page_layout == PageLayoutMode::Continuous,
+                st.auto_scrolling,
+                st.scrolling_does_browse,
+            )
+        };
+        if continuous {
             self.scroll_up_lines(lines, false);
-        } else if self.state.borrow().auto_scrolling {
+        } else if auto {
             self.display_previous_page_or_part(false);
         } else {
-            self.scroll_up_lines(lines, self.state.borrow().scrolling_does_browse);
+            self.scroll_up_lines(lines, browse);
         }
     }
 
@@ -1147,12 +1163,20 @@ impl PageView {
         if self.eat_scrolling() {
             return;
         }
-        if self.state.borrow().page_layout == PageLayoutMode::Continuous {
+        let (continuous, auto, browse) = {
+            let st = self.state.borrow();
+            (
+                st.page_layout == PageLayoutMode::Continuous,
+                st.auto_scrolling,
+                st.scrolling_does_browse,
+            )
+        };
+        if continuous {
             self.scroll_down_lines(lines, false);
-        } else if self.state.borrow().auto_scrolling {
+        } else if auto {
             self.display_next_page_or_part(false);
         } else {
-            self.scroll_down_lines(lines, self.state.borrow().scrolling_does_browse);
+            self.scroll_down_lines(lines, browse);
         }
     }
 
@@ -1163,7 +1187,8 @@ impl PageView {
         if self.eat_scrolling() {
             return;
         }
-        if self.state.borrow().auto_scrolling {
+        let auto = self.state.borrow().auto_scrolling;
+        if auto {
             self.display_previous_page_or_part(false);
         } else {
             let (lw, _) = self.line_size();
@@ -1175,7 +1200,8 @@ impl PageView {
         if self.eat_scrolling() {
             return;
         }
-        if self.state.borrow().auto_scrolling {
+        let auto = self.state.borrow().auto_scrolling;
+        if auto {
             self.display_next_page_or_part(false);
         } else {
             let (lw, _) = self.line_size();
@@ -1722,13 +1748,16 @@ impl PageView {
                     None => 0.0,
                 }
             };
-            {
-                let mut st = view.state.borrow_mut();
-                if !st.drag_action && dist > DRAG_THRESHOLD {
-                    st.drag_action = true;
-                    view.cancel_pending_click();
-                    gesture.set_state(gtk4::EventSequenceState::Claimed);
-                }
+            // Decide first, act with the borrow released — the state
+            // must not be held while cancel_pending_click borrows.
+            let cross = {
+                let st = view.state.borrow();
+                !st.drag_action && dist > DRAG_THRESHOLD
+            };
+            if cross {
+                view.state.borrow_mut().drag_action = true;
+                view.cancel_pending_click();
+                gesture.set_state(gtk4::EventSequenceState::Claimed);
             }
             let mut st = view.state.borrow_mut();
             if !st.drag_action {
@@ -1794,8 +1823,12 @@ impl PageView {
         });
         let view = self.clone();
         controller.connect_released(move |_, n, _x, _y| {
-            if n == 1 && !view.state.borrow().drag_action {
-                view.schedule_click();
+            // Borrow hoisted out of the condition (see scroll_up).
+            if n == 1 {
+                let action = view.state.borrow().drag_action;
+                if !action {
+                    view.schedule_click();
+                }
             }
         });
         self.area.add_controller(controller);
@@ -1877,14 +1910,16 @@ impl PageView {
             "Original" => self.set_fit_mode(ImageFitMode::Original),
             // `SetPageFitAll`/`SetPageFitHeight` skip in continuous mode.
             "FitAll" => {
-                if self.state.borrow().page_layout != PageLayoutMode::Continuous {
+                let continuous = self.state.borrow().page_layout == PageLayoutMode::Continuous;
+                if !continuous {
                     self.set_fit_mode(ImageFitMode::Fit);
                 }
             }
             "FitWidth" => self.set_fit_mode(ImageFitMode::FitWidth),
             "FitWidthAdaptive" => self.set_fit_mode(ImageFitMode::FitWidthAdaptive),
             "FitHeight" => {
-                if self.state.borrow().page_layout != PageLayoutMode::Continuous {
+                let continuous = self.state.borrow().page_layout == PageLayoutMode::Continuous;
+                if !continuous {
                     self.set_fit_mode(ImageFitMode::FitHeight);
                 }
             }
@@ -1901,17 +1936,20 @@ impl PageView {
             // The MainForm guards the rotation commands against
             // continuous mode (the strip keeps its own geometry).
             "RotateC" => {
-                if self.state.borrow().page_layout != PageLayoutMode::Continuous {
+                let continuous = self.state.borrow().page_layout == PageLayoutMode::Continuous;
+                if !continuous {
                     self.rotate_right();
                 }
             }
             "RotateCC" => {
-                if self.state.borrow().page_layout != PageLayoutMode::Continuous {
+                let continuous = self.state.borrow().page_layout == PageLayoutMode::Continuous;
+                if !continuous {
                     self.rotate_left();
                 }
             }
             "AutoRotate" => {
-                if self.state.borrow().page_layout != PageLayoutMode::Continuous {
+                let continuous = self.state.borrow().page_layout == PageLayoutMode::Continuous;
+                if !continuous {
                     self.toggle_auto_rotate();
                 }
             }

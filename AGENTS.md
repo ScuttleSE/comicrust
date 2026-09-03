@@ -453,6 +453,14 @@ Re-bless the `db-large.xml` snapshot after a deliberate model change: `CR_BLESS=
   handler's `borrow_mut` (RefCell panic).
 - Release build matters: debug decodes ~50x slower (1.9 s vs 34 ms
   per page). All user tests run `cargo run -p cr-app --release --`.
+- Edition 2021 holds `if`-condition temporaries until the END of the
+  whole if/else statement. `if self.state.borrow().x == y { body }`
+  panics ("RefCell already borrowed") the moment the body or the
+  else-arm borrows again — this crashed the T4 wheel path. Hoist
+  every condition borrow into a `let` statement before branching
+  (`let v = self.state.borrow().x;` then branch on `v`). Same for
+  bodies that call further borrowing methods (pan threshold,
+  click dispatch). Sweep: `rg "if (self|view)\.state\.borrow"`.
 - Headless smoke tests: Xvfb + `import -window root` screenshot
   diffs, `xdotool key --window`. `xdotool click 4/5` does NOT
   produce scroll events under GTK/X11 (the wheel path is only
