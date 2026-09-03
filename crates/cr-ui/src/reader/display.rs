@@ -168,6 +168,15 @@ impl Mat {
         )
     }
 
+    /// The magnifier wrap (`DrawMagnifier`): the display matrix with
+    /// a zoom about the view point `(cx, cy)` applied over it —
+    /// content under that point appears magnified.
+    pub fn premultiply_zoom(&mut self, zoom: f32, cx: f32, cy: f32) {
+        self.append(&Mat {
+            e: [zoom, 0.0, 0.0, zoom, cx * (1.0 - zoom), cy * (1.0 - zoom)],
+        });
+    }
+
     /// `DisplayOutput.Transform` inverse — `ClientToImage` support.
     /// Returns `None` for singular matrices.
     pub fn invert(&self) -> Option<Mat> {

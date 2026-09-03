@@ -19,6 +19,7 @@ pub mod adjust;
 pub mod decode;
 pub mod disk;
 pub mod error;
+pub mod error_assets;
 pub mod keys;
 pub mod memory;
 pub mod resize;

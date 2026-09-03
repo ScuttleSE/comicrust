@@ -17,10 +17,10 @@
 //! like `ImageDisplayControl.OnMouseMove`.
 
 use std::cell::RefCell;
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::rc::Rc;
-use std::sync::{Arc, Condvar, Mutex};
+use std::sync::{Arc, Mutex};
 use std::time::Instant;
 
 use gtk4::cairo;
@@ -73,6 +73,12 @@ const BLEND_DURATION_MS: u64 = 400;
 
 /// `ContinuousPageLayout` fallback width (`ContinuousFallbackWidth`).
 const CONTINUOUS_FALLBACK_WIDTH: i32 = 1000;
+
+/// `ComicDisplayControl.MagnifierSize` default (200, 200).
+const MAGNIFIER_SIZE: i32 = 200;
+
+/// `ComicDisplayControl.MagnifierZoom` default (2).
+const MAGNIFIER_ZOOM: f32 = 2.0;
 
 /// How many neighbor pages around the current one stay decoded.
 const PAGE_WINDOW: usize = 4;
@@ -147,84 +153,41 @@ type PageCallback = Box<dyn Fn(usize, usize)>;
 /// `ToggleUndockReader`, `ToggleMenu`).
 type CommandCallback = Rc<dyn Fn(&str)>;
 
-/// A finished background page load. Raw RGBA travels across threads;
-/// the cairo surface is built on the main thread.
-struct LoadedPage {
+/// One finished pool-queue page render (`AsyncCallback` payload).
+/// The comic source rides along so stale results from a previous
+/// comic are dropped.
+struct PageDone {
     source: String,
     page: usize,
-    size: (i32, i32),
-    rgba: Option<Vec<u8>>,
-    auto_background: (f32, f32, f32),
+    rotation: ImageRotation,
+    image: Option<cr_image::Image>,
 }
 
-/// Latest-wins page decode mailbox: at most one render in flight,
-/// one queued request — the C# `AddToTop` queue behavior in
-/// miniature until the full queues are wired. The rotation rides
-/// along (the Y commands rotate the page; `PageKey` carries it).
-type PageMailbox = Arc<(Mutex<Option<(usize, String, ImageRotation)>>, Condvar)>;
+/// The completion side of the page channel, shared by the queue
+/// callbacks (`Sender` is not `Sync`; the slow queue runs several
+/// workers).
+#[derive(Clone)]
+struct PageTx(Arc<Mutex<std::sync::mpsc::Sender<PageDone>>>);
 
-struct PageWorker {
-    mailbox: PageMailbox,
-}
-
-impl PageWorker {
-    fn spawn(pool: Arc<ImagePool>, tx: std::sync::mpsc::Sender<LoadedPage>) -> PageWorker {
-        let mailbox: PageMailbox = Arc::new((Mutex::new(None), Condvar::new()));
-        let mb = Arc::clone(&mailbox);
-        let _ = std::thread::Builder::new()
-            .name("page-worker".into())
-            .spawn(move || loop {
-                let request = {
-                    let (lock, cvar) = &*mb;
-                    let mut pending = lock.lock().expect("page worker lock");
-                    if pending.is_none() {
-                        pending = cvar.wait(pending).expect("page worker wait");
-                    }
-                    pending.take()
-                };
-                let Some((page, source, rotation)) = request else {
-                    continue;
-                };
-                let key = cr_image::keys::ImageKey::from_file(
-                    source.clone(),
-                    Path::new(&source),
-                    page,
-                    rotation,
-                );
-                let page_key = cr_image::keys::PageKey::new(key, BitmapAdjustment::default());
-                let (size, rgba, auto_background) = match pool.render_page(&page_key) {
-                    Some(image) => {
-                        let background =
-                            auto_background_color(&image.rgba, image.width, image.height);
-                        (
-                            (image.width as i32, image.height as i32),
-                            Some(image.rgba),
-                            background,
-                        )
-                    }
-                    None => ((0, 0), None, (0.0, 0.0, 0.0)),
-                };
-                let _ = tx.send(LoadedPage {
-                    source,
-                    page,
-                    size,
-                    rgba,
-                    auto_background,
-                });
-            });
-        PageWorker { mailbox }
+impl PageTx {
+    fn new(tx: std::sync::mpsc::Sender<PageDone>) -> PageTx {
+        PageTx(Arc::new(Mutex::new(tx)))
     }
 
-    fn request(&self, page: usize, source: &str, rotation: ImageRotation) {
-        let (lock, cvar) = &*self.mailbox;
-        *lock.lock().expect("page request lock") = Some((page, source.to_owned(), rotation));
-        cvar.notify_one();
+    fn send(&self, done: PageDone) {
+        if let Ok(tx) = self.0.lock() {
+            let _ = tx.send(done);
+        }
     }
 }
 
 struct ViewState {
-    worker: PageWorker,
-    page_rx: std::sync::mpsc::Receiver<LoadedPage>,
+    /// The shared render pools — current pages ride the fast queue
+    /// (`AddToTop`), prefetches the bottom (`CachePage` parity).
+    pool: Arc<ImagePool>,
+    /// The completion side of the pool-queue callbacks.
+    page_tx: PageTx,
+    page_rx: std::sync::mpsc::Receiver<PageDone>,
     provider: Option<ComicProvider>,
     /// The comic path as a string — the cache-key location.
     source: String,
@@ -233,10 +196,11 @@ struct ViewState {
     last_read: usize,
     /// Decoded pages (bounded to the window around the current one).
     loaded: HashMap<usize, LoadedPageData>,
-    /// The page decode currently in flight.
-    in_flight: Option<usize>,
-    /// Decodes queued behind the in-flight one.
-    wanted: VecDeque<usize>,
+    /// Pages rendering in the pool queues, with the rotation their
+    /// key carries (`queue_for` enqueues, the pump collects).
+    queued: HashSet<(usize, ImageRotation)>,
+    /// Pages the composition still waits for, newest first.
+    wanted: Vec<(usize, ImageRotation)>,
     /// The composed virtual image; `None` while the needed pages are
     /// still decoding (the C# renders blank meanwhile).
     composition: Option<Composition>,
@@ -314,6 +278,11 @@ struct ViewState {
     /// Shell-level commands the widget cannot serve itself (tab
     /// switching, undock) — forwarded to the reader window.
     command_callback: Option<CommandCallback>,
+    /// `MagnifierVisible` (the M command) — a zoom lens at the
+    /// cursor.
+    magnifier: bool,
+    /// The lens center (the last cursor position).
+    magnifier_at: Option<(f64, f64)>,
 }
 
 impl ViewState {
@@ -399,53 +368,119 @@ impl ViewState {
         self.loaded.retain(|n, _| keep(*n));
     }
 
-    /// Queues `page` and its composition neighbor for decode.
+    /// Queues `page` and its composition neighbors for decode — the
+    /// C# `CachePage` pattern: the pages the composition waits for go
+    /// first (fast queue, `AddToTop`), prefetches trail
+    /// (`CacheBackPage` rides the bottom).
     fn queue_for(&mut self, page: usize) {
         self.wanted.clear();
+        let rotation = self.rotation_for(page);
         if !self.loaded.contains_key(&page) {
-            self.wanted.push_back(page);
+            self.wanted.push((page, rotation));
         }
         match self.page_layout {
             PageLayoutMode::Single => {}
             PageLayoutMode::Double | PageLayoutMode::DoubleAdaptive => {
                 let neighbor = page + 1;
                 if neighbor < self.page_count && !self.loaded.contains_key(&neighbor) {
-                    self.wanted.push_back(neighbor);
+                    self.wanted.push((neighbor, self.rotation_for(neighbor)));
                 }
             }
             PageLayoutMode::Continuous => {
                 for offset in 1..=PAGE_WINDOW {
                     let n = page + offset;
                     if n < self.page_count && !self.loaded.contains_key(&n) {
-                        self.wanted.push_back(n);
+                        self.wanted.push((n, self.rotation_for(n)));
                     }
                 }
                 if page > 0 && !self.loaded.contains_key(&(page - 1)) {
-                    self.wanted.push_back(page - 1);
+                    self.wanted.push((page - 1, self.rotation_for(page - 1)));
                 }
             }
         }
         self.trim_loaded(page);
+        self.dispatch_wanted();
     }
 
-    /// Dispatches the next wanted page to the idle worker.
-    fn dispatch_next(&mut self) {
-        if self.in_flight.is_some() {
-            return;
-        }
-        while let Some(candidate) = self.wanted.pop_front() {
-            if !self.loaded.contains_key(&candidate) {
-                self.in_flight = Some(candidate);
-                let source = self.source.clone();
-                let rotation = self
-                    .page_rotations
-                    .get(&candidate)
-                    .copied()
-                    .unwrap_or(ImageRotation::None);
-                self.worker.request(candidate, &source, rotation);
-                return;
+    fn rotation_for(&self, page: usize) -> ImageRotation {
+        self.page_rotations
+            .get(&page)
+            .copied()
+            .unwrap_or(ImageRotation::None)
+    }
+
+    /// The `PageKey` for a page under its current rotation.
+    fn page_key(&self, page: usize, rotation: ImageRotation) -> cr_image::keys::PageKey {
+        let key = cr_image::keys::ImageKey::from_file(
+            self.source.clone(),
+            Path::new(&self.source),
+            page,
+            rotation,
+        );
+        cr_image::keys::PageKey::new(key, BitmapAdjustment::default())
+    }
+
+    /// Enqueues every missing wanted page (`CachePage` →
+    /// `AddPageToQueue`: current and forward pages at the top,
+    /// backward prefetches at the bottom). Memory hits convert on the
+    /// spot; the rest render in the pool queues and report through
+    /// the channel. Returns `true` when everything wanted is already
+    /// loaded.
+    fn dispatch_wanted(&mut self) -> bool {
+        let current = self.page;
+        let source = self.source.clone();
+        let mut all_loaded = true;
+        for (page, rotation) in self.wanted.clone() {
+            if self.loaded.contains_key(&page) {
+                continue;
             }
+            let key = self.page_key(page, rotation);
+            if let Some(image) = self.pool.get_page_memory(&key) {
+                self.insert_loaded_page(page, image);
+                continue;
+            }
+            all_loaded = false;
+            if self.queued.contains(&(page, rotation)) {
+                continue;
+            }
+            self.queued.insert((page, rotation));
+            let tx = self.page_tx.clone();
+            let pool = Arc::clone(&self.pool);
+            let done_source = source.clone();
+            self.pool.add_page_to_queue(
+                key,
+                None,
+                move |k| {
+                    let image = pool.render_page(k);
+                    tx.send(PageDone {
+                        source: done_source.clone(),
+                        page: k.key.index,
+                        rotation: k.key.rotation,
+                        image,
+                    });
+                },
+                page < current,
+            );
         }
+        self.wanted
+            .retain(|(page, _)| !self.loaded.contains_key(page));
+        all_loaded
+    }
+
+    /// Turns a finished queue result into a `LoadedPageData`
+    /// (including the continuous size bookkeeping).
+    fn insert_loaded_page(&mut self, page: usize, image: cr_image::Image) {
+        let background = auto_background_color(&image.rgba, image.width, image.height);
+        self.continuous_page_sizes
+            .insert(page, (image.width as i32, image.height as i32));
+        self.loaded.insert(
+            page,
+            LoadedPageData {
+                surface: image_surface_from_rgba(&image.rgba, image.width, image.height),
+                size: (image.width as i32, image.height as i32),
+                auto_background: background,
+            },
+        );
     }
 
     /// Recomputes the composition for the current state.
@@ -683,15 +718,15 @@ impl PageView {
         area.set_vexpand(true);
         area.set_focusable(true);
 
-        // Background page decode: one worker, latest request wins.
-        // Results pump into the main loop with a 10 ms poll while a
-        // load is pending (glib 0.22 has no cross-thread channel;
-        // a std mpsc + local timeout keeps the dependency surface
-        // small).
-        let (tx, rx) = std::sync::mpsc::channel::<LoadedPage>();
-        let worker = PageWorker::spawn(Arc::clone(&pool), tx);
+        // Page loads ride the pool's fast/slow queues (`CachePage`):
+        // the queue callback renders and ships the result here; a
+        // 10 ms poll drains it while loads are pending (glib 0.22
+        // has no cross-thread channel; a std mpsc + local timeout
+        // keeps the dependency surface small).
+        let (tx, rx) = std::sync::mpsc::channel::<PageDone>();
         let state = Rc::new(RefCell::new(ViewState {
-            worker,
+            pool,
+            page_tx: PageTx::new(tx),
             page_rx: rx,
             provider: None,
             source: String::new(),
@@ -699,8 +734,8 @@ impl PageView {
             page_count: 0,
             last_read: 0,
             loaded: HashMap::new(),
-            in_flight: None,
-            wanted: VecDeque::new(),
+            queued: HashSet::new(),
+            wanted: Vec::new(),
             composition: None,
             continuous: None,
             continuous_viewport_top: 0,
@@ -742,6 +777,8 @@ impl PageView {
             pending_click: None,
             exit_callback: None,
             command_callback: None,
+            magnifier: false,
+            magnifier_at: None,
         }));
 
         let view = PageView {
@@ -763,6 +800,7 @@ impl PageView {
         view.install_pan_controller();
         view.install_zoom_drag_controller();
         view.install_click_controller();
+        view.install_magnifier_controller();
         view
     }
 
@@ -802,6 +840,7 @@ impl PageView {
             st.page_count = page_count;
             st.last_read = last_read;
             st.loaded.clear();
+            st.queued.clear();
             st.continuous = None;
             st.continuous_page_sizes.clear();
             st.continuous_content_width = 0;
@@ -809,7 +848,6 @@ impl PageView {
             st.visible = ImagePartInfo::EMPTY;
             st.image_zoom = 1.0;
             st.rotation = ImageRotation::None;
-            st.in_flight = None;
             st.wanted.clear();
             st.transition_anim = None;
             st.page_rotations.clear();
@@ -892,17 +930,14 @@ impl PageView {
         st.invalidate();
         st.queue_for(page);
         st.transition_anim = snapshot;
-        let idle = st.in_flight.is_none();
+        let all_loaded = st.wanted.is_empty();
         drop(st);
-        if idle {
-            self.state.borrow_mut().dispatch_next();
-            let still_idle = self.state.borrow().in_flight.is_none();
-            if still_idle {
-                // Every needed page is already decoded — compose now
-                // (navigating back to cached pages never waits for a
-                // load that will not happen).
-                self.finish_page_setup();
-            }
+        if all_loaded {
+            // Every needed page is already decoded — compose now
+            // (navigating back to cached pages never waits for a
+            // load that will not happen).
+            self.finish_page_setup();
+        } else {
             self.start_pump();
         }
         self.notify_page();
@@ -910,7 +945,7 @@ impl PageView {
     }
 
     /// Recomposes after the decode set for the current page changed
-    /// (shared by `on_page_loaded` and the already-cached path).
+    /// (shared by the load pump and the already-cached path).
     fn finish_page_setup(&self) {
         let enter_at_last = {
             let mut st = self.state.borrow_mut();
@@ -933,42 +968,47 @@ impl PageView {
         self.area.queue_draw();
     }
 
-    /// Applies a finished background load; recomposes and dispatches
-    /// the next queued decode.
-    fn on_page_loaded(&self, loaded: LoadedPage) {
+    /// Applies a finished pool-queue render; recomposes.
+    fn on_page_loaded(&self, done: PageDone) {
         {
             let mut st = self.state.borrow_mut();
-            if Some(loaded.page) == st.in_flight && loaded.source == st.source {
-                st.in_flight = None;
-            }
-            if loaded.source != st.source {
+            if done.source != st.source {
                 return; // stale result from another comic
             }
-            if loaded.size.0 > 0 {
-                st.continuous_page_sizes.insert(loaded.page, loaded.size);
-                st.loaded.insert(
-                    loaded.page,
-                    LoadedPageData {
-                        surface: image_surface_from_rgba(
-                            &loaded.rgba.expect("non-empty size implies rgba"),
-                            loaded.size.0 as u32,
-                            loaded.size.1 as u32,
-                        ),
-                        size: loaded.size,
-                        auto_background: loaded.auto_background,
-                    },
-                );
-                // Continuous mode keeps `LastPageRead` ahead.
-                if st.page_layout == PageLayoutMode::Continuous {
-                    st.last_read = st.last_read.max(loaded.page);
+            st.queued.remove(&(done.page, done.rotation));
+            match done.image {
+                Some(image) => {
+                    st.insert_loaded_page(done.page, image);
+                    // Continuous mode keeps `LastPageRead` ahead.
+                    if st.page_layout == PageLayoutMode::Continuous {
+                        st.last_read = st.last_read.max(done.page);
+                    }
+                    st.wanted.retain(|(page, _)| *page != done.page);
+                }
+                None => {
+                    // Decode failed — the error page takes the slot
+                    // (`CreateErrorPage` parity).
+                    let surface = error_page_surface();
+                    let (w, h) = (surface.width(), surface.height());
+                    st.continuous_page_sizes.insert(done.page, (w, h));
+                    st.loaded.insert(
+                        done.page,
+                        LoadedPageData {
+                            surface,
+                            size: (w, h),
+                            auto_background: (0.0, 0.0, 0.0),
+                        },
+                    );
+                    st.wanted.retain(|(page, _)| *page != done.page);
                 }
             }
-            st.dispatch_next();
         }
         self.finish_page_setup();
+        self.notify_page();
     }
 
-    /// Polls the worker channel until the pending load lands.
+    /// Drains the pool-queue completion channel until the wanted set
+    /// is served.
     fn start_pump(&self) {
         let view = self.clone();
         glib::timeout_add_local(std::time::Duration::from_millis(10), move || {
@@ -979,16 +1019,16 @@ impl PageView {
                 // `on_page_loaded`'s mutable borrow.
                 let received_now = view.state.borrow().page_rx.try_recv();
                 match received_now {
-                    Ok(loaded) => {
+                    Ok(done) => {
                         received = true;
-                        view.on_page_loaded(loaded);
+                        view.on_page_loaded(done);
                     }
                     Err(_) => break,
                 }
             }
             let more = {
                 let st = view.state.borrow();
-                st.in_flight.is_some()
+                !st.wanted.is_empty()
             };
             if received || more {
                 glib::ControlFlow::Continue
@@ -1327,10 +1367,9 @@ impl PageView {
                 st.page = hit;
                 st.last_read = st.last_read.max(hit);
                 st.queue_for(hit);
-                let idle = st.in_flight.is_none();
+                let needs_pump = !st.wanted.is_empty();
                 drop(st);
-                if idle {
-                    self.state.borrow_mut().dispatch_next();
+                if needs_pump {
                     self.start_pump();
                 }
                 self.notify_page();
@@ -1488,10 +1527,9 @@ impl PageView {
         st.composition = None;
         st.invalidate();
         st.queue_for(page);
-        let idle = st.in_flight.is_none();
+        let needs_pump = !st.wanted.is_empty();
         drop(st);
-        if idle {
-            self.state.borrow_mut().dispatch_next();
+        if needs_pump {
             self.start_pump();
         }
         self.area.queue_draw();
@@ -1545,10 +1583,9 @@ impl PageView {
         st.recompose();
         let current = st.page;
         st.queue_for(current);
-        let needs_pump = st.in_flight.is_none();
+        let needs_pump = !st.wanted.is_empty();
         drop(st);
         if needs_pump {
-            self.state.borrow_mut().dispatch_next();
             self.start_pump();
         }
         self.area.queue_draw();
@@ -1666,10 +1703,9 @@ impl PageView {
                 st.page = hit;
                 st.last_read = st.last_read.max(hit);
                 st.queue_for(hit);
-                let needs_pump = st.in_flight.is_none();
+                let needs_pump = !st.wanted.is_empty();
                 drop(st);
                 if needs_pump {
-                    self.state.borrow_mut().dispatch_next();
                     self.start_pump();
                 }
                 self.notify_page();
@@ -1857,6 +1893,30 @@ impl PageView {
         self.area.add_controller(controller);
     }
 
+    /// Tracks the cursor for the magnifier lens
+    /// (`PositionMagnifier`); the lens auto-hides outside the client
+    /// rect (`AutoHideMagnifier`).
+    fn install_magnifier_controller(&self) {
+        let controller = gtk4::EventControllerMotion::new();
+        let view = self.clone();
+        controller.connect_motion(move |_c, x, y| {
+            let redraw = view.state.borrow().magnifier;
+            view.state.borrow_mut().magnifier_at = Some((x, y));
+            if redraw {
+                view.area.queue_draw();
+            }
+        });
+        let view = self.clone();
+        controller.connect_leave(move |_| {
+            let redraw = view.state.borrow().magnifier;
+            view.state.borrow_mut().magnifier_at = None;
+            if redraw {
+                view.area.queue_draw();
+            }
+        });
+        self.area.add_controller(controller);
+    }
+
     /// Builds a `CommandKey` and dispatches through the table
     /// (`KeyboardShortcuts.HandleKey`).
     fn dispatch_key(&self, key: super::keys::Key, mods: super::keys::Mods) {
@@ -1932,8 +1992,12 @@ impl PageView {
             "ToggleFullScreen" => self.toggle_full_screen(),
             "ToggleTwoPages" => self.toggle_page_layout(),
             "ToggleRealisticPages" => self.toggle_realistic_pages(),
-            // The magnifier is T6.
-            "ToggleMagnify" => {}
+            // The magnifier lens is handled above.
+            "ToggleMagnify" => {
+                let next = !self.state.borrow().magnifier;
+                self.state.borrow_mut().magnifier = next;
+                self.area.queue_draw();
+            }
             "Original" => self.set_fit_mode(ImageFitMode::Original),
             // `SetPageFitAll`/`SetPageFitHeight` skip in continuous mode.
             "FitAll" => {
@@ -2088,6 +2152,39 @@ fn take_transition_snapshot(st: &ViewState, backward: bool) -> Option<Transition
 
 /// Converts the decoded RGBA page into a cairo ARGB32 surface
 /// (premultiplied; comic pages are opaque, so this is an R/B swap).
+/// The cached error-page surface: the C# `CreateErrorPage` bitmap
+/// (bundled `ErrorPage.jpg`) with the message drawn on top
+/// (`PageFailedToLoad`, 32 pt black at 40,40).
+fn error_page_surface() -> cairo::ImageSurface {
+    // Cairo surfaces are neither Send nor Sync — the cache stays on
+    // the UI thread.
+    thread_local! {
+        static SURFACE: RefCell<Option<cairo::ImageSurface>> = const { RefCell::new(None) };
+    }
+    SURFACE.with(|cell| {
+        if let Some(surface) = cell.borrow().as_ref() {
+            return surface.clone();
+        }
+        let surface = build_error_page_surface();
+        *cell.borrow_mut() = Some(surface.clone());
+        surface
+    })
+}
+
+fn build_error_page_surface() -> cairo::ImageSurface {
+    let image = cr_image::error_assets::error_page_image().expect("bundled error page decodes");
+    let surface = image_surface_from_rgba(&image.rgba, image.width, image.height);
+    let ctx = cairo::Context::new(&surface).expect("error page context");
+    ctx.set_source_rgb(0.0, 0.0, 0.0);
+    ctx.select_font_face("sans", cairo::FontSlant::Normal, cairo::FontWeight::Normal);
+    ctx.set_font_size(32.0 * 1.4);
+    ctx.move_to(40.0, 80.0);
+    let _ = ctx.show_text("Page failed to load.");
+    ctx.move_to(40.0, 130.0);
+    let _ = ctx.show_text("Try refresh to load again...");
+    surface
+}
+
 fn image_surface_from_rgba(rgba: &[u8], width: u32, height: u32) -> cairo::ImageSurface {
     let stride = width as usize * 4;
     let mut argb = vec![0u8; stride * height as usize];
@@ -2258,6 +2355,18 @@ fn draw_frame(
             );
         }
 
+        // The magnifier lens (`DrawMagnifier`): a clipped second
+        // scene pass, zoomed about the cursor, with the glass rim on
+        // top.
+        if st.magnifier {
+            if let Some((mx, my)) = st.magnifier_at {
+                let (w, h) = (f64::from(width), f64::from(height));
+                if mx >= 0.0 && my >= 0.0 && mx <= w && my <= h && !display.is_empty() {
+                    draw_magnifier(ctx, &display, &mut st, width, height, mx, my);
+                }
+            }
+        }
+
         // Continuous: the logical page follows the viewport top.
         if st.page_layout == PageLayoutMode::Continuous {
             let top = i64::from(st.visible.offset.1);
@@ -2271,8 +2380,7 @@ fn draw_frame(
                 st.last_read = st.last_read.max(hit);
                 notify = Some((st.page, st.page_count));
                 st.queue_for(hit);
-                if st.in_flight.is_none() {
-                    st.dispatch_next();
+                if !st.wanted.is_empty() {
                     let view = PageView {
                         area: area.clone(),
                         state: Rc::clone(state),
@@ -2288,6 +2396,73 @@ fn draw_frame(
             cb(page, count);
         }
     }
+}
+
+/// The magnifier lens (`ComicDisplayControl.DrawMagnifier`): the
+/// scene re-rendered through the display matrix with a zoom about
+/// the cursor (`premultiply_zoom`), clipped to the lens circle. The
+/// glass bitmap overlay of the C# style stays out — cairo draws a
+/// simple rim.
+fn draw_magnifier(
+    ctx: &cairo::Context,
+    display: &DisplayOutput,
+    st: &mut ViewState,
+    width: i32,
+    height: i32,
+    mx: f64,
+    my: f64,
+) {
+    let radius = f64::from(MAGNIFIER_SIZE) / 2.0;
+    let zoomed = {
+        let mut d = display.clone();
+        d.mat.premultiply_zoom(MAGNIFIER_ZOOM, mx as f32, my as f32);
+        d
+    };
+    // Lens interior: the display background, then the zoomed scene
+    // (`RenderImageBackground` runs inside the C# lens too).
+    ctx.save().ok();
+    ctx.identity_matrix();
+    ctx.new_path();
+    ctx.arc(mx, my, radius - 2.0, 0.0, std::f64::consts::TAU);
+    ctx.clip();
+    let background = match st.background_mode {
+        ImageBackgroundMode::Auto => st
+            .loaded
+            .get(&st.page)
+            .map(|p| p.auto_background)
+            .map(|(r, g, b)| (f64::from(r), f64::from(g), f64::from(b)))
+            .unwrap_or(DEFAULT_BACKGROUND),
+        _ => DEFAULT_BACKGROUND,
+    };
+    ctx.set_source_rgb(background.0, background.1, background.2);
+    ctx.rectangle(mx - radius, my - radius, radius * 2.0, radius * 2.0);
+    let _ = ctx.fill();
+    if st.page_layout == PageLayoutMode::Continuous {
+        draw_continuous(ctx, &zoomed, st);
+    } else if let Some(comp) = st.composition.clone() {
+        let paper = st.paper.clone();
+        let paper_mode = st.background_mode == ImageBackgroundMode::Texture;
+        draw_composition(
+            ctx,
+            &zoomed,
+            &comp,
+            &st.loaded,
+            paper.as_ref(),
+            paper_mode,
+            background,
+        );
+    }
+    ctx.restore().ok();
+    // The rim.
+    ctx.save().ok();
+    ctx.identity_matrix();
+    ctx.new_path();
+    ctx.arc(mx, my, radius, 0.0, std::f64::consts::TAU);
+    ctx.set_source_rgba(0.0, 0.0, 0.0, 0.55);
+    ctx.set_line_width(3.0);
+    let _ = ctx.stroke();
+    ctx.restore().ok();
+    let _ = (width, height);
 }
 
 /// Draws one composed frame through the part transform

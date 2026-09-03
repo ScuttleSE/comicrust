@@ -278,6 +278,25 @@ impl ImagePool {
         Some(img)
     }
 
+    /// `pagePool.GetPage(key, onlyMemory: true)` — the cache-hit
+    /// check the reader runs on the UI thread before any queue work.
+    pub fn get_page_memory(&self, key: &PageKey) -> Option<Image> {
+        let hash = page_hash(key);
+        let mut pool = self.pages.lock().ok()?;
+        pool.get(hash).cloned()
+    }
+
+    /// Whether a page render is still queued or in flight — the
+    /// reader's poll distinguishes "wait" from "decode failed" (the
+    /// C# pool caches the error page, the reader renders it).
+    pub fn is_page_pending(&self, key: &PageKey) -> bool {
+        self.fast_page_queue
+            .pending_items()
+            .iter()
+            .chain(self.slow_page_queue.pending_items().iter())
+            .any(|k| k == key)
+    }
+
     /// The worker render chain for a thumbnail: render the page, build
     /// the 512px JPEG q60 thumbnail, cache to disk and memory.
     pub fn render_thumbnail(&self, key: &ThumbnailKey) -> Option<Vec<u8>> {

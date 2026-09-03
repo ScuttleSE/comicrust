@@ -163,6 +163,27 @@ impl ReaderWindow {
             });
         }
 
+        // The initial grab_focus often runs while the window is not
+        // yet active (late WM focus — sway, or no WM) — GTK then
+        // ignores it and keys never reach the reader. Re-grab when
+        // the toplevel becomes active.
+        {
+            let st = Rc::downgrade(&shell.state);
+            window.connect_notify_local(Some("is-active"), move |win, _| {
+                if !win.is_active() {
+                    return;
+                }
+                let Some(sh) = st.upgrade() else {
+                    return;
+                };
+                let s = sh.borrow();
+                let current = s.notebook.current_page();
+                if let Some(tab) = s.tabs.get(current.unwrap_or(0) as usize) {
+                    tab.view.widget().grab_focus();
+                }
+            });
+        }
+
         // Fullscreen chrome: the header hides with the decorations
         // (`AutoMinimalGui` is false by default, so the C# keeps the
         // menu; the reveal strip below still applies).
@@ -455,6 +476,17 @@ impl ReaderWindow {
             .default_height(DEFAULT_HEIGHT)
             .build();
         undocked_window.set_child(Some(view.widget()));
+        // The undocked window is not active yet at this point — the
+        // grab_focus below would be ignored. Re-grab on activation
+        // (same race as the main window).
+        {
+            let view = view.clone();
+            undocked_window.connect_notify_local(Some("is-active"), move |win, _| {
+                if win.is_active() {
+                    view.widget().grab_focus();
+                }
+            });
+        }
         {
             let mut st = state.borrow_mut();
             st.undocked = Some(UndockedTab {
