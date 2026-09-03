@@ -1,0 +1,76 @@
+name: Rolling release
+
+# Builds the app and republishes the single "rolling" release on every
+# push to main (and on manual dispatch). The version is
+# <major>.<minor>.<build> where build = total commits on main; bump
+# major/minor by editing the Version step below.
+#
+# The release is marked prerelease and its assets (binary tarball +
+# sha256) are replaced on every run. Publishing needs a token with
+# write access: if the default GITHUB_TOKEN gets a 403, create a PAT
+# (repo scope) and store it as the secret RELEASE_TOKEN — this
+# workflow prefers it automatically.
+#
+# Build image: .gitea/container/Dockerfile (see its header).
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: rolling-release
+  # Never kill a run mid-publish: the release would be left deleted.
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: build + publish rolling
+    runs-on: docker-runner-amd64
+    container:
+      image: comicrust-ci:latest
+
+    steps:
+      - name: Checkout (full history for the version number)
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Version
+        id: version
+        # 0.0.<build>. Bump major/minor here at milestones; the build
+        # number keeps counting all commits on main.
+        run: |
+          version="0.0.$(git rev-list --count HEAD)"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "rolling version: $version"
+
+      - name: Build
+        run: cargo build --release --locked -p cr-app
+
+      - name: Package
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          asset="comicrust-${VERSION}-linux-amd64.tar.gz"
+          mkdir -p dist/assets
+          cp target/release/cr-app dist/comicrust
+          cp -r crates/cr-ui/assets/papers dist/assets/papers
+          tar -czf "$asset" -C dist comicrust assets
+          sha256sum "$asset" > "${asset}.sha256"
+          echo "packaged: $asset"
+
+      - name: Publish
+        env:
+          # Prefer a PAT secret; fall back to the default token.
+          TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          API: ${{ github.server_url }}/api/v1
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: bash .gitea/publish_rolling.sh "$VERSION"
