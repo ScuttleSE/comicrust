@@ -144,6 +144,9 @@ struct ViewState {
     drag_last: Option<(f64, f64)>,
     /// The page a background decode is running for (latest wins).
     pending_page: Option<usize>,
+    /// Enter the landing page at its last part (backwards navigation
+    /// parity: `CurrentPageChanged` picks part = ImagePartCount-1).
+    enter_at_last: bool,
     /// Worker + result channel for background page loads.
     worker: PageWorker,
     page_rx: std::sync::mpsc::Receiver<LoadedPage>,
@@ -258,6 +261,7 @@ impl PageView {
             page_callback: None,
             drag_last: None,
             pending_page: None,
+            enter_at_last: false,
             worker,
             page_rx: rx,
         }));
@@ -307,8 +311,7 @@ impl PageView {
             self.notify_page();
             return Ok(());
         }
-        self.load_current_page();
-        self.notify_page();
+        self.goto_page(0, false);
         Ok(())
     }
 
@@ -322,14 +325,39 @@ impl PageView {
     /// Loads page `page` through the ImagePool render chain
     /// (`pagePool.GetPage` parity; synchronous until the queue-backed
     /// pre-caching lands in T6).
-    /// Requests page `page` from the background worker
-    /// (`pagePool.GetPage` parity: the UI keeps painting the old page
-    /// until the new one arrives).
-    fn load_page(&self, page: usize) {
+    /// Moves to `page` (`ComicDisplayControl.CurrentPageChanged`
+    /// parity): the logical page advances immediately — the header
+    /// and the page counter track the book, not the decoder — while
+    /// the image streams in from the worker (the old page keeps
+    /// painting until then, `pagePool.GetPage` behavior).
+    fn goto_page(&self, page: usize, enter_at_last: bool) -> bool {
+        {
+            let st = self.state.borrow();
+            if st.provider.is_none()
+                || page >= st.page_count
+                || (st.page == page && st.pending_page.is_none())
+            {
+                return false;
+            }
+        }
+        self.request_and_go(page, enter_at_last)
+    }
+
+    /// Sets the logical page state and queues the decode. Bypasses
+    /// the same-page guard (open() uses it for page 0).
+    fn request_and_go(&self, page: usize, enter_at_last: bool) -> bool {
         let mut st = self.state.borrow_mut();
         if st.provider.is_none() || page >= st.page_count {
-            return;
+            return false;
         }
+        st.page = page;
+        st.enter_at_last = enter_at_last;
+        st.visible = ImagePartInfo::EMPTY;
+        // The C# display goes blank on a page change: with the new
+        // page not in the pool yet, GetImageInfo yields an empty
+        // image and the control paints background only.
+        st.surface = None;
+        st.image_size = (0, 0);
         let needs_pump = st.pending_page.is_none();
         st.pending_page = Some(page);
         st.invalidate();
@@ -339,6 +367,8 @@ impl PageView {
         if needs_pump {
             self.start_pump();
         }
+        self.notify_page();
+        true
     }
 
     /// Polls the worker channel until the pending load lands.
@@ -376,22 +406,25 @@ impl PageView {
                 return;
             }
             st.pending_page = None;
-            st.page = loaded.page;
             st.image_size = loaded.size;
             st.surface = loaded.rgba.map(|rgba| {
                 image_surface_from_rgba(&rgba, loaded.size.0 as u32, loaded.size.1 as u32)
             });
-            st.visible = ImagePartInfo::EMPTY;
-            st.image_zoom = 1.0;
+            // The zoom persists across pages (the C# keeps ImageZoom);
+            // only the visible part resets, at the entry edge.
+            let count = {
+                let (w, h) = (self.area.width(), self.area.height());
+                st.display((w, h)).part_count
+            };
+            st.visible = if st.enter_at_last {
+                ImagePartInfo::new(count - 1, (0, 0))
+            } else {
+                ImagePartInfo::EMPTY
+            };
+            st.enter_at_last = false;
             st.invalidate();
         }
         self.area.queue_draw();
-        self.notify_page();
-    }
-
-    fn load_current_page(&self) {
-        let page = self.state.borrow().page;
-        self.load_page(page);
     }
 
     fn resolved_display(&self) -> DisplayOutput {
@@ -406,18 +439,16 @@ impl PageView {
     /// Next part or page. `true` when something moved.
     pub fn next(&self) -> bool {
         let display = self.resolved_display();
+        // Empty display: the current page has no image yet (in
+        // flight) — keep advancing the book, one page per press.
         if display.is_empty() {
-            return false;
+            let page = self.state.borrow().page;
+            return self.goto_page(page + 1, false);
         }
         let visible = self.state.borrow().visible;
         if display.is_end_part(visible) {
             let page = self.state.borrow().page;
-            if page + 1 < self.state.borrow().page_count {
-                self.load_page(page + 1);
-                self.notify_page();
-                return true;
-            }
-            return false;
+            return self.goto_page(page + 1, false);
         }
         self.display_part(PartPageToDisplay::Next)
     }
@@ -426,7 +457,11 @@ impl PageView {
     pub fn previous(&self) -> bool {
         let display = self.resolved_display();
         if display.is_empty() {
-            return false;
+            let page = self.state.borrow().page;
+            if page == 0 {
+                return false;
+            }
+            return self.goto_page(page - 1, true);
         }
         let visible = self.state.borrow().visible;
         if display.is_start_part(visible) {
@@ -434,35 +469,18 @@ impl PageView {
             if page == 0 {
                 return false;
             }
-            self.load_page(page - 1);
-            // Land on the last part of the previous page
-            // (`CurrentPageChanged` parity: part = ImagePartCount-1
-            // when moving backwards).
-            let count = self.resolved_display().part_count;
-            self.state.borrow_mut().visible = ImagePartInfo::new(count - 1, (0, 0));
-            self.notify_page();
-            return true;
+            return self.goto_page(page - 1, true);
         }
         self.display_part(PartPageToDisplay::Previous)
     }
 
     pub fn first_page(&self) -> bool {
-        if self.state.borrow().page == 0 {
-            return false;
-        }
-        self.load_page(0);
-        self.notify_page();
-        true
+        self.goto_page(0, false)
     }
 
     pub fn last_page(&self) -> bool {
         let last = self.state.borrow().page_count.saturating_sub(1);
-        if self.state.borrow().page == last {
-            return false;
-        }
-        self.load_page(last);
-        self.notify_page();
-        true
+        self.goto_page(last, false)
     }
 
     /// `ImageDisplayControl.DisplayPart` (instant, no smooth

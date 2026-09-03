@@ -52,6 +52,15 @@ impl<V> MemoryPool<V> {
         self.bytes
     }
 
+    /// Cache hit without producing — bumps recency on hit.
+    pub fn get(&mut self, hash: u64) -> Option<&mut V> {
+        self.clock += 1;
+        let clock = self.clock;
+        let entry = self.entries.get_mut(&hash)?;
+        entry.last_use = clock;
+        Some(&mut entry.value)
+    }
+
     /// `Cache.LockItem` — get-or-insert, bumping recency on hit and
     /// evicting on insert.
     pub fn lock_item<F>(&mut self, hash: u64, make: F) -> Result<&mut V>
@@ -159,5 +168,23 @@ mod tests {
         *p.lock_item(3, || Ok((3, 10))).unwrap() += 0;
         assert_eq!(p.len(), 2);
         assert!(!p.entries.contains_key(&1));
+    }
+
+    #[test]
+    fn get_hits_without_producing() {
+        let mut pool: MemoryPool<String> = MemoryPool::new(2, 1024);
+        pool.lock_item(1, || Ok(("first".into(), 5))).unwrap();
+        // Produce is not called on a hit; recency bumps.
+        let hit = pool.get(1).map(|v| v.clone());
+        assert_eq!(hit.as_deref(), Some("first"));
+        let again = pool.lock_item(1, || Err(crate::Error::UnsupportedFormat));
+        assert_eq!(again.unwrap().as_str(), "first");
+        assert!(pool.get(2).is_none());
+    }
+
+    #[test]
+    fn lock_item_produces_on_miss() {
+        let mut pool: MemoryPool<u32> = MemoryPool::new(2, 1024);
+        assert_eq!(*pool.lock_item(7, || Ok((42, 4))).unwrap(), 42);
     }
 }

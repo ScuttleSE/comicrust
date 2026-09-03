@@ -209,9 +209,17 @@ impl ImagePool {
     }
 
     /// The worker render chain for a page (`ImagePool.GetPage` →
-    /// `AddImage` closure): decode, apply the partial disk-cache tiers,
-    /// adjust, rotate, then cache.
+    /// `AddImage` closure): memory pool first, then decode, partial
+    /// disk-cache tiers, adjust, rotate, and re-cache.
     pub fn render_page(&self, key: &PageKey) -> Option<Image> {
+        // Memory pool short-circuit (`pagePool.GetPage(onlyMemory)`
+        // runs before any provider work in the C#).
+        let hash = page_hash(key);
+        if let Ok(mut pool) = self.pages.lock() {
+            if let Some(cached) = pool.get(hash) {
+                return Some(cached.clone());
+            }
+        }
         let provider = ComicProvider::open(Path::new(&key.key.location)).ok()?;
         let bytes = provider.read_page(key.key.index)?;
         let key_text = base_key_text(&key.key);
@@ -264,7 +272,6 @@ impl ImagePool {
 
         // Cache the final result in memory.
         let size = img.rgba.len();
-        let hash = page_hash(key);
         if let Ok(mut pool) = self.pages.lock() {
             let _ = pool.lock_item(hash, || Ok((img.clone(), size)));
         }
