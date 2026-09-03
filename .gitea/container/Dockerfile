@@ -22,7 +22,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 # (CR_FORMAT_TESTS=1 / tools on PATH). PDF tests stay ungated-off:
 # they need a libpdfium.so we do not ship.
 RUN apt-get update \
-    && apt-get install -y --no-recommends \
+    && apt-get install -y --no-install-recommends \
         build-essential \
         pkg-config \
         git \

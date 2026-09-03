@@ -1,0 +1,120 @@
+name: Tagged release
+
+# Builds the app at an existing tag and publishes a proper (stable,
+# non-prerelease) release for it.
+#
+# Trigger: manual only. Run it from the Gitea UI (Actions -> "Tagged
+# release" -> Run workflow) and enter the tag in the "tag" input,
+# e.g. v0.1.0. Create the tag first:
+#
+#   git tag v0.1.0 && git push origin v0.1.0
+#
+# The version in the asset names and the release title is the tag
+# without its leading "v" (v0.1.0 -> 0.1.0). Re-running for the same
+# tag replaces the release and its assets; the tag itself is never
+# moved or deleted.
+#
+# The checks job gates the release: fmt, clippy, test must pass on the
+# tag's code before anything is built or published.
+#
+# Publishing needs a token with write access: if the default
+# GITHUB_TOKEN gets a 403, create a PAT (repo scope) and store it as
+# the secret RELEASE_TOKEN — this workflow prefers it automatically.
+#
+# Build image: .gitea/container/Dockerfile (see its header).
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to release, e.g. v0.1.0
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: tagged-release-${{ inputs.tag }}
+  # Never kill a run mid-publish: the release would be left deleted.
+  cancel-in-progress: false
+
+jobs:
+  checks:
+    name: fmt, clippy, test
+    runs-on: docker-runner-amd64
+    container:
+      image: comicrust-ci:latest
+
+    steps:
+      - name: Checkout (at the tag)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+
+      - name: rustfmt
+        run: cargo fmt --check --all
+
+      - name: clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Test
+        env:
+          CR_FORMAT_TESTS: "1"
+        run: cargo test --workspace
+
+  release:
+    name: build + publish ${{ inputs.tag }}
+    needs: checks
+    runs-on: docker-runner-amd64
+    container:
+      image: comicrust-ci:latest
+
+    steps:
+      - name: Checkout (at the tag)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+
+      - name: Version
+        id: version
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+$'; then
+              echo "tag '$TAG' must look like v0.1.0 (got version '$version')" >&2
+              exit 1
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "tagged release version: $version"
+
+      - name: Build
+        run: cargo build --release --locked -p cr-app
+
+      - name: Package
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          asset="comicrust-${VERSION}-linux-amd64.tar.gz"
+          mkdir -p dist/assets
+          cp target/release/cr-app dist/comicrust
+          cp -r crates/cr-ui/assets/papers dist/assets/papers
+          tar -czf "$asset" -C dist comicrust assets
+          sha256sum "$asset" > "${asset}.sha256"
+          echo "packaged: $asset"
+
+      - name: Publish
+        env:
+          # Prefer a PAT secret; fall back to the default token.
+          TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          API: ${{ github.server_url }}/api/v1
+          REPO: ${{ github.repository }}
+          TAG: ${{ inputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          # The commit the tag points at, not the dispatching branch head.
+          export SHA="$(git rev-parse HEAD)"
+          bash .gitea/publish_release.sh "$TAG" "$VERSION" false false

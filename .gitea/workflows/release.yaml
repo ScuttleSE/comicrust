@@ -73,4 +73,4 @@ jobs:
           REPO: ${{ github.repository }}
           SHA: ${{ github.sha }}
           VERSION: ${{ steps.version.outputs.version }}
-        run: bash .gitea/publish_rolling.sh "$VERSION"
+        run: bash .gitea/publish_release.sh rolling "$VERSION" true true
