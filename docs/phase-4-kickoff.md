@@ -366,3 +366,33 @@ C# spec: `PagesView.cs` (833), `ComicPagesView.cs` (241),
   in brackets, operator word, quoted value; the grammar is in
   `cr-engine/src/matcher/query.rs`). The dialog example was
   corrected; the full editor UI is Phase 5.
+- **T3 (ItemView core) IMPLEMENTED (2026-09-03), user test
+  pending.** The pure modules: `view_state.rs` (the MRU-3 sort
+  chain with `Reverse()` semantics, the group buckets ordered by
+  the `GroupInfo.Compare` rule — bucket index, then
+  ExtendedStringComparer IgnoreArticles|IgnoreCase, deterministic
+  tie-break —, collapse by caption, and the full selection model:
+  click/ctrl/shift/rubber-band-from-snapshot/focus/anchor),
+  `layout.rs` (Thumbnail greedy flow with the `>=` wrap and 2 px
+  gaps, Tile 192×96 cells, Detail rows over the column strip with
+  the x+8 offset, full-width group headers, collapsed groups drop
+  their items, culling, hit tests, column-aware keyboard movement,
+  page steps), `columns.rs` (the C# default column set — 13
+  visible + the hidden rest), and the engine's
+  `display_text.rs` (`GetPropertyValue(proposed: true)` parity:
+  Shadow*/AsText/Published/date/registry fallback).
+  `item_view.rs` — the DrawingArea in a ScrolledWindow (content
+  sized to the virtual size; native wheel scrolling is a documented
+  deviation from the C# 16 px line step), draw = culled items with
+  selection/focus visuals, group headers, Detail header strip;
+  covers ride `add_thumb_to_queue` + the mpsc pump (the ADR-019
+  pattern), failures fall back to the error thumbnail; click /
+  ctrl / shift / rubber band, arrows / Home / End / PageUp /
+  PageDown / Enter, type-ahead (2500 ms). Double-click / Enter →
+  `open_reader` (the browser stays — the C# main-form shape).
+  Fixed on the way: the rebuild carried collapse flags only after
+  the groups reset (read them first), `relative_item`'s `?` skipped
+  the row-edge fallback, and a RefCell double-borrow in `set_books`.
+  Probe: the browser renders the 255-book fixture grid with
+  captions; Detail/Tile geometry unit-tested. T4 adds the real
+  cover drawing/badges and the exact text lines.
