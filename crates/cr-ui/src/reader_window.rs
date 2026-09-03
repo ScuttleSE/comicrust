@@ -58,6 +58,12 @@ impl ReaderWindow {
             })));
         }
         subtitle.set_text(&page_subtitle(0, page_count));
+        // The `Exit` reader command (Q) closes the window — the C#
+        // `ControlExit` closes the main form.
+        {
+            let win = window.clone();
+            page_view.set_exit_callback(Box::new(move || win.close()));
+        }
         window.set_child(Some(page_view.widget()));
         page_view.widget().grab_focus();
 

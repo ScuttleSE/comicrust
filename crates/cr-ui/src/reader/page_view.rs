@@ -11,9 +11,10 @@
 //!
 //! Renderer note (ADR-008): cairo first. Fade/slide transitions and
 //! the paper texture are cairo-native; the paging bow animation and
-//! the magnifier wait for the GL renderer. Input note: this is the
-//! T2/T3 test map (arrows, +/-, R, F, L, S, D, C); the full
-//! `MainForm` accelerator map is T4 work.
+//! the magnifier wait for the GL renderer. Input: the full
+//! `MainForm` reader command table (`super::keys`) dispatches keys,
+//! wheel/tilt and clicks; pointer drags pan (left) or zoom (middle)
+//! like `ImageDisplayControl.OnMouseMove`.
 
 use std::cell::RefCell;
 use std::collections::{HashMap, VecDeque};
@@ -24,7 +25,9 @@ use std::time::Instant;
 
 use gtk4::cairo;
 use gtk4::prelude::*;
-use gtk4::{gdk, glib, DrawingArea, EventControllerKey, EventControllerScroll, GestureDrag};
+use gtk4::{
+    gdk, glib, DrawingArea, EventControllerKey, EventControllerScroll, GestureClick, GestureDrag,
+};
 
 use cr_core::model::bitmap_adjustment::BitmapAdjustment;
 use cr_core::model::enums::ImageRotation;
@@ -47,9 +50,23 @@ const ANAMORPHIC_TOLERANCE: f32 = 0.25;
 /// Fallback background (shell CSS `#202020`) for `Color` mode.
 const DEFAULT_BACKGROUND: (f64, f64, f64) = (0.1255, 0.1255, 0.1255);
 
-/// Zoom factor per wheel/key tick (`MainForm` zoom commands step by
-/// the same factor).
-const ZOOM_STEP: f32 = 1.25;
+/// `EngineConfiguration.KeyboardZoomStepping` default (the Z /
+/// Shift+Z step zoom commands).
+const KEYBOARD_ZOOM_STEPPING: f32 = 0.5;
+
+/// `ComicDisplay.DefaultPageWallTicks` — after a page change, further
+/// scroll input within this window is eaten (`EatScrolling`), and
+/// part navigation arms the page-change wall (`IsPageChangeWalled`).
+const PAGE_WALL: std::time::Duration = std::time::Duration::from_millis(300);
+
+/// Drag distance before a press becomes a pan/zoom
+/// (`ImageDisplayControl.OnMouseMove` 5 px threshold).
+const DRAG_THRESHOLD: f64 = 5.0;
+
+/// Click-dispatch delay — WinForms parks single clicks for the
+/// double-click time so a double click cancels the pending single
+/// click (`mouseClickTimer`).
+const DOUBLE_CLICK_MS: u64 = 400;
 
 /// `EngineConfiguration.BlendDuration` default.
 const BLEND_DURATION_MS: u64 = 400;
@@ -138,8 +155,9 @@ struct LoadedPage {
 
 /// Latest-wins page decode mailbox: at most one render in flight,
 /// one queued request — the C# `AddToTop` queue behavior in
-/// miniature until the full queues are wired.
-type PageMailbox = Arc<(Mutex<Option<(usize, String)>>, Condvar)>;
+/// miniature until the full queues are wired. The rotation rides
+/// along (the Y commands rotate the page; `PageKey` carries it).
+type PageMailbox = Arc<(Mutex<Option<(usize, String, ImageRotation)>>, Condvar)>;
 
 struct PageWorker {
     mailbox: PageMailbox,
@@ -160,14 +178,14 @@ impl PageWorker {
                     }
                     pending.take()
                 };
-                let Some((page, source)) = request else {
+                let Some((page, source, rotation)) = request else {
                     continue;
                 };
                 let key = cr_image::keys::ImageKey::from_file(
                     source.clone(),
                     Path::new(&source),
                     page,
-                    ImageRotation::None,
+                    rotation,
                 );
                 let page_key = cr_image::keys::PageKey::new(key, BitmapAdjustment::default());
                 let (size, rgba, auto_background) = match pool.render_page(&page_key) {
@@ -193,9 +211,9 @@ impl PageWorker {
         PageWorker { mailbox }
     }
 
-    fn request(&self, page: usize, source: &str) {
+    fn request(&self, page: usize, source: &str, rotation: ImageRotation) {
         let (lock, cvar) = &*self.mailbox;
-        *lock.lock().expect("page request lock") = Some((page, source.to_owned()));
+        *lock.lock().expect("page request lock") = Some((page, source.to_owned(), rotation));
         cvar.notify_one();
     }
 }
@@ -248,13 +266,47 @@ struct ViewState {
     /// Cached resolution; rebuilt when the config or view size moves.
     cache: Option<(DisplayConfig, DisplayOutput)>,
     page_callback: Option<PageCallback>,
-    /// Last drag position — GestureDrag reports offsets cumulative
-    /// from the press, `MovePart` consumes per-update deltas.
-    drag_last: Option<(f64, f64)>,
     transition_anim: Option<TransitionAnim>,
     /// Enter the landing page at its last part (backwards navigation
     /// parity: `CurrentPageChanged` picks part = ImagePartCount-1).
     enter_at_last: bool,
+    // ----- input state (`ComicDisplay` scroll/wall machinery + the
+    // pointer handlers) -----
+    /// `Program.Settings.AutoScrolling` (S command; session-only
+    /// until the settings port).
+    auto_scrolling: bool,
+    /// `ComicDisplay.ScrollingDoesBrowse` default.
+    scrolling_does_browse: bool,
+    /// `ComicDisplay.MouseWheelSpeed` default.
+    mouse_wheel_speed: f32,
+    /// Lines per scroll command (`ComicDisplay.scrollLines` — 1 for
+    /// keys, set per wheel event).
+    scroll_lines: f32,
+    /// Set after every page change; gates scrolling (`EatScrolling`).
+    last_paging: Option<Instant>,
+    /// Set after every part move/navigation; arms the page-change
+    /// wall (`IsPageChangeWalled`).
+    last_part_navigation: Option<Instant>,
+    /// `WallState` — armed after a walled page change was suppressed.
+    wall_pending: bool,
+    wall_start: Option<Instant>,
+    /// Per-page permanent rotation (`ComicPageInfo.Rotation`, the Y
+    /// commands; persistence lands with the T5 write-back).
+    page_rotations: HashMap<usize, ImageRotation>,
+    /// Drag start point (for the 5 px threshold).
+    drag_start: Option<(f64, f64)>,
+    /// Last drag position — GestureDrag reports offsets cumulative
+    /// from the press, `MovePart` consumes per-update deltas.
+    drag_last: Option<(f64, f64)>,
+    /// `MouseActionHappened` — a drag past the threshold suppresses
+    /// the click dispatch.
+    drag_action: bool,
+    /// Middle-button drag zoom: press point + starting zoom.
+    zoom_drag: Option<((f64, f64), f32)>,
+    /// Pending single-click dispatch (cancelled by a double click or
+    /// a drag).
+    pending_click: Option<glib::SourceId>,
+    exit_callback: Option<Box<dyn Fn()>>,
 }
 
 impl ViewState {
@@ -378,7 +430,12 @@ impl ViewState {
             if !self.loaded.contains_key(&candidate) {
                 self.in_flight = Some(candidate);
                 let source = self.source.clone();
-                self.worker.request(candidate, &source);
+                let rotation = self
+                    .page_rotations
+                    .get(&candidate)
+                    .copied()
+                    .unwrap_or(ImageRotation::None);
+                self.worker.request(candidate, &source, rotation);
                 return;
             }
         }
@@ -663,6 +720,20 @@ impl PageView {
             drag_last: None,
             transition_anim: None,
             enter_at_last: false,
+            auto_scrolling: false,
+            scrolling_does_browse: true,
+            mouse_wheel_speed: 2.0,
+            scroll_lines: 1.0,
+            last_paging: None,
+            last_part_navigation: None,
+            wall_pending: false,
+            wall_start: None,
+            page_rotations: HashMap::new(),
+            drag_start: None,
+            drag_action: false,
+            zoom_drag: None,
+            pending_click: None,
+            exit_callback: None,
         }));
 
         let view = PageView {
@@ -682,6 +753,8 @@ impl PageView {
         view.install_key_controller();
         view.install_scroll_controller();
         view.install_pan_controller();
+        view.install_zoom_drag_controller();
+        view.install_click_controller();
         view
     }
 
@@ -716,6 +789,13 @@ impl PageView {
             st.in_flight = None;
             st.wanted.clear();
             st.transition_anim = None;
+            st.page_rotations.clear();
+            st.last_paging = None;
+            st.last_part_navigation = None;
+            st.wall_pending = false;
+            st.wall_start = None;
+            st.drag_action = false;
+            st.zoom_drag = None;
             st.invalidate();
         }
         if page_count == 0 {
@@ -901,70 +981,244 @@ impl PageView {
         st.display((w, h))
     }
 
-    // ----- navigation (`ImageDisplayControl.DisplayPart` + the
-    // ComicDisplayControl page commands) -----
+    // ----- navigation (`ComicDisplay` page + part commands; the
+    // command table in `super::keys` dispatches to these) -----
 
-    /// Next part or page. `true` when something moved.
-    pub fn next(&self) -> bool {
-        // Continuous mode scrolls one viewport (`DisplayPart(Next)`
-        // with the strip anchor following).
+    /// `ComicDisplay.DisplayNextPageOrPart`: next part, at the part
+    /// edge the next page (`PagingMode.Double | Walled`).
+    pub fn display_next_page_or_part(&self, force_new_page: bool) {
         if self.state.borrow().page_layout == PageLayoutMode::Continuous {
-            return self.display_part(PartPageToDisplay::Next);
+            // Continuous mode scrolls one viewport per step
+            // (`DisplayPart(Next)` on the strip); page wall does not
+            // apply (single part).
+            if !self.eat_scrolling() {
+                self.display_part(PartPageToDisplay::Next);
+            }
+            return;
         }
-        let display = self.resolved_display();
-        // Empty display: the current page has no image yet (in
-        // flight) — keep advancing the book, one page per press.
-        if display.is_empty() {
-            let page = self.state.borrow().page;
-            return self.goto_page(page + 1, false);
+        if !self.eat_scrolling() && (force_new_page || !self.display_part(PartPageToDisplay::Next))
+        {
+            self.display_next_page(true, true);
         }
-        let visible = self.state.borrow().visible;
-        if display.is_end_part(visible) {
-            let page = self.state.borrow().page;
-            return self.goto_page(page + self.page_step(), false);
-        }
-        self.display_part(PartPageToDisplay::Next)
     }
 
-    /// `DisplayNextPage` PagingMode.Double: two pages per turn while
-    /// a spread is displayed, one from a single-page view.
-    fn page_step(&self) -> usize {
+    /// `ComicDisplay.DisplayPreviousPageOrPart`.
+    pub fn display_previous_page_or_part(&self, force_new_page: bool) {
+        if self.state.borrow().page_layout == PageLayoutMode::Continuous {
+            if !self.eat_scrolling() {
+                self.display_part(PartPageToDisplay::Previous);
+            }
+            return;
+        }
+        if !self.eat_scrolling()
+            && (force_new_page || !self.display_part(PartPageToDisplay::Previous))
+        {
+            self.display_previous_page(true, true);
+        }
+    }
+
+    /// `ComicDisplay.DisplayNextPage`: step 2 while a spread is
+    /// displayed (`IsDoubleImage` = more than one image visible), 1
+    /// otherwise. The `SeekNewPage` Near-position refinement needs
+    /// page metadata the reader does not load yet.
+    pub fn display_next_page(&self, double_step: bool, walled: bool) {
+        if walled && self.is_page_change_walled() {
+            return;
+        }
+        let (page, step) = {
+            let st = self.state.borrow();
+            let is_double = st.composition.as_ref().is_some_and(|c| c.pages.len() > 1);
+            let step = if double_step && is_double { 2 } else { 1 };
+            (st.page, step)
+        };
+        self.state.borrow_mut().last_paging = Some(Instant::now());
+        self.goto_page(page + step, false);
+    }
+
+    /// `ComicDisplay.DisplayPreviousPage`: the -1/-2 offset — two
+    /// pages back in a two-page layout unless the sought page is
+    /// invalid. The single-page-type and Near/Far conditions need
+    /// page metadata (defaults make them false), so the offset
+    /// reduces to the page index.
+    pub fn display_previous_page(&self, double_step: bool, walled: bool) {
+        if !walled || !self.is_page_change_walled() {
+            let (page, two_page) = {
+                let st = self.state.borrow();
+                (
+                    st.page,
+                    matches!(
+                        st.page_layout,
+                        PageLayoutMode::Double | PageLayoutMode::DoubleAdaptive
+                    ),
+                )
+            };
+            let step = if two_page && double_step && page >= 2 {
+                2
+            } else {
+                1
+            };
+            if page < step {
+                return; // `Book.Navigate` fails below page 0
+            }
+            self.state.borrow_mut().last_paging = Some(Instant::now());
+            self.goto_page(page - step, true);
+        }
+    }
+
+    /// `ComicDisplay.EatScrolling`: scrolling right after a page
+    /// change is eaten (a multi-notch wheel must not flip several
+    /// pages). A single-part display never eats.
+    fn eat_scrolling(&self) -> bool {
+        let part_count = self.resolved_display().part_count;
         let st = self.state.borrow();
-        let two_page = matches!(
-            st.page_layout,
-            PageLayoutMode::Double | PageLayoutMode::DoubleAdaptive
-        );
-        let spread = st.composition.as_ref().is_some_and(|c| c.pages.len() > 1);
-        if two_page && spread {
-            2
+        if part_count == 1 {
+            return false;
+        }
+        st.last_paging
+            .is_some_and(|t| Instant::now().duration_since(t) < PAGE_WALL)
+    }
+
+    /// `ComicDisplay.IsPageChangeWalled`: page changes within the
+    /// wall window after part navigation need a second press (the
+    /// first press arms the wall).
+    fn is_page_change_walled(&self) -> bool {
+        let part_count = self.resolved_display().part_count;
+        let mut st = self.state.borrow_mut();
+        if part_count == 1 {
+            return false;
+        }
+        let now = Instant::now();
+        let armed = st
+            .last_part_navigation
+            .is_some_and(|t| now.duration_since(t) < PAGE_WALL);
+        if !armed {
+            st.wall_pending = false;
+            return false;
+        }
+        if !st.wall_pending {
+            st.wall_start = Some(now);
+            st.wall_pending = true;
+            return true;
+        }
+        if st
+            .wall_start
+            .is_some_and(|t| now.duration_since(t) < PAGE_WALL)
+        {
+            return true;
+        }
+        st.wall_pending = false;
+        st.wall_start = Some(now);
+        false
+    }
+
+    /// `ComicDisplay.GetLineSize` — pan step per scroll line, from
+    /// the virtual image size (continuous uses the strip width/16).
+    fn line_size(&self) -> (i32, i32) {
+        let st = self.state.borrow();
+        if st.page_layout == PageLayoutMode::Continuous {
+            let w = st
+                .continuous
+                .as_ref()
+                .map(|l| l.total_size().0)
+                .unwrap_or(0);
+            return (w / 16, w / 16);
+        }
+        let (w, h) = st.composition.as_ref().map(|c| c.size).unwrap_or((0, 0));
+        let is_double = st.composition.as_ref().is_some_and(|c| c.pages.len() > 1);
+        (w / if is_double { 32 } else { 16 }, h / 32)
+    }
+
+    /// `ComicDisplay.ScrollUp` — pan a line up; at the part edge,
+    /// `ScrollingDoesBrowse` turns the page.
+    pub fn scroll_up(&self, lines: f32) {
+        if self.eat_scrolling() {
+            return;
+        }
+        if self.state.borrow().page_layout == PageLayoutMode::Continuous {
+            self.scroll_up_lines(lines, false);
+        } else if self.state.borrow().auto_scrolling {
+            self.display_previous_page_or_part(false);
         } else {
-            1
+            self.scroll_up_lines(lines, self.state.borrow().scrolling_does_browse);
         }
     }
 
-    /// Previous part or page. `true` when something moved.
-    pub fn previous(&self) -> bool {
-        if self.state.borrow().page_layout == PageLayoutMode::Continuous {
-            return self.display_part(PartPageToDisplay::Previous);
+    pub fn scroll_down(&self, lines: f32) {
+        if self.eat_scrolling() {
+            return;
         }
+        if self.state.borrow().page_layout == PageLayoutMode::Continuous {
+            self.scroll_down_lines(lines, false);
+        } else if self.state.borrow().auto_scrolling {
+            self.display_next_page_or_part(false);
+        } else {
+            self.scroll_down_lines(lines, self.state.borrow().scrolling_does_browse);
+        }
+    }
+
+    /// `ComicDisplay.ScrollLeft` — horizontal scroll never changes
+    /// the page; auto-scrolling turns instead (`IsMovementFlipped`
+    /// default false).
+    pub fn scroll_left(&self, lines: f32) {
+        if self.eat_scrolling() {
+            return;
+        }
+        if self.state.borrow().auto_scrolling {
+            self.display_previous_page_or_part(false);
+        } else {
+            let (lw, _) = self.line_size();
+            self.move_part((0 - (lines * (lw as f32)) as i32, 0));
+        }
+    }
+
+    pub fn scroll_right(&self, lines: f32) {
+        if self.eat_scrolling() {
+            return;
+        }
+        if self.state.borrow().auto_scrolling {
+            self.display_next_page_or_part(false);
+        } else {
+            let (lw, _) = self.line_size();
+            self.move_part(((lines * (lw as f32)) as i32, 0));
+        }
+    }
+
+    fn scroll_up_lines(&self, lines: f32, with_page_change: bool) -> bool {
+        let (_, lh) = self.line_size();
+        if self.move_part((0, -((lines * (lh as f32)) as i32))) {
+            return true;
+        }
+        if !with_page_change {
+            return false;
+        }
+        if self.eat_scrolling() {
+            return false;
+        }
+        self.display_previous_page_or_part(true);
+        true
+    }
+
+    fn scroll_down_lines(&self, lines: f32, with_page_change: bool) -> bool {
+        let (_, lh) = self.line_size();
+        if self.move_part((0, (lines * (lh as f32)) as i32)) {
+            return true;
+        }
+        if !with_page_change {
+            return false;
+        }
+        self.display_next_page_or_part(true);
+        true
+    }
+
+    /// `ImageDisplayControl.MovePartDown` — 10% of the output height
+    /// per press (V / B, Ctrl+Down / Ctrl+Up).
+    pub fn move_part_down(&self, percent: f32) {
         let display = self.resolved_display();
         if display.is_empty() {
-            let page = self.state.borrow().page;
-            if page == 0 {
-                return false;
-            }
-            return self.goto_page(page - 1, true);
+            return;
         }
-        let visible = self.state.borrow().visible;
-        if display.is_start_part(visible) {
-            let page = self.state.borrow().page;
-            if page == 0 {
-                return false;
-            }
-            let step = self.page_step();
-            return self.goto_page(page.saturating_sub(step), true);
-        }
-        self.display_part(PartPageToDisplay::Previous)
+        let dy = (display.output_bounds().h as f32 * percent) as i32;
+        self.move_part((0, dy));
     }
 
     pub fn first_page(&self) -> bool {
@@ -977,7 +1231,9 @@ impl PageView {
     }
 
     /// `ImageDisplayControl.DisplayPart` (instant, no smooth
-    /// scrolling — the animated variant is GL-renderer work).
+    /// scrolling — the animated variant is GL-renderer work) wrapped
+    /// by `ComicDisplay.DisplayPart` (stamps the part navigation on
+    /// success).
     fn display_part(&self, ptd: PartPageToDisplay) -> bool {
         let mut st = self.state.borrow_mut();
         let (w, h) = (self.area.width(), self.area.height());
@@ -1012,6 +1268,8 @@ impl PageView {
             }
             st.visible = ImagePartInfo::new(0, (0, top as i32));
             st.invalidate();
+            st.last_part_navigation = Some(Instant::now());
+            st.wall_pending = false;
             let layout = st.continuous.as_ref();
             let hit = layout
                 .and_then(|l| l.hit_test(top))
@@ -1065,6 +1323,8 @@ impl PageView {
         };
         st.visible = target;
         st.invalidate();
+        st.last_part_navigation = Some(Instant::now());
+        st.wall_pending = false;
         drop(st);
         self.area.queue_draw();
         true
@@ -1072,19 +1332,18 @@ impl PageView {
 
     // ----- zoom (`ImageDisplayControl.DoZoom` / `ZoomTo`) -----
 
+    /// The `ImageZoom` setter anchor: `Display.PartBounds.GetCenter()`.
     pub fn zoom_to(&self, zoom: f32) {
-        let (w, h) = (self.area.width(), self.area.height());
-        self.do_zoom((w / 2, h / 2), zoom);
+        let display = self.resolved_display();
+        let b = display.part_bounds;
+        self.do_zoom((b.x + b.w / 2, b.y + b.h / 2), zoom);
     }
 
-    pub fn zoom_in(&self) {
-        let zoom = self.state.borrow().image_zoom * ZOOM_STEP;
-        self.zoom_to(zoom);
-    }
-
-    pub fn zoom_out(&self) {
-        let zoom = self.state.borrow().image_zoom / ZOOM_STEP;
-        self.zoom_to(zoom);
+    /// The MainForm zoom commands: `(zoom + delta).Clamp(lo, hi)`
+    /// through the `ImageZoom` setter.
+    pub fn zoom_add(&self, delta: f32, lo: f32, hi: f32) {
+        let current = self.state.borrow().image_zoom;
+        self.zoom_to((current + delta).clamp(lo, hi));
     }
 
     fn do_zoom(&self, center: (i32, i32), zoom: f32) {
@@ -1122,11 +1381,70 @@ impl PageView {
 
     // ----- rotation / fit / RTL / layout toggles -----
 
-    pub fn rotate(&self) {
+    /// The MainForm `RotateC` command (`RotateRight()`; the
+    /// Continuous guard lives in the dispatch switch).
+    pub fn rotate_right(&self) {
         let mut st = self.state.borrow_mut();
         st.rotation = rotate_right(st.rotation);
         st.invalidate();
         drop(st);
+        self.area.queue_draw();
+    }
+
+    /// The MainForm `RotateCC` command (`RotateLeft()`).
+    pub fn rotate_left(&self) {
+        let mut st = self.state.borrow_mut();
+        st.rotation = rotate_left(st.rotation);
+        st.invalidate();
+        drop(st);
+        self.area.queue_draw();
+    }
+
+    /// The MainForm `AutoRotate` command (`ImageAutoRotate` toggle).
+    pub fn toggle_auto_rotate(&self) {
+        let mut st = self.state.borrow_mut();
+        st.auto_rotate = !st.auto_rotate;
+        st.invalidate();
+        drop(st);
+        self.area.queue_draw();
+    }
+
+    /// The MainForm `PageRotateC`/`PageRotateCC` commands
+    /// (`GetPageEditor().Rotation`): the page decodes with the new
+    /// rotation. View-side port — persistence into `ComicPageInfo`
+    /// lands with the T5 write-back.
+    pub fn page_rotate(&self, right: bool) {
+        let mut st = self.state.borrow_mut();
+        let page = st.page;
+        let current = st
+            .page_rotations
+            .get(&page)
+            .copied()
+            .unwrap_or(ImageRotation::None);
+        let next = if right {
+            rotate_right(current)
+        } else {
+            rotate_left(current)
+        };
+        if next == ImageRotation::None {
+            st.page_rotations.remove(&page);
+        } else {
+            st.page_rotations.insert(page, next);
+        }
+        // Evict the stale decode; the rotated page decodes fresh
+        // (sizes change, so the continuous strip re-derives too).
+        st.loaded.remove(&page);
+        st.continuous_page_sizes.remove(&page);
+        st.continuous_content_width = 0;
+        st.composition = None;
+        st.invalidate();
+        st.queue_for(page);
+        let idle = st.in_flight.is_none();
+        drop(st);
+        if idle {
+            self.state.borrow_mut().dispatch_next();
+            self.start_pump();
+        }
         self.area.queue_draw();
     }
 
@@ -1170,6 +1488,11 @@ impl PageView {
         st.page_layout = mode;
         st.visible = ImagePartInfo::EMPTY;
         st.image_zoom = 1.0;
+        if mode == PageLayoutMode::Continuous {
+            // The C# setter re-anchors the strip at the current page
+            // (`RebuildContinuousLayout(Anchor(CurrentPage, 0))`).
+            st.continuous = None;
+        }
         st.recompose();
         let current = st.page;
         st.queue_for(current);
@@ -1186,20 +1509,27 @@ impl PageView {
         self.state.borrow().page_layout
     }
 
-    /// Cycles the background mode; Texture loads the bundled
-    /// checkered paper (the C# keeps the file in the workspace
-    /// settings — Phase 5/7 wiring).
-    pub fn cycle_background(&self) {
+    /// The MainForm `ToggleTwoPages` command — the `TogglePageLayout`
+    /// cycle (`Continuous` falls back to `Single`).
+    pub fn toggle_page_layout(&self) {
+        let next = match self.state.borrow().page_layout {
+            PageLayoutMode::Single => PageLayoutMode::Double,
+            PageLayoutMode::Double => PageLayoutMode::DoubleAdaptive,
+            PageLayoutMode::DoubleAdaptive | PageLayoutMode::Continuous => PageLayoutMode::Single,
+        };
+        self.set_page_layout(next);
+    }
+
+    /// The MainForm `ToggleRealisticPages` command. The reader folds
+    /// the paper texture into `background_mode` (Texture ↔ Color);
+    /// the C# keeps the paper selection in the workspace settings.
+    pub fn toggle_realistic_pages(&self) {
         let next = match self.state.borrow().background_mode {
-            ImageBackgroundMode::Color => ImageBackgroundMode::Auto,
-            ImageBackgroundMode::Auto => ImageBackgroundMode::Texture,
             ImageBackgroundMode::Texture => ImageBackgroundMode::Color,
+            _ => ImageBackgroundMode::Texture,
         };
         let mut st = self.state.borrow_mut();
         st.background_mode = next;
-        // The bundled paper rides the Texture mode until the
-        // preferences dialogs land (Phase 5): Color/Auto clear the
-        // overlay, Texture loads the checkered paper.
         st.paper = if next == ImageBackgroundMode::Texture {
             Self::bundled_paper("Checkered.jpg")
         } else {
@@ -1256,7 +1586,8 @@ impl PageView {
     // ----- pan (`ImageDisplayControl.MovePart`, instant) -----
 
     /// Pans the visible part by `offset` pixels; `true` when the
-    /// part moved.
+    /// part moved (`ComicDisplay.MovePart` stamps the part
+    /// navigation on success).
     fn move_part(&self, offset: (i32, i32)) -> bool {
         let mut st = self.state.borrow_mut();
         let (w, h) = (self.area.width(), self.area.height());
@@ -1269,7 +1600,11 @@ impl PageView {
         let clamped = display.part_offset(ipi.part, target);
         let moved = clamped != ipi.offset;
         st.visible = ImagePartInfo::new(ipi.part, clamped);
-        st.invalidate();
+        if moved {
+            st.invalidate();
+            st.last_part_navigation = Some(Instant::now());
+            st.wall_pending = false;
+        }
         // Continuous mode: the visible page follows the viewport.
         if st.page_layout == PageLayoutMode::Continuous {
             let top = i64::from(clamped.1);
@@ -1302,110 +1637,103 @@ impl PageView {
         moved
     }
 
-    // ----- input wiring (the full C# key map lands in T4) -----
+    // ----- input wiring (the `MainForm` command table; `super::keys`) -----
 
+    /// `ReaderFormKeyDown` → `KeyboardShortcuts.HandleKey`: build the
+    /// `CommandKey` from the keyval + modifier state and dispatch
+    /// through the table.
     fn install_key_controller(&self) {
         let controller = EventControllerKey::new();
         let view = self.clone();
-        controller.connect_key_pressed(move |_, key, _code, modifier| {
-            let view = view.clone();
-            match key {
-                gdk::Key::Right | gdk::Key::Down => {
-                    view.next();
+        controller.connect_key_pressed(move |_, key, _code, state| {
+            match super::keys::command_key_from_gdk(key, state).and_then(super::keys::command_for) {
+                Some(command) => {
+                    view.dispatch_command(command.id);
                     glib::Propagation::Stop
                 }
-                gdk::Key::Left | gdk::Key::Up => {
-                    view.previous();
-                    glib::Propagation::Stop
-                }
-                gdk::Key::Home => {
-                    view.first_page();
-                    glib::Propagation::Stop
-                }
-                gdk::Key::End => {
-                    view.last_page();
-                    glib::Propagation::Stop
-                }
-                gdk::Key::r | gdk::Key::R => {
-                    view.rotate();
-                    glib::Propagation::Stop
-                }
-                gdk::Key::plus | gdk::Key::KP_Add | gdk::Key::equal => {
-                    view.zoom_in();
-                    glib::Propagation::Stop
-                }
-                gdk::Key::minus | gdk::Key::KP_Subtract => {
-                    view.zoom_out();
-                    glib::Propagation::Stop
-                }
-                gdk::Key::f | gdk::Key::F if modifier.is_empty() => {
-                    let mode = match view.fit_mode() {
-                        ImageFitMode::Fit => ImageFitMode::FitWidth,
-                        ImageFitMode::FitWidth => ImageFitMode::FitHeight,
-                        _ => ImageFitMode::Fit,
-                    };
-                    view.set_fit_mode(mode);
-                    glib::Propagation::Stop
-                }
-                gdk::Key::_1 => {
-                    view.set_page_layout(PageLayoutMode::Single);
-                    glib::Propagation::Stop
-                }
-                gdk::Key::_2 => {
-                    view.set_page_layout(PageLayoutMode::Double);
-                    glib::Propagation::Stop
-                }
-                gdk::Key::_3 => {
-                    view.set_page_layout(PageLayoutMode::DoubleAdaptive);
-                    glib::Propagation::Stop
-                }
-                gdk::Key::_4 => {
-                    view.set_page_layout(PageLayoutMode::Continuous);
-                    glib::Propagation::Stop
-                }
-                // Temporary test hook until the Phase 5 preferences:
-                // cycle Color → Auto → Texture (bundled checkered
-                // paper). 'P' = paper.
-                gdk::Key::p | gdk::Key::P => {
-                    view.cycle_background();
-                    glib::Propagation::Stop
-                }
-                _ => glib::Propagation::Proceed,
+                None => glib::Propagation::Proceed,
             }
         });
         self.area.add_controller(controller);
     }
 
+    /// `display_MouseWheel` / `display_MouseHWheel`: wheel and tilt
+    /// dispatch through the command table (Ctrl+Wheel = ZoomIn/
+    /// ZoomOut); the wheel updates `scrollLines` first. The
+    /// right-button wheel switches tabs in the C# — reader tabs land
+    /// in T5.
     fn install_scroll_controller(&self) {
         let controller = EventControllerScroll::new(
-            gtk4::EventControllerScrollFlags::VERTICAL | gtk4::EventControllerScrollFlags::DISCRETE,
+            gtk4::EventControllerScrollFlags::VERTICAL
+                | gtk4::EventControllerScrollFlags::HORIZONTAL
+                | gtk4::EventControllerScrollFlags::DISCRETE,
         );
         let view = self.clone();
-        controller.connect_scroll(move |_, _dx, dy| {
-            let view = view.clone();
-            if dy > 0.0 {
-                view.next();
-            } else if dy < 0.0 {
-                view.previous();
+        controller.connect_scroll(move |controller, dx, dy| {
+            let state = controller.current_event_state();
+            let mods = super::keys::Mods {
+                ctrl: state.contains(gdk::ModifierType::CONTROL_MASK),
+                shift: state.contains(gdk::ModifierType::SHIFT_MASK),
+                alt: state.contains(gdk::ModifierType::ALT_MASK),
+            };
+            if dy != 0.0 {
+                // `scrollLines = |delta| * MouseWheelSpeed`
+                let speed = view.state.borrow().mouse_wheel_speed;
+                view.state.borrow_mut().scroll_lines = dy.abs() as f32 * speed;
+                let key = if dy < 0.0 {
+                    super::keys::Key::MouseWheelUp
+                } else {
+                    super::keys::Key::MouseWheelDown
+                };
+                view.dispatch_key(key, mods);
+            } else if dx != 0.0 {
+                let key = if dx < 0.0 {
+                    super::keys::Key::MouseTiltLeft
+                } else {
+                    super::keys::Key::MouseTiltRight
+                };
+                view.dispatch_key(key, mods);
             }
             glib::Propagation::Stop
         });
         self.area.add_controller(controller);
     }
 
+    /// `ImageDisplayControl.OnMouseMove` — left-drag pans after the
+    /// 5 px threshold (`MouseActionHappened`); the sequence is only
+    /// claimed at the threshold so short presses still dispatch as
+    /// clicks.
     fn install_pan_controller(&self) {
         let controller = GestureDrag::new();
+        controller.set_button(1);
         let view = self.clone();
-        controller.connect_drag_begin(move |gesture, x, y| {
-            let view = view.clone();
-            view.state.borrow_mut().drag_last = Some((x, y));
-            gesture.set_state(gtk4::EventSequenceState::Claimed);
+        controller.connect_drag_begin(move |_, x, y| {
+            let mut st = view.state.borrow_mut();
+            st.drag_start = Some((x, y));
+            st.drag_last = Some((x, y));
+            st.drag_action = false;
         });
         let view = self.clone();
         controller.connect_drag_update(move |gesture, x, y| {
-            let view = view.clone();
-            let _ = gesture.start_point();
+            let dist = {
+                let st = view.state.borrow();
+                match st.drag_start {
+                    Some((sx, sy)) => (x - sx).hypot(y - sy),
+                    None => 0.0,
+                }
+            };
+            {
+                let mut st = view.state.borrow_mut();
+                if !st.drag_action && dist > DRAG_THRESHOLD {
+                    st.drag_action = true;
+                    view.cancel_pending_click();
+                    gesture.set_state(gtk4::EventSequenceState::Claimed);
+                }
+            }
             let mut st = view.state.borrow_mut();
+            if !st.drag_action {
+                return;
+            }
             let Some((lx, ly)) = st.drag_last else {
                 return;
             };
@@ -1416,11 +1744,248 @@ impl PageView {
             view.move_part(((x - lx) as i32, (y - ly) as i32));
         });
         let view = self.clone();
-        controller.connect_drag_end(move |_gesture, _x, _y| {
-            let view = view.clone();
-            view.state.borrow_mut().drag_last = None;
+        controller.connect_drag_end(move |_, _x, _y| {
+            let mut st = view.state.borrow_mut();
+            st.drag_start = None;
+            st.drag_last = None;
+            st.drag_action = false;
         });
         self.area.add_controller(controller);
+    }
+
+    /// `ImageDisplayControl.OnMouseMove` middle-button branch —
+    /// drag-zooms around the press point: `orgZoom + dy / 100`
+    /// clamped to the zoom range.
+    fn install_zoom_drag_controller(&self) {
+        let controller = GestureDrag::new();
+        controller.set_button(2);
+        let view = self.clone();
+        controller.connect_drag_begin(move |gesture, x, y| {
+            let org = view.state.borrow().image_zoom;
+            view.state.borrow_mut().zoom_drag = Some(((x, y), org));
+            gesture.set_state(gtk4::EventSequenceState::Claimed);
+        });
+        let view = self.clone();
+        controller.connect_drag_update(move |_, _x, y| {
+            let drag = view.state.borrow().zoom_drag;
+            if let Some(((px, py), org)) = drag {
+                view.do_zoom((px as i32, py as i32), org + ((y - py) / 100.0) as f32);
+            }
+        });
+        let view = self.clone();
+        controller.connect_drag_end(move |_, _x, _y| {
+            view.state.borrow_mut().zoom_drag = None;
+        });
+        self.area.add_controller(controller);
+    }
+
+    /// `ImageDisplayControl.OnClick`/`OnDoubleClick`: the single
+    /// click dispatch parks for the double-click time; a second
+    /// press cancels it and dispatches the double click.
+    fn install_click_controller(&self) {
+        let controller = GestureClick::new();
+        controller.set_button(1);
+        let view = self.clone();
+        controller.connect_pressed(move |_, n, _x, _y| {
+            if n >= 2 {
+                view.cancel_pending_click();
+                view.dispatch_key(super::keys::Key::MouseDoubleLeft, Default::default());
+            }
+        });
+        let view = self.clone();
+        controller.connect_released(move |_, n, _x, _y| {
+            if n == 1 && !view.state.borrow().drag_action {
+                view.schedule_click();
+            }
+        });
+        self.area.add_controller(controller);
+    }
+
+    /// Builds a `CommandKey` and dispatches through the table
+    /// (`KeyboardShortcuts.HandleKey`).
+    fn dispatch_key(&self, key: super::keys::Key, mods: super::keys::Mods) {
+        if let Some(command) = super::keys::command_for(super::keys::CommandKey { key, mods }) {
+            self.dispatch_command(command.id);
+        }
+    }
+
+    /// The command switch. The C# wires each id to the display or
+    /// the shell (`MainForm.InitializeKeyboard`); ids for features
+    /// that land in T5/T6 (undock, menu chrome, magnifier, tabs) or
+    /// later phases (bookmarks, the browser list, page write-back)
+    /// dispatch as no-ops until their task.
+    fn dispatch_command(&self, id: &str) {
+        match id {
+            // Library group — the browser list is Phase 4.
+            "NextComic" | "PrevComic" | "RandomComic" | "ShowBrowser" => {}
+            "MoveToFirstPage" => {
+                self.first_page();
+            }
+            "MoveToPreviousPage" => self.display_previous_page(true, false),
+            "MoveToNextPage" => self.display_next_page(true, false),
+            "MoveToLastPage" => {
+                self.last_page();
+            }
+            // Bookmarks need the per-book bookmark list (later phase).
+            "MoveToPrevBookmark" | "MoveToNextBookmark" => {}
+            // Reader tabs land in T5.
+            "PrevTab" | "NextTab" => {}
+            "MoveToPrevPageSingle" => self.display_previous_page(false, false),
+            "MoveToNextPageSingle" => self.display_next_page(false, false),
+            "MovePrevPart" => self.display_previous_page_or_part(false),
+            "MoveNextPart" => self.display_next_page_or_part(false),
+            "MoveFirstPart" => {
+                self.display_part(PartPageToDisplay::First);
+            }
+            "MoveLastPart" => {
+                self.display_part(PartPageToDisplay::Last);
+            }
+            "MovePartDown10" => self.move_part_down(0.1),
+            "MovePartUp10" => self.move_part_down(-0.1),
+            "ToggleAutoScrolling" => {
+                let next = !self.state.borrow().auto_scrolling;
+                self.state.borrow_mut().auto_scrolling = next;
+            }
+            "DoublePageAutoScroll" => {
+                let mut st = self.state.borrow_mut();
+                st.two_page_navigation = !st.two_page_navigation;
+                st.invalidate();
+            }
+            "MoveUp" => {
+                let lines = self.state.borrow().scroll_lines;
+                self.scroll_up(lines);
+            }
+            "MoveDown" => {
+                let lines = self.state.borrow().scroll_lines;
+                self.scroll_down(lines);
+            }
+            "MoveLeft" => {
+                let lines = self.state.borrow().scroll_lines;
+                self.scroll_left(lines);
+            }
+            "MoveRight" => {
+                let lines = self.state.borrow().scroll_lines;
+                self.scroll_right(lines);
+            }
+            // The reader undocks into a window in T5.
+            "ToggleUndockReader" => {}
+            "ToggleFullScreen" => self.toggle_full_screen(),
+            "ToggleTwoPages" => self.toggle_page_layout(),
+            "ToggleRealisticPages" => self.toggle_realistic_pages(),
+            // The magnifier is T6; the menu/chrome toggle is T5.
+            "ToggleMagnify" | "ToggleMenu" => {}
+            "Original" => self.set_fit_mode(ImageFitMode::Original),
+            // `SetPageFitAll`/`SetPageFitHeight` skip in continuous mode.
+            "FitAll" => {
+                if self.state.borrow().page_layout != PageLayoutMode::Continuous {
+                    self.set_fit_mode(ImageFitMode::Fit);
+                }
+            }
+            "FitWidth" => self.set_fit_mode(ImageFitMode::FitWidth),
+            "FitWidthAdaptive" => self.set_fit_mode(ImageFitMode::FitWidthAdaptive),
+            "FitHeight" => {
+                if self.state.borrow().page_layout != PageLayoutMode::Continuous {
+                    self.set_fit_mode(ImageFitMode::FitHeight);
+                }
+            }
+            "FitBest" => self.set_fit_mode(ImageFitMode::BestFit),
+            "SinglePage" => self.set_page_layout(PageLayoutMode::Single),
+            "TwoPages" => self.set_page_layout(PageLayoutMode::Double),
+            "TwoPagesAdaptive" => self.set_page_layout(PageLayoutMode::DoubleAdaptive),
+            "Continuous" => self.set_page_layout(PageLayoutMode::Continuous),
+            "RightToLeft" => {
+                let rtl = self.state.borrow().rtl;
+                self.set_rtl(!rtl);
+            }
+            "OnlyFitIfOversized" => self.toggle_fit_only_if_oversized(),
+            // The MainForm guards the rotation commands against
+            // continuous mode (the strip keeps its own geometry).
+            "RotateC" => {
+                if self.state.borrow().page_layout != PageLayoutMode::Continuous {
+                    self.rotate_right();
+                }
+            }
+            "RotateCC" => {
+                if self.state.borrow().page_layout != PageLayoutMode::Continuous {
+                    self.rotate_left();
+                }
+            }
+            "AutoRotate" => {
+                if self.state.borrow().page_layout != PageLayoutMode::Continuous {
+                    self.toggle_auto_rotate();
+                }
+            }
+            "ZoomIn" => self.zoom_add(0.1, MINIMUM_ZOOM, MAXIMUM_ZOOM),
+            "ZoomOut" => self.zoom_add(-0.1, MINIMUM_ZOOM, MAXIMUM_ZOOM),
+            "StepZoomIn" => self.zoom_add(KEYBOARD_ZOOM_STEPPING, MINIMUM_ZOOM, 4.0),
+            "StepZoomOut" => self.zoom_add(-KEYBOARD_ZOOM_STEPPING, MINIMUM_ZOOM, 4.0),
+            // Touch-only binding in the C#.
+            "ToggleZoom" => {}
+            "PageRotateC" => self.page_rotate(true),
+            "PageRotateCC" => self.page_rotate(false),
+            "Exit" => {
+                let cb = self.state.borrow_mut().exit_callback.take();
+                if let Some(cb) = cb {
+                    cb();
+                    self.state.borrow_mut().exit_callback = Some(cb);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// The MainForm `ToggleFullScreen` command
+    /// (`ComicDisplay.ToggleFullScreen`).
+    pub fn toggle_full_screen(&self) {
+        if let Some(window) = self.area.root().and_downcast::<gtk4::Window>() {
+            if window.is_fullscreen() {
+                window.unfullscreen();
+            } else {
+                window.fullscreen();
+            }
+        }
+    }
+
+    /// The MainForm `OnlyFitIfOversized` command
+    /// (`ImageFitOnlyIfOversized` toggle).
+    pub fn toggle_fit_only_if_oversized(&self) {
+        let mut st = self.state.borrow_mut();
+        st.fit_only_if_oversized = !st.fit_only_if_oversized;
+        st.invalidate();
+        drop(st);
+        self.area.queue_draw();
+    }
+
+    /// The MainForm `RightToLeft` command (`RightToLeftReading`
+    /// toggle).
+    pub fn toggle_rtl(&self) {
+        let rtl = self.state.borrow().rtl;
+        self.set_rtl(!rtl);
+    }
+
+    /// The Exit command closes the reader window (the C#
+    /// `ControlExit` closes the main form).
+    pub fn set_exit_callback(&self, callback: Box<dyn Fn()>) {
+        self.state.borrow_mut().exit_callback = Some(callback);
+    }
+
+    fn schedule_click(&self) {
+        let view = self.clone();
+        let source = glib::timeout_add_local(
+            std::time::Duration::from_millis(DOUBLE_CLICK_MS),
+            move || {
+                view.state.borrow_mut().pending_click = None;
+                view.dispatch_key(super::keys::Key::MouseLeft, Default::default());
+                glib::ControlFlow::Break
+            },
+        );
+        self.state.borrow_mut().pending_click = Some(source);
+    }
+
+    fn cancel_pending_click(&self) {
+        if let Some(source) = self.state.borrow_mut().pending_click.take() {
+            source.remove();
+        }
     }
 }
 
