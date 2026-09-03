@@ -1,0 +1,256 @@
+# Phase 4 Kickoff — The Browser (library view)
+
+Goal: comicrust loads a real library, shows the ComicRack browser —
+list navigator, book list with thumbnail/tile/detail modes, sorting,
+grouping, columns, search — and hands books to the Phase 3 reader.
+Exit gate: **a user browses their migrated library (the 255-book
+real-world ComicDb.xml) in daily-driver comfort: lists evaluate,
+books display with covers, sort/group/column changes apply, search
+filters, double-click opens the reader, and reading state round-trips
+through a byte-stable ComicDb.xml save.**
+
+Read first: `AGENTS.md` (rules + status), `docs/phase-3-kickoff.md`
+(the reader, and the user-test protocol — it stays mandatory),
+`docs/decisions.md` (ADR-008 cairo, ADR-017 reader architecture,
+ADR-018 GTK surface, ADR-019 pool-queue page loads).
+
+## Why this phase is the long pole
+
+The C# browser is the single largest custom build in the codebase:
+
+| C# file | LOC | Role |
+|---|---|---|
+| `cYo.Common.Windows/Forms/ItemView.cs` | 4,770 | The list control: modes, layout, groups, columns, selection, drag |
+| `ComicRack/Views/ComicBrowserControl.cs` | 3,536 | The comic browser: search, view switcher, wiring |
+| `ComicRack/Controls/CoverViewItem.cs` | 1,648 | The comic item: cover, badges, text lines, comparers |
+| `ComicRack/Views/ComicListLibraryBrowser.cs` | 1,647 | The library browser pane (list navigator + browser host) |
+| `ComicRack/Controls/PagesView.cs` | 833 | The pages panel (page thumbnails of one book) |
+| `ComicRack/NavigatorManager.cs` | 461 | The list navigator model (ComicLists tree ↔ views) |
+| `ComicRack/Views/QuickOpenView.cs` | 210 | QuickOpen (recent lists as a cover grid) |
+| `ComicRack/Views/ComicPagesView.cs` | 241 | The pages view host |
+
+Supporting specs: `ItemViewColumn.cs`/`ItemViewConfig.cs`/
+`ItemViewMode.cs` (Thumbnail/Tile/Detail), `ItemViewGroupsStatus.cs`,
+`CoverViewItem*Comparer/Grouper.cs` (the Phase 2 T7 registry tables
+feed these), `cYo.Common.Windows/Forms/SearchTextBox.cs` +
+`ToolStripSearchTextBox.cs` + `SearchContextMenuBuilder.cs` (search),
+`ComicRack.Engine/Controls/SearchBrowserControl.cs`, and the browser
+wiring regions of `ComicRack/MainForm.cs` (4,576 — the orchestrator).
+
+## What already exists (do not rebuild)
+
+| Need | Where |
+|---|---|
+| The ComicLists tree model (raw matchers) | `cr-core/database/list_items.rs`, `display_config.rs` |
+| ComicDatabase load/save, `.bak`/`.restore` chain | `cr-core/database/comic_database.rs` |
+| Book defaults, reading-state fields, `set_current_page` | `cr-core/model/comic_book.rs` |
+| Property registry (C# property name → typed accessors) | `cr-core/registry.rs` — drives columns AND search |
+| List evaluation (limits, filtered ids, base lists) | `cr-engine/smart_list.rs` |
+| Sort comparers + grouper ladders + `compare_by_column` | `cr-engine/sort.rs`, `group.rs` |
+| Thumbnails (512 px q60, `ThumbnailKey`, disk+memory) | `cr-image/thumbnail.rs`, `cr-engine/image_pool.rs` (`add_thumb_to_queue`, fast/slow thumb queues) |
+| Error thumbnail (broken covers) | `cr-image/error_assets.rs` |
+| Scanner + watch folders (library refresh) | `cr-engine/scanner.rs`, `watch.rs` |
+| The reader (tabs, undock, input map) | `cr-ui/reader*` — Phase 4 re-hosts it |
+| Queue→UI callback pattern (`PageTx` + pump) | `cr-ui/reader/page_view.rs` — reuse for thumbnail loads |
+
+## The one structural decision (this doc's ADR-020 proposal)
+
+The C# main window hosts panes: the list navigator (left), the
+browser (center), the reader (replaces the browser view when a comic
+opens, or tabs beside it). Phase 3 shipped a reader-only window with
+its own session tabs. Phase 4 makes the browser window the app's main
+window and the reader a VIEW inside it (the C# `ComicDisplay` panel),
+keeping the undock path (`D`) that already exists. The Phase 3
+session tabs become the browser's open-comic tabs, matching the C#
+`MainForm` layout. Do not port `TabBar.cs`/`SizableContainer.cs`
+control-by-control — build the GTK4 layout that produces the same
+user-visible behavior (paned positions, tab captions, undock).
+
+## Task breakdown
+
+Order: T1 (session) and T3 (ItemView core) are the critical path;
+T3 is the largest single build — start it early and keep it pure
+(geometry unit tests like the reader's).
+
+### T1. The library session (`cr-ui` app wiring + `cr-engine`)
+
+- [ ] `ComicDatabase::open_with_fallback` at startup (the
+      `.restore` → main → `.bak` chain exists); the in-memory
+      library state: books + list tree + display config.
+- [ ] Save on exit through the C# `DatabaseManager` semantics
+      (`.bak` rotation, temp-file atomicity — the writer is proven,
+      wire the lifecycle). The byte-stable round-trip gate MUST stay
+      green with a saved real-world DB.
+- [ ] Scanner integration: the stored watch folders + a manual
+      "Add folder" flow → `scanner::scan_database` → new/removed
+      books appear. File-info refresh through the ComicBook queues
+      (`queue_manager.rs`).
+- [ ] Reading-state persistence: the Phase 3 session-only
+      write-back (`OpenedTime`/`OpenedCount`/`CurrentPage`/
+      `LastPageRead`) now lands in the saved DB. The Phase 2
+      ground truth (Never Read = all 255) must flip correctly as
+      the user reads.
+- [ ] Verify headless first: a `cr-cli`-style integration test
+      loads the real-world DB, scans a synthetic folder, saves,
+      round-trips byte-stable on the XML.
+
+### T2. The list navigator pane (`cr-ui`)
+
+C# spec: `NavigatorManager.cs`, `ComicListNavigator` usage in
+`MainForm.cs`, the tree skin in `ComicRack/Controls/LibraryTreeSkin.cs`.
+
+- [ ] The ComicLists tree as a GTK4 tree view: Library root,
+      smart lists, folders, the default-list icons, nested lists.
+      Custom thumbnails on list items are Phase 5 polish.
+- [ ] Selection → evaluation: the selected list's books via
+      `cr-engine/smart_list::evaluate_smart_list` (the matcher
+      binding exists). Evaluation runs on selection change; large
+      sets debounce.
+- [ ] "New smart list" creates a list with a `Match` string (the
+      editor UI itself is Phase 5 — a bare list with a hand-written
+      query is enough here); folders create/rename/delete.
+- [ ] The list's evaluation result feeds T3/T5's book set.
+
+### T3. The ItemView core (`cr-ui/src/browser/`) — the long pole
+
+C# spec: `ItemView.cs` (4,770). Port the BEHAVIOR, not the WinForms
+machinery. Structure it like the reader: pure geometry + state
+modules with unit tests, one GTK4 drawing-area widget on top.
+
+- [ ] `view_state.rs` — the item set: book list, current sort
+      (`compare_by_column`), grouping (the `group.rs` ladders →
+      group ranges), stacking (by the stack column), filtered
+      selection.
+- [ ] `layout.rs` — the pure layout engine: Thumbnail (cover grid,
+      per-thumb size), Tile (cover + text lines), Detail (the
+      columned report view) modes; group headers (ItemViewLayout
+      Top/Left semantics); item rects, hit testing, visible-window
+      culling for virtualization (the continuous-mode lesson
+      applies: only visible items draw).
+- [ ] `columns.rs` — column set from the C# browser defaults
+      (the `MainForm` default columns), widths, visibility,
+      order; cell text via the property registry
+      (`cr-core/registry.rs`) — the same source the matchers use.
+      Column drag-reorder and resize are GTK-overlay polish; ship
+      fixed order + configurable widths first.
+- [ ] The widget: scrolling (mouse wheel = scroll lines, the
+      reader's scroll machinery is the model), selection (click,
+      ctrl/shift-click, rubber band — the C# `ItemView` selection
+      semantics), keyboard navigation (arrows, Home/End, type-ahead
+      find), focus rectangle. NO drag-drop reorder yet (T5).
+- [ ] Thumbnails load through `ImagePool::add_thumb_to_queue`
+      (fast/slow thumb queues, ADR-019 pattern: callbacks + the
+      pump). Failed covers render the error thumbnail
+      (`cr-image::error_assets`).
+- [ ] Unit tests: layout math (rects, groups, culling), sort/group
+      composition over synthetic books, selection model.
+
+### T4. The comic item (`cr-ui/src/browser/item.rs`)
+
+C# spec: `CoverViewItem.cs` + the `CoverViewItem*Comparer/Grouper`
+family.
+
+- [ ] Cover drawing (fit-to-box scaling incl. the UP-scaling
+      parity lesson from Phase 1), the overlay badges: read
+      markers, page-count/rating text — port the C# `DrawItem`
+      visuals in cairo, one badge at a time, user-tested.
+- [ ] Tile/Detail text lines from the registry (the C# format
+      strings; start with the English defaults).
+- [ ] Custom book thumbnail: stored `ThumbnailKey` data wins over
+      the generated cover (the C# `SetCustomThumbnail` path; the
+      backup format already carries `Thumbnails/*`).
+
+### T5. The browser shell (`cr-ui/src/browser/` + app window)
+
+C# spec: `ComicBrowserControl.cs` (3,536) — port the user-visible
+subset; `MainForm` browser regions.
+
+- [ ] The main window layout: navigator pane (T2) + ItemView (T3)
+      in a GTK paned container; the reader opens as a view/tab in
+      the same window (the Phase 3 shell moves under it — keep
+      undock/re-dock and the session tabs working).
+- [ ] The search box (`ToolStripSearchTextBox` + 
+      `SearchContextMenuBuilder`): text → matcher query over the
+      registry properties (`ComicBookMatcher` search mapping),
+      filters the current list's book set. The C# search field
+      builds `ComicBookMatcher` queries — reuse the Phase 2
+      matcher plumbing, not a new filter language.
+- [ ] View-mode switcher (Thumbnail/Tile/Detail), thumbnail-size
+      control, sort menu (column + direction), group menu (the
+      grouper registry), column visibility.
+- [ ] The status bar: book count/selection count (the C#
+      `ComicBrowserControl` status strip).
+- [ ] Double-click / Enter → open the book in the reader (in-tab,
+      per the C#); the reading-state write-back loop closes.
+- [ ] Context menu (right-click): the common commands only —
+      open, reveal in file manager (xdg-open), remove from
+      library, properties stub (the editor dialog is Phase 5).
+- [ ] Rubber-band drag of books onto folders/desktop = OUT for
+      this phase (GTK drag sources are Phase 5/7 polish); the C#
+      `DragDropContainer` behavior is recorded here so it is not
+      forgotten.
+
+### T6. PagesView + QuickOpen
+
+C# spec: `PagesView.cs` (833), `ComicPagesView.cs` (241),
+`QuickOpenView.cs` (210).
+
+- [ ] PagesView: the selected book's pages as a thumbnail grid
+      (thumbnail keys per page index), double-click → the reader
+      at that page (`open_with_state` already takes a page).
+      Bookmarks show when the book has them (Phase 5 adds the
+      bookmark editor; display-only here).
+- [ ] QuickOpen: when the browser pane is hidden
+      (`ShowQuickOpen` setting), the recent/favorite lists show as
+      a cover grid (the C# default quick-open lists); click →
+      open. Minimal and honest.
+
+## Non-goals for Phase 4
+
+- All remaining dialogs (book editor, bulk edit, preferences,
+  smart-list editor, export, devices) — Phase 5.
+- Scripting hooks, remote server, sync — Phases 6-7.
+- The GL renderer swap (ADR-008) — cairo carries the browser;
+  revisit only if scrolling proves too slow with measured evidence.
+- Workspace persistence (pane layout, per-list column config saved
+  into the DB `<Display>` subtree display-config port) — the
+  display_config model exists; wire what the browser needs, defer
+  the full workspace system to Phase 7.
+
+## Test strategy
+
+- Pure modules (layout, selection, sort/group composition, session
+  state) get unit tests like the reader's geometry suites.
+- The real-world DB (`tests/realworld/ComicDb.xml`, read its README)
+  stays the evaluation ground truth: list → book id sets must keep
+  matching the Phase 2 evidence; add a T1 acceptance test that
+  loads → mutates reading state → saves → verifies the diff AND a
+  byte-stable re-save of unmutated state.
+- Thumbnail queue tests reuse `cr-engine/tests/image_pool.rs`
+  patterns (real threads, short timeouts).
+- Headless Xvfb probes for rendering (the Phase 3 probe lessons:
+  `windowfocus` before keys, screenshots decide rendering).
+- The user-test protocol stays mandatory per task: gate, commit,
+  push, pause with a written test, iterate on evidence.
+
+## Risks / lessons that apply
+
+- The ItemView port is WinForms machinery at its worst — port the
+  observable behavior (what the user sees and does), never the
+  control hierarchy. When the C# reaches for owner-draw, draw in
+  cairo directly.
+- Virtualize early: a 255-book list is small, but the C# design
+  point is 50k books. Cull offscreen items in the layout engine
+  from day one (the continuous-strip culling code is the model).
+- Thumbnail loads arrive late and out of order — the Phase 3
+  `PageDone`/pump pattern with source-keyed staleness checks is
+  the proven answer; per-item staleness keys on the book id.
+- GTK4 list widgets (GtkListView/Gio.ListStore) exist but fight
+  the C# drawing model (owner-draw cells, per-item pixel layout).
+  The reader precedent — one DrawingArea + pure layout modules —
+  is the house style; do not mix GtkListView into ItemView.
+- The DB save path is sacred: every task that touches persisted
+  state re-runs the golden round-trip (`CR_BLESS` is for deliberate
+  model changes only — review the diff before committing).
+- Update the **Current status** section of `AGENTS.md` at the end
+  of every session, and commit+push per task (working rules).

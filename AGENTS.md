@@ -51,36 +51,56 @@ Update this section at the **end of every work session**. The next agent must kn
 
 ### State summary
 
-- **Phase:** 3 (reader UI) IN PROGRESS (2026-09-03) — **T1-T3 done and user-tested; next: T4 (input: the real `MainForm` accelerator map). Read `docs/phase-3-kickoff.md` (Status section) and the Phase 3 lessons below, then start T4.** Phases 0-2 are complete (their gates stay green). Phase 1 gaps that remain open: WebComicProvider and the PDF/DjVu writers (tracked in `docs/phase-1-kickoff.md`). Phase 0 tail still open: the settings port (`IniFile`/`EngineConfiguration`/`SystemPaths`); the default-lists tail item closed in Phase 2 T3. The Phase 0 exit review remains not done.
-- **State:** `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` are green. 199 tests pass across 28 suites.
+- **Phase:** 3 (reader UI) COMPLETE (2026-09-03) — **next: Phase 4 (the browser). Read `docs/phase-4-kickoff.md`, then the status sections of `AGENTS.md` and `docs/phase-3-kickoff.md`.** Phases 0-2 are complete (their gates stay green). Phase 1 gaps that remain open: WebComicProvider and the PDF/DjVu writers (tracked in `docs/phase-1-kickoff.md`). Phase 0 tail still open: the settings port (`IniFile`/`EngineConfiguration`/`SystemPaths`); the default-lists tail item closed in Phase 2 T3. The Phase 0 exit review remains not done.
+- **State:** `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` are green. 206 tests pass across 28 suites.
 - **Phase 0 gate status:** byte-stable ComicDb.xml round-trip proven on all three synthetic fixtures AND the real-world database `tests/realworld/ComicDb.xml` (255 books, 584 KB, 2026-09-02, user-approved commit).
 - **Phase 2 gate status:** every saved smart list in the real-world DB (a) binds to the matcher registry, (b) renders to a `Match` query string that re-parses and re-renders byte-identically, and (c) evaluates to the SAME book sets the C# cached in `CacheStorage` (Never Read = all 255, Files to update = the 3 dirty books, Reading/Read = empty). Evidence: `crates/cr-engine/tests/realworld_query.rs`.
-- **Phase 3 gate status (T1-T3 slice):** a real comic (`tests/testfiles/`, git-ignored, user-supplied) opens in a GTK4 window and reads comfortably: single/double/adaptive/continuous layouts, spread composition with cover-right + binding-edge rules, fit modes with anamorphic tolerance, zoom/pan/rotation, RTL, continuous scroll with anchor-stable layout rebuilds, fade/slide transitions, paper texture, Auto/Color/Texture backgrounds. User-verified after each task; UI smoke tests on this machine run headless under Xvfb + xdotool screenshot diffs.
+- **Phase 3 gate status (COMPLETE):** a real comic (`tests/testfiles/`, git-ignored, user-supplied) opens in a GTK4 window and reads comfortably: single/double/adaptive/continuous layouts, spread composition with cover-right + binding-edge rules, fit modes with anamorphic tolerance, zoom/pan/rotation, RTL, continuous scroll with anchor-stable layout rebuilds, fade/slide transitions, paper texture, Auto/Color/Texture backgrounds, the real `MainForm` input map, session tabs with undock, fullscreen chrome with cursor auto-hide, reading-state tracking, the magnifier, error pages, and pool-queue page loads. User-verified after each task; UI smoke tests on this machine run headless under Xvfb + screenshots (see the probe lessons below — the key-injection tools are unreliable; only user tests decide input behavior).
 
 ### Phase 3 progress (sessions of 2026-09-03)
 
-T1-T3 done. Architecture per ADR-017: one widget
-(`cr-ui/src/reader/page_view.rs`) renders one virtual image through
-the part machinery (`reader/display.rs`, the `ImageDisplayControl`
-`DisplayOutput` port, unit-tested); the comic layer composes pages
-into that virtual image — single page, spread (`compose_spread`), or
-continuous strip (`reader/continuous.rs`, the `ContinuousPageLayout`
-port). Pages decode on a background worker (latest-wins mailbox +
-`timeout_add_local` pump); the logical page advances per press while
-images trail (the C# book/display split). T3 shipped: layout modes
-Single/Double/DoubleAdaptive/Continuous, spread rules (cover right,
-RTL FlipPages swap, `DoublePageOverlap` trim, forced-double slot),
-Fade/LeftRight/TopDown transitions (Paging degrades to Fade until
-GL), paper texture (bundled `cr-ui/assets/papers`), Auto/Color/
-Texture backgrounds, and `MemoryPool::get` +
-`ImagePool::render_page` cache-first ordering.
+COMPLETE — T1-T6 all done and user-tested. Architecture per ADR-017:
+one widget (`cr-ui/src/reader/page_view.rs`) renders one virtual image
+through the part machinery (`reader/display.rs`, the
+`ImageDisplayControl` `DisplayOutput` port, unit-tested); the comic
+layer composes pages into that virtual image — single page, spread
+(`compose_spread`), or continuous strip (`reader/continuous.rs`, the
+`ContinuousPageLayout` port). T3 shipped: layout modes Single/Double/
+DoubleAdaptive/Continuous, spread rules (cover right, RTL FlipPages
+swap, `DoublePageOverlap` trim, forced-double slot), Fade/LeftRight/
+TopDown transitions (Paging degrades to Fade until GL), paper texture
+(bundled `cr-ui/assets/papers`), Auto/Color/Texture backgrounds, and
+`MemoryPool::get` + `ImagePool::render_page` cache-first ordering.
 
-The user test protocol for UI tasks: implement, gate (fmt/clippy/
-test), commit+push, then PAUSE with a written user test the user
-runs on their machine with `cargo run -p cr-app --release --` (the
-release build matters — debug decodes ~50x slower). Iterate on
-failures with evidence before fixes. This loop is mandatory for
-every remaining Phase 3 task.
+T4-T6 (the closing slice): T4 shipped `reader/keys.rs` — the exact
+`MainForm.InitializeKeyboard` table (41 reader commands, registration
+order = dispatch priority, exact key+modifier match), wired to wheel,
+tilt, click, double-click, left-drag pan (5 px threshold), middle-drag
+zoom, zoom anchoring, page walls (`PAGE_WALL` 300 ms,
+`IsPageChangeWalled`), the scroll family (`ScrollingDoesBrowse`,
+`MouseWheelSpeed`), view-side page rotation, and Q exit. T5 shipped
+the reader shell (`reader_window.rs`): session tabs (closable, Tab/
+Shift+Tab), undock/re-dock (`D`, one chrome-less `ReaderForm`-style
+window), fullscreen chrome hide + reveal strip, MinimalGui (`K`),
+fullscreen cursor auto-hide, and reading-state write-back
+(`OpenedTime`/`OpenedCount` stamped on open, `CurrentPage`/
+`LastPageRead` per turn via `ComicBook::set_current_page`; session
+only — the ComicDb wiring is Phase 4's job). T6 shipped the pool-queue
+page loads (the private decode worker is gone; `queue_for` →
+`ImagePool::add_page_to_queue` fast/slow with AddToTop/bottom, results
+via queue callbacks + a `timeout_add_local` pump — ADR-019), the
+magnifier (`M`, 200 px lens, zoom 2, cairo rim instead of the C#
+glass bitmap), the error page (bundled `ErrorPage.jpg` + cairo text,
+`CreateErrorPage` parity), and `cr-image::error_assets`
+(`CreateErrorThumbnail` port with the bundled RedCross, unit-tested).
+A window-activation focus re-grab fixes the dead-first-keypress race
+(also visible under sway).
+
+The user test protocol for UI tasks stays mandatory for Phase 4:
+implement, gate (fmt/clippy/test), commit+push, then PAUSE with a
+written user test the user runs on their machine with
+`cargo run -p cr-app --release --` (the release build matters — debug
+decodes ~50x slower). Iterate on failures with evidence before fixes.
 
 ### Phase 2 progress (session of 2026-09-03)
 
@@ -283,17 +303,19 @@ Do not edit or reformat that fixture; byte identity is the test.
 | `crates/cr-engine/src/backup.rs` | Backup zip create/restore + the `.restore` flow. |
 | `crates/cr-cli/src/main.rs` | `info`, `db-dump`, `db-roundtrip`, `pages`, `extract`, `thumb`, `rewrite`, `metron`, `lists`. |
 
-The UI crate (Phase 3 T1-T3):
+The UI crate (Phase 3):
 
 | Path | Contents |
 |---|---|
 | `crates/cr-ui/src/app.rs` | GtkApplication shell: `open` signal file handling, launcher window, error dialog. |
 | `crates/cr-ui/src/theme.rs` | CSS provider skeleton + dark preference (no libadwaita, ADR-004). |
-| `crates/cr-ui/src/reader/display.rs` | Pure `ImageDisplayControl` geometry: fit modes (anamorphic tolerance), part grid, binding edges, RTL, rotation, clamped offsets, interpolate, matrix inverse. Unit-tested. |
+| `crates/cr-ui/src/reader/display.rs` | Pure `ImageDisplayControl` geometry: fit modes (anamorphic tolerance), part grid, binding edges, RTL, rotation, clamped offsets, interpolate, matrix inverse, magnifier zoom premultiply. Unit-tested. |
 | `crates/cr-ui/src/reader/continuous.rs` | `ContinuousPageLayout` port: strip geometry, visible-window binary search, anchors. Unit-tested. |
-| `crates/cr-ui/src/reader/page_view.rs` | The reader widget: part-transform cairo drawing, spread composition (`compose_spread`), layout modes, continuous offset-model scrolling, transitions (Fade/LeftRight/TopDown), paper texture, background decode worker, navigation/zoom/pan. |
-| `crates/cr-ui/src/reader_window.rs` | Reader window chrome (header, page indicator). |
+| `crates/cr-ui/src/reader/keys.rs` | The `MainForm.InitializeKeyboard` command table (41 commands, exact key+modifier match, registration order = priority) + dispatch resolution. Unit-tested. |
+| `crates/cr-ui/src/reader/page_view.rs` | The reader widget: part-transform cairo drawing, spread composition (`compose_spread`), layout modes, continuous offset-model scrolling, transitions (Fade/LeftRight/TopDown), paper texture, pool-queue page loads (fast/slow queues, completion callbacks + pump), magnifier, error page, navigation/zoom/pan, the full input map. |
+| `crates/cr-ui/src/reader_window.rs` | Reader shell: session tabs (closable, Tab cycling), undock/re-dock, fullscreen chrome hide + reveal strip, MinimalGui, cursor auto-hide, reading-state write-back. |
 | `crates/cr-ui/assets/papers/` | Paper textures copied from the C# `Resources/Textures/Papers`. |
+| `crates/cr-image/src/error_assets.rs` | `CreateErrorPage`/`CreateErrorThumbnail` port with the bundled `ErrorPage.jpg` + `RedCross.png`. Unit-tested. |
 
 Tests: `crates/cr-core/tests/golden_roundtrip.rs`, `crates/cr-engine/tests/realworld_query.rs` (the Phase 2 gate), `crates/cr-engine/tests/eval.rs`, `crates/cr-engine/tests/queues.rs`, `crates/cr-engine/tests/image_pool.rs`, `crates/cr-engine/tests/scanner_lib.rs`, `crates/cr-cli/tests/cli.rs`, plus the in-crate unit tests (`cr-ui` geometry/continuous/spread suites). Fixtures: `tests/golden/` (read `tests/golden/README.md` before you touch the XML layer).
 
@@ -314,8 +336,11 @@ cargo run -p cr-app --release -- <comic-file>   # the reader (release build — 
 
 Headless UI smoke tests (this machine): `Xvfb :99` + `GDK_BACKEND=x11
 DISPLAY=:99`, screenshot diffs via ImageMagick `import -window root`,
-keys via `xdotool key --window <wid>`. Keep such probes out of
-committed tests; committed UI tests are the pure-geometry suites only.
+keys via `xdotool key`. Read the Phase 3 probe lessons first — the
+key-injection path is unreliable without an X input focus; set
+`xdotool windowfocus <wid>` before keys and expect first-key drops.
+Committed UI tests are the pure-geometry suites only; screenshots
+decide rendering, user tests decide input behavior.
 
 Subprocess-format tests: `CR_FORMAT_TESTS=1 cargo test -p cr-io` runs
 the 7z suite when `7z` is installed; PDF needs `CR_PDFIUM=<path to
@@ -462,17 +487,48 @@ Re-bless the `db-large.xml` snapshot after a deliberate model change: `CR_BLESS=
   bodies that call further borrowing methods (pan threshold,
   click dispatch). Sweep: `rg "if (self|view)\.state\.borrow"`.
 - Headless smoke tests: Xvfb + `import -window root` screenshot
-  diffs, `xdotool key --window`. `xdotool click 4/5` does NOT
-  produce scroll events under GTK/X11 (the wheel path is only
-  user-testable). The first keypress after launch sometimes drops —
-  warm up with a sacrificial key. GTK apps crash with "GTK has not
-  been initialized" if `theme::init` runs before `gtk::init()`.
+  diffs, `xdotool key`. `xdotool click 4/5` does NOT produce scroll
+  events under GTK/X11 (the wheel path is only user-testable). GTK
+  apps crash with "GTK has not been initialized" if `theme::init`
+  runs before `gtk::init()`.
+- xdotool key delivery is the fragile part of every probe. XTEST
+  (`xdotool key <key>` with NO `--window`) + `xdotool windowfocus
+  <wid>` is the working combination; `key --window` (XSendEvent) and
+  key presses before the toplevel is active silently reach nothing —
+  the widget logs prove it. A restarted WM-less Xvfb may report
+  `XGetInputFocus = 1`; keys stay dead for EVERY binary (T5 and T6
+  binaries both failed until `windowfocus` + the is-active fix) —
+  suspect the probe first, bisect with `git stash` before blaming
+  code.
+- GTK4 has NO click-to-focus and grab_focus is ignored while the
+  toplevel is inactive. The reader re-grabs focus on the window's
+  `is-active` notify (both the main window and the undocked one).
+  Any future widget that must take keys on window activation needs
+  the same hook (this was the sway "first keypress dead" bug).
+- The zoom commands anchor at the part-bounds center (`ImageZoom`
+  setter parity); the magnifier composes as `mat.append(zoom_about(
+  cursor))` (`Mat::premultiply_zoom`) — the zoom applies OVER the
+  part matrix, then the whole scene re-renders under a circular
+  clip. The lens reuses `draw_composition`/`draw_continuous` with
+  the premultiplied display; `DisplayOutput` is `Clone` for exactly
+  this.
+- Page loads ride the ImagePool queues (ADR-019): the queue callback
+  renders and ships a `PageDone` over std mpsc; the UI pump drains
+  it. The completion payload carries the comic source string so
+  stale results from a previous open are dropped. Failure =
+  `image: None` → the error page surface (a `thread_local` cache —
+  cairo surfaces are not Send/Sync, no `OnceLock`).
+- `ProcessingQueue` callbacks must be `Fn + Send + Sync`; std
+  `mpsc::Sender` is not Sync — wrap it (`PageTx(Arc<Mutex<Sender>>)`).
+  The slow queue runs several workers.
+- cairo ImageSurface from RGBA needs ARGB pre-multiplication and the
+  surface's stride, not `width*4` (`image_surface_from_rgba`).
+- The cr-cli `pages` JSON is the ground truth for page indexes when
+  a test needs "which entry is page N" (natural sort of full entry
+  names; archives without a `00000` cover shift by one).
 - `MemoryPool::get` (cache-hit without produce) was added for the
   C# `GetPage(onlyMemory)` ordering; `ImagePool::render_page` checks
   the pages pool before any provider work.
-- Temporary test keys in the reader (until T4 ports the real map):
-  arrows/wheel navigate, Home/End, `+`/`-` zoom, `R` rotate, `F` fit
-  cycle, `1/2/3/4` layout modes, `P` background cycle.
 
 ### Blockers / open questions
 

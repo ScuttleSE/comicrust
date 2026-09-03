@@ -4,10 +4,57 @@ Goal: comicrust opens a comic file in a GTK4 window and renders it comfortably �
 
 Read first: `AGENTS.md` (rules), `docs/port-plan.md` (architecture, tech mapping), `docs/decisions.md` (ADR-004: no libadwaita; ADR-008: cairo first, GL later). Phase 2's kickoff records the engine entry points you will call.
 
-## Status (2026-09-03) — T1-T3 COMPLETE, T4-T6 REMAIN
+## Status (2026-09-03) — COMPLETE
+
+All tasks T1-T6 are done, committed, and user-tested (each task ended
+with a manual user test on the user's machine). Phase 3 shipped:
+
+- **T1-T3** (see the history below): the app shell, the
+  `ImageDisplayControl` geometry port, the spread/continuous
+  composition layer, transitions, paper texture, backgrounds.
+- **T4.** `reader/keys.rs` — the exact `MainForm.InitializeKeyboard`
+  command table (41 commands, registration order = dispatch
+  priority, exact key+modifier match). Wheel, tilt, click,
+  double-click, left-drag pan (5 px threshold), middle-drag zoom,
+  zoom anchoring at the part center, page walls (`PAGE_WALL` 300 ms
+  / `IsPageChangeWalled`), the scroll family
+  (`ScrollingDoesBrowse`/`MouseWheelSpeed`), view-side page
+  rotation, Q exit. The old test keys are gone.
+- **T5.** `reader_window.rs` shell: session tabs (closable, Tab/
+  Shift+Tab cycling), undock/re-dock (`D`, one chrome-less
+  `ReaderForm`-style window, re-docks at its old position),
+  fullscreen chrome hide + top-strip reveal (`AutoHideMainMenu`),
+  MinimalGui (`K`), fullscreen cursor auto-hide (1 s), and
+  reading-state write-back (`OpenedTime`/`OpenedCount` on open,
+  `CurrentPage`/`LastPageRead` per turn via
+  `ComicBook::set_current_page` — session-only; the ComicDb
+  persistence wiring belongs to Phase 4).
+- **T6.** Page loads through the real `ImagePool` queues
+  (`add_page_to_queue`: fast/slow split + AddToTop/bottom, queue
+  callbacks ship `PageDone` over std mpsc, a `timeout_add_local`
+  pump drains — ADR-019 supersedes the ADR-017 worker on this
+  point). The magnifier (`M`, 200 px lens at the cursor, zoom 2,
+  circular clip + cairo rim), the error page (bundled
+  `ErrorPage.jpg` + the `PageFailedToLoad` message, cairo text),
+  and `cr-image::error_assets` (`CreateErrorThumbnail` with the
+  bundled `RedCross.png`, unit-tested — the Phase 4 browser will
+  consume it).
+- A window-activation focus re-grab (both windows) fixes the dead
+  first keypress after launch/alt-tab (GTK4 has no click-to-focus
+  and ignores grab_focus on an inactive toplevel).
+
+Acceptance evidence: the user's daily-driver reading session on a
+42 MB real comic (all layouts, transitions, magnifier, tabs, undock,
+fullscreen) passed; headless Xvfb probes verified rendering and the
+undock/tab mechanics; 206 tests across 28 suites stay green. Phase 3
+open items carried forward: NONE blocking — the reader-side gaps
+(GL transitions per ADR-008, `ToggleMenu` overlay polish) are
+enhancements, recorded here for later phases.
+
+## Status history (T1-T3, 2026-09-03)
 
 Done and user-tested (each task ended with a manual user test on the
-user's machine — keep that loop for T4-T6):
+user's machine — the same loop drove T4-T6):
 
 - **T1.** `cr-ui` app shell (`app.rs`, `theme.rs`), reader window,
   `cr-app` wiring. Opens a comic from the command line
@@ -31,20 +78,18 @@ user's machine — keep that loop for T4-T6):
   Unit tests for the geometry: part grid, spread rules, anchors,
   continuous visibility.
 
-Remaining Phase 3 tasks (start at T4; read the lessons in
-`AGENTS.md` first):
+The T4-T6 task descriptions that drove the closing slice (all done —
+see the COMPLETE status above):
 
 - **T4.** Input: port the real `MainForm` reader accelerators and
-  mouse map (the current keys 1/2/3/4, P, F, R, +/-, arrows are
+  mouse map (the old keys 1/2/3/4, P, F, R, +/-, arrows were
   documented test hooks, not the C# map).
 - **T5.** Fullscreen + overlay chrome, reader tabs/undocked windows,
   reading-state write-back (`CurrentPage`/`LastPageRead`/
-  `OpenedTime`/`OpenedCount` into ComicBook; `last_read` already
-  tracks in the widget).
-- **T6.** Magnifier (cairo second-draw pass acceptable), error page +
+  `OpenedTime`/`OpenedCount` into ComicBook).
+- **T6.** Magnifier (cairo second-draw pass), error page +
   error thumbnail, page pre-caching through the Phase 2 `ImagePool`
-  queues (replace the per-widget latest-wins worker with the real
-  fast/slow queues when it lands).
+  queues.
 
 Architecture notes for T4-T6 (ADR-017): one widget (`PageView`)
 renders one virtual image through the part machinery; the comic layer
