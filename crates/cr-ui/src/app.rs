@@ -96,6 +96,10 @@ pub fn open_file_dialog(parent: &impl IsA<Window>) {
         };
         if let Some(app) = app.downcast_ref::<Application>() {
             open_reader(app, &path);
+            // The shell is only a launcher until the Phase 4 browser
+            // lands: a successful open hands the session to the
+            // reader window and the shell goes away.
+            parent_window.close();
         }
     });
     chooser.show();
