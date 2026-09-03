@@ -127,35 +127,45 @@ fn show_shell(app: &Application) {
     header.pack_start(&add_folder);
     win.set_titlebar(Some(&header));
 
-    // Navigator pane + placeholder (the ItemView arrives in T3).
+    // Navigator pane + ItemView (the browser center).
     let paned = gtk4::Paned::new(gtk4::Orientation::Horizontal);
     let navigator = browser::navigator::Navigator::new();
     paned.set_start_child(Some(navigator.widget()));
     paned.set_shrink_start_child(false);
     paned.set_position(280);
 
-    let placeholder = gtk4::Label::new(None);
-    placeholder.set_valign(gtk4::Align::Center);
-    placeholder.set_halign(gtk4::Align::Center);
-    placeholder.set_hexpand(true);
-    placeholder.set_vexpand(true);
-    paned.set_end_child(Some(&placeholder));
+    // One render pool for the browser (the C# `Program.ImagePool` is
+    // global; the reader windows keep their own until T5).
+    let pool = std::sync::Arc::new(cr_engine::image_pool::ImagePool::new(None));
+    let browser::item_view::ItemViewWidgets {
+        scroller,
+        view: item_view,
+    } = browser::item_view::ItemView::create(pool);
+    paned.set_end_child(Some(&scroller));
     paned.set_shrink_end_child(false);
     win.set_child(Some(&paned));
 
     // Selection → evaluate the list (debounced inside the widget);
-    // the placeholder shows what the browser would display.
-    navigator.connect_selected(move |_id, name| {
-        let result = library::evaluate_list(_id);
-        let text = match result {
-            Some((list_name, _ids, count)) => {
-                format!("{list_name}\n{count} book(s)")
-            }
-            None => String::new(),
-        };
-        placeholder.set_text(&text);
-        let _ = name;
+    // the ItemView shows the books.
+    let item_view_select = item_view.clone();
+    navigator.connect_selected(move |id, _name| {
+        if let Some((_name, books)) = library::evaluate_books(id) {
+            item_view_select.set_books(books);
+        }
     });
+
+    // Double-click / Enter → open the comic in the reader
+    // (`ItemActivate`; the browser stays — the C# main-form shape).
+    {
+        let app_for_open = app.clone();
+        let item_view = item_view.clone();
+        item_view.connect_activate(move |id| {
+            let path = library::book_path(id);
+            if let Some(path) = path {
+                open_reader(&app_for_open, std::path::Path::new(&path));
+            }
+        });
+    }
 
     // Context-menu commands (the C# navigator commands, dialogs are
     // Phase 5 — bare entry dialogs here).

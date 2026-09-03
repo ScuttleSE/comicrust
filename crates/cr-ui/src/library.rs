@@ -396,3 +396,25 @@ fn find_base_mut<'a>(
     }
     None
 }
+
+/// Evaluates one tree node to its book set, cloned for the ItemView
+/// (the browser shell shares handles in T5).
+pub fn evaluate_books(id: &CrGuid) -> Option<(String, Vec<ComicBook>)> {
+    let lib = session();
+    let l = lib.borrow();
+    let item = cr_engine::lists::find_list_item(&l.database().comic_lists, id)?;
+    let books = cr_engine::lists::evaluate_list(&item, l.database());
+    let name = item.base().name.clone().unwrap_or_default();
+    Some((name, books.into_iter().cloned().collect()))
+}
+
+/// The file path of one library book (the ItemView activate path).
+pub fn book_path(id: &CrGuid) -> Option<String> {
+    let lib = session();
+    let l = lib.borrow();
+    l.database()
+        .books
+        .iter()
+        .find(|b| b.id == *id)
+        .map(|b| b.file_path.clone())
+}
