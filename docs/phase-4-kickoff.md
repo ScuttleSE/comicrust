@@ -300,3 +300,12 @@ C# spec: `PagesView.cs` (833), `ComicPagesView.cs` (241),
   byte-stable saves, scan add/missing, watch→rescan). Headless Xvfb
   smoke test: launcher renders with Open + Add Folder, fresh DB
   silent, no criticals.
+
+  Fix during the T1 user test: the first "Add Folder" run froze the
+  UI — the scan ran synchronously on the GTK thread. The scan now
+  runs on the "Book Scanner" worker thread (books move to the worker
+  and back over mpsc + the main-loop pump; ADR-019 pattern), queued
+  one at a time, with the exit/background saves guarding an
+  in-flight scan (a mid-scan save would write the taken, empty book
+  list). A headless probe measured a 705 µs max main-loop gap during
+  a scan. The watch-event poll timer (1 s) is wired in `app.rs`.
