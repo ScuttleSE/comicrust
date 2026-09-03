@@ -470,11 +470,15 @@ Re-bless the `db-large.xml` snapshot after a deliberate model change: `CR_BLESS=
 
 None. The real-world database is committed under `tests/realworld/` with user permission (see `tests/realworld/README.md`; remove it first if the repo ever goes public).
 
-Repo hygiene note: one 42 MB user comic was briefly committed by
-accident in Phase 3 (commit d6d896c, removed in eaf9b00;
-`tests/testfiles/` is now git-ignored). The blob remains in remote
-git history — rewrite history before the repo ever goes public.
-The file stays local-only for user tests.
+Repo hygiene: `tests/testfiles/` is the designated home for
+user-supplied test comics. It is git-ignored — NEVER commit its
+contents (invariant: never commit user library data). One 42 MB
+comic was briefly committed by accident in Phase 3; the history was
+rewritten the same day (`filter-branch` index-filter, force-push,
+local gc) and the blob is gone from the remote. The file stays
+local-only for user tests. Caveat: the Gitea server may retain the
+old pack objects until its own GC runs; if that ever matters, run
+the server-side GC.
 
 ---
 
