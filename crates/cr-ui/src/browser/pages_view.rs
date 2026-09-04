@@ -37,7 +37,6 @@ const MIN_THUMB: f64 = 96.0;
 const MAX_THUMB: f64 = 512.0;
 
 const BG: (f64, f64, f64) = (0.13, 0.13, 0.15);
-const SELECT_BG: (f64, f64, f64) = (0.2, 0.38, 0.62);
 const FOCUS_UNFOCUSED: (f64, f64, f64) = (0.5, 0.5, 0.55);
 
 #[derive(Clone)]
@@ -169,13 +168,33 @@ impl PagesPanel {
         {
             let state = Rc::downgrade(&state);
             let scroller = scroller.clone();
+            let canvas_for_draw = canvas.clone();
             canvas.set_draw_func(move |_, ctx, _w, _h| {
                 let Some(state) = state.upgrade() else {
                     return;
                 };
                 let v = scroller.vadjustment();
                 let window = (v.value(), v.page_size());
-                draw_frame(ctx, &state, window);
+                let queued = draw_frame(ctx, &state, window);
+                if queued {
+                    start_thumb_pump(&state, &canvas_for_draw);
+                }
+            });
+        }
+
+        // Re-flow when the panel first gets its real size (the
+        // binding can land while the tab is hidden — width 0).
+        {
+            let state = Rc::downgrade(&state);
+            let canvas = canvas.clone();
+            canvas.connect_resize(move |canvas, _width, _height| {
+                let Some(state) = state.upgrade() else {
+                    return;
+                };
+                let width = canvas.width() as f64;
+                let content = state.borrow_mut().content_height(width);
+                canvas.set_content_height(content as i32);
+                canvas.queue_draw();
             });
         }
 
@@ -378,19 +397,23 @@ impl PagesPanel {
     }
 }
 
+/// Draws one frame; returns whether new page loads were queued (the
+/// caller starts the pump outside the borrow — a dead pump strands
+/// every completion in the channel, the ItemView lesson).
 fn draw_frame(
     ctx: &cairo::Context,
     state: &Rc<RefCell<PagesState>>,
     (scroll_y, view_h): (f64, f64),
-) {
+) -> bool {
     let (path, cells) = {
         let binding = state.borrow();
         match binding.bound.as_ref() {
             Some((p, c)) => (p.clone(), c.clone()),
-            None => return,
+            None => return false,
         }
     };
     let mut s = state.borrow_mut();
+    let mut queued_thumbs = false;
     let (bg_r, bg_g, bg_b) = BG;
     ctx.set_source_rgb(bg_r, bg_g, bg_b);
     ctx.paint().ok();
@@ -411,6 +434,7 @@ fn draw_frame(
         let _ = (x, w);
         s.queued.insert(*page);
         s.pending += 1;
+        queued_thumbs = true;
         let key = ThumbnailKey::new(ImageKey::from_file(
             path.clone(),
             std::path::Path::new(&path),
@@ -456,9 +480,59 @@ fn draw_frame(
             ctx.set_line_width(1.0);
             ctx.rectangle(*x - 1.0, *y - 1.0, w + 2.0, h + 2.0);
             ctx.stroke().ok();
-            let _ = SELECT_BG;
         }
     }
+
+    queued_thumbs
+}
+
+/// The thumbnail-completion pump (the ItemView shape): started by
+/// the draw path whenever loads are in flight.
+fn start_thumb_pump(state: &Rc<RefCell<PagesState>>, canvas: &DrawingArea) {
+    {
+        let s = state.borrow();
+        if s.pump_active {
+            return;
+        }
+    }
+    {
+        let mut s = state.borrow_mut();
+        s.pump_active = true;
+    }
+    let state = Rc::downgrade(state);
+    glib::timeout_add_local(std::time::Duration::from_millis(10), move || {
+        let Some(state) = state.upgrade() else {
+            return glib::ControlFlow::Break;
+        };
+        let mut got = false;
+        loop {
+            let next = state.borrow().thumb_rx.try_recv();
+            match next {
+                Ok(done) => {
+                    got = true;
+                    let mut s = state.borrow_mut();
+                    s.pending = s.pending.saturating_sub(1);
+                    if let Some(surface) = done.bytes.and_then(|bytes| decode_surface(&bytes)) {
+                        s.thumbs.insert(done.page, surface);
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        if got {
+            state.borrow().canvas.queue_draw();
+        }
+        let more = state.borrow().pending > 0;
+        if !more {
+            state.borrow_mut().pump_active = false;
+        }
+        if got || more {
+            glib::ControlFlow::Continue
+        } else {
+            glib::ControlFlow::Break
+        }
+    });
+    let _ = canvas;
 }
 
 fn decode_surface(bytes: &[u8]) -> Option<cairo::ImageSurface> {
