@@ -794,14 +794,47 @@ fn show_context_menu(state: &std::rc::Weak<ShellState>, target: Option<CrGuid>, 
                     }
                 }
                 "properties" => {
+                    // The selection (plus the right-clicked row when
+                    // it is outside it) — the C# opens the dialog
+                    // over the selected books (prev/next when > 1).
+                    let selection = sh.item_view.view_state().selection_snapshot();
+                    let mut ids: Vec<CrGuid> = selection.into_iter().collect();
                     if let Some(id) = target {
-                        if let Some(path) = library::book_path(&id) {
-                            show_info_dialog(
-                                &window,
-                                &format!("Properties (the editor lands in Phase 5):\n{path}"),
-                            );
+                        if !ids.contains(&id) {
+                            ids.push(id);
                         }
                     }
+                    if ids.is_empty() {
+                        return;
+                    }
+                    // List order for the prev/next walk.
+                    let books: Vec<cr_core::model::comic_book::ComicBook> = {
+                        let lib = library::session();
+                        let l = lib.borrow();
+                        l.database()
+                            .books
+                            .iter()
+                            .filter(|b| ids.contains(&b.id))
+                            .cloned()
+                            .collect()
+                    };
+                    if books.is_empty() {
+                        return;
+                    }
+                    let commit: crate::dialogs::book_editor::CommitFn = Rc::new(|edited| {
+                        let lib = library::session();
+                        let mut l = lib.borrow_mut();
+                        if let Some(book) = l
+                            .database_mut()
+                            .books
+                            .iter_mut()
+                            .find(|b| b.id == edited.id)
+                        {
+                            *book = edited.clone();
+                            l.mark_dirty();
+                        }
+                    });
+                    crate::dialogs::book_editor::show(&window, books, commit);
                 }
                 _ => {}
             }
@@ -914,19 +947,6 @@ fn show_error_dialog(parent: &Application, title: &str, message: &str) {
         .text(format!("Cannot open {title}"))
         .secondary_text(message.to_string())
         .message_type(gtk4::MessageType::Error)
-        .buttons(gtk4::ButtonsType::Close)
-        .build();
-    dialog.connect_response(|dialog, _| dialog.destroy());
-    dialog.present();
-}
-
-fn show_info_dialog(parent: &ApplicationWindow, message: &str) {
-    let dialog = gtk4::MessageDialog::builder()
-        .transient_for(parent)
-        .modal(true)
-        .title("comicrust")
-        .text(message)
-        .message_type(gtk4::MessageType::Info)
         .buttons(gtk4::ButtonsType::Close)
         .build();
     dialog.connect_response(|dialog, _| dialog.destroy());

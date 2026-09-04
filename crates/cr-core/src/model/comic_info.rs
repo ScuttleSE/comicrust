@@ -2,7 +2,7 @@
 //! `ComicBook`. Field order and defaults mirror `ComicInfo.cs`.
 
 use crate::model::comic_page_info::ComicPageInfo;
-use crate::model::enums::{MangaYesNo, YesNo};
+use crate::model::enums::{ComicPagePosition, ComicPageType, ImageRotation, MangaYesNo, YesNo};
 use crate::xml::reader::{XmlError, XmlResult};
 use crate::xml::{Emitter, Tok};
 use std::io::Write;
@@ -389,5 +389,256 @@ fn read_pages(r: &mut crate::xml::XmlReader<'_>, pages: &mut Vec<ComicPageInfo>)
             Tok::Text(_) => {}
             _ => {}
         }
+    }
+}
+
+// ---------- Page operations (the `ComicInfo` page-edit API) ----------
+//
+// The C# mutates the page list through `UpdatePageType`/
+// `UpdatePageRotation`/`UpdatePagePosition`/`MovePages`/
+// `ResetPageSequence`/`SortPages` (ComicInfo.cs) and reads the
+// display order through `TranslateImageIndexToPage` and
+// `FrontCoverPageIndex`. The Rust list has positional identity, so
+// the mutations take indexes.
+
+impl ComicInfo {
+    /// `UpdatePageType(page, value)` (existing entries only; the C#
+    /// `GetPage(page, add: true)` path is only used by writers that
+    /// already know the page exists).
+    pub fn update_page_type(&mut self, page: usize, value: ComicPageType) {
+        if let Some(p) = self.pages.get_mut(page) {
+            if p.page_type != value {
+                p.page_type = value;
+            }
+        }
+    }
+
+    /// `UpdatePageRotation(page, value)`.
+    pub fn update_page_rotation(&mut self, page: usize, value: ImageRotation) {
+        if let Some(p) = self.pages.get_mut(page) {
+            if p.rotation != value {
+                p.rotation = value;
+            }
+        }
+    }
+
+    /// `UpdatePagePosition(page, value)`.
+    pub fn update_page_position(&mut self, page: usize, value: ComicPagePosition) {
+        if let Some(p) = self.pages.get_mut(page) {
+            if p.page_position != value {
+                p.page_position = value;
+            }
+        }
+    }
+
+    /// `TranslateImageIndexToPage(imageIndex)`: the list position of
+    /// the entry with that ImageIndex, else the index itself.
+    pub fn translate_image_index_to_page(&self, image_index: i32) -> i32 {
+        self.pages
+            .iter()
+            .position(|p| p.image_index() == image_index)
+            .map(|p| p as i32)
+            .unwrap_or(image_index)
+    }
+
+    /// `FrontCoverPageIndex`: the PreferredFrontCover-th FrontCover
+    /// page, else the first page whose type is not `Other`, else 0.
+    pub fn front_cover_page_index(&self) -> i32 {
+        let covers: Vec<&ComicPageInfo> = self
+            .pages
+            .iter()
+            .filter(|p| p.page_type == ComicPageType(1))
+            .collect();
+        let preferred = if covers.is_empty() {
+            None
+        } else {
+            let idx = (self.preferred_front_cover as usize).min(covers.len() - 1);
+            covers.get(idx).copied()
+        };
+        let pick = preferred.or_else(|| {
+            self.pages
+                .iter()
+                .find(|p| p.page_type != ComicPageType(512))
+        });
+        match pick {
+            Some(p) => self.translate_image_index_to_page(p.image_index()),
+            None => 0,
+        }
+    }
+
+    /// `MovePages(position, pages)` — the C# algorithm over indexes
+    /// (the list position is the entry identity): each listed page is
+    /// removed (a removal before the cursor shifts the cursor down),
+    /// then re-inserted at the cursor and the cursor advances; a
+    /// negative cursor appends (the C# `-1` quirk). `pages` lists the
+    /// CURRENT indexes in list order.
+    pub fn move_pages(&mut self, position: i32, pages: &[usize]) {
+        // Identity = the ORIGINAL index of each entry (the C#
+        // `IndexOf` reference semantics), tracked in a parallel list
+        // while the interleaved remove/insert walk runs — the C#
+        // moves one page per iteration, so the intermediate list
+        // state matters for the insert positions.
+        let mut orig: Vec<usize> = (0..self.pages.len()).collect();
+        let mut cursor = position;
+        for &target in pages {
+            let Some(num) = orig.iter().position(|&o| o == target) else {
+                continue;
+            };
+            let page = self.pages.remove(num);
+            orig.remove(num);
+            if (num as i32) < cursor {
+                cursor -= 1;
+            }
+            if cursor < 0 {
+                self.pages.push(page);
+                orig.push(target);
+                continue;
+            }
+            let at = (cursor as usize).min(self.pages.len());
+            self.pages.insert(at, page);
+            orig.insert(at, target);
+            cursor += 1;
+        }
+    }
+
+    /// `ResetPageSequence` — sort by ImageIndex.
+    pub fn reset_page_sequence(&mut self) {
+        self.pages.sort_by_key(|p| p.image_index());
+    }
+
+    /// `SortPages` by the stored entry key (the archive entry name):
+    /// `compare` receives the two keys (ordinal, or the
+    /// `ExtendedStringComparer` natural order — injected by the
+    /// caller; cr-io owns that comparer).
+    pub fn sort_pages_by_key(&mut self, compare: impl Fn(&str, &str) -> std::cmp::Ordering) {
+        let keys: Vec<Option<String>> = self.pages.iter().map(|p| p.key.clone()).collect();
+        let mut order: Vec<usize> = (0..self.pages.len()).collect();
+        order.sort_by(|&a, &b| {
+            let ka = keys[a].as_deref().unwrap_or("");
+            let kb = keys[b].as_deref().unwrap_or("");
+            compare(ka, kb)
+        });
+        let old = std::mem::take(&mut self.pages);
+        for i in order {
+            self.pages.push(old[i].clone());
+        }
+    }
+}
+
+#[cfg(test)]
+mod page_op_tests {
+    use super::*;
+
+    fn info_with(pages: &[(i32, ComicPageType)]) -> ComicInfo {
+        let mut info = ComicInfo::default();
+        for (idx, t) in pages {
+            let mut p = ComicPageInfo::default();
+            p.set_image_index(*idx);
+            p.page_type = *t;
+            info.pages.push(p);
+        }
+        info
+    }
+
+    #[test]
+    fn update_ops_touch_only_the_target_page() {
+        let mut info = info_with(&[(0, ComicPageType(8)), (1, ComicPageType(8))]);
+        info.update_page_type(1, ComicPageType(1)); // FrontCover
+        assert_eq!(info.pages[1].page_type, ComicPageType(1));
+        assert_eq!(info.pages[0].page_type, ComicPageType(8));
+        info.update_page_rotation(0, ImageRotation::Rotate90);
+        assert_eq!(info.pages[0].rotation, ImageRotation::Rotate90);
+        info.update_page_position(0, ComicPagePosition::Far);
+        assert_eq!(info.pages[0].page_position, ComicPagePosition::Far);
+        // Out-of-range is a no-op (the C# would create; our editor
+        // never edits a page that does not exist).
+        info.update_page_type(9, ComicPageType(1));
+        assert_eq!(info.pages.len(), 2);
+    }
+
+    #[test]
+    fn translate_image_index_prefers_the_list_hit() {
+        let info = info_with(&[(5, ComicPageType(8)), (2, ComicPageType(8))]);
+        assert_eq!(info.translate_image_index_to_page(2), 1);
+        assert_eq!(info.translate_image_index_to_page(9), 9);
+    }
+
+    #[test]
+    fn front_cover_prefers_the_typed_page() {
+        let mut info = info_with(&[
+            (0, ComicPageType(8)), // Story
+            (1, ComicPageType(1)), // FrontCover
+            (2, ComicPageType(8)),
+        ]);
+        assert_eq!(info.front_cover_page_index(), 1);
+        // PreferredFrontCover clamps into the cover count.
+        info.preferred_front_cover = 99;
+        assert_eq!(info.front_cover_page_index(), 1);
+        // Without covers: the first page that is not Other.
+        info.pages[1].page_type = ComicPageType(8);
+        assert_eq!(info.front_cover_page_index(), 0);
+        // All Other → 0.
+        for p in &mut info.pages {
+            p.page_type = ComicPageType(512);
+        }
+        assert_eq!(info.front_cover_page_index(), 0);
+    }
+
+    #[test]
+    fn move_pages_follows_the_csharp_cursor_arithmetic() {
+        // [a b c d]; move d (index 3) to the top.
+        let mut info = info_with(&[
+            (0, ComicPageType(8)),
+            (1, ComicPageType(8)),
+            (2, ComicPageType(8)),
+            (3, ComicPageType(8)),
+        ]);
+        info.move_pages(0, &[3]);
+        let order: Vec<i32> = info.pages.iter().map(|p| p.image_index()).collect();
+        assert_eq!(order, vec![3, 0, 1, 2]);
+
+        // Move [a b] (indexes 0,1) to the end (cursor 4). The C#
+        // IndexOf tracks identity: a removes (cursor 4→3) and
+        // inserts at 3 → [b c d a]; b then removes from the FRONT
+        // (its index is 0 now, still < 4 → cursor 3) and inserts at
+        // 3 — the END of [c d a] — so the pair keeps its order.
+        let mut info = info_with(&[
+            (0, ComicPageType(8)),
+            (1, ComicPageType(8)),
+            (2, ComicPageType(8)),
+            (3, ComicPageType(8)),
+        ]);
+        info.move_pages(4, &[0, 1]);
+        let order: Vec<i32> = info.pages.iter().map(|p| p.image_index()).collect();
+        assert_eq!(order, vec![2, 3, 0, 1]);
+
+        // A pair to the top keeps its order.
+        let mut info = info_with(&[
+            (0, ComicPageType(8)),
+            (1, ComicPageType(8)),
+            (2, ComicPageType(8)),
+            (3, ComicPageType(8)),
+        ]);
+        info.move_pages(0, &[2, 3]);
+        let order: Vec<i32> = info.pages.iter().map(|p| p.image_index()).collect();
+        assert_eq!(order, vec![2, 3, 0, 1]);
+    }
+
+    #[test]
+    fn reset_and_sort_orders() {
+        let mut info = ComicInfo::default();
+        for (i, name) in ["003.jpg", "0001.jpg", "002.jpg"].iter().enumerate() {
+            let mut p = ComicPageInfo::default();
+            p.set_image_index(i as i32);
+            p.key = Some(name.to_string());
+            info.pages.push(p);
+        }
+        // Reset: by ImageIndex (already ascending here).
+        info.reset_page_sequence();
+        assert_eq!(info.pages[0].image_index(), 0);
+        // Ordinal by key: "0001" < "002" < "003".
+        info.sort_pages_by_key(|a, b| a.cmp(b));
+        let keys: Vec<String> = info.pages.iter().map(|p| p.key.clone().unwrap()).collect();
+        assert_eq!(keys, vec!["0001.jpg", "002.jpg", "003.jpg"]);
     }
 }

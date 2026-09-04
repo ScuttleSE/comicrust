@@ -141,23 +141,64 @@ deepest dialog); keep the editors pure-model first, GTK last.
       the backup/association groups are Windows-shell features
       (Phase 8). Opened from the header "Preferences" button.
 
-### T2. The book editor (`ComicBookDialog`)
+### T2. The book editor (`ComicBookDialog`) — CHECKPOINT 1 IMPLEMENTED (2026-09-04), user test pending
 
 - [ ] The metadata form: every ComicInfo field the registry
       exposes, the proposed-value flow (`EnableProposed` — the
       gray "proposed" text from the filename parse, accept
-      per-field), the `Checked` semantics.
-- [ ] The thumbnail page: front-cover choice, custom thumbnail
-      set/clear (needs the settings port's CustomThumbnails path —
-      see above), the page-type/rotation/position edits per page
-      (the Pages panel's deferred edit commands).
+      per-field), the `Checked` semantics. DONE (checkpoint 1):
+      `cr-ui/src/dialogs/book_editor.rs` — the left column (cover
+      thumb via the thumb queue + the mpsc pump, Page/Type/Size/
+      Path labels, prev/next for multi-book edits) beside Details
+      (all registry text/number rows + the four combos), Plot
+      (Summary/Notes/Review TextViews + Characters/Teams/Main/
+      Locations), Catalog (the book* fields + ISBN + Added/Released
+      date entries). Load = `SetComicToEditor`/`SetDataToEditor`
+      parity through the cr-core registry; save = `SaveBook` parity
+      (trimmed text assigns unconditionally; `GetNumber`/`GetReal`
+      parse-or--1; YesNo/Manga combos; rating/date lenient parses).
+      The proposed placeholders (the seven fields) follow the
+      EnableProposed combo. Commit points = Apply / OK / prev/next
+      (the C# live-object semantics: Cancel does not revert already
+      committed edits). The commit applies via
+      `library::apply_edited` (replace by id + mark dirty).
+- [ ] The thumbnail page: front-cover choice (a page typed
+      FrontCover becomes the cover — `front_cover_page_index`
+      ported: PreferredFrontCover clamp, first non-Other fallback),
+      custom thumbnail set/clear (needs the pool `type://` loader —
+      DEFERRED to checkpoint 2, the path exists per ADR-023), the
+      page-type/rotation/position edits per page (the Pages panel's
+      deferred edit commands). DONE (checkpoint 1): the Pages tab —
+      the page list (number/type/rotation/position captions), the
+      preview + first/prev/next/last, the context menu with Set
+      Page Type (the 11 single values with the C# enum values),
+      Rotate, Position, Mark as Deleted (toggle), Move to Top /
+      Bottom (the `MovePages` cursor algorithm with the C# IndexOf
+      identity — unit-tested), Reset Original Order (sort by
+      ImageIndex). The Colors tab: the five sliders writing
+      `book.color_adjustment` on save (saturation/brightness/
+      contrast/gamma ±100%, sharpening 0..3) with the loaded values
+      on every load. Custom values: read-only list in checkpoint 1
+      (the library-wide key editor joins with the write-back).
 - [ ] Write-back: `ComicBook.IsDirty` → the write-info queue
       (`write.rs` — the CBZ/CBT native rewrite, CB7 `7z u`) with
       the Phase 1 rules (never write defaults over file metadata).
       The "Files to update" smart list flips as the user saves.
+      CHECKPOINT 2 (next session) — the DB write-back works
+      (mark-dirty + the byte-stable save); the FILE write-back is
+      not wired yet.
 - [ ] Bulk edit (`MultipleComicBooksDialog`): the union/intersection
       field model over a selection (the browser context menu gains
-      "Edit" on multi-select).
+      "Edit" on multi-select). CHECKPOINT 2.
+
+Headless proof: the probe binary (`cr-ui/examples/editor_probe.rs`)
+opens the editor over synthetic books under Xvfb — the Details grid
+renders all rows/combos with the loaded values, the Pages tab lists
+the pages with the C# type names, the page-type enum values match
+the model (FrontCover = 1; the first draft had the values shifted —
+caught by the probe). The context menus (browser + page rows) are
+user-test scope (the synthetic button-3 injection does not reach
+GTK gestures — the standing probe lesson).
 
 ### T3. The smart-list editor (`SmartListDialog` + matchers)
 
@@ -221,7 +262,9 @@ deepest dialog); keep the editors pure-model first, GTK last.
 ## Update at the end of every task
 
 - [x] T1 settings port + options builder + Preferences shell
-- [ ] T2 book editor + bulk edit + write-back wiring
+- [ ] T2 book editor + bulk edit + write-back wiring (checkpoint 1
+      in, user test pending; checkpoint 2 = file write-back + bulk
+      edit)
 - [ ] T3 smart-list/reading-list editors
 - [ ] T4 export + small dialogs
 

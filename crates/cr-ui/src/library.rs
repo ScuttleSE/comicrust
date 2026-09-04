@@ -481,6 +481,27 @@ pub fn evaluate_books(id: &CrGuid) -> Option<(String, Vec<ComicBook>)> {
     Some((name, books.into_iter().cloned().collect()))
 }
 
+/// Applies an edited book (the book editor's commit callback): the
+/// library entry with the same id is REPLACED (the C# edits the live
+/// object; the clone round-trip through the dialog is the port's
+/// shape) and the database marks dirty. Returns false when the book
+/// is not in the library (a temporary session book).
+pub fn apply_edited(edited: &ComicBook) -> bool {
+    let lib = session();
+    let mut l = lib.borrow_mut();
+    let Some(slot) = l
+        .database_mut()
+        .books
+        .iter_mut()
+        .find(|b| b.id == edited.id)
+    else {
+        return false;
+    };
+    *slot = edited.clone();
+    l.mark_dirty();
+    true
+}
+
 /// Removes one book from the library by id (the context-menu
 /// command; the file on disk is untouched).
 pub fn remove_book(id: &CrGuid) {

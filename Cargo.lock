@@ -450,6 +450,7 @@ name = "cr-ui"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "cr-core",
  "cr-engine",
  "cr-image",

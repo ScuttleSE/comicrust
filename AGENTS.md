@@ -51,11 +51,12 @@ Update this section at the **end of every work session**. The next agent must kn
 
 ### State summary
 
-- **Phase:** 5 (the dialogs) — T1 (the settings port + the options
-  builder + the Preferences shell) COMPLETE (2026-09-04), user-
-  tested, all pass. **Next: T2 (the book editor
-  `ComicBookDialog` + bulk edit + the write-back wiring).**
-  Phases 0-4 are complete (their gates stay green).
+- **Phase:** 5 (the dialogs) — T1 COMPLETE (user-tested, all
+  pass). T2 (the book editor) CHECKPOINT 1 IMPLEMENTED (2026-09-04),
+  user test pending: the editor UI + the DB write-back. **Next: run
+  the T2 checkpoint-1 user test; then checkpoint 2 (the file
+  write-back queue + bulk edit).** Phases 0-4 are complete (their
+  gates stay green).
   Phase 1 gaps that remain open: WebComicProvider and the PDF/DjVu
   writers (tracked in `docs/phase-1-kickoff.md`). The Phase 0 exit
   review can close with the T1 wrap-up (the settings port it
@@ -83,7 +84,33 @@ reconciliation, the probe recipe) lives in
 `docs/phase-5-kickoff.md`. Deferred within Phase 5: the
 disk-cache settings do not consume into the ImagePool disk
 caches yet (memory-only pools), the language page waits on the
-TR loader, the Scripts page on Phase 6. **Next: T2 (the book
+TR loader, the Scripts page on Phase 6.
+
+T2 (the book editor) CHECKPOINT 1 IMPLEMENTED — user test pending
+(2026-09-04). `cr-ui/src/dialogs/book_editor.rs`: the Details/Plot/
+Catalog/Catalog-form rows through the cr-core registry (the
+`SaveBook` parse semantics unit-tested), the proposed-value
+placeholders on the EnableProposed combo, the Pages tab (list +
+preview + first/prev/next/last + the context menu: page type /
+rotation / position / mark-deleted / move top+bottom / reset
+order), the Colors tab (five sliders → `book.color_adjustment`),
+and Apply/OK/Cancel with the C# commit-point semantics (prev/next
+save first; Cancel never reverts). The cr-core page ops
+(`update_page_type/rotation/position`, `move_pages` with the C#
+IndexOf identity + cursor arithmetic — unit-tested,
+`reset_page_sequence`, `sort_pages_by_key` with an injected
+comparer, `translate_image_index_to_page`, `front_cover_page_index`)
+landed in `comic_info.rs`. The browser context menu "Properties…"
+opens the editor over the selection (prev/next with >1);
+`library::apply_edited` replaces the library book by id + marks
+dirty (the DB save persists). Probe proof: the `editor_probe`
+example under Xvfb renders the Details grid and the Pages tab; the
+probe caught the first-draft page-type values being shifted by one
+(FrontCover = 1, Deleted = 1024 — fixed). Deferred to checkpoint 2:
+the file write-back queue (`UpdateComicFiles` + never-write-
+defaults + "Files to update" flips), the bulk-edit dialog, the
+custom-thumbnail buttons (the `type://` pool loader), the
+white-point color pick, the library-wide custom-value key editor. **Next: T2 (the book
 editor `ComicBookDialog` + bulk edit + the write-back wiring).**
 
 ### Phase 4 progress (sessions of 2026-09-03)
