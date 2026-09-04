@@ -733,3 +733,77 @@ change; it lands after the bars so they exist in both modes.
   the window leaked). Release workflows now copy `assets/icons`
   next to `assets/papers` in the tarball (both release.yaml and
   tagged-release.yaml). **Next: T3 (the menubar skeleton).**
+- T3 IMPLEMENTED (2026-09-04), user test pending. The menubar:
+  `cr-ui/src/browser/menubar.rs` — a PURE table (`MENUS`: the six
+  C# menus with GTK `_` mnemonics, every item citing its Designer
+  source) + a Gio model builder (sections = separators, `accel`
+  attributes drive the shortcut display) + the `menubar_visible`
+  rule — the `OnGuiVisibilities` FILL-mode port
+  (`MainForm.cs:3673-3688`): `flag4 && (!AutoHideMainMenu ||
+  (ShowMainMenuNoComicOpen && !bookOpen))`, the undocked shape
+  forces ON, MinimalGui kills it, the Alt-reveal overrides. The
+  bar mounts in a wrapper Box above the shell stack (the window
+  keeps its HeaderBar). Present/absent decisions (all unit-asserted):
+  the ADR-024 omissions are absent; the T4 dynamic PARENTS (Open
+  Books, Recent Books, Page Type, Page Rotation) stay out until
+  their fills exist; Help carries only About (the docs/forum/news
+  links stay out); the C# in-menu star-slider control under My
+  Rating is not ported (the Quick Rating dialog covers it, T13);
+  Bookmarks lists the five static items (the dynamic list is T4).
+  New actions: `toggle-zoom` (the `MainForm.ToggleZoom` port —
+  `PageView::toggle_zoom` with the `lastZoom` field), `zoom-preset`
+  (100..400 % → `ImageZoom = v` via the new `ReaderShell::
+  zoom_current`), `generate-thumbnails` (disabled stub — no task
+  owns the thumbnail-queue command yet), and `display-settings`
+  gained its F9 accel (the stub existed unbound). Five toggles
+  became STATEFUL check actions (toggle-browser, auto-scroll,
+  double-auto-scroll, minimal-gui, full-screen) and `sync_enabled`
+  writes every check/radio state from the reader getters (new:
+  PageView `auto_scrolling`/`two_page_navigation`/`auto_rotate`,
+  ReaderShell `current_auto_scrolling`/`current_two_page_navigation`/
+  `current_auto_rotate`/`is_minimal_gui`/`is_undocked`/
+  `is_fullscreen`); the sync runs after EVERY action dispatch (the
+  `CommandMapper` idle-update parity) and from the new
+  `ReaderShell::set_on_chrome_change` hook (fired by
+  `apply_chrome_visibility`; `toggle_minimal_gui` now routes
+  through it; the callback fires AFTER the state borrow drops).
+  AutoHideMainMenu (default TRUE): Alt pressed-and-released ALONE
+  toggles the reveal (`MainForm.OnKeyUp` port; enableAutoHideMenu
+  parity — only while auto-hidden and not minimal). Deviations
+  recorded: the 500 ms re-close debounce is not ported; GTK4
+  cannot open a PopoverMenuBar from code (the C# "select the first
+  item" step is out) and has no popdown signal (the C# re-hides on
+  menu deactivate; ours re-hides on action activation + Alt, an
+  Esc/click-away leaves the bar until the next action); the C#
+  miAutoScroll persists `Program.Settings.AutoScrolling`, the port
+  flips the view field (session-only). Auto-scroll/double-auto-
+  scroll/minimal-gui/full-screen stay gated to an open book (the
+  check cannot fire without a view). Gate: 4 menubar unit tests
+  (action existence, display-accel consistency with the commands
+  table, the omission list, the visibility truth table); 293
+  workspace tests green; `menubar_probe` (six menus, the startup
+  visibility equals the rule, clean exit) + `commands_probe` still
+  69/69; the Xvfb screenshot shows the bar under the header.
+  **USER TEST (the T3 acceptance):**
+  1. `cargo run -p cr-app --release --` — the menubar shows
+     (File Edit Browse Read Display Help) under the header; the
+     browser view has no book open.
+  2. Open a comic — the menubar hides (AutoHideMainMenu default);
+     Alt alone reveals it; Alt again hides it.
+  3. With the bar revealed: fire Read ▸ Next Page — the page turns
+     and the bar hides again (the action-activation re-hide).
+  4. Compare the six menus against ComicRack — every item present
+     or absent for a recorded reason (the list above).
+  5. Check/radio state: Display ▸ Page Layout carries the radio dot
+     on the current fit/layout; Ctrl+0 flips Right to Left (spread
+     or RTL comic to see it); Ctrl+Shift+0 flips Only fit if
+     oversized; Ctrl+S and Alt+Shift+S flip the two Auto Scrolling
+     checks; F10/F11 (MinimalGui/Full Screen) check AND hide the
+     bar — leaving restores it; Browse ▸ Browser/Sidebar follow
+     their toggles; Edit ▸ Track current Page flips.
+  6. Disabled state: no book open greys the Read menu and the
+     bookmarks; a selection greys/un-greys My Rating; Zoom In/Out
+     need a book.
+  7. Zoom: Ctrl+= / Ctrl+- / Toggle Zoom (Ctrl+Alt+Z) and the
+     100–400 % presets work in the reader; the menu shows the C#
+     shortcuts.

@@ -72,7 +72,20 @@ Update this section at the **end of every work session**. The next agent must kn
   icons through a texture column, `cr-ui/tests/icons.rs` gates all
   212 resx names, `icons_probe` proves the loads + the visible
   gallery. Release tarballs ship `assets/icons` now.
-  **Next: T3 (the menubar skeleton).** Phase 6
+  T3 (the menubar skeleton) IMPLEMENTED (2026-09-04), user test
+  pending. `cr-ui/src/browser/menubar.rs`: the pure six-menu table
+  (the `OnGuiVisibilities` Fill-mode visibility rule ported and
+  unit-tested; the T4 dynamic parents stay out; omissions
+  asserted), the Gio model builder (accel attributes = the T1
+  table), the Alt-alone reveal for the default-TRUE
+  AutoHideMainMenu. Five toggles are stateful checks now;
+  `sync_enabled` writes all check/radio states from the reader
+  getters and runs after every action dispatch; the chrome-change
+  hook re-syncs on fullscreen/MinimalGui. New: `toggle-zoom`
+  (real), `zoom-preset` 100-400 % (real), `generate-thumbnails`
+  (stub). Probe `menubar_probe` green; `commands_probe` still
+  69/69; 293 tests. The T3 user test is written in the kickoff.
+  **Next: T3 user test, then T4 (the dynamic menus).** Phase 6
   (scripting) starts only after 5.5.
   Phases 0-5 are complete (their gates stay green). Open Phase 1
   gaps: WebComicProvider and the PDF/DjVu writers (tracked in
