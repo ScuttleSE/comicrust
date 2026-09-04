@@ -51,7 +51,7 @@ Update this section at the **end of every work session**. The next agent must kn
 
 ### State summary
 
-- **Phase:** 4 (the browser) IN PROGRESS — T1-T5 COMPLETE and user-tested; T6 (PagesView + QuickOpen) IMPLEMENTED, user test pending — the last task of the phase. Read `docs/phase-4-kickoff.md` (its Progress section records the per-task state). Phases 0-3 are complete (their gates stay green). Phase 1 gaps that remain open: WebComicProvider and the PDF/DjVu writers (tracked in `docs/phase-1-kickoff.md`). Phase 0 tail still open: the settings port (`IniFile`/`EngineConfiguration`/the full `SystemPaths`); T1 shipped a minimal `cr-core::paths` slice (ADR-022). The Phase 0 exit review remains not done.
+- **Phase:** 4 (the browser) COMPLETE (2026-09-04) — T1-T6 all done and user-tested; the gate is met (see `docs/phase-4-kickoff.md`). **Next: Phase 5 (the dialogs). Read `docs/phase-5-kickoff.md` first** — T1 is the settings port (the Phase 0 tail it also closes). Phases 0-3 are complete (their gates stay green). Phase 1 gaps that remain open: WebComicProvider and the PDF/DjVu writers (tracked in `docs/phase-1-kickoff.md`). The Phase 0 exit review remains not done; the settings port moves INTO Phase 5 T1. Read `docs/phase-4-kickoff.md` (its Progress section records the per-task state). Phases 0-3 are complete (their gates stay green). Phase 1 gaps that remain open: WebComicProvider and the PDF/DjVu writers (tracked in `docs/phase-1-kickoff.md`). Phase 0 tail still open: the settings port (`IniFile`/`EngineConfiguration`/the full `SystemPaths`); T1 shipped a minimal `cr-core::paths` slice (ADR-022). The Phase 0 exit review remains not done.
 - **State:** `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` are green. 211 tests pass across 29 suites. CI runs on the `docker-runner-amd64` container runner (ADR-020). The release tracks are `release.yaml` (rolling prerelease per push) and `tagged-release.yaml` (manual dispatch, stable release for an existing tag — ADR-021, 2026-09-03). Until the runner is registered and `comicrust-ci:latest` is built on the runner host, pushed and dispatched workflows sit queued on that label.
 - **Phase 0 gate status:** byte-stable ComicDb.xml round-trip proven on all three synthetic fixtures AND the real-world database `tests/realworld/ComicDb.xml` (255 books, 584 KB, 2026-09-02, user-approved commit).
 - **Phase 2 gate status:** every saved smart list in the real-world DB (a) binds to the matcher registry, (b) renders to a `Match` query string that re-parses and re-renders byte-identically, and (c) evaluates to the SAME book sets the C# cached in `CacheStorage` (Never Read = all 255, Files to update = the 3 dirty books, Reading/Read = empty). Evidence: `crates/cr-engine/tests/realworld_query.rs`.
@@ -144,7 +144,17 @@ the QuickOpen stack page (the three built-in lists through
 `library::quick_open_lists`, captionless covers via
 `LayoutConfig.hide_captions`), and `ReaderShell` hooks
 (`current_comic_book`, `navigate_current` with the view cloned out
-before the callback fires, `set_on_page_change`).
+before the callback fires, `set_on_page_change`,
+`set_on_book_changed`). T6 COMPLETE — user-tested over five fix
+rounds; the round lessons: the Pages panel binds the OPEN comic
+and rebinds on reader tab switches (slot-guard the turn hook or
+the marker follows the wrong comic), thumb completions carry the
+queued source path (stale loads after a rebind otherwise land in
+the new comic's map), a hidden tab has width 0 (reflow on tab
+visibility + the draw-path height self-correction), and the
+provider index fills `info.pages` on open (the C#
+`ProviderIndexRetrievalCompleted` parity) — `refresh_file_info`
+sets only the count.
 `cr-engine/src/lists.rs` evaluates the ComicLists tree (Library =
 all, folder Or = union / And = intersect / Empty, id lists, smart
 lists with recursive base-list resolution + a cycle guard; the
