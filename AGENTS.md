@@ -51,22 +51,20 @@ Update this section at the **end of every work session**. The next agent must kn
 
 ### State summary
 
-- **Phase:** 5 (the dialogs) COMPLETE — the gate is MET
-  (2026-09-04; the full record lives in
-  `docs/phase-5-kickoff.md`). T1 (the settings port + the
-  Preferences shell), T2 (the book editor + the bulk editor + the
-  file write-back), T3 (the smart-list editor + the list editor),
-  T4 (the export dialog + engine + the remove confirm) all
-  user-tested. **Next: Phase 6 (scripting — PyO3 host, hook
-  wiring, the plugin package manager) per `docs/port-plan.md`;
-  read `docs/phase-6-kickoff.md` when it exists, else write it
-  from the port plan's Phase 6 row and the C#
-  `ComicRack.Plugins` project.** Phases 0-4 are complete (their
-  gates stay green). Open Phase 1 gaps: WebComicProvider and the
-  PDF/DjVu writers (tracked in `docs/phase-1-kickoff.md`). The
-  Phase 0 exit review is now closable — every item it waited on
-  (the settings port) is in; record the close in
-  `docs/decisions.md` if the next agent takes it.
+- **Phase:** 5.5 (UI chrome parity) — NEW PHASE, planning done
+  (2026-09-04). The user asked for a phase between 5 and 6 to bring
+  the chrome (menubar, toolbars, status bar, book tabs, dock
+  modes, icons, layout persistence) close to the original
+  ComicRack. The full C# chrome inventory (with file:line refs),
+  the locked scope (ADR-024: Fill+Bottom dock only, Detail column
+  chooser IN, Info Panel OUT, bundled CR PNG icons, named
+  workspaces OUT) and the omissions list live in
+  `docs/phase-5.5-kickoff.md`. **Next: Phase 5.5 T1 (the
+  command/action layer + accelerators); T2 (the bundled icon set)
+  lands second.** Phase 6 (scripting) starts only after 5.5.
+  Phases 0-5 are complete (their gates stay green). Open Phase 1
+  gaps: WebComicProvider and the PDF/DjVu writers (tracked in
+  `docs/phase-1-kickoff.md`).
 - **State:** `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` are green. 281 tests pass across 30 suites. CI runs on the `docker-runner-amd64` container runner (ADR-020). The release tracks are `release.yaml` (rolling prerelease per push) and `tagged-release.yaml` (manual dispatch, stable release for an existing tag — ADR-021, 2026-09-03). Until the runner is registered and `comicrust-ci:latest` is built on the runner host, pushed and dispatched workflows sit queued on that label.
 - **Phase 0 gate status:** byte-stable ComicDb.xml round-trip proven on all three synthetic fixtures AND the real-world database `tests/realworld/ComicDb.xml` (255 books, 584 KB, 2026-09-02, user-approved commit).
 - **Phase 2 gate status:** every saved smart list in the real-world DB (a) binds to the matcher registry, (b) renders to a `Match` query string that re-parses and re-renders byte-identically, and (c) evaluates to the SAME book sets the C# cached in `CacheStorage` (Never Read = all 255, Files to update = the 3 dirty books, Reading/Read = empty). Evidence: `crates/cr-engine/tests/realworld_query.rs`.

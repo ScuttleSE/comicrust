@@ -53,6 +53,7 @@ Every phase ends shippable and testable. Phases 0-2 are fully headless. They de-
 | 3 | Reader UI | GTK4 shell skeleton, GL renderer port: single/double/adaptive/continuous layouts, fit modes, zoom/pan/rotation, transitions, magnifier, paper texture, gestures, fullscreen/undock, tabs | Comfortable daily-driver reading session | 10-12 wk |
 | 4 | Browser | ItemView port (thumbnail/tile/detail, grouping, stacking, columns, sort, rubber-band, drag-drop), library tree, search popover, QuickOpen, PagesView | Library browse/manage replaces C# browser for common flows | 10-12 wk |
 | 5 | Dialogs | All ~50: book editor, bulk edit, preferences (+ serde-driven options builder), smart-list/matcher editors, export, devices, workspace save/switch | Feature-complete for local-library workflows | 12-14 wk |
+| 5.5 | UI chrome parity | Menubar, toolbars (reader/browser/navigator/pages), multi-panel status bar, book tabs + context menu, browser dock modes (Fill/Bottom), sidebar preview, Book Display Settings, About/Zoom/QuickRating/Tasks, bundled CR icons, layout persistence — see `phase-5.5-kickoff.md` (ADR-024) | Chrome close to original CR with locked omissions; every task user-tested | 8-10 wk |
 | 6 | Scripting | PyO3 host, hook wiring (Automation menus, NetSearch, overlays, info panels), package manager, WebKitGTK panel bridge, 2to3 migration guide + top-5 plugin acceptance tests | Shipped sample scripts + ComicVine-class plugin operational | 6-8 wk |
 | 7 | Platform | D-Bus single instance, MTP/wireless sync, HTTP remote server, full i18n wiring, workspace persistence, dark theme | Feature checklist from C# complete | 8-10 wk |
 | 8 | Polish/ship | Flatpak/.deb/AUR packaging, CI, docs, migration tooling, perf passes | 1.0 | 4-6 wk |
@@ -72,3 +73,4 @@ Phase task breakdowns with acceptance criteria:
 
 - Phase 0: `phase-0-kickoff.md` — built and validated (see `AGENTS.md` status).
 - Phase 1: `phase-1-kickoff.md`.
+- Phase 5.5: `phase-5.5-kickoff.md` — the UI-parity phase (ADR-024), inserted between 5 and 6.

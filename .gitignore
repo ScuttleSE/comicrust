@@ -9,3 +9,4 @@
 .DS_Store
 tests/testfiles/
 tests/realworld/ComicDb.xml.smaller
+docs/screenshots/
