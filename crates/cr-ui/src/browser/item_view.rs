@@ -94,6 +94,9 @@ pub struct ItemViewState {
     /// columns (the same regex hazard as the captions — the Detail
     /// view draws visible_rows × columns cells per frame).
     detail_texts: HashMap<CrGuid, Vec<String>>,
+    /// The Tile text lines per book (the same hazard —
+    /// `tile_text_lines` resolves proposed names through regexes).
+    tile_texts: HashMap<CrGuid, Vec<(String, f64, bool)>>,
     /// Loads in flight (the pump stays alive while this is > 0).
     pending_thumbs: usize,
     pump_active: bool,
@@ -233,6 +236,7 @@ impl ItemView {
             queued: HashSet::new(),
             captions: HashMap::new(),
             detail_texts: HashMap::new(),
+            tile_texts: HashMap::new(),
             pending_thumbs: 0,
             pump_active: false,
             band: None,
@@ -298,6 +302,7 @@ impl ItemView {
             s.queued.clear();
             s.captions.clear();
             s.detail_texts.clear();
+            s.tile_texts.clear();
             s.band = None;
             s.relayout(width);
         }
