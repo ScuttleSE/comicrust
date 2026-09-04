@@ -71,9 +71,17 @@ struct PagesState {
     pump_active: bool,
     thumb_height: f64,
     current_page: usize,
-    on_activate: Option<Box<dyn Fn(usize)>>,
+    /// The content height the canvas was last sized for (the draw
+    /// path self-corrects: the binding can land while the panel is
+    /// hidden, where the canvas width is 0 and the layout collapses).
+    last_content_height: f64,
     canvas: DrawingArea,
 }
+
+/// The activation callback lives OUTSIDE the state: the callee
+/// re-enters the state (navigate → page callback →
+/// `set_current_page`), so it must run with no state borrow held.
+type ActivateCell = Rc<RefCell<Option<Box<dyn Fn(usize)>>>>;
 
 impl PagesState {
     /// The greedy thumbnail flow (the ItemView Top layout: 1 px
@@ -121,6 +129,7 @@ impl PagesState {
 #[derive(Clone)]
 pub struct PagesPanel {
     state: Rc<RefCell<PagesState>>,
+    activation: ActivateCell,
     canvas: DrawingArea,
     scroller: ScrolledWindow,
 }
@@ -141,6 +150,7 @@ impl PagesPanel {
             .build();
 
         let (tx, rx) = std::sync::mpsc::channel::<PageDone>();
+        let activation: ActivateCell = Rc::new(RefCell::new(None));
 
         let state = Rc::new(RefCell::new(PagesState {
             bound: None,
@@ -153,12 +163,13 @@ impl PagesPanel {
             pump_active: false,
             thumb_height: 128.0,
             current_page: 0,
-            on_activate: None,
+            last_content_height: 0.0,
             canvas: canvas.clone(),
         }));
 
         let panel = PagesPanel {
             state: Rc::clone(&state),
+            activation: Rc::clone(&activation),
             canvas: canvas.clone(),
             scroller: scroller.clone(),
         };
@@ -272,9 +283,11 @@ impl PagesPanel {
                 canvas_for_grab.grab_focus();
                 if n > 1 {
                     // Double-click → navigate (`ItemView_ItemActivate`).
+                    // The callback runs with NO state borrow — it
+                    // re-enters this panel through the reader's page
+                    // callback.
                     if let Some(page) = hit {
-                        let s = state.borrow();
-                        if let Some(f) = s.on_activate.as_ref() {
+                        if let Some(f) = activation.borrow().as_ref() {
                             f(page);
                         }
                     }
@@ -387,7 +400,7 @@ impl PagesPanel {
     }
 
     pub fn connect_activate<F: Fn(usize) + 'static>(&self, f: F) {
-        self.state.borrow_mut().on_activate = Some(Box::new(f));
+        *self.activation.borrow_mut() = Some(Box::new(f));
     }
 
     fn update_size_request(&self) {
@@ -405,6 +418,7 @@ fn draw_frame(
     state: &Rc<RefCell<PagesState>>,
     (scroll_y, view_h): (f64, f64),
 ) -> bool {
+    let mut resize_after = false;
     let (path, cells) = {
         let binding = state.borrow();
         match binding.bound.as_ref() {
@@ -420,6 +434,15 @@ fn draw_frame(
 
     let width = s.canvas.width() as f64;
     let placed = s.relayout(width);
+
+    // The self-correction: the panel may have been bound while
+    // hidden (width 0) — the real layout height applies now, and the
+    // canvas resize lands after this draw.
+    let content = s.content_height(width);
+    if (content - s.last_content_height).abs() > 0.5 {
+        s.last_content_height = content;
+        resize_after = true;
+    }
 
     // Queue thumb loads for the visible cells (AddToTop semantics —
     // the demanded pages skip the line).
@@ -481,6 +504,16 @@ fn draw_frame(
             ctx.rectangle(*x - 1.0, *y - 1.0, w + 2.0, h + 2.0);
             ctx.stroke().ok();
         }
+    }
+
+    if resize_after {
+        let canvas = s.canvas.clone();
+        let height = s.last_content_height;
+        glib::idle_add_local(move || {
+            canvas.set_content_height(height as i32);
+            canvas.queue_draw();
+            glib::ControlFlow::Break
+        });
     }
 
     queued_thumbs
