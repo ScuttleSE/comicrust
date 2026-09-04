@@ -527,6 +527,13 @@ thread_local! {
 /// `AutoUpdateComicsFiles` path. The gates run again when the timer
 /// fires.
 pub fn schedule_book_file_update(id: &CrGuid) {
+    schedule_book_write(id, false);
+}
+
+/// The debounced write timer (`AddBookToFileUpdate` debounces 100 ms);
+/// `always_write` is the manual command path (it bypasses the
+/// `AutoUpdateComicsFiles` gate, not the dirty flag).
+fn schedule_book_write(id: &CrGuid, always_write: bool) {
     WRITE_TIMERS.with(|cell| {
         let mut timers = cell.borrow_mut();
         if let Some(old) = timers.remove(id) {
@@ -537,10 +544,44 @@ pub fn schedule_book_file_update(id: &CrGuid) {
             WRITE_TIMERS.with(|c| {
                 c.borrow_mut().remove(&id);
             });
-            let _ = update_book_file(&id, false);
+            let _ = update_book_file(&id, always_write);
             glib::ControlFlow::Break
         });
         timers.insert(id, source);
+    });
+}
+
+/// `UpdateComics` (`MainForm`): the manual "Update all Book Files"
+/// pass — `AddBookToFileUpdate(cb, alwaysWrite: true)` for every
+/// book. The dirty flag STILL gates (the C# gate order: IsLinked,
+/// FileInfoRetrieved, UpdateComicFiles, AutoUpdate || alwaysWrite,
+/// then `ComicInfoIsDirty || (UpdateComicBookFiles &&
+/// ComicBookIsDirty)`) — only the "Files to update" books write.
+/// The writes drain one per main-loop tick so the UI keeps drawing
+/// (the C# funnels them through the WriteComicBookInfoFileQueue).
+pub fn update_all_book_files() {
+    let dirty: std::collections::VecDeque<CrGuid> = {
+        let lib = session();
+        let l = lib.borrow();
+        l.database()
+            .books
+            .iter()
+            .filter(|b| b.comic_info_is_dirty)
+            .map(|b| b.id)
+            .collect()
+    };
+    if dirty.is_empty() {
+        return;
+    }
+    let mut queue = dirty;
+    glib::timeout_add_local(std::time::Duration::from_millis(0), move || {
+        match queue.pop_front() {
+            Some(id) => {
+                let _ = update_book_file(&id, true);
+                glib::ControlFlow::Continue
+            }
+            None => glib::ControlFlow::Break,
+        }
     });
 }
 

@@ -1596,6 +1596,16 @@ impl PageView {
         self.area.queue_draw();
     }
 
+    /// The absolute view rotation (`ComicDisplay.ImageRotate` setter
+    /// — the Rotation submenu items Rotate 0/90/180/270).
+    pub fn set_rotation(&self, rotation: ImageRotation) {
+        let mut st = self.state.borrow_mut();
+        st.rotation = rotation;
+        st.invalidate();
+        drop(st);
+        self.area.queue_draw();
+    }
+
     /// The MainForm `PageRotateC`/`PageRotateCC` commands
     /// (`GetPageEditor().Rotation`): the page decodes with the new
     /// rotation. View-side port — persistence into `ComicPageInfo`
@@ -2031,8 +2041,15 @@ impl PageView {
     /// dispatch as no-ops until their task.
     fn dispatch_command(&self, id: &str) {
         match id {
-            // Library group — the browser list is Phase 4.
-            "NextComic" | "PrevComic" | "RandomComic" | "ShowBrowser" => {}
+            // Library group — the browser list lives in the shell
+            // (`MainForm.OpenNextComic`/`ToggleBrowserFromReader`);
+            // the docked reader forwards the commands.
+            "NextComic" | "PrevComic" | "RandomComic" | "ShowBrowser" => {
+                let cb = self.state.borrow().command_callback.clone();
+                if let Some(cb) = cb {
+                    cb(id);
+                }
+            }
             "MoveToFirstPage" => {
                 self.first_page();
             }
@@ -2137,6 +2154,12 @@ impl PageView {
                     self.rotate_left();
                 }
             }
+            // The Rotation submenu items (`ComicDisplay.ImageRotate`
+            // setter) — menu-only commands without reader keys.
+            "Rotate0" => self.set_rotation(ImageRotation::None),
+            "Rotate90" => self.set_rotation(ImageRotation::Rotate90),
+            "Rotate180" => self.set_rotation(ImageRotation::Rotate180),
+            "Rotate270" => self.set_rotation(ImageRotation::Rotate270),
             "AutoRotate" => {
                 let continuous = self.state.borrow().page_layout == PageLayoutMode::Continuous;
                 if !continuous {
@@ -2202,6 +2225,19 @@ impl PageView {
     /// them to `OpenBooks`/`MainForm` methods.
     pub fn set_command_callback(&self, callback: Rc<dyn Fn(&str)>) {
         self.state.borrow_mut().command_callback = Some(callback);
+    }
+
+    /// Shell-side command entry: the shell actions forward reader
+    /// commands here (`KeyboardShortcuts.HandleKey` parity — the
+    /// dispatch table is the one in `dispatch_command`).
+    pub fn run_command(&self, id: &str) {
+        self.dispatch_command(id);
+    }
+
+    /// The current Right-to-Left reading state (the shell radio
+    /// action syncs from it).
+    pub fn rtl(&self) -> bool {
+        self.state.borrow().rtl
     }
 
     fn schedule_click(&self) {

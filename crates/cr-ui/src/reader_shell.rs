@@ -41,7 +41,8 @@ use crate::library;
 fn cr_ui_settings() -> std::rc::Rc<std::cell::RefCell<cr_core::settings::Settings>> {
     library::settings()
 }
-use crate::reader::page_view::PageView;
+use crate::reader::display::ImageFitMode;
+use crate::reader::page_view::{PageLayoutMode, PageView};
 
 /// Default reader window size (the C# persists its own window layout;
 /// workspace persistence arrives in Phase 7).
@@ -69,6 +70,10 @@ struct UndockedTab {
     window: ApplicationWindow,
     tab: ReaderTab,
 }
+
+/// The Library-group command forwarder (`Rc`: the dispatch clones it
+/// out before firing — the handler re-enters this shell).
+type LibraryCommandFn = Rc<dyn Fn(&str)>;
 
 struct ShellState {
     /// The host window (the browser shell sets it; fullscreen chrome
@@ -98,6 +103,10 @@ struct ShellState {
     /// The host runs this when the visible book changes (open or
     /// slot switch) — the Pages panel rebinds.
     on_book_changed: Option<Box<dyn Fn()>>,
+    /// The host runs this for the Library-group reader commands
+    /// (`NextComic`/`PrevComic`/`RandomComic`/`ShowBrowser`) — the
+    /// C# handlers live on `MainForm` (the browser list context).
+    on_library_command: Option<LibraryCommandFn>,
 }
 
 impl ShellState {
@@ -173,6 +182,7 @@ impl ReaderShell {
                 on_view_change: None,
                 on_page_change: None,
                 on_book_changed: None,
+                on_library_command: None,
             })),
         };
 
@@ -269,6 +279,78 @@ impl ReaderShell {
     /// `pagesView.Book` rebind).
     pub fn set_on_book_changed<F: Fn() + 'static>(&self, f: F) {
         self.state.borrow_mut().on_book_changed = Some(Box::new(f));
+    }
+
+    /// The host hook: a Library-group reader command fired (the
+    /// C# `OpenNextComic`/`ToggleBrowserFromReader` on MainForm).
+    pub fn set_on_library_command<F: Fn(&str) + 'static>(&self, f: F) {
+        self.state.borrow_mut().on_library_command = Some(Rc::new(f));
+    }
+
+    /// The number of open reader slots (`OpenBooks.Slots.Count`).
+    pub fn tab_count(&self) -> usize {
+        self.state.borrow().tabs.len()
+    }
+
+    /// Forwards a shell command into the CURRENT reader view
+    /// (`ComicDisplay` command parity — the shell actions route
+    /// here). The view handle clones out first: the dispatch can
+    /// re-enter this shell (the RefCell lesson).
+    pub fn dispatch_current(&self, id: &str) {
+        let view = {
+            let s = self.state.borrow();
+            let current = match s.notebook.current_page() {
+                Some(c) => c,
+                None => return,
+            };
+            match s.tabs.get(current as usize) {
+                Some(tab) => tab.view.clone(),
+                None => return,
+            }
+        };
+        view.run_command(id);
+    }
+
+    /// Closes the current tab (`OpenBooks.Close` — the Ctrl+X
+    /// command; the tab close button routes to the same slot close).
+    pub fn close_current_tab(&self) {
+        let slot = {
+            let s = self.state.borrow();
+            match s.current_slot() {
+                Some(slot) => slot,
+                None => return,
+            }
+        };
+        ReaderShell::close_tab(&self.state, slot);
+    }
+
+    /// Closes every tab (`OpenBooks.CloseAll`); the last close hands
+    /// the view back to the browser through the host callback.
+    pub fn close_all_tabs(&self) {
+        while !self.is_empty() {
+            self.close_current_tab();
+        }
+    }
+
+    /// The current view's fit mode (the shell radio sync).
+    pub fn current_fit_mode(&self) -> Option<ImageFitMode> {
+        let s = self.state.borrow();
+        let current = s.notebook.current_page()?;
+        Some(s.tabs.get(current as usize)?.view.fit_mode())
+    }
+
+    /// The current view's page layout (the shell radio sync).
+    pub fn current_page_layout(&self) -> Option<PageLayoutMode> {
+        let s = self.state.borrow();
+        let current = s.notebook.current_page()?;
+        Some(s.tabs.get(current as usize)?.view.page_layout())
+    }
+
+    /// The current view's RTL state (the shell check sync).
+    pub fn current_rtl(&self) -> Option<bool> {
+        let s = self.state.borrow();
+        let current = s.notebook.current_page()?;
+        Some(s.tabs.get(current as usize)?.view.rtl())
     }
 
     fn fire_book_changed(state: &Rc<RefCell<ShellState>>) {
@@ -514,6 +596,16 @@ impl ReaderShell {
                         "PrevTab" => ReaderShell::switch_slot(&sh, -1),
                         "ToggleUndockReader" => ReaderShell::toggle_undock(&sh),
                         "ToggleMenu" => ReaderShell::toggle_minimal_gui(&sh),
+                        // Library-group commands — the C# handlers
+                        // are MainForm methods (the browser list
+                        // context); the host (browser shell) owns
+                        // them.
+                        "NextComic" | "PrevComic" | "RandomComic" | "ShowBrowser" => {
+                            let f = sh.borrow().on_library_command.clone();
+                            if let Some(f) = f {
+                                f(command);
+                            }
+                        }
                         _ => {}
                     }
                 }));

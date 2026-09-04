@@ -372,6 +372,37 @@ impl ItemView {
         self.state.borrow().view.len()
     }
 
+    /// The selection size (the enable-state reads it — a view-state
+    /// clone would copy every book).
+    pub fn selection_len(&self) -> usize {
+        self.state.borrow().view.selection().len()
+    }
+
+    /// The selected ids (the shell commands read them).
+    pub fn selection_ids(&self) -> Vec<CrGuid> {
+        self.state
+            .borrow()
+            .view
+            .selection()
+            .iter()
+            .copied()
+            .collect()
+    }
+
+    /// Selects one book and reveals it (`IComicBrowser.SelectComic`
+    /// parity — the Show-in-Browser path). The redraw keeps the
+    /// selection marker in sync; scrolling to the item stays with
+    /// the layout work.
+    pub fn select_book(&self, id: &CrGuid) {
+        let width = self.state.borrow().config.view_width;
+        {
+            let mut s = self.state.borrow_mut();
+            s.view.select_one(*id);
+            s.relayout(width);
+        }
+        self.notify_and_redraw();
+    }
+
     /// The right-click context menu (`tvQueries_MouseDown` shape):
     /// (item under the cursor, x, y) — the coordinates are TOPLEVEL
     /// (window) coordinates, ready for a popover parented to the

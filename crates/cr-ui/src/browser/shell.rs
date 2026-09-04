@@ -4,7 +4,8 @@
 //! commands, and the reader docked as a view (the C# reader replaces
 //! the browser view; `D` undocks it into its own window).
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
+use std::collections::HashMap;
 use std::path::Path;
 use std::rc::Rc;
 use std::sync::Arc;
@@ -19,6 +20,8 @@ use cr_engine::image_pool::ImagePool;
 use cr_engine::matcher::tree::Matcher;
 
 use crate::library;
+use crate::reader::display::ImageFitMode;
+use crate::reader::page_view::PageLayoutMode;
 
 /// The user settings (`Program.Settings`).
 fn cr_ui_settings() -> std::rc::Rc<std::cell::RefCell<cr_core::settings::Settings>> {
@@ -59,10 +62,26 @@ struct ShellState {
     pages: PagesPanel,
     /// The browser-panel tab strip: Library | Pages (`MainView`).
     panel_stack: Stack,
+    /// The left panel host (switcher + stack) — the Sidebar toggle.
+    panel_box: gtk4::Box,
+    /// The quick-search entry (the FocusQuickSearch command target).
+    search: Entry,
     reader: ReaderShell,
     app: Application,
     /// The current navigator selection (refreshes after mutations).
     current_list: RefCell<Option<CrGuid>>,
+    /// The `win.` action group members by name (the enable-state
+    /// sync reaches them here). A RefCell: the map fills while the
+    /// state itself already lives in its Rc.
+    actions: RefCell<HashMap<&'static str, gio::SimpleAction>>,
+    /// The list browsing history (the C# `ILibraryBrowser` back /
+    /// forward chain; Previous/Next List + the T6 toolbar buttons).
+    list_history: RefCell<Vec<CrGuid>>,
+    list_history_pos: Cell<usize>,
+    /// The random-book walk state (`OpenNextComic` random mode: no
+    /// repeats until the list changed or the cycle wrapped).
+    random_list: RefCell<Vec<CrGuid>>,
+    random_picked: RefCell<Vec<CrGuid>>,
 }
 
 impl ShellState {
@@ -268,9 +287,16 @@ impl BrowserShell {
             quick_view,
             pages,
             panel_stack,
+            panel_box: panel_box.clone(),
+            search: search.clone(),
             reader,
             app: app.clone(),
             current_list: RefCell::new(None),
+            actions: RefCell::new(HashMap::new()),
+            list_history: RefCell::new(Vec::new()),
+            list_history_pos: Cell::new(0),
+            random_list: RefCell::new(Vec::new()),
+            random_picked: RefCell::new(Vec::new()),
         });
         let shell = BrowserShell {
             window: window.clone(),
@@ -322,6 +348,30 @@ impl BrowserShell {
                     if let Some(sh) = state.upgrade() {
                         sh.pages.clear_book();
                         sh.show_quick_open();
+                        sh.sync_enabled();
+                    }
+                });
+        }
+
+        // Library-group reader commands (`NextComic`/`PrevComic`/
+        // `RandomComic`/`ShowBrowser`) — the C# handlers live on
+        // MainForm; the shell owns the list context.
+        {
+            let state = Rc::downgrade(state);
+            state
+                .upgrade()
+                .expect("state")
+                .reader
+                .set_on_library_command(move |id| {
+                    if let Some(sh) = state.upgrade() {
+                        match id {
+                            "NextComic" => sh.open_next_book(1),
+                            "PrevComic" => sh.open_next_book(-1),
+                            "RandomComic" => sh.open_next_book(0),
+                            "ShowBrowser" => sh.show_browser(),
+                            _ => {}
+                        }
+                        sh.sync_enabled();
                     }
                 });
         }
@@ -357,24 +407,14 @@ impl BrowserShell {
             });
         }
 
-        // The Preferences dialog (the C# Tools → Preferences): a
-        // modal settings clone committed on OK; the reader views and
-        // the QuickOpen grid re-apply the changed values.
+        // The Preferences dialog (the C# Tools → Preferences): the
+        // shared handler (the action routes to the same method).
         {
             let state = Rc::downgrade(state);
             prefs_button.connect_clicked(move |_| {
-                let Some(sh) = state.upgrade() else {
-                    return;
-                };
-                let window = sh.window.clone();
-                let state2 = state.clone();
-                crate::settings::preferences::show_preferences(&window, move || {
-                    if let Some(sh) = state2.upgrade() {
-                        sh.reader.apply_settings_to_open_views();
-                        let size = cr_ui_settings().borrow().quick_open_thumbnail_size as f64;
-                        sh.quick_view.configure(|c| c.thumb_height = size);
-                    }
-                });
+                if let Some(sh) = state.upgrade() {
+                    sh.show_preferences();
+                }
             });
         }
 
@@ -394,6 +434,7 @@ impl BrowserShell {
                             sh.pages.set_book(book);
                             sh.pages.set_current_page(page);
                         }
+                        sh.sync_enabled();
                     }
                 });
         }
@@ -469,11 +510,25 @@ impl BrowserShell {
                 .connect_selected(move |id, _name| {
                     if let Some(sh) = state.upgrade() {
                         *sh.current_list.borrow_mut() = Some(*id);
+                        // The list history (`BrowsePrevious` chain): a
+                        // history walk lands on the entry at the walk
+                        // position and does not append; a new
+                        // selection drops the forward entries.
+                        {
+                            let mut h = sh.list_history.borrow_mut();
+                            let pos = sh.list_history_pos.get();
+                            if h.get(pos) != Some(id) {
+                                h.truncate(pos + 1);
+                                h.push(*id);
+                                sh.list_history_pos.set(h.len() - 1);
+                            }
+                        }
                         if let Some((_name, books)) = library::evaluate_books(id) {
                             let count = books.len();
                             sh.item_view.set_books(books);
                             sh.update_status(count, 0);
                         }
+                        sh.sync_enabled();
                     }
                 });
         }
@@ -489,6 +544,7 @@ impl BrowserShell {
                     if let Some(sh) = state.upgrade() {
                         let count = sh.item_view.book_count();
                         sh.update_status(count, selected);
+                        sh.sync_enabled();
                     }
                 });
         }
@@ -644,10 +700,308 @@ impl BrowserShell {
     }
 
     fn install_actions(&self) {
-        let state = Rc::downgrade(&self.state);
-        let actions = gio::SimpleActionGroup::new();
+        ShellState::install_commands(&self.state);
+    }
 
-        // view-mode: thumbnail | tile | detail (radio).
+    /// Opens a comic into the docked reader (the app's `open_reader`
+    /// path).
+    pub fn open_comic(&self, path: &Path) {
+        self.state.open_comic(path);
+    }
+
+    pub fn present(&self) {
+        self.window.present();
+    }
+}
+
+impl ShellState {
+    fn action(&self, name: &str) -> Option<gio::SimpleAction> {
+        self.actions.borrow().get(name).cloned()
+    }
+
+    fn set_action_enabled(&self, name: &str, enabled: bool) {
+        if let Some(a) = self.actions.borrow().get(name) {
+            a.set_enabled(enabled);
+        }
+    }
+
+    /// Registers one parameterless action with a `&ShellState`
+    /// handler (the `CommandMapper.Add` one-command-one-handler
+    /// shape).
+    fn add_simple<F: Fn(&Rc<ShellState>) + 'static>(
+        self: &Rc<ShellState>,
+        group: &gio::SimpleActionGroup,
+        name: &'static str,
+        f: F,
+    ) {
+        let action = gio::SimpleAction::new(name, None);
+        let state = Rc::downgrade(self);
+        action.connect_activate(move |_, _| {
+            if let Some(sh) = state.upgrade() {
+                f(&sh);
+            }
+        });
+        group.add_action(&action);
+        self.actions.borrow_mut().insert(name, action);
+    }
+
+    /// The enable-state sync (`CommandMapper` idle update parity):
+    /// reader commands need an open book, the edit commands a
+    /// selection, Previous/Next List a walkable history. The
+    /// radio/check actions take their state from the reader.
+    fn sync_enabled(&self) {
+        let has_book = !self.reader.is_empty();
+        let slots = self.reader.tab_count();
+        let selected = self.item_view.selection_len();
+        let (can_prev, can_next) = {
+            let h = self.list_history.borrow();
+            let pos = self.list_history_pos.get();
+            (pos > 0, pos + 1 < h.len())
+        };
+        // Reader commands (`ComicDisplay.Book != null`).
+        for name in [
+            "close",
+            "close-all",
+            "first-page",
+            "prev-page",
+            "next-page",
+            "last-page",
+            "prev-bookmark",
+            "next-bookmark",
+            "last-page-read",
+            "auto-scroll",
+            "double-auto-scroll",
+            "show-in-browser",
+            "prev-book",
+            "next-book",
+            "random-book",
+            "full-screen",
+            "magnifier",
+            "minimal-gui",
+            "undock-reader",
+        ] {
+            self.set_action_enabled(name, has_book);
+        }
+        self.set_action_enabled("prev-tab", slots > 1);
+        self.set_action_enabled("next-tab", slots > 1);
+        // Selection commands (`GetBookList(Selected)` non-empty).
+        for name in [
+            "info", "rating-0", "rating-1", "rating-2", "rating-3", "rating-4", "rating-5",
+        ] {
+            self.set_action_enabled(name, selected > 0);
+        }
+        self.set_action_enabled("prev-list", can_prev);
+        self.set_action_enabled("next-list", can_next);
+        // Radio/check state follows the reader (`IsPageFitBest`,
+        // `IsPageSingle`, `RightToLeftReading` checks).
+        if let Some(fit) = self.reader.current_fit_mode() {
+            if let Some(a) = self.action("page-fit") {
+                a.set_state(&fit_action_name(fit).to_variant());
+            }
+        }
+        if let Some(layout) = self.reader.current_page_layout() {
+            if let Some(a) = self.action("page-layout") {
+                a.set_state(&layout_action_name(layout).to_variant());
+            }
+        }
+        if let Some(rtl) = self.reader.current_rtl() {
+            if let Some(a) = self.action("right-to-left") {
+                a.set_state(&rtl.to_variant());
+            }
+        }
+    }
+
+    /// `OpenNextComic(relative)`: the neighbor book in the current
+    /// list's view order; `relative == 0` picks a random book without
+    /// repeats until the cycle wraps (`lastRandomList`/
+    /// `randomSelectedComics` parity). The current book must be part
+    /// of the viewed list — the C# resolves the book's own browser
+    /// container, we use the active view.
+    fn open_next_book(&self, relative: i32) {
+        let Some(current) = self.reader.current_comic_book() else {
+            return;
+        };
+        let view = self.item_view.view_state();
+        let ids: Vec<CrGuid> = view
+            .display_order()
+            .iter()
+            .map(|&i| view.books()[i].id)
+            .collect();
+        let Some(pos) = ids.iter().position(|id| *id == current.id) else {
+            return;
+        };
+        let next = if relative == 0 {
+            let reset = {
+                let mut list = self.random_list.borrow_mut();
+                if *list != ids {
+                    *list = ids.clone();
+                    self.random_picked.borrow_mut().clear();
+                }
+                let mut picked = self.random_picked.borrow_mut();
+                if picked.len() >= ids.len() {
+                    picked.clear();
+                }
+                let remaining: Vec<CrGuid> = ids
+                    .iter()
+                    .filter(|id| !picked.contains(id))
+                    .copied()
+                    .collect();
+                // `new Random().Next(0, remaining)` — the C# uses an
+                // unseeded Random; a time-seeded one matches the
+                // behavior class.
+                let seed = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.subsec_nanos() as i32)
+                    .unwrap_or(0);
+                let choice =
+                    remaining[cr_engine::sort::DotNetRandom::new(seed).next(remaining.len())];
+                picked.push(choice);
+                choice
+            };
+            Some(reset)
+        } else {
+            let idx = pos as i32 + relative;
+            if idx >= 0 && (idx as usize) < ids.len() {
+                Some(ids[idx as usize])
+            } else {
+                None
+            }
+        };
+        if let Some(id) = next {
+            if let Some(path) = library::book_path(&id) {
+                self.open_comic(Path::new(&path));
+            }
+        }
+    }
+
+    /// Walks the list browsing history (Previous/Next List).
+    fn browse_history(&self, dir: i32) {
+        let next = self.list_history_pos.get() as i64 + dir as i64;
+        let id = {
+            let h = self.list_history.borrow();
+            if next < 0 || next as usize >= h.len() {
+                return;
+            }
+            h[next as usize]
+        };
+        self.list_history_pos.set(next as usize);
+        self.navigator.select_list(&id);
+        self.sync_enabled();
+    }
+
+    /// `ShowInfo` (Ctrl+I): the editor over the selection — the bulk
+    /// editor for several books (`MultipleComicBooksDialog`), the
+    /// book editor otherwise.
+    fn show_info(self: &Rc<ShellState>) {
+        let ids = self.item_view.selection_ids();
+        if ids.is_empty() {
+            return;
+        }
+        let books = Self::books_by_ids(&ids);
+        if books.is_empty() {
+            return;
+        }
+        if books.len() > 1 {
+            self.open_bulk_editor(books);
+        } else {
+            self.open_editor(books);
+        }
+    }
+
+    fn books_by_ids(ids: &[CrGuid]) -> Vec<ComicBook> {
+        let lib = library::session();
+        let l = lib.borrow();
+        l.database()
+            .books
+            .iter()
+            .filter(|b| ids.contains(&b.id))
+            .cloned()
+            .collect()
+    }
+
+    /// The editor commit: `apply_edited` (the library replace + the
+    /// dirty mark + the debounced file write) and a grid refresh.
+    fn editor_commit(self: &Rc<ShellState>) -> crate::dialogs::book_editor::CommitFn {
+        let state = Rc::downgrade(self);
+        Rc::new(move |edited| {
+            library::apply_edited(edited);
+            if let Some(sh) = state.upgrade() {
+                sh.refresh_view_from_list();
+            }
+        })
+    }
+
+    fn open_editor(self: &Rc<ShellState>, books: Vec<ComicBook>) {
+        let commit = self.editor_commit();
+        crate::dialogs::book_editor::show(&self.window, books, commit);
+    }
+
+    fn open_bulk_editor(self: &Rc<ShellState>, books: Vec<ComicBook>) {
+        let commit = self.editor_commit();
+        crate::dialogs::bulk_edit::show(&self.window, books, commit);
+    }
+
+    /// `SetRating(n)` over the selection (the My Rating menu).
+    fn set_rating(&self, rating: f32) {
+        let ids = self.item_view.selection_ids();
+        if ids.is_empty() {
+            return;
+        }
+        for mut book in Self::books_by_ids(&ids) {
+            book.rating = rating;
+            library::apply_edited(&book);
+        }
+        self.refresh_view_from_list();
+    }
+
+    /// `RefreshDisplay` (F5): the tree re-fills and the current list
+    /// re-evaluates.
+    fn refresh_view(&self) {
+        self.navigator.refill(&library::comic_lists_snapshot());
+        self.refresh_view_from_list();
+    }
+
+    /// The Preferences dialog (shared by the header button and the
+    /// action): a modal settings clone committed on OK; the open
+    /// reader views and the QuickOpen grid re-apply.
+    fn show_preferences(self: &Rc<ShellState>) {
+        let window = self.window.clone();
+        let state = Rc::downgrade(self);
+        crate::settings::preferences::show_preferences(&window, move || {
+            if let Some(sh) = state.upgrade() {
+                sh.reader.apply_settings_to_open_views();
+                let size = cr_ui_settings().borrow().quick_open_thumbnail_size as f64;
+                sh.quick_view.configure(|c| c.thumb_height = size);
+            }
+        });
+    }
+
+    /// `ToggleBrowser`: the browser and reader pages flip; without a
+    /// book the browser/QuickOpen stays.
+    fn toggle_browser(&self) {
+        let visible = self
+            .stack
+            .visible_child_name()
+            .map(|s| s.to_string())
+            .unwrap_or_default();
+        match visible.as_str() {
+            "reader" => self.show_browser(),
+            "browser" | "quickopen" if !self.reader.is_empty() => {
+                self.stack.set_visible_child_name("reader");
+            }
+            _ => {}
+        }
+    }
+
+    /// The shell command registry (`CommandMapper` parity): every
+    /// command a `win.` action, accelerators on the application.
+    /// Stub actions stay DISABLED until their feature lands — the
+    /// task that lands each one is noted.
+    fn install_commands(self: &Rc<ShellState>) {
+        let group = gio::SimpleActionGroup::new();
+        let state = Rc::downgrade(self);
+
+        // --- Existing view commands (Phase 4) ---
         let mode_action = gio::SimpleAction::new_stateful(
             "view-mode",
             Some(glib::VariantTy::STRING),
@@ -669,7 +1023,8 @@ impl BrowserShell {
                 action.set_state(&name.to_variant());
             });
         }
-        actions.add_action(&mode_action);
+        group.add_action(&mode_action);
+        self.actions.borrow_mut().insert("view-mode", mode_action);
 
         // thumb-size: grow / shrink (the C# Ctrl+wheel steps 16).
         for (name, delta) in [("thumb-bigger", THUMB_STEP), ("thumb-smaller", -THUMB_STEP)] {
@@ -682,7 +1037,7 @@ impl BrowserShell {
                     sh.item_view.configure(|c| c.thumb_height = next);
                 }
             });
-            actions.add_action(&action);
+            group.add_action(&action);
         }
 
         // sort-column (string parameter = the property name).
@@ -697,7 +1052,7 @@ impl BrowserShell {
                 }
             });
         }
-        actions.add_action(&sort_action);
+        group.add_action(&sort_action);
 
         // sort-direction toggle.
         let dir_action = gio::SimpleAction::new("sort-direction", None);
@@ -709,7 +1064,7 @@ impl BrowserShell {
                 }
             });
         }
-        actions.add_action(&dir_action);
+        group.add_action(&dir_action);
 
         // group-by (string parameter; "" = none).
         let group_action = gio::SimpleAction::new("group-by", Some(glib::VariantTy::STRING));
@@ -730,20 +1085,414 @@ impl BrowserShell {
                 }
             });
         }
-        actions.add_action(&group_action);
+        group.add_action(&group_action);
 
-        self.window.insert_action_group("win", Some(&actions));
+        // --- File ---
+        self.add_simple(&group, "open-file", |sh| {
+            let window = sh.window.clone();
+            let state = Rc::downgrade(sh);
+            open_file_dialog(&window, move |path| {
+                if let Some(sh) = state.upgrade() {
+                    sh.open_comic(Path::new(&path));
+                }
+            });
+        });
+        self.add_simple(&group, "close", |sh| sh.reader.close_current_tab());
+        self.add_simple(&group, "close-all", |sh| sh.reader.close_all_tabs());
+        // `OpenBooks.AddSlot`: the empty slot shows QuickOpen.
+        self.add_simple(&group, "new-tab", |sh| sh.show_quick_open());
+        self.add_simple(&group, "add-folder", |sh| {
+            let window = sh.window.clone();
+            crate::app::add_folder_dialog(&window);
+            let state = Rc::downgrade(sh);
+            glib::timeout_add_local(std::time::Duration::from_millis(500), move || {
+                if let Some(sh) = state.upgrade() {
+                    sh.navigator.refill(&library::comic_lists_snapshot());
+                }
+                glib::ControlFlow::Break
+            });
+        });
+        self.add_simple(&group, "scan-folders", |_sh| {
+            // `StartFullScan`: re-scan every watch-folder root (the
+            // C# `QueueManager.StartScan(all,
+            // RemoveMissingFilesOnFullScan)`; the remove-missing flag
+            // is not ported — scans flag, never delete).
+            let roots: Vec<String> = {
+                let lib = library::session();
+                let l = lib.borrow();
+                l.database()
+                    .watch_folders
+                    .iter()
+                    .map(|w| w.folder.clone())
+                    .collect()
+            };
+            for root in roots {
+                if root.is_empty() {
+                    continue;
+                }
+                library::add_folder_to_library(Path::new(&root), |_| {});
+            }
+        });
+        self.add_simple(&group, "update-book-files", |_| {
+            library::update_all_book_files();
+        });
+        // tasks — T13 lands the Tasks dialog.
+        self.add_disabled(&group, "tasks");
+        // new-book-entry — fileless books are unported.
+        self.add_disabled(&group, "new-book-entry");
+        self.add_simple(&group, "restart", |sh| {
+            // `MenuRestart`: save, then re-launch the binary (the C#
+            // `Program.Restart` + `Application.Restart`).
+            if let Err(err) = library::save() {
+                eprintln!("library save failed: {err}");
+            }
+            library::save_settings();
+            if let Ok(exe) = std::env::current_exe() {
+                let _ = std::process::Command::new(exe).spawn();
+            }
+            sh.app.quit();
+        });
+        self.add_simple(&group, "quit", |sh| sh.window.close());
+
+        // --- Edit ---
+        self.add_simple(&group, "info", ShellState::show_info);
+        for (n, name) in [
+            (0u32, "rating-0"),
+            (1, "rating-1"),
+            (2, "rating-2"),
+            (3, "rating-3"),
+            (4, "rating-4"),
+            (5, "rating-5"),
+        ] {
+            let action = gio::SimpleAction::new(name, None);
+            let state = state.clone();
+            action.connect_activate(move |_, _| {
+                if let Some(sh) = state.upgrade() {
+                    sh.set_rating(n as f32);
+                }
+            });
+            group.add_action(&action);
+        }
+        // quick-rating — T13 lands the dialog.
+        self.add_disabled(&group, "quick-rating");
+        // set/remove-bookmark — the bookmark editor is unported.
+        self.add_disabled(&group, "set-bookmark");
+        self.add_disabled(&group, "remove-bookmark");
+        self.add_simple(&group, "prev-bookmark", |sh| {
+            sh.reader.dispatch_current("MoveToPrevBookmark")
+        });
+        self.add_simple(&group, "next-bookmark", |sh| {
+            sh.reader.dispatch_current("MoveToNextBookmark")
+        });
+        self.add_simple(&group, "last-page-read", |sh| {
+            // `ComicDisplay.DisplayLastPageRead`.
+            if let Some(book) = sh.reader.current_comic_book() {
+                let page = book.last_page_read.max(0) as usize;
+                sh.reader.navigate_current(page);
+            }
+        });
+        // copy-page / export-page — the clipboard path is unported.
+        self.add_disabled(&group, "copy-page");
+        self.add_disabled(&group, "export-page");
+        self.add_simple(&group, "refresh", |sh| sh.refresh_view());
+        self.add_simple(&group, "preferences", ShellState::show_preferences);
+
+        // --- Browse ---
+        self.add_simple(&group, "toggle-browser", |sh| sh.toggle_browser());
+        self.add_simple(&group, "view-library", |sh| {
+            sh.show_browser();
+            sh.panel_stack.set_visible_child_name("library");
+        });
+        self.add_simple(&group, "view-pages", |sh| {
+            sh.show_browser();
+            sh.panel_stack.set_visible_child_name("pages");
+        });
+        {
+            let sidebar = gio::SimpleAction::new_stateful("sidebar", None, &true.to_variant());
+            let state = state.clone();
+            sidebar.connect_activate(move |action, _| {
+                let Some(sh) = state.upgrade() else {
+                    return;
+                };
+                let visible = !sh.panel_box.is_visible();
+                sh.panel_box.set_visible(visible);
+                action.set_state(&visible.to_variant());
+            });
+            group.add_action(&sidebar);
+            self.actions.borrow_mut().insert("sidebar", sidebar);
+        }
+        // small-preview — T11 lands the pane.
+        self.add_disabled(&group, "small-preview");
+        self.add_simple(&group, "prev-list", |sh| sh.browse_history(-1));
+        self.add_simple(&group, "next-list", |sh| sh.browse_history(1));
+
+        // --- Read ---
+        self.add_simple(&group, "first-page", |sh| {
+            sh.reader.dispatch_current("MoveToFirstPage")
+        });
+        self.add_simple(&group, "prev-page", |sh| {
+            sh.reader.dispatch_current("MoveToPreviousPage")
+        });
+        self.add_simple(&group, "next-page", |sh| {
+            sh.reader.dispatch_current("MoveToNextPage")
+        });
+        self.add_simple(&group, "last-page", |sh| {
+            sh.reader.dispatch_current("MoveToLastPage")
+        });
+        self.add_simple(&group, "prev-book", |sh| sh.open_next_book(-1));
+        self.add_simple(&group, "next-book", |sh| sh.open_next_book(1));
+        self.add_simple(&group, "random-book", |sh| sh.open_next_book(0));
+        self.add_simple(&group, "show-in-browser", |sh| {
+            // `SyncBrowser`: reveal the browser, select the open book.
+            if let Some(book) = sh.reader.current_comic_book() {
+                sh.show_browser();
+                sh.item_view.select_book(&book.id);
+            }
+        });
+        self.add_simple(&group, "prev-tab", |sh| {
+            sh.reader.dispatch_current("PrevTab")
+        });
+        self.add_simple(&group, "next-tab", |sh| {
+            sh.reader.dispatch_current("NextTab")
+        });
+        self.add_simple(&group, "auto-scroll", |sh| {
+            sh.reader.dispatch_current("ToggleAutoScrolling")
+        });
+        self.add_simple(&group, "double-auto-scroll", |sh| {
+            sh.reader.dispatch_current("DoublePageAutoScroll")
+        });
+        {
+            let track = gio::SimpleAction::new_stateful(
+                "track-current-page",
+                None,
+                &cr_ui_settings().borrow().track_current_page.to_variant(),
+            );
+            track.connect_activate(move |action, _| {
+                let next = !cr_ui_settings().borrow().track_current_page;
+                cr_ui_settings().borrow_mut().track_current_page = next;
+                action.set_state(&next.to_variant());
+            });
+            group.add_action(&track);
+        }
+
+        // --- Display ---
+        // display-settings — T12 lands the dialog.
+        self.add_disabled(&group, "display-settings");
+        let fit_action = gio::SimpleAction::new_stateful(
+            "page-fit",
+            Some(glib::VariantTy::STRING),
+            &"fit-all".to_variant(),
+        );
+        {
+            let state = state.clone();
+            fit_action.connect_activate(move |_, value| {
+                let Some(sh) = state.upgrade() else {
+                    return;
+                };
+                let name = value.and_then(|v| v.get::<String>()).unwrap_or_default();
+                let id = match name.as_str() {
+                    "original" => "Original",
+                    "fit-all" => "FitAll",
+                    "fit-width" => "FitWidth",
+                    "fit-width-adaptive" => "FitWidthAdaptive",
+                    "fit-height" => "FitHeight",
+                    "fit-best" => "FitBest",
+                    _ => return,
+                };
+                sh.reader.dispatch_current(id);
+                sh.sync_enabled();
+            });
+        }
+        group.add_action(&fit_action);
+        self.actions.borrow_mut().insert("page-fit", fit_action);
+
+        let layout_action = gio::SimpleAction::new_stateful(
+            "page-layout",
+            Some(glib::VariantTy::STRING),
+            &"single".to_variant(),
+        );
+        {
+            let state = state.clone();
+            layout_action.connect_activate(move |_, value| {
+                let Some(sh) = state.upgrade() else {
+                    return;
+                };
+                let name = value.and_then(|v| v.get::<String>()).unwrap_or_default();
+                let id = match name.as_str() {
+                    "single" => "SinglePage",
+                    "double" => "TwoPages",
+                    "double-adaptive" => "TwoPagesAdaptive",
+                    "continuous" => "Continuous",
+                    _ => return,
+                };
+                sh.reader.dispatch_current(id);
+                sh.sync_enabled();
+            });
+        }
+        group.add_action(&layout_action);
+        self.actions
+            .borrow_mut()
+            .insert("page-layout", layout_action);
+
+        let rtl_action =
+            gio::SimpleAction::new_stateful("right-to-left", None, &false.to_variant());
+        {
+            let state = state.clone();
+            rtl_action.connect_activate(move |_, _| {
+                if let Some(sh) = state.upgrade() {
+                    sh.reader.dispatch_current("RightToLeft");
+                    sh.sync_enabled();
+                }
+            });
+        }
+        group.add_action(&rtl_action);
+        self.actions
+            .borrow_mut()
+            .insert("right-to-left", rtl_action);
+
+        let oversized =
+            gio::SimpleAction::new_stateful("only-fit-oversized", None, &false.to_variant());
+        {
+            let state = state.clone();
+            oversized.connect_activate(move |_, _| {
+                if let Some(sh) = state.upgrade() {
+                    sh.reader.dispatch_current("OnlyFitIfOversized");
+                    sh.sync_enabled();
+                }
+            });
+        }
+        group.add_action(&oversized);
+
+        self.add_simple(&group, "zoom-in", |sh| sh.reader.dispatch_current("ZoomIn"));
+        self.add_simple(&group, "zoom-out", |sh| {
+            sh.reader.dispatch_current("ZoomOut")
+        });
+        // zoom-custom — T13 lands the dialog.
+        self.add_disabled(&group, "zoom-custom");
+        self.add_simple(&group, "rotate-left", |sh| {
+            sh.reader.dispatch_current("RotateCC")
+        });
+        self.add_simple(&group, "rotate-right", |sh| {
+            sh.reader.dispatch_current("RotateC")
+        });
+        self.add_simple(&group, "rotate-0", |sh| {
+            sh.reader.dispatch_current("Rotate0")
+        });
+        self.add_simple(&group, "rotate-90", |sh| {
+            sh.reader.dispatch_current("Rotate90")
+        });
+        self.add_simple(&group, "rotate-180", |sh| {
+            sh.reader.dispatch_current("Rotate180")
+        });
+        self.add_simple(&group, "rotate-270", |sh| {
+            sh.reader.dispatch_current("Rotate270")
+        });
+        {
+            let auto = gio::SimpleAction::new_stateful("auto-rotate", None, &false.to_variant());
+            let state = state.clone();
+            auto.connect_activate(move |action, _| {
+                if let Some(sh) = state.upgrade() {
+                    sh.reader.dispatch_current("AutoRotate");
+                    let current = action
+                        .state()
+                        .and_then(|v| v.get::<bool>())
+                        .unwrap_or(false);
+                    action.set_state(&(!current).to_variant());
+                }
+            });
+            group.add_action(&auto);
+        }
+        self.add_simple(&group, "minimal-gui", |sh| {
+            sh.reader.dispatch_current("ToggleMenu")
+        });
+        self.add_simple(&group, "full-screen", |sh| {
+            sh.reader.dispatch_current("ToggleFullScreen")
+        });
+        self.add_simple(&group, "undock-reader", |sh| {
+            sh.reader.dispatch_current("ToggleUndockReader")
+        });
+        self.add_simple(&group, "magnifier", |sh| {
+            sh.reader.dispatch_current("ToggleMagnify")
+        });
+
+        // --- Help ---
+        // about — T13 lands the About dialog.
+        self.add_disabled(&group, "about");
+
+        // --- The mainKeys shell commands ---
+        self.add_simple(&group, "focus-search", |sh| {
+            sh.search.grab_focus();
+        });
+        // toggle-navigator-search — T7 lands the navigator search box.
+        self.add_disabled(&group, "toggle-navigator-search");
+
+        self.window.insert_action_group("win", Some(&group));
+        ShellState::register_accels(&self.app);
+        self.sync_enabled();
     }
 
-    /// Opens a comic into the docked reader (the app's `open_reader`
-    /// path).
-    pub fn open_comic(&self, path: &Path) {
-        self.state.open_comic(path);
+    /// A stub action that stays disabled until its feature task
+    /// lands (the name is the note).
+    fn add_disabled(&self, group: &gio::SimpleActionGroup, name: &'static str) {
+        let action = gio::SimpleAction::new(name, None);
+        action.set_enabled(false);
+        group.add_action(&action);
+        self.actions.borrow_mut().insert(name, action);
     }
 
-    pub fn present(&self) {
-        self.window.present();
+    /// The accelerator registration (`gtk_application_set_accels_for_
+    /// action`); the radio values ride detailed action names.
+    fn register_accels(app: &Application) {
+        for command in crate::commands::COMMANDS {
+            if !command.accels.is_empty() {
+                app.set_accels_for_action(&format!("win.{}", command.action), command.accels);
+            }
+        }
+        for (value, accel) in crate::commands::FIT_MODES {
+            if !accel.is_empty() {
+                app.set_accels_for_action(&format!("win.page-fit::{value}"), &[*accel]);
+            }
+        }
+        for (value, accel) in crate::commands::LAYOUT_MODES {
+            if !accel.is_empty() {
+                app.set_accels_for_action(&format!("win.page-layout::{value}"), &[*accel]);
+            }
+        }
     }
+}
+
+/// `ImageFitMode` → the `win.page-fit` state name.
+fn fit_action_name(mode: ImageFitMode) -> &'static str {
+    match mode {
+        ImageFitMode::Original => "original",
+        ImageFitMode::Fit => "fit-all",
+        ImageFitMode::FitWidth => "fit-width",
+        ImageFitMode::FitWidthAdaptive => "fit-width-adaptive",
+        ImageFitMode::FitHeight => "fit-height",
+        ImageFitMode::BestFit => "fit-best",
+    }
+}
+
+/// `PageLayoutMode` → the `win.page-layout` state name.
+fn layout_action_name(mode: PageLayoutMode) -> &'static str {
+    match mode {
+        PageLayoutMode::Single => "single",
+        PageLayoutMode::Double => "double",
+        PageLayoutMode::DoubleAdaptive => "double-adaptive",
+        PageLayoutMode::Continuous => "continuous",
+    }
+}
+
+/// The selection ids plus the right-clicked row when it is outside
+/// the selection (the context-menu targeting rule).
+fn selection_ids_with_target(sh: &ShellState, target: Option<CrGuid>) -> Vec<CrGuid> {
+    let mut ids = sh.item_view.selection_ids();
+    if let Some(id) = target {
+        if !ids.contains(&id) {
+            ids.push(id);
+        }
+    }
+    ids
 }
 
 fn show_context_menu(state: &std::rc::Weak<ShellState>, target: Option<CrGuid>, x: f64, y: f64) {
@@ -790,47 +1539,15 @@ fn show_context_menu(state: &std::rc::Weak<ShellState>, target: Option<CrGuid>, 
                 "edit" => {
                     // The bulk editor over the selection (the C#
                     // `MultipleComicBooksDialog`).
-                    let selection = sh.item_view.view_state().selection_snapshot();
-                    let mut ids: Vec<CrGuid> = selection.into_iter().collect();
-                    if let Some(id) = target {
-                        if !ids.contains(&id) {
-                            ids.push(id);
-                        }
-                    }
+                    let ids = selection_ids_with_target(&sh, target);
                     if ids.is_empty() {
                         return;
                     }
-                    let books: Vec<cr_core::model::comic_book::ComicBook> = {
-                        let lib = library::session();
-                        let l = lib.borrow();
-                        l.database()
-                            .books
-                            .iter()
-                            .filter(|b| ids.contains(&b.id))
-                            .cloned()
-                            .collect()
-                    };
+                    let books = ShellState::books_by_ids(&ids);
                     if books.is_empty() {
                         return;
                     }
-                    // The grid shows the edited values on commit (the
-                    // "remove" command pattern; the single editor
-                    // path refreshes per save point too).
-                    {
-                        let commit_state = state.clone();
-                        let commit_refresh = Rc::new(move || {
-                            if let Some(sh) = commit_state.upgrade() {
-                                sh.refresh_view_from_list();
-                            }
-                        }) as Rc<dyn Fn()>;
-                        let commit: crate::dialogs::book_editor::CommitFn =
-                            Rc::new(move |edited| {
-                                library::apply_edited(edited);
-                                commit_refresh();
-                            });
-                        let window2 = window.clone();
-                        crate::dialogs::bulk_edit::show(&window2, books, commit);
-                    }
+                    sh.open_bulk_editor(books);
                 }
                 "update-file" => {
                     // The manual write (the C# `AddBookToFileUpdate(cb,
@@ -975,44 +1692,16 @@ fn show_context_menu(state: &std::rc::Weak<ShellState>, target: Option<CrGuid>, 
                     // The selection (plus the right-clicked row when
                     // it is outside it) — the C# opens the dialog
                     // over the selected books (prev/next when > 1).
-                    let selection = sh.item_view.view_state().selection_snapshot();
-                    let mut ids: Vec<CrGuid> = selection.into_iter().collect();
-                    if let Some(id) = target {
-                        if !ids.contains(&id) {
-                            ids.push(id);
-                        }
-                    }
+                    let ids = selection_ids_with_target(&sh, target);
                     if ids.is_empty() {
                         return;
                     }
                     // List order for the prev/next walk.
-                    let books: Vec<cr_core::model::comic_book::ComicBook> = {
-                        let lib = library::session();
-                        let l = lib.borrow();
-                        l.database()
-                            .books
-                            .iter()
-                            .filter(|b| ids.contains(&b.id))
-                            .cloned()
-                            .collect()
-                    };
+                    let books = ShellState::books_by_ids(&ids);
                     if books.is_empty() {
                         return;
                     }
-                    let commit: crate::dialogs::book_editor::CommitFn = Rc::new(|edited| {
-                        let lib = library::session();
-                        let mut l = lib.borrow_mut();
-                        if let Some(book) = l
-                            .database_mut()
-                            .books
-                            .iter_mut()
-                            .find(|b| b.id == edited.id)
-                        {
-                            *book = edited.clone();
-                            l.mark_dirty();
-                        }
-                    });
-                    crate::dialogs::book_editor::show(&window, books, commit);
+                    sh.open_editor(books);
                 }
                 _ => {}
             }

@@ -270,6 +270,13 @@ impl Navigator {
         }
     }
 
+    /// Selects a list row by item id (the shell's Previous/Next
+    /// List history walk — the WinForms `SelectedNode` path:
+    /// ancestors expand first).
+    pub fn select_list(&self, id: &CrGuid) {
+        self.select_by_id(id);
+    }
+
     /// Depth-first row search by the id column text.
     fn find_iter(&self, start: Option<&TreeIter>, id_text: &str) -> Option<TreeIter> {
         let mut iter = *start?;
