@@ -377,11 +377,12 @@ pub fn new_smart_list(after: Option<&CrGuid>, name: &str, query: &str) -> Result
 }
 
 /// `NewFolder` — created in the selection's container.
-pub fn new_folder(after: Option<&CrGuid>, name: &str) {
+pub fn new_folder(after: Option<&CrGuid>, name: &str) -> CrGuid {
+    let id = CrGuid::new_random();
     let item = cr_core::database::list_items::ComicListItem::Folder(
         cr_core::database::list_items::FolderItem {
             base: cr_core::database::list_items::ListItemBase {
-                id: CrGuid::new_random(),
+                id,
                 name: Some(name.to_string()),
                 ..Default::default()
             },
@@ -389,6 +390,7 @@ pub fn new_folder(after: Option<&CrGuid>, name: &str) {
         },
     );
     insert_list_item(after, item);
+    id
 }
 
 /// Rename (the C# `AfterLabelEdit` → `comicListItem.Name = label`).
@@ -822,4 +824,86 @@ pub fn smart_list_base_options(edit_id: &CrGuid) -> Vec<(CrGuid, String)> {
     }
     walk(&l.database().comic_lists, edit_id, &mut out, &lib);
     out
+}
+
+/// `NewList`: inserts an empty reading list (the `ComicIdListItem`).
+/// Returns the new id.
+pub fn new_id_list(after: Option<&CrGuid>, name: &str) -> CrGuid {
+    let id = CrGuid::new_random();
+    let item = cr_core::database::list_items::ComicListItem::IdList(
+        cr_core::database::list_items::IdListItem {
+            base: cr_core::database::list_items::ListItemBase {
+                id,
+                name: Some(name.to_string()),
+                ..Default::default()
+            },
+            book_ids: Vec::new(),
+        },
+    );
+    insert_list_item(after, item);
+    id
+}
+
+/// `EditListDialog.Edit` result for one item: the fields the dialog
+/// edits (the rest of the item stays).
+pub struct ListEditFields {
+    pub name: String,
+    pub description: String,
+    pub quick_open: bool,
+    pub combine_mode: Option<cr_core::model::enums::ComicFolderCombineMode>,
+}
+
+/// Applies [`ListEditFields`] to a folder or reading list (the C#
+/// `EditListDialog.Edit` write-back; `SetList` parity for the base
+/// fields). Returns false when the id is not a folder/id list.
+pub fn update_list_fields(id: &CrGuid, fields: &ListEditFields) -> bool {
+    let lib = session();
+    let mut l = lib.borrow_mut();
+    fn apply(
+        items: &mut [cr_core::database::list_items::ComicListItem],
+        id: &CrGuid,
+        f: &ListEditFields,
+    ) -> bool {
+        for i in items.iter_mut() {
+            match i {
+                cr_core::database::list_items::ComicListItem::Folder(folder)
+                    if folder.base.id == *id =>
+                {
+                    folder.base.name = Some(f.name.clone());
+                    folder.base.description = f.description.clone();
+                    if let Some(mode) = f.combine_mode {
+                        folder.combine_mode = mode;
+                    }
+                    return true;
+                }
+                cr_core::database::list_items::ComicListItem::IdList(list)
+                    if list.base.id == *id =>
+                {
+                    list.base.name = Some(f.name.clone());
+                    list.base.description = f.description.clone();
+                    list.base.quick_open = f.quick_open;
+                    return true;
+                }
+                cr_core::database::list_items::ComicListItem::Folder(folder) => {
+                    if apply(&mut folder.items, id, f) {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+    let changed = apply(&mut l.database_mut().comic_lists, id, fields);
+    if changed {
+        l.mark_dirty();
+    }
+    changed
+}
+
+/// The item clone for ANY kind (the editor routing reads it).
+pub fn find_list_item_any(id: &CrGuid) -> Option<cr_core::database::list_items::ComicListItem> {
+    let lib = session();
+    let l = lib.borrow();
+    cr_engine::lists::find_list_item(&l.database().comic_lists, id)
 }

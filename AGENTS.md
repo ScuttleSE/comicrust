@@ -52,11 +52,12 @@ Update this section at the **end of every work session**. The next agent must kn
 ### State summary
 
 - **Phase:** 5 (the dialogs) — T1 COMPLETE, T2 COMPLETE (both
-  user-tested). T3 (the smart-list editor) checkpoint 1
-  IMPLEMENTED (2026-09-04), user test pending: the visual
-  designer + the query tab. **Next: run the T3 user test; then
-  the reading-list editor (T3 tail).** Phases 0-4 are complete
-  (their gates stay green).
+  user-tested). T3 (the smart-list editor) checkpoint 1 COMPLETE
+  (user-tested, 2026-09-04 — one fix round: the re-entrant close
+  response + the query-text clearing; the record lives in
+  `docs/phase-5-kickoff.md`). **Next: the T3 tail (the
+  reading-list editor + the folder EditListDialog).** Phases 0-4
+  are complete (their gates stay green).
   Phase 1 gaps that remain open: WebComicProvider and the PDF/DjVu
   writers (tracked in `docs/phase-1-kickoff.md`). The Phase 0 exit
   review can close with the T1 wrap-up (the settings port it

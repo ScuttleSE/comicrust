@@ -359,8 +359,25 @@ by the build result.
       (`SetList` parity: id/position/book counts/cache stay).
       `EditListDialog` for folders stays the bare name prompt
       (deferred with the reading lists).
-- [ ] The reading-list editor (`ListEditorDialog`) — orderable book
-      lists (the `IdListItem` model). NEXT.
+- [x] The reading-list editor + the folder `EditListDialog`.
+      DONE: `cr-ui/src/dialogs/list_editor.rs` (the `EditListDialog`
+      port — the C# routes FOLDERS and READING LISTS through it from
+      the one `miEditSmartList` menu item; `ListEditorDialog` in the
+      C# is an unrelated workspaces editor). Folders: name/notes +
+      the combine mode ("All Books from every list" / "Only Books
+      existing in every list" / "Empty list"); reading lists:
+      name/notes + QuickOpen. The navigator gains "New List…"
+      (dialog-first, then the insert — the C# `NewList`; a cancelled
+      fresh insert pops) and New Folder/Edit route through the
+      dialog (`library::{new_id_list, new_folder -> id,
+      update_list_fields}` with the `SetList`-style base-field
+      preservation); Rename routes through Edit (the C# has no
+      separate rename). Headless probe: the full New Folder flow —
+      dialog renders (Name/Notes/Combine), the typed name lands in
+      the tree after OK. The done-Cell re-entrancy guard applies
+      here too. The reading list's BOOK management (the orderable
+      drag-in list) is the browser's "add to reading list" flow —
+      Phase 6/7 polish with the drag-drop work.
 Headless proof: the app probe seeds a fresh DB, right-clicks the
 navigator, New Smart List… opens the editor with the head fields
 (the Base List combo showing Library, the limit row disabled).

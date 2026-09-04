@@ -2,4 +2,5 @@
 
 pub mod book_editor;
 pub mod bulk_edit;
+pub mod list_editor;
 pub mod smart_list;

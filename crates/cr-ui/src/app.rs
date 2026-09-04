@@ -156,26 +156,96 @@ fn run_list_command(
                 Err(err) => show_attention_dialog(parent, &err),
             }
         }
-        ListCommand::EditSmartList => {
-            if let Some(id) = target {
-                if library::find_smart_list(&id).is_some() {
+        ListCommand::Edit => {
+            // The C# `EditSmartListItem`/`EditListDialog.Edit`
+            // routing: smart lists → the smart-list editor, folders
+            // and reading lists → the list editor.
+            let Some(id) = target else {
+                return;
+            };
+            let lib = library::session();
+            let l = lib.borrow();
+            let item = cr_engine::lists::find_list_item(&l.database().comic_lists, &id);
+            drop(l);
+            match item {
+                Some(cr_core::database::list_items::ComicListItem::Smart(_)) => {
                     run_smart_list_editor(parent, nav, Some(id));
                 }
+                Some(cr_core::database::list_items::ComicListItem::Folder(f)) => {
+                    run_list_editor(
+                        parent,
+                        nav,
+                        crate::dialogs::list_editor::ListKind::Folder,
+                        &id,
+                        f.base.name.as_deref().unwrap_or(""),
+                        f.base.description.as_str(),
+                        f.base.quick_open,
+                        f.combine_mode,
+                    );
+                }
+                Some(cr_core::database::list_items::ComicListItem::IdList(list)) => {
+                    run_list_editor(
+                        parent,
+                        nav,
+                        crate::dialogs::list_editor::ListKind::ReadingList,
+                        &id,
+                        list.base.name.as_deref().unwrap_or(""),
+                        list.base.description.as_str(),
+                        list.base.quick_open,
+                        cr_core::model::enums::ComicFolderCombineMode::Or,
+                    );
+                }
+                _ => {}
             }
+        }
+        ListCommand::NewList => {
+            // The C# `NewList`: the dialog first, then the insert.
+            let id = library::new_id_list(target.as_ref(), "New List");
+            nav.refill(&library::comic_lists_snapshot());
+            let Some(cr_core::database::list_items::ComicListItem::IdList(item)) =
+                library::find_list_item_any(&id)
+            else {
+                return;
+            };
+            run_list_editor(
+                parent,
+                nav,
+                crate::dialogs::list_editor::ListKind::ReadingList,
+                &id,
+                item.base.name.as_deref().unwrap_or("New List"),
+                item.base.description.as_str(),
+                item.base.quick_open,
+                cr_core::model::enums::ComicFolderCombineMode::Or,
+            );
         }
         ListCommand::NewFolder => {
-            if let Some(name) = entry_dialog(parent, "New Folder", "Name", "New Folder") {
-                library::new_folder(target.as_ref(), &name);
-                nav.refill(&library::comic_lists_snapshot());
-            }
+            // The C# `NewFolder`: the dialog first, then the insert.
+            let id = library::new_folder(target.as_ref(), "New Folder");
+            nav.refill(&library::comic_lists_snapshot());
+            let Some(cr_core::database::list_items::ComicListItem::Folder(folder)) =
+                library::find_list_item_any(&id)
+            else {
+                return;
+            };
+            run_list_editor(
+                parent,
+                nav,
+                crate::dialogs::list_editor::ListKind::Folder,
+                &id,
+                folder.base.name.as_deref().unwrap_or("New Folder"),
+                folder.base.description.as_str(),
+                folder.base.quick_open,
+                folder.combine_mode,
+            );
         }
         ListCommand::Rename => {
-            if let Some(id) = target {
-                if let Some(name) = entry_dialog(parent, "Rename", "Name", "") {
-                    library::rename_list(&id, &name);
-                    nav.refill(&library::comic_lists_snapshot());
-                }
-            }
+            // Route through the editors (the C# has no separate
+            // rename: Edit carries the name).
+            let Some(id) = target else {
+                return;
+            };
+            let _ = id;
+            run_list_command(parent, nav, browser::navigator::ListCommand::Edit, target);
         }
         ListCommand::Delete => {
             if let Some(id) = target {
@@ -184,54 +254,6 @@ fn run_list_command(
             }
         }
     }
-}
-
-/// A one-field prompt. Returns the entered text, or `None` when the
-/// dialog was cancelled. (The C# inline label edit lands with the
-/// Phase 5 dialogs; this is the T2 stand-in.)
-fn entry_dialog(
-    parent: &ApplicationWindow,
-    title: &str,
-    label: &str,
-    initial: &str,
-) -> Option<String> {
-    let dialog = gtk4::Dialog::builder()
-        .title(title)
-        .transient_for(parent)
-        .modal(true)
-        .build();
-    dialog.add_button("Cancel", gtk4::ResponseType::Cancel);
-    dialog.add_button("OK", gtk4::ResponseType::Ok);
-    dialog.set_default_response(gtk4::ResponseType::Ok);
-    let content = dialog.content_area();
-    content.set_margin_top(12);
-    content.set_margin_bottom(12);
-    content.set_margin_start(12);
-    content.set_margin_end(12);
-    content.set_spacing(6);
-    let label = gtk4::Label::with_mnemonic(label);
-    content.append(&label);
-    let entry = gtk4::Entry::new();
-    entry.set_text(initial);
-    entry.set_activates_default(true);
-    content.append(&entry);
-    // The response closure cannot return out — park the result in a
-    // cell the wait loop reads back.
-    let result: Rc<RefCell<Option<String>>> = Rc::new(RefCell::new(None));
-    let r = result.clone();
-    dialog.connect_response(move |d, response| {
-        if response == gtk4::ResponseType::Ok {
-            *r.borrow_mut() = Some(entry.text().into());
-        }
-        d.destroy();
-    });
-    dialog.show();
-    // Nested iteration until the dialog closes (a modal prompt).
-    while dialog.is_visible() {
-        glib::MainContext::default().iteration(true);
-    }
-    let out = result.borrow().clone();
-    out
 }
 
 pub fn open_file_dialog(parent: &impl IsA<Window>) {
@@ -421,4 +443,52 @@ fn run_smart_list_editor(
         },
     );
     let _ = window2;
+}
+
+/// The list editor flow for folders and reading lists (the C#
+/// `EditListDialog.Edit`): OK applies the fields, Cancel discards
+/// (a fresh uncommitted insert with the default name is removed).
+#[allow(clippy::too_many_arguments)]
+fn run_list_editor(
+    parent: &ApplicationWindow,
+    nav: &Rc<browser::navigator::Navigator>,
+    kind: crate::dialogs::list_editor::ListKind,
+    id: &CrGuid,
+    name: &str,
+    description: &str,
+    quick_open: bool,
+    combine_mode: cr_core::model::enums::ComicFolderCombineMode,
+) {
+    let nav2 = Rc::clone(nav);
+    let id = *id;
+    let name = name.to_string();
+    let description = description.to_string();
+    // A fresh reading list the user cancels: pop it (computed before
+    // the move into the closure).
+    let fresh_insert =
+        kind == crate::dialogs::list_editor::ListKind::ReadingList && name == "New List";
+    crate::dialogs::list_editor::show_list_editor(
+        parent,
+        kind,
+        &name,
+        &description,
+        quick_open,
+        combine_mode,
+        move |result| {
+            if let Some(result) = result {
+                library::update_list_fields(
+                    &id,
+                    &library::ListEditFields {
+                        name: result.name,
+                        description: result.description,
+                        quick_open: result.quick_open,
+                        combine_mode: result.combine_mode,
+                    },
+                );
+            } else if fresh_insert {
+                library::remove_list(&id);
+            }
+            nav2.refill(&library::comic_lists_snapshot());
+        },
+    );
 }

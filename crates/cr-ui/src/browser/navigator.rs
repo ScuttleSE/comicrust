@@ -42,7 +42,8 @@ const COL_ID_I: i32 = COL_ID as i32;
 #[derive(Clone, Copy, Debug)]
 pub enum ListCommand {
     NewSmartList,
-    EditSmartList,
+    NewList,
+    Edit,
     NewFolder,
     Rename,
     Delete,
@@ -364,9 +365,10 @@ impl Navigator {
             box_.append(&button);
         };
         add_item(&box_, "New Smart List…", ListCommand::NewSmartList);
-        // `miEditSmartList`: only meaningful on a smart list (the
-        // command handler checks the target kind).
-        add_item(&box_, "Edit Smart List…", ListCommand::EditSmartList);
+        add_item(&box_, "New List…", ListCommand::NewList);
+        // `miEditSmartList`: the C# routes smart lists, folders and
+        // reading lists through their editors from this one item.
+        add_item(&box_, "Edit…", ListCommand::Edit);
         add_item(&box_, "New Folder…", ListCommand::NewFolder);
         add_item(&box_, "Rename…", ListCommand::Rename);
         add_item(&box_, "Delete", ListCommand::Delete);
