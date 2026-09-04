@@ -298,6 +298,12 @@ impl ItemView {
         self.state.borrow().view.clone()
     }
 
+    /// Takes the keyboard focus onto the grid (the window-activation
+    /// re-grab — the reader's dead-first-keypress fix).
+    pub fn grab_focus(&self) {
+        self.canvas.grab_focus();
+    }
+
     fn update_size_request(&self) {
         update_size_request(&self.state, &self.canvas);
     }
@@ -319,6 +325,9 @@ impl ItemView {
                 return;
             };
             gesture.set_state(gtk4::EventSequenceState::Claimed);
+            // Take the keyboard focus on click (GTK4 has no
+            // click-to-focus — the Phase 3 lesson).
+            canvas.grab_focus();
             if n != 1 {
                 // Double-click → activate.
                 let id = state.borrow().view.focus();

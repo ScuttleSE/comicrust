@@ -154,6 +154,18 @@ fn show_shell(app: &Application) {
         }
     });
 
+    // The window-activation focus re-grab (the reader's dead
+    // first-keypress fix): the grid takes the keys when the window
+    // activates.
+    {
+        let item_view_focus = item_view.clone();
+        win.connect_notify_local(Some("is-active"), move |w, _| {
+            if w.is_active() {
+                item_view_focus.grab_focus();
+            }
+        });
+    }
+
     // Double-click / Enter → open the comic in the reader
     // (`ItemActivate`; the browser stays — the C# main-form shape).
     {
@@ -438,6 +450,15 @@ pub fn open_reader(app: &Application, path: &Path) {
     if let Err(err) = result {
         show_error_dialog(app, &path.to_string_lossy(), &format!("{err:#}"));
     }
+}
+
+/// The reader window closed — drop the session slot so the next open
+/// creates a fresh window (a closed window still sits in the slot
+/// otherwise, and every later open lands in it invisibly).
+pub(crate) fn reader_closed() {
+    READER.with(|cell| {
+        *cell.borrow_mut() = None;
+    });
 }
 
 fn show_error_dialog(app: &Application, title: &str, message: &str) {

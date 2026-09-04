@@ -219,6 +219,9 @@ impl ReaderWindow {
                 if let Err(err) = library::save() {
                     eprintln!("library save failed: {err}");
                 }
+                // Drop the app's reader slot — a closed window must
+                // not silently receive the next open (Phase 4 T3).
+                crate::app::reader_closed();
                 glib::Propagation::Proceed
             });
         }
