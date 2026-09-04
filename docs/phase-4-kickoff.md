@@ -567,3 +567,12 @@ C# spec: `PagesView.cs` (833), `ComicPagesView.cs` (241),
   names with regexes per book per frame (captions cached per book
   id) plus a full layout reflow per draw frame (the draw path only
   reflows on a viewport-width change now).
+  T5 fixes from the user test round 4: the Detail header drew only
+  the text columns while the cells drew all of them (names shifted
+  left — the header now iterates the same list as the cells), and
+  the context menu anchored at canvas coordinates instead of
+  toplevel coordinates (it appeared left of the cursor by the
+  navigator width — the callback now translates to the window).
+  Backlog note (user feedback): the full-library smoothness is
+  better but needs polish work — batch with the Phase 5/7 polish
+  items (thumbnail decode pacing, incremental relayout).
