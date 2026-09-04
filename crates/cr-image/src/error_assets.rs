@@ -8,6 +8,11 @@ use crate::Image;
 const ERROR_PAGE_JPG: &[u8] = include_bytes!("../assets/ErrorPage.jpg");
 const RED_CROSS_PNG: &[u8] = include_bytes!("../assets/RedCross.png");
 
+/// The raw RedCross image (the browser state-strip marker uses it).
+pub fn red_cross_image() -> Option<Image> {
+    crate::decode::decode(RED_CROSS_PNG).ok()
+}
+
 /// `CreateErrorPage` bitmap (without the drawn message — the reader
 /// overlays the localized text at render time).
 pub fn error_page_image() -> Option<Image> {

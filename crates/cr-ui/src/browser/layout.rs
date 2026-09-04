@@ -129,7 +129,9 @@ pub struct ItemLayout {
     pub rows: Vec<Vec<usize>>,
 }
 
-fn label_strip_height(config: &LayoutConfig) -> f64 {
+/// The caption strip height (`ThumbnailLabelHeight`; the Thumbnail
+/// cell reserves it at the bottom).
+pub fn label_strip_height(config: &LayoutConfig) -> f64 {
     let scale = (config.thumb_height / 192.0).clamp(0.7, 1.0);
     LABEL_LINES * (config.font_height * scale + 2.0)
 }

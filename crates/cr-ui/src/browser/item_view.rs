@@ -805,58 +805,85 @@ fn draw_thumbnail_item(
     selected: bool,
 ) {
     let (tr, tg, tb) = if selected { SELECT_TEXT } else { TEXT };
-    // The cover: the loaded thumbnail fit into the image area
-    // (top-anchored); the error thumbnail on failure; a dark
-    // placeholder until the load lands.
     let image_area_h = rect.h - label_height(&s.config);
     let image_area = Rect::new(rect.x, rect.y, rect.w, image_area_h);
-    let id = s.view.book(display).id;
+    let book = s.view.book(display);
+    let id = book.id;
     let thumb = match s.thumbs.get(&id) {
         Some(ThumbState::Ready(surface)) => Some(surface.clone()),
         Some(ThumbState::Failed) => error_surface(),
         None => None,
     };
-    match thumb {
-        Some(surface) => {
-            let (iw, ih) = (surface.width() as f64, surface.height() as f64);
-            let scale = (image_area.w / iw).min(image_area.h / ih).min(1.0);
-            let dw = iw * scale;
-            let dx = image_area.x + (image_area.w - dw) / 2.0;
-            ctx.save().ok();
-            ctx.translate(dx, image_area.y);
-            ctx.scale(scale, scale);
-            ctx.set_source_surface(&surface, 0.0, 0.0).ok();
-            ctx.rectangle(0.0, 0.0, iw, ih);
-            ctx.fill().ok();
-            ctx.restore().ok();
-        }
-        None => {
-            ctx.set_source_rgb(0.08, 0.08, 0.09);
-            ctx.rectangle(
-                image_area.x + 8.0,
-                image_area.y + 8.0,
-                image_area.w - 16.0,
-                image_area.h - 16.0,
+    // The dark placeholder until the load lands.
+    if thumb.is_none() {
+        ctx.set_source_rgb(0.08, 0.08, 0.09);
+        ctx.rectangle(
+            image_area.x + 8.0,
+            image_area.y + 8.0,
+            image_area.w - 16.0,
+            image_area.h - 16.0,
+        );
+        ctx.fill().ok();
+    }
+    // The cover (border/shadow/frame/tint — `ThumbRenderer`).
+    super::item::draw_cover(
+        ctx,
+        thumb.as_ref(),
+        (image_area.x, image_area.y, image_area.w, image_area.h),
+        selected,
+    );
+    // The read markers: CurrentPage (Orange) / LastPageRead (Green)
+    // ribbons on the right edge (`DrawBookmarkV`).
+    if thumb.is_some() {
+        super::item::draw_bookmarks(
+            ctx,
+            (image_area.x, image_area.y, image_area.w, image_area.h),
+            (book.current_page, book.last_page_read),
+            book.info.page_count,
+        );
+        // The numeric rating tags (the default rating mode).
+        super::item::draw_rating_tags(
+            ctx,
+            (image_area.x, image_area.y, image_area.w, image_area.h),
+            book.rating,
+            book.info.community_rating,
+        );
+        if book.file_is_missing {
+            super::item::draw_missing_marker(
+                ctx,
+                (image_area.x, image_area.y, image_area.w, image_area.h),
+                missing_cross().as_ref(),
             );
-            ctx.fill().ok();
         }
     }
-    // The caption (one line inside the 3-line strip).
-    let caption = s.caption(display);
-    ctx.set_source_rgb(tr, tg, tb);
+    // The caption: the exact `Comic.Caption`, centered, wrapping in
+    // the 3-line strip.
     ctx.select_font_face("Sans", cairo::FontSlant::Normal, cairo::FontWeight::Normal);
     let scale = (s.config.thumb_height / 192.0).clamp(0.7, 1.0);
     ctx.set_font_size(s.config.font_height * scale);
-    ctx.move_to(
-        rect.x + 2.0,
-        rect.y + image_area_h + s.config.font_height * scale,
+    let caption = cr_engine::display_text::caption(s.view.book(display));
+    super::item::draw_wrapped_centered(
+        ctx,
+        &caption,
+        rect.x,
+        rect.y + image_area_h,
+        rect.w,
+        3,
+        (tr, tg, tb),
     );
-    ctx.show_text(&caption).ok();
 }
 
-fn label_height(config: &LayoutConfig) -> f64 {
-    let scale = (config.thumb_height / 192.0).clamp(0.7, 1.0);
-    layout::LABEL_LINES * (config.font_height * scale + 2.0)
+use layout::label_strip_height as label_height;
+
+/// The RedCross marker surface, decoded once (cairo surfaces are not
+/// Send — a thread-local cache, the error-page pattern).
+fn missing_cross() -> Option<cairo::ImageSurface> {
+    thread_local! {
+        static CROSS: Option<cairo::ImageSurface> =
+            cr_image::error_assets::red_cross_image()
+                .map(|img| surface_from_rgba(&img.rgba, img.width, img.height));
+    }
+    CROSS.with(|c| c.clone())
 }
 
 fn draw_tile_item(
@@ -867,58 +894,90 @@ fn draw_tile_item(
     selected: bool,
 ) {
     let (tr, tg, tb) = if selected { SELECT_TEXT } else { TEXT };
-    // Cover: the left half; text: the right side (DrawTile).
+    // Cover: the left half; text: the right side (`DrawTile`).
     let image_area = Rect::new(rect.x, rect.y, rect.w / 2.0, rect.h);
-    let id = s.view.book(display).id;
+    let book = s.view.book(display);
+    let id = book.id;
     let thumb = match s.thumbs.get(&id) {
         Some(ThumbState::Ready(surface)) => Some(surface.clone()),
         Some(ThumbState::Failed) => error_surface(),
         None => None,
     };
-    match thumb {
-        Some(surface) => {
-            let (iw, ih) = (surface.width() as f64, surface.height() as f64);
-            let scale = (image_area.w / iw).min(image_area.h / ih).min(1.0);
-            let dh = ih * scale;
-            ctx.save().ok();
-            ctx.translate(image_area.x, image_area.y + (image_area.h - dh) / 2.0);
-            ctx.scale(scale, scale);
-            ctx.set_source_surface(&surface, 0.0, 0.0).ok();
-            ctx.rectangle(0.0, 0.0, iw, ih);
-            ctx.fill().ok();
-            ctx.restore().ok();
-        }
-        None => {
-            ctx.set_source_rgb(0.08, 0.08, 0.09);
-            ctx.rectangle(
-                image_area.x + 4.0,
-                image_area.y + 4.0,
-                image_area.w - 8.0,
-                image_area.h - 8.0,
-            );
-            ctx.fill().ok();
+    if thumb.is_none() {
+        ctx.set_source_rgb(0.08, 0.08, 0.09);
+        ctx.rectangle(
+            image_area.x + 4.0,
+            image_area.y + 4.0,
+            image_area.w - 8.0,
+            image_area.h - 8.0,
+        );
+        ctx.fill().ok();
+    }
+    super::item::draw_cover(
+        ctx,
+        thumb.as_ref(),
+        (image_area.x, image_area.y, image_area.w, image_area.h),
+        selected,
+    );
+    // The text block: the `DefaultFileComic` lines with the shared
+    // tab stop (`SimpleTextRenderer` two-column shape).
+    ctx.save().ok();
+    let text_x = rect.x + rect.w / 2.0 + 4.0;
+    let text_w = rect.x + rect.w - text_x - 4.0;
+    ctx.rectangle(text_x - 2.0, rect.y, text_w + 4.0, rect.h);
+    ctx.clip();
+    let lines = super::item::tile_text_lines(s.view.book(display));
+    // The tab stop: the widest first-segment width + 8 px.
+    ctx.select_font_face("Sans", cairo::FontSlant::Normal, cairo::FontWeight::Normal);
+    ctx.set_font_size(s.config.font_height * 0.9);
+    let mut tab = 0.0f64;
+    for (text, _, _) in &lines {
+        if let Some(pos) = text.find('\t') {
+            if let Ok(ext) = ctx.text_extents(&text[..pos]) {
+                tab = tab.max(ext.width());
+            }
         }
     }
-    let text_x = rect.x + rect.w / 2.0 + 4.0;
-    ctx.save().ok();
-    ctx.rectangle(text_x - 2.0, rect.y, rect.x + rect.w - text_x + 2.0, rect.h);
-    ctx.clip();
-    let book = s.view.book(display);
-    let prop = cr_engine::matcher::book_view::proposed(book);
-    let series = cr_engine::matcher::book_view::shadow_series(book, &prop);
-    ctx.select_font_face("Sans", cairo::FontSlant::Normal, cairo::FontWeight::Bold);
-    ctx.set_font_size((s.config.font_height * 1.0).max(10.0));
-    ctx.set_source_rgb(tr, tg, tb);
-    ctx.move_to(text_x, rect.y + 16.0);
-    ctx.show_text(series).ok();
-    ctx.select_font_face("Sans", cairo::FontSlant::Normal, cairo::FontWeight::Normal);
-    ctx.set_font_size(10.0);
-    ctx.move_to(text_x, rect.y + 30.0);
-    let name = std::path::Path::new(&book.file_path)
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_default();
-    ctx.show_text(&name).ok();
+    let tab = tab + 8.0;
+    let mut y = rect.y + 6.0;
+    for (text, scale, bold) in &lines {
+        ctx.select_font_face(
+            "Sans",
+            cairo::FontSlant::Normal,
+            if *bold {
+                cairo::FontWeight::Bold
+            } else {
+                cairo::FontWeight::Normal
+            },
+        );
+        ctx.set_font_size((s.config.font_height * scale).max(8.0));
+        let line_h = super::item::line_height(ctx).max(2.0);
+        if text.is_empty() {
+            y += line_h * 0.5;
+            continue;
+        }
+        if let Some(pos) = text.find('\t') {
+            let (label, value) = (&text[..pos], &text[pos + 1..]);
+            ctx.set_source_rgb(tr, tg, tb);
+            ctx.move_to(text_x, y + line_h * 0.85);
+            ctx.show_text(label).ok();
+            ctx.move_to(text_x + tab, y + line_h * 0.85);
+            ctx.show_text(value).ok();
+        } else {
+            // Trim with an ellipsis at the block width.
+            let mut line = text.clone();
+            while line.len() > 1 && ctx.text_extents(&line).is_ok_and(|e| e.width() > text_w) {
+                line.pop();
+            }
+            if line != *text {
+                line.push('…');
+            }
+            ctx.set_source_rgb(tr, tg, tb);
+            ctx.move_to(text_x, y + line_h * 0.85);
+            ctx.show_text(&line).ok();
+        }
+        y += line_h;
+    }
     ctx.restore().ok();
 }
 
