@@ -87,6 +87,9 @@ pub struct ItemViewState {
     thumb_tx: ThumbTx,
     thumbs: HashMap<CrGuid, ThumbState>,
     queued: HashSet<CrGuid>,
+    /// Loads in flight (the pump stays alive while this is > 0).
+    pending_thumbs: usize,
+    pump_active: bool,
     band: Option<Rect>,
     band_start: (f64, f64),
     /// The selection at band start (Ctrl-drag flips from it,
@@ -136,6 +139,7 @@ impl ItemViewState {
             .collect();
         for (id, path) in wanted {
             self.queued.insert(id);
+            self.pending_thumbs += 1;
             let key = ThumbnailKey::new(ImageKey::from_file(
                 path.clone(),
                 std::path::Path::new(&path),
@@ -149,6 +153,10 @@ impl ItemViewState {
                 tx.send(ThumbDone { book_id: id, bytes });
             });
         }
+    }
+
+    fn pump_needed(&self) -> bool {
+        self.pending_thumbs > 0
     }
 
     /// The caption line (`Comic.Caption`; the display-text resolver's
@@ -208,6 +216,8 @@ impl ItemView {
             thumb_tx,
             thumbs: HashMap::new(),
             queued: HashSet::new(),
+            pending_thumbs: 0,
+            pump_active: false,
             band: None,
             band_start: (0.0, 0.0),
             band_snapshot: HashSet::new(),
@@ -235,7 +245,10 @@ impl ItemView {
                 };
                 let (sx, sy, view_w, view_h) = scroll_window(&scroller);
                 let window = Rect::new(sx, sy, view_w.max(width as f64), view_h.max(height as f64));
-                draw_frame(ctx, &state, window);
+                let queued = draw_frame(ctx, &state, window);
+                if queued {
+                    start_thumb_pump(&state);
+                }
             });
         }
 
@@ -245,42 +258,9 @@ impl ItemView {
             adj.connect_value_changed(move |_| canvas.queue_draw());
         }
 
-        // The thumb pump (10 ms, drains until empty — the reader
-        // pump shape).
-        {
-            let state = Rc::downgrade(&state);
-            glib::timeout_add_local(std::time::Duration::from_millis(10), move || {
-                let Some(state) = state.upgrade() else {
-                    return glib::ControlFlow::Break;
-                };
-                let mut got = false;
-                loop {
-                    let next = state.borrow().thumb_rx.try_recv();
-                    match next {
-                        Ok(done) => {
-                            got = true;
-                            let mut s = state.borrow_mut();
-                            let surface = done.bytes.and_then(|bytes| decode_surface(&bytes));
-                            match surface {
-                                Some(surface) => {
-                                    s.thumbs.insert(done.book_id, ThumbState::Ready(surface));
-                                }
-                                None => {
-                                    s.thumbs.insert(done.book_id, ThumbState::Failed);
-                                }
-                            }
-                        }
-                        Err(_) => break,
-                    }
-                }
-                if got {
-                    state.borrow().canvas.queue_draw();
-                    glib::ControlFlow::Continue
-                } else {
-                    glib::ControlFlow::Break
-                }
-            });
-        }
+        // The thumb pump is NOT started here: the draw path starts it
+        // whenever loads are in flight (a dead pump would strand
+        // every late completion in the channel).
 
         // Mouse: select / band / activate / group toggle.
         iv.install_click_controller();
@@ -600,7 +580,12 @@ fn keyval_char(key: gtk4::gdk::Key) -> Option<char> {
 }
 
 fn decode_surface(bytes: &[u8]) -> Option<cairo::ImageSurface> {
-    let img = cr_image::decode::decode(bytes).ok()?;
+    // The pool caches the C# `ThumbnailImage` serialization (size
+    // header + JPEG data) — parse, then decode the JPEG.
+    let jpeg = cr_image::thumbnail::Thumbnail::from_bytes(bytes)
+        .map(|t| t.data)
+        .unwrap_or_else(|_| bytes.to_vec());
+    let img = cr_image::decode::decode(&jpeg).ok()?;
     Some(surface_from_rgba(&img.rgba, img.width, img.height))
 }
 
@@ -635,7 +620,67 @@ fn surface_from_rgba(rgba: &[u8], width: u32, height: u32) -> cairo::ImageSurfac
     .expect("surface")
 }
 
-fn draw_frame(ctx: &cairo::Context, state: &Rc<RefCell<ItemViewState>>, window: Rect) {
+/// The thumbnail-completion pump (the ADR-019 shape): a 10 ms poll
+/// that decodes finished thumbs and redraws, alive while loads are in
+/// flight. Started by the draw path after queueing — the single
+/// source of truth is `pending_thumbs`.
+fn start_thumb_pump(state: &Rc<RefCell<ItemViewState>>) {
+    {
+        let s = state.borrow();
+        if s.pump_active {
+            return;
+        }
+    }
+    {
+        let mut s = state.borrow_mut();
+        s.pump_active = true;
+    }
+    let state = Rc::downgrade(state);
+    glib::timeout_add_local(std::time::Duration::from_millis(10), move || {
+        let Some(state) = state.upgrade() else {
+            return glib::ControlFlow::Break;
+        };
+        let mut got = false;
+        loop {
+            // Bind first: a `while let` scrutinee borrow would live
+            // through the body and conflict with the `borrow_mut`.
+            let next = state.borrow().thumb_rx.try_recv();
+            match next {
+                Ok(done) => {
+                    got = true;
+                    let mut s = state.borrow_mut();
+                    s.pending_thumbs = s.pending_thumbs.saturating_sub(1);
+                    let surface = done.bytes.and_then(|bytes| decode_surface(&bytes));
+                    match surface {
+                        Some(surface) => {
+                            s.thumbs.insert(done.book_id, ThumbState::Ready(surface));
+                        }
+                        None => {
+                            s.thumbs.insert(done.book_id, ThumbState::Failed);
+                        }
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        let more = state.borrow().pending_thumbs > 0;
+        if !more {
+            state.borrow_mut().pump_active = false;
+        }
+        if got {
+            state.borrow().canvas.queue_draw();
+        }
+        if got || more {
+            glib::ControlFlow::Continue
+        } else {
+            glib::ControlFlow::Break
+        }
+    });
+}
+
+/// Draws one frame; returns whether new thumbnail loads were queued
+/// (the caller starts the pump outside the borrow).
+fn draw_frame(ctx: &cairo::Context, state: &Rc<RefCell<ItemViewState>>, window: Rect) -> bool {
     let mut s = state.borrow_mut();
     s.config.view_height = window.h;
     s.relayout(window.w);
@@ -645,6 +690,7 @@ fn draw_frame(ctx: &cairo::Context, state: &Rc<RefCell<ItemViewState>>, window: 
 
     // Queue thumb loads for the visible set.
     s.queue_visible_thumbs(window);
+    let queued_thumbs = s.pump_needed();
 
     // Group headers (Top layout).
     for gh in &s.layout.group_headers {
@@ -738,6 +784,8 @@ fn draw_frame(ctx: &cairo::Context, state: &Rc<RefCell<ItemViewState>>, window: 
         ctx.rectangle(band.x - 2.0, band.y - 2.0, band.w + 4.0, band.h + 4.0);
         ctx.fill().ok();
     }
+
+    queued_thumbs
 }
 
 fn draw_thumbnail_item(
