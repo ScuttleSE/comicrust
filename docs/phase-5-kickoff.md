@@ -64,7 +64,7 @@ from Phase 4 T4), and the QuickOpen thumbnail size.
 Order: T1 unblocks everything; T2 is the critical path (the
 deepest dialog); keep the editors pure-model first, GTK last.
 
-### T1. The settings port + the options builder — IMPLEMENTED (2026-09-04), user test pending
+### T1. The settings port + the options builder — COMPLETE (2026-09-04), user-tested
 
 - [x] `IniFile` + `EngineConfiguration` + Settings in cr-core (or
       `cr-settings`): field defaults = the C# `[DefaultValue]`
@@ -220,7 +220,7 @@ deepest dialog); keep the editors pure-model first, GTK last.
 
 ## Update at the end of every task
 
-- [ ] T1 settings port + options builder + Preferences shell
+- [x] T1 settings port + options builder + Preferences shell
 - [ ] T2 book editor + bulk edit + write-back wiring
 - [ ] T3 smart-list/reading-list editors
 - [ ] T4 export + small dialogs
@@ -233,24 +233,14 @@ changes preferences that visibly move the reader and browser.
 
 ## Progress (2026-09-04)
 
-- **T1 IMPLEMENTED, user test pending.** The settings layer:
-  `cr-core/src/settings/` (ini/registry/engine-config/extended/
-  settings + the Config.xml layer) and `cr-ui/src/settings/`
-  (options builder + the Preferences dialog). ADR-023 records the
-  XDG layout the user directed: configuration in
-  `~/.config/comicrust` (Config.xml + comicrust.ini), data and
-  caches in `~/.local/share/comicrust`. The C# correction (this
-  doc's plan text said "config.ini beside the DB"): Settings
-  persists as Config.xml; the ini carries only engine/extended
-  overrides. The stand-ups are reconciled (track-current-page,
-  add-to-library-on-open with the AddToStorage parity, 14/95/10
-  from the engine config, OfValues/legacy parser) and the
-  reader/browser now consume the real settings (wheel speed, page
-  wall, browse-on-scroll, cursor hide + its 5000 ms duration,
-  auto-minimal-GUI, QuickOpen show + size). Headless probes (the
-  isolated-XDG recipe): the app boots with the config tree; the
-  Preferences dialog renders all four pages (Behavior = the C#
-  auto-panel groups with correct defaults and sort); toggling a
-  check box + OK writes `~/.config/comicrust/Config.xml` with the
-  change (NewsStartup=false observed) in the XmlSerializer form.
-  261 tests across 29 suites; fmt + clippy clean.
+- **T1 COMPLETE — USER-TESTED, ALL PASS (2026-09-04).** The user
+  verified: the Preferences button opens the dialog; the Behavior
+  page matches the C# auto-panel (groups, defaults, sort, wheel
+  scrolling); a toggle + OK persists across a restart (Config.xml
+  in `~/.config/comicrust` carries the change); Cancel discards;
+  the page-wall setting visibly changes the reader's margin
+  behavior; "Opened Files are added to the Library" adds non-library
+  comics on open; the fullscreen cursor hide (5000 ms) and
+  AutoMinimalGui work; the Libraries page lists watch folders with
+  add/Watch-toggle persistence. The phase-5 doc above carries the
+  full implementation record.

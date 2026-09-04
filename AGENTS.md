@@ -52,13 +52,14 @@ Update this section at the **end of every work session**. The next agent must kn
 ### State summary
 
 - **Phase:** 5 (the dialogs) — T1 (the settings port + the options
-  builder + the Preferences shell) IMPLEMENTED (2026-09-04), user
-  test pending. **Next: run the T1 user test, then T2 (the book
-  editor).** Phases 0-4 are complete (their gates stay green).
+  builder + the Preferences shell) COMPLETE (2026-09-04), user-
+  tested, all pass. **Next: T2 (the book editor
+  `ComicBookDialog` + bulk edit + the write-back wiring).**
+  Phases 0-4 are complete (their gates stay green).
   Phase 1 gaps that remain open: WebComicProvider and the PDF/DjVu
   writers (tracked in `docs/phase-1-kickoff.md`). The Phase 0 exit
-  review remains not done (the settings port it waited on is now
-  IN — the review can close with T1).
+  review can close with the T1 wrap-up (the settings port it
+  waited on is in).
 - **State:** `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` are green. 261 tests pass across 29 suites. CI runs on the `docker-runner-amd64` container runner (ADR-020). The release tracks are `release.yaml` (rolling prerelease per push) and `tagged-release.yaml` (manual dispatch, stable release for an existing tag — ADR-021, 2026-09-03). Until the runner is registered and `comicrust-ci:latest` is built on the runner host, pushed and dispatched workflows sit queued on that label.
 - **Phase 0 gate status:** byte-stable ComicDb.xml round-trip proven on all three synthetic fixtures AND the real-world database `tests/realworld/ComicDb.xml` (255 books, 584 KB, 2026-09-02, user-approved commit).
 - **Phase 2 gate status:** every saved smart list in the real-world DB (a) binds to the matcher registry, (b) renders to a `Match` query string that re-parses and re-renders byte-identically, and (c) evaluates to the SAME book sets the C# cached in `CacheStorage` (Never Read = all 255, Files to update = the 3 dirty books, Reading/Read = empty). Evidence: `crates/cr-engine/tests/realworld_query.rs`.
@@ -69,32 +70,21 @@ Update this section at the **end of every work session**. The next agent must kn
 ### Phase 5 progress (session of 2026-09-04)
 
 T1 (the settings port + the options builder + the Preferences
-shell) IMPLEMENTED — user test pending. The layer:
-`cr-core/src/settings/` (`ini.rs` IniFile, `registry.rs` typed
-field tables + `settings_fields!`, `engine_config.rs`,
-`extended.rs`, `enums.rs`, `settings.rs` — ~120 scalar Settings
-fields + the Config.xml Emitter/reader) and `cr-ui/src/settings/`
-(`options.rs` the `FillPanelWithOptions` parity,
-`preferences.rs` the dialog). ADR-023: config in
-`~/.config/comicrust` (Config.xml + comicrust.ini), data + caches
-in `~/.local/share/comicrust`. Key C# correction: Settings is
-Config.xml (XmlSerializer), NOT an ini — only engine/extended
-overrides ride the ini chain. Reconciled stand-ups: TrackCurrentPage,
-AddToLibraryOnOpen (the AddToStorage parity on open), 14/95/10
-from the engine config (create_new + QuickOpen), OfValues/legacy
-parser; reader wiring: MouseWheelSpeed, ScrollingDoesBrowse,
-PageChangeDelay (the wall), HideCursorFullScreen +
-AutoHideCursorDuration (5000 ms), AutoMinimalGui; browser wiring:
-ShowQuickOpen + QuickOpenThumbnailSize (applied at startup, stored
-on exit). Settings load in `cr-ui/src/library.rs::initialize`
-(Config.xml + ini chain + argv → the globals), save on the main
-window close. Probe-verified headless (isolated XDG trees +
-Xvfb): all four pages render (Behavior = the C# auto-panel with
-correct groups/defaults/sort), a toggle + OK writes Config.xml
-with the change. 261 tests across 29 suites; fmt + clippy clean.
-Deferred within Phase 5: the disk-cache settings do not consume
-into the ImagePool disk caches yet (memory-only pools), the
-language page waits on the TR loader, the Scripts page on Phase 6.
+shell) COMPLETE — USER-TESTED, ALL PASS (2026-09-04). The user
+verified: the dialog opens from the header button; the Behavior
+page matches the C# auto-panel; a toggle + OK persists across
+restart (Config.xml in `~/.config/comicrust`); Cancel discards;
+the page-wall setting visibly changes the reader; the
+add-to-library-on-open flow adds non-library comics; the
+fullscreen cursor hide (5000 ms) + AutoMinimalGui work; the
+watch-folder page persists add/Watch toggles. Implementation
+record (the layer, the C# corrections, the stand-up
+reconciliation, the probe recipe) lives in
+`docs/phase-5-kickoff.md`. Deferred within Phase 5: the
+disk-cache settings do not consume into the ImagePool disk
+caches yet (memory-only pools), the language page waits on the
+TR loader, the Scripts page on Phase 6. **Next: T2 (the book
+editor `ComicBookDialog` + bulk edit + the write-back wiring).**
 
 ### Phase 4 progress (sessions of 2026-09-03)
 
