@@ -197,6 +197,11 @@ struct ViewState {
     page: usize,
     page_count: usize,
     last_read: usize,
+    /// The DISPLAY sequence: display position → provider index. The
+    /// C# navigates a filtered page list (`GetPageList` with the
+    /// PageFilter — the default excludes Deleted) and reads pages by
+    /// their `ImageIndex`; `None` is the identity 1:1 sequence.
+    page_indexes: Option<Vec<usize>>,
     /// Decoded pages (bounded to the window around the current one).
     loaded: HashMap<usize, LoadedPageData>,
     /// Pages rendering in the pool queues, with the rotation their
@@ -418,12 +423,18 @@ impl ViewState {
             .unwrap_or(ImageRotation::None)
     }
 
-    /// The `PageKey` for a page under its current rotation.
+    /// The `PageKey` for a page under its current rotation — the
+    /// provider index resolves through the display sequence
+    /// (`Pages[page].ImageIndex` parity).
     fn page_key(&self, page: usize, rotation: ImageRotation) -> cr_image::keys::PageKey {
+        let provider_index = match &self.page_indexes {
+            Some(seq) => seq.get(page).copied().unwrap_or(page),
+            None => page,
+        };
         let key = cr_image::keys::ImageKey::from_file(
             self.source.clone(),
             Path::new(&self.source),
-            page,
+            provider_index,
             rotation,
         );
         cr_image::keys::PageKey::new(key, self.base_adjustment)
@@ -742,6 +753,7 @@ impl PageView {
             page: 0,
             page_count: 0,
             last_read: 0,
+            page_indexes: None,
             loaded: HashMap::new(),
             queued: HashSet::new(),
             wanted: Vec::new(),
@@ -867,7 +879,28 @@ impl PageView {
         page: usize,
         last_read: usize,
     ) -> Result<(), String> {
-        let page_count = provider.page_count();
+        self.open_with_sequence(provider, path, None, page, last_read)
+    }
+
+    /// Opens with a display sequence (the filtered page list — the
+    /// shell builds it from the book's page entries: Deleted pages
+    /// drop, reads resolve by `ImageIndex`).
+    pub fn open_with_sequence(
+        &self,
+        provider: ComicProvider,
+        path: &Path,
+        sequence: Option<Vec<usize>>,
+        page: usize,
+        last_read: usize,
+    ) -> Result<(), String> {
+        let page_count = match &sequence {
+            Some(seq) if !seq.is_empty() => seq.len(),
+            _ => provider.page_count(),
+        };
+        let sequence = match &sequence {
+            Some(seq) if !seq.is_empty() => Some(seq.clone()),
+            _ => None,
+        };
         let page = page.min(page_count.saturating_sub(1));
         let last_read = last_read.min(page_count.saturating_sub(1));
         {
@@ -877,6 +910,7 @@ impl PageView {
             st.page = page;
             st.page_count = page_count;
             st.last_read = last_read;
+            st.page_indexes = sequence;
             st.loaded.clear();
             st.queued.clear();
             st.continuous = None;

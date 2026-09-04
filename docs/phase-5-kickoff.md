@@ -224,6 +224,23 @@ Verified after the fixes (probe, real comic from
 with the nav buttons ("Page 2" renders page 2 — the debug build
 needs ~5 s per page decode; the release build is fast).
 
+Second user-test round (2026-09-04) — the reader-side page model
+was the gap (the C# navigates a FILTERED page list and reads by
+`ImageIndex`; the port was positional 1:1):
+- Reader: `PageView::open_with_sequence` — the shell builds the
+  display sequence from the book's page entries (Deleted drops,
+  the default `PageFilter` = All parity) and every page read
+  resolves through it (`page_key` → `Pages[page].ImageIndex`).
+  The provider-index fill now stamps `Image` (`set_image_index(i)`)
+  like the C# handler. Books without page entries keep 1:1; an
+  all-deleted list falls back to 1:1 (safety).
+- Editor: the cover refreshes on a page-type change (the `after`
+  path re-queues the cover); the preview/cover read the ENTRY's
+  `ImageIndex` (a reorder moves entries, not archive slots — the
+  "move to top changed the captions but not the pages" report);
+  the nav buttons move the list highlight (`select_row`, the
+  selection hook guards the same page).
+
 ### T3. The smart-list editor (`SmartListDialog` + matchers)
 
 - [ ] The visual matcher builder: property combo (the registry),

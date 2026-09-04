@@ -752,7 +752,7 @@ pub fn show(parent: &impl IsA<gtk4::Window>, books: Vec<ComicBook>, on_commit: C
     }
 
     // ----- Pages tab -----
-    let pages_widgets = build_pages_tab(&state);
+    let pages_widgets = build_pages_tab(&state, &cover);
     notebook.append_page(&pages_widgets.root, Some(&Label::new(Some("Pages"))));
 
     // ----- Colors tab -----
@@ -1176,11 +1176,20 @@ fn queue_cover(state: &StateRef, book: &ComicBook) {
         .info
         .front_cover_page_index()
         .clamp(0, (book.info.page_count - 1).max(0))
-        .max(0);
+        .max(0) as usize;
+    // The thumb reads the ENTRY's archive index (a reorder moves
+    // entries, not archive slots).
+    let provider_index = book
+        .info
+        .pages
+        .get(page)
+        .map(|p| p.image_index())
+        .filter(|idx| *idx >= 0)
+        .unwrap_or(page as i32) as usize;
     let key = cr_image::keys::ThumbnailKey::new(cr_image::keys::ImageKey::from_file(
         path.clone(),
         Path::new(&path),
-        page as usize,
+        provider_index,
         ImageRotation::None,
     ));
     let key_text = format!("cover:{}#{}", path, page);
@@ -1305,9 +1314,10 @@ struct PagesWidgets {
     root: GtkBox,
     list: gtk4::ListBox,
     preview: DrawingArea,
+    cover: DrawingArea,
 }
 
-fn build_pages_tab(state: &StateRef) -> PagesWidgets {
+fn build_pages_tab(state: &StateRef, cover: &DrawingArea) -> PagesWidgets {
     let root = GtkBox::new(Orientation::Horizontal, 8);
     root.set_margin_top(8);
     root.set_margin_bottom(8);
@@ -1354,11 +1364,14 @@ fn build_pages_tab(state: &StateRef) -> PagesWidgets {
     right.append(&nav);
     root.append(&right);
 
-    // `btFirstPage` family.
+    // `btFirstPage` family. The nav also moves the list highlight
+    // (select_row fires the row_selected hook, which guards on the
+    // same page).
     let goto_page = {
         let state = Rc::clone(state);
         let preview = preview.clone();
         let label = label.clone();
+        let list = list.clone();
         move |target: i32| {
             let count = {
                 let s = state.borrow();
@@ -1370,6 +1383,9 @@ fn build_pages_tab(state: &StateRef) -> PagesWidgets {
             let page = target.clamp(0, count - 1) as usize;
             state.borrow_mut().page_view_page = page;
             label.set_text(&format!("Page {}", page + 1));
+            if let Some(row) = list.row_at_index(page as i32) {
+                list.select_row(Some(&row));
+            }
             let book = current_book(&state);
             queue_preview(&state, &book);
             preview.queue_draw();
@@ -1454,6 +1470,7 @@ fn build_pages_tab(state: &StateRef) -> PagesWidgets {
             root: root.clone(),
             list: list.clone(),
             preview: preview.clone(),
+            cover: cover.clone(),
         };
         let gesture = gtk4::GestureClick::new();
         gesture.set_button(3);
@@ -1472,6 +1489,7 @@ fn build_pages_tab(state: &StateRef) -> PagesWidgets {
         root,
         list,
         preview,
+        cover: cover.clone(),
     }
 }
 
@@ -1534,6 +1552,9 @@ fn show_page_menu(state: &StateRef, widgets: &PagesWidgets, index: usize, x: f64
         move || {
             rebuild_pages_list(&widgets, &state);
             let book = current_book(&state);
+            // A Front Cover type change moves the cover thumbnail.
+            queue_cover(&state, &book);
+            widgets.cover.queue_draw();
             queue_preview(&state, &book);
             widgets.preview.queue_draw();
         }

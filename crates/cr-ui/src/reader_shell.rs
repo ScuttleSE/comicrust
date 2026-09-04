@@ -411,16 +411,54 @@ impl ReaderShell {
             book.info.pages = provider
                 .pages()
                 .iter()
-                .map(|p| cr_core::model::comic_page_info::ComicPageInfo {
-                    key: Some(p.name.clone()),
-                    ..Default::default()
+                .enumerate()
+                .map(|(i, p)| {
+                    let mut pg = cr_core::model::comic_page_info::ComicPageInfo {
+                        key: Some(p.name.clone()),
+                        ..Default::default()
+                    };
+                    // The C# provider index fills `Image` (raw +1).
+                    pg.set_image_index(i as i32);
+                    pg
                 })
                 .collect();
         }
-        // Resume position and read-progress clamp to the real page
+        // The display sequence (the C# `GetPageList` with the default
+        // PageFilter = All: Deleted pages drop; reads resolve by the
+        // entry ImageIndex). Books without page entries keep the
+        // 1:1 sequence.
+        let sequence: Option<Vec<usize>> = if book.info.pages.is_empty() {
+            None
+        } else {
+            let seq: Vec<usize> = book
+                .info
+                .pages
+                .iter()
+                .enumerate()
+                .filter(|(_, p)| p.page_type != cr_core::model::enums::ComicPageType(1024))
+                .map(|(i, p)| {
+                    let idx = p.image_index();
+                    if idx >= 0 {
+                        idx as usize
+                    } else {
+                        i
+                    }
+                })
+                .collect();
+            // All-deleted edge: fall back to 1:1 (the C# tolerates
+            // empty, our reader shows the error page per the T5
+            // lesson — keep a page).
+            if seq.is_empty() {
+                None
+            } else {
+                Some(seq)
+            }
+        };
+        let display_count = sequence.as_ref().map_or(page_count, |s| s.len());
+        // Resume position and read-progress clamp to the DISPLAY
         // count. An empty page list (a broken archive) must not
         // panic — the display shows the error page instead.
-        let max_page = (page_count as i32 - 1).max(0);
+        let max_page = (display_count as i32 - 1).max(0);
         let resume = book.current_page.clamp(0, max_page).max(0) as usize;
         book.last_page_read = book.last_page_read.clamp(0, max_page);
         let last_read = book.last_page_read.max(0) as usize;
@@ -540,7 +578,7 @@ impl ReaderShell {
         let notebook = self.state.borrow().notebook.clone();
         let widget = view.widget().clone();
         notebook.append_page(&widget, Some(&tab_widget));
-        view.open_with_state(provider, path, resume, last_read)
+        view.open_with_sequence(provider, path, sequence, resume, last_read)
             .map_err(|e| anyhow::anyhow!(e))?;
         // Select the new tab outside the state borrow — the
         // switch-page handler borrows the shell itself.
