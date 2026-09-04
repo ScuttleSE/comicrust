@@ -576,3 +576,8 @@ C# spec: `PagesView.cs` (833), `ComicPagesView.cs` (241),
   Backlog note (user feedback): the full-library smoothness is
   better but needs polish work — batch with the Phase 5/7 polish
   items (thumbnail decode pacing, incremental relayout).
+  Detail-view scroll slowness (user test round 5): every visible
+  cell re-ran the property resolver per frame — including the
+  proposed-name regex fallback — 13 columns × rows. The row's cell
+  texts now cache per book id (`detail_texts`, cleared with the
+  other caches on a book-set swap).
