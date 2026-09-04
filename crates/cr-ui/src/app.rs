@@ -145,23 +145,22 @@ fn run_list_command(
     use browser::navigator::ListCommand;
     match command {
         ListCommand::NewSmartList => {
-            let dialog = entry_dialog(parent, "New Smart List", "Name", "New Smart List");
-            if let Some(name) = dialog {
-                // The C# query form: `Match` + `[matcher name]`
-                // operator "value" (the editor UI is Phase 5; the C#
-                // SmartListDialog generates this text via
-                // `ComicSmartListItem.ToString()`).
-                let query_dialog = entry_dialog(
-                    parent,
-                    "New Smart List",
-                    "Match query  (Match [Name] contains \"text\")",
-                    "Match [Series] contains \"Batman\"",
-                );
-                let query = query_dialog.unwrap_or_default();
-                if let Err(err) = library::new_smart_list(target.as_ref(), &name, &query) {
-                    show_attention_dialog(parent, &format!("Bad query: {err}"));
+            // The C# `NewSmartList`: insert an empty smart list, then
+            // open the editor; Cancel removes it.
+            let new_id = library::new_smart_list(target.as_ref(), "New Smart List", "");
+            match new_id {
+                Ok(id) => {
+                    nav.refill(&library::comic_lists_snapshot());
+                    run_smart_list_editor(parent, nav, Some(id));
                 }
-                nav.refill(&library::comic_lists_snapshot());
+                Err(err) => show_attention_dialog(parent, &err),
+            }
+        }
+        ListCommand::EditSmartList => {
+            if let Some(id) = target {
+                if library::find_smart_list(&id).is_some() {
+                    run_smart_list_editor(parent, nav, Some(id));
+                }
             }
         }
         ListCommand::NewFolder => {
@@ -368,4 +367,51 @@ pub fn open_reader(app: &Application, path: &Path) {
 
 thread_local! {
     static BROWSER: RefCell<Option<browser::shell::BrowserShell>> = const { RefCell::new(None) };
+}
+
+/// The smart-list editor flow (the C# `EditSmartListItem`): the
+/// editor edits a CLONE; OK commits via `update_smart_list`, Cancel
+/// keeps the item as it was (a freshly created one is removed — the
+/// C# `NewSmartList` pops the insert when the editor returns false).
+fn run_smart_list_editor(
+    parent: &ApplicationWindow,
+    nav: &Rc<browser::navigator::Navigator>,
+    id: Option<CrGuid>,
+) {
+    let Some(id) = id else {
+        return;
+    };
+    let Some(item) = library::find_smart_list(&id) else {
+        return;
+    };
+    let base_options = library::smart_list_base_options(&id);
+    let nav2 = Rc::clone(nav);
+    let window2 = parent.clone();
+    crate::dialogs::smart_list::show_smart_list_editor(
+        parent,
+        item,
+        base_options,
+        move |committed| match committed {
+            Some(updated) => {
+                library::update_smart_list(&id, updated);
+                nav2.refill(&library::comic_lists_snapshot());
+            }
+            None => {
+                // A named "New Smart List" with no matchers that the
+                // user never committed: the C# pops the fresh insert.
+                // Only remove when it is STILL empty (an edit keeps).
+                if let Some(item) = library::find_smart_list(&id) {
+                    if item.matchers.is_empty()
+                        && item.base.name.as_deref() == Some("New Smart List")
+                    {
+                        library::remove_list(&id);
+                    }
+                }
+                nav2.refill(&library::comic_lists_snapshot());
+            } // The window reference keeps the transient parent alive
+              // for the dialog lifetime (unused otherwise).
+              ,
+        },
+    );
+    let _ = window2;
 }

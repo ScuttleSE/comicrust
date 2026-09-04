@@ -10,6 +10,7 @@
 //!   matchers.
 
 pub mod book_view;
+pub mod edit_ops;
 pub mod eval;
 pub mod query;
 pub mod series;

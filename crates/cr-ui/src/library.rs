@@ -346,7 +346,7 @@ pub fn insert_list_item(
 /// `NewSmartList`: name + a hand-written `Match` query (the editor
 /// dialog is Phase 5; the query parses through the Phase 2 matcher
 /// language). An empty query matches every book (the C# default).
-pub fn new_smart_list(after: Option<&CrGuid>, name: &str, query: &str) -> Result<(), String> {
+pub fn new_smart_list(after: Option<&CrGuid>, name: &str, query: &str) -> Result<CrGuid, String> {
     let matchers = if query.trim().is_empty() {
         Vec::new()
     } else {
@@ -359,10 +359,11 @@ pub fn new_smart_list(after: Option<&CrGuid>, name: &str, query: &str) -> Result
             .map(cr_engine::matcher::tree::Matcher::to_raw)
             .collect()
     };
+    let id = CrGuid::new_random();
     let item = cr_core::database::list_items::ComicListItem::Smart(
         cr_core::database::list_items::SmartListItem {
             base: cr_core::database::list_items::ListItemBase {
-                id: CrGuid::new_random(),
+                id,
                 name: Some(name.to_string()),
                 ..Default::default()
             },
@@ -372,7 +373,7 @@ pub fn new_smart_list(after: Option<&CrGuid>, name: &str, query: &str) -> Result
         },
     );
     insert_list_item(after, item);
-    Ok(())
+    Ok(id)
 }
 
 /// `NewFolder` — created in the selection's container.
@@ -702,5 +703,120 @@ pub fn quick_open_lists() -> Vec<(String, Vec<ComicBook>)> {
         books.truncate(cr_core::settings::ExtendedSettings::global().quick_open_list_size as usize);
         out.push((name.to_string(), books));
     }
+    out
+}
+
+// ---------- The smart-list editor (Phase 5 T3) ----------
+
+/// The item for the editor (a clone; the editor edits the clone and
+/// commits it).
+pub fn find_smart_list(id: &CrGuid) -> Option<cr_core::database::list_items::SmartListItem> {
+    let lib = session();
+    let l = lib.borrow();
+    match cr_engine::lists::find_list_item(&l.database().comic_lists, id)? {
+        cr_core::database::list_items::ComicListItem::Smart(s) => Some(s.clone()),
+        _ => None,
+    }
+}
+
+/// `ComicSmartListItem.SetList`: replaces the smart-list item's
+/// model fields (position + id stay; the extra values move over).
+pub fn update_smart_list(id: &CrGuid, item: cr_core::database::list_items::SmartListItem) -> bool {
+    let lib = session();
+    let mut l = lib.borrow_mut();
+    fn apply(
+        items: &mut [cr_core::database::list_items::ComicListItem],
+        id: &CrGuid,
+        new: &cr_core::database::list_items::SmartListItem,
+    ) -> bool {
+        for i in items.iter_mut() {
+            match i {
+                cr_core::database::list_items::ComicListItem::Smart(s) if s.base.id == *id => {
+                    let mut next = new.clone();
+                    next.base.id = s.base.id;
+                    next.base.book_count = s.base.book_count;
+                    next.base.new_book_count = s.base.new_book_count;
+                    next.base.unread_book_count = s.base.unread_book_count;
+                    next.base.cache_storage = s.base.cache_storage.clone();
+                    *s = next;
+                    return true;
+                }
+                cr_core::database::list_items::ComicListItem::Folder(f) => {
+                    if apply(&mut f.items, id, new) {
+                        return true;
+                    }
+                }
+                _ => {}
+            }
+        }
+        false
+    }
+    let changed = apply(&mut l.database_mut().comic_lists, id, &item);
+    if changed {
+        l.mark_dirty();
+    }
+    changed
+}
+
+/// The base-list combo options: every list item (Library = the empty
+/// Guid) whose subtree does not reference the edited id (the C#
+/// `RecursionTest`).
+pub fn smart_list_base_options(edit_id: &CrGuid) -> Vec<(CrGuid, String)> {
+    /// Whether the base chain starting at `start` reaches `edit_id`
+    /// (the recursion guard the C# applies as `RecursionTest`).
+    fn chain_references(
+        l: &std::rc::Rc<std::cell::RefCell<Library>>,
+        start: &CrGuid,
+        edit_id: &CrGuid,
+    ) -> bool {
+        if start == edit_id {
+            return true;
+        }
+        let Some(item) =
+            cr_engine::lists::find_list_item(&l.borrow().database().comic_lists, start)
+        else {
+            return false;
+        };
+        if let cr_core::database::list_items::ComicListItem::Smart(s) = &item {
+            if !s.base_list_id.is_empty() {
+                return chain_references(l, &s.base_list_id, edit_id);
+            }
+        }
+        false
+    }
+    let lib = session();
+    let l = lib.borrow();
+    let mut out = Vec::new();
+    fn walk(
+        items: &[cr_core::database::list_items::ComicListItem],
+        edit_id: &CrGuid,
+        out: &mut Vec<(CrGuid, String)>,
+        lib: &std::rc::Rc<std::cell::RefCell<Library>>,
+    ) {
+        for i in items {
+            match i {
+                cr_core::database::list_items::ComicListItem::Library(_) => {
+                    out.push((CrGuid::EMPTY, "Library".to_string()));
+                }
+                cr_core::database::list_items::ComicListItem::Smart(s) => {
+                    let name = s.base.name.clone().unwrap_or_default();
+                    // Skip candidates whose base chain would recurse
+                    // through the edited list (the C# RecursionTest).
+                    if s.base.id != *edit_id && !chain_references(lib, &s.base_list_id, edit_id) {
+                        out.push((s.base.id, name));
+                    }
+                }
+                cr_core::database::list_items::ComicListItem::Folder(f) => {
+                    let name = f.base.name.clone().unwrap_or_default();
+                    if f.base.id != *edit_id {
+                        out.push((f.base.id, format!("{name} (folder)")));
+                    }
+                    walk(&f.items, edit_id, out, lib);
+                }
+                cr_core::database::list_items::ComicListItem::IdList(_) => {}
+            }
+        }
+    }
+    walk(&l.database().comic_lists, edit_id, &mut out, &lib);
     out
 }

@@ -320,20 +320,50 @@ FrontCover"). Rule: a scripted multi-line replacement must be
 verified by grepping for the NEW symbol in the changed file, not
 by the build result.
 
-### T3. The smart-list editor (`SmartListDialog` + matchers)
+### T3. The smart-list editor (`SmartListDialog` + matchers) — IMPLEMENTED (2026-09-04), user test pending
 
-- [ ] The visual matcher builder: property combo (the registry),
+- [x] The visual matcher builder: property combo (the registry),
       operator combo (the spec's operators), 1–2 argument fields,
       and/or mode, not flags, nested groups (`MatcherGroupEditor`).
-      The model layer (a matcher-tree → editor-state mapping) is
-      pure and unit-tested.
-- [ ] The query tab: the text form with the live parse (the Phase 2
-      query language; the T2 lesson — `Match [Series] contains
-      "Batman"`).
-- [ ] The navigator's "New Smart List" opens the editor; Edit
-      opens it pre-filled. `EditListDialog` for list properties.
+      DONE: `cr-engine/src/matcher/edit_ops.rs` (the pure command
+      model — add_rule duplicates after the node, add_group wraps a
+      clone in a new And-group, delete (blocked at one node — the
+      C# disables Delete), move up/down, and the type switch
+      keeping values + clamping the operator into the new spec's
+      list (`newMatcher.Set(current)` parity); MAX_LEVEL 5; the
+      nested paths address containers — 5 unit tests) and
+      `cr-ui/src/dialogs/smart_list.rs` (the dialog: the head
+      fields — name/notes/base-list combo with the
+      `RecursionTest`-style recursion filter/ALL-ANY mode/Not-in-
+      base/limit type+value/QuickOpen — plus the matcher rows: the
+      type combo over all 97 spec descriptions, the operator combo
+      per spec, 0-2 value fields per the argument count, the Not
+      check, and the right-click edit menu New Rule / New Group /
+      Delete / Move Up / Down; structural changes rebuild the row
+      area wholesale). Group rows carry their own ALL/ANY combo and
+      nested rows.
+- [x] The query tab: the text form with the live parse (the Phase 2
+      query language). DONE: one dialog with a Designer | Query
+      notebook (the C# Ctrl-swaps two dialogs). Entering Query
+      renders the item (`item_to_query` → `render_smart_list_query`,
+      raw→engine via `Matcher::from_raw`); OK parses the text into
+      the item (engine tree → `Matcher::to_raw`); a parse failure
+      blocks the close with the error line (the C# keeps the old
+      item).
+- [x] The navigator's "New Smart List" opens the editor; Edit
+      opens it pre-filled. DONE: `library::new_smart_list` now
+      returns the new id; New Smart List inserts an empty list and
+      opens the editor (Cancel removes the fresh empty insert —
+      the C# flow); "Edit Smart List…" (the new nav command) opens
+      pre-filled and commits via `library::update_smart_list`
+      (`SetList` parity: id/position/book counts/cache stay).
+      `EditListDialog` for folders stays the bare name prompt
+      (deferred with the reading lists).
 - [ ] The reading-list editor (`ListEditorDialog`) — orderable book
-      lists (the `IdListItem` model).
+      lists (the `IdListItem` model). NEXT.
+Headless proof: the app probe seeds a fresh DB, right-clicks the
+navigator, New Smart List… opens the editor with the head fields
+(the Base List combo showing Library, the limit row disabled).
 
 ### T4. Export + the remaining dialogs
 
