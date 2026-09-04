@@ -9,7 +9,10 @@ fn main() {
     win.set_default_size(920, 680);
 
     let mut books = Vec::new();
-    if let Some(b) = real_book("tests/testfiles/Absolute Flash (2025) Volume 01 Issue 009.cbz") {
+    if let Some(mut b) = real_book("tests/testfiles/Absolute Flash (2025) Volume 01 Issue 009.cbz")
+    {
+        // The user's failing shape: NO stored page list.
+        b.info.pages.clear();
         books.push(b);
     }
     for i in 1..=2 {

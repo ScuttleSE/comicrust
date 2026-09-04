@@ -257,6 +257,15 @@ takes the `PreferredFrontCover`-th (default 0) FrontCover page,
 C# parity. Moving the cover = change the old cover's type too
 (Story), or set the new cover when no earlier FrontCover exists.
 
+Fourth round (2026-09-04): the editor's Pages tab was empty for
+titles without a STORED page list — the C# editor opens the comic
+through a navigator (the provider index fills `Pages`); the port
+never did. Fixed: the editor load fills `info.pages` from the
+provider when empty (the reader_shell fill parity, `Image` = i),
+and the filled list persists on save (`comic.SetPages` parity).
+Probe-proven with a page-list-cleared book: the list, preview, and
+cover render.
+
 ### T3. The smart-list editor (`SmartListDialog` + matchers)
 
 - [ ] The visual matcher builder: property combo (the registry),

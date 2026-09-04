@@ -32,6 +32,7 @@ use gtk4::{
 
 use cr_core::model::bitmap_adjustment::BitmapAdjustment;
 use cr_core::model::comic_book::ComicBook;
+use cr_core::model::comic_page_info::ComicPageInfo;
 use cr_core::model::enums::{ComicPagePosition, ComicPageType, ImageRotation, MangaYesNo, YesNo};
 use cr_core::registry::{self, PropValue};
 use cr_engine::image_pool::ImagePool;
@@ -887,7 +888,35 @@ pub fn show(parent: &impl IsA<gtk4::Window>, books: Vec<ComicBook>, on_commit: C
                 s.pending_cover = None;
                 s.preview = None;
                 s.cover = None;
-                let book = s.books[s.current].clone();
+                let mut book = s.books[s.current].clone();
+                // The C# editor opens the comic through a navigator
+                // (`pagesView.Book.Open`), which retrieves the
+                // provider index — books without a stored page list
+                // still show their pages (and the filled list
+                // persists on save, `comic.SetPages` parity).
+                let filled = if book.info.pages.is_empty() {
+                    cr_io::ComicProvider::open(std::path::Path::new(&book.file_path)).ok()
+                } else {
+                    None
+                };
+                if let Some(provider) = filled {
+                    book.info.page_count = provider.page_count() as i32;
+                    book.info.pages = provider
+                        .pages()
+                        .iter()
+                        .enumerate()
+                        .map(|(i, p)| {
+                            let mut pg = ComicPageInfo {
+                                key: Some(p.name.clone()),
+                                ..Default::default()
+                            };
+                            pg.set_image_index(i as i32);
+                            pg
+                        })
+                        .collect();
+                    let cur = s.current;
+                    s.books[cur].info = book.info.clone();
+                }
                 s.page_view_page = book
                     .info
                     .front_cover_page_index()
