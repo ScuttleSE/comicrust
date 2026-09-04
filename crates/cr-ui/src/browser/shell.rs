@@ -13,6 +13,7 @@ use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::{gio, Application, ApplicationWindow, Button, Entry, Label, MenuButton, Paned, Stack};
 
+use cr_core::model::comic_book::ComicBook;
 use cr_core::xml::scalar::CrGuid;
 use cr_engine::image_pool::ImagePool;
 use cr_engine::matcher::tree::Matcher;
@@ -24,6 +25,7 @@ use super::columns::default_columns;
 use super::item_view::ItemView;
 use super::layout::ItemViewMode;
 use super::navigator::Navigator;
+use super::pages_view::PagesPanel;
 
 /// The search debounce (`UpdateSearch` on text change; large sets
 /// re-filter).
@@ -48,6 +50,10 @@ struct ShellState {
     status: Label,
     navigator: Rc<Navigator>,
     item_view: ItemView,
+    quick_view: ItemView,
+    pages: PagesPanel,
+    /// The browser-panel tab strip: Library | Pages (`MainView`).
+    panel_stack: Stack,
     reader: ReaderShell,
     app: Application,
     /// The current navigator selection (refreshes after mutations).
@@ -60,6 +66,12 @@ impl ShellState {
     fn open_comic(&self, path: &Path) {
         match self.reader.open_comic(path) {
             Ok(()) => {
+                // The Pages panel binds the open comic (the C#
+                // `Viewer_BookChanged` → `pagesView.Book`).
+                if let Some(book) = self.reader.current_comic_book() {
+                    self.pages.set_book(book);
+                    self.panel_stack.set_visible_child_name("pages");
+                }
                 self.stack.set_visible_child_name("reader");
                 self.window.present();
             }
@@ -71,6 +83,23 @@ impl ShellState {
 
     fn show_browser(&self) {
         self.stack.set_visible_child_name("browser");
+    }
+
+    /// The QuickOpen empty state (`UpdateQuickList`: visible when no
+    /// book is open, `ShowQuickOpen`, and the database has books).
+    fn show_quick_open(&self) {
+        let lists = library::quick_open_lists();
+        let total: usize = lists.iter().map(|(_, b)| b.len()).sum();
+        if total == 0 {
+            self.show_browser();
+            return;
+        }
+        let mut books: Vec<ComicBook> = Vec::new();
+        for (_, group) in lists {
+            books.extend(group);
+        }
+        self.quick_view.set_books(books);
+        self.stack.set_visible_child_name("quickopen");
     }
 
     fn refresh_view_from_list(&self) {
@@ -112,6 +141,16 @@ impl BrowserShell {
             scroller: item_scroller,
             view: item_view,
         } = ItemView::create(Arc::clone(&pool));
+        // The QuickOpen covers (captionless — `HideCaptions`).
+        let super::item_view::ItemViewWidgets {
+            scroller: quick_scroller,
+            view: quick_view,
+        } = ItemView::create(Arc::clone(&pool));
+        quick_view.configure(|c| c.hide_captions = true);
+        let super::pages_view::PagesPanelWidgets {
+            scroller: pages_scroller,
+            panel: pages,
+        } = super::pages_view::PagesPanel::create(Arc::clone(&pool));
 
         // The header commands (the handlers wire in `wire`, where
         // the shared state exists).
@@ -154,10 +193,22 @@ impl BrowserShell {
         header.pack_end(&reader_widgets.subtitle());
         window.set_titlebar(Some(&header));
 
-        // The browser page: navigator | ItemView, with the status
-        // bar below (the C# `ComicBrowserControl` status strip).
+        // The browser page: the left panel's tab strip — Library |
+        // Pages (`MainView`: tsbLibrary/tsbPages; the Pages tab only
+        // exists while a comic is open) — and the ItemView, with the
+        // status bar below.
+        let panel_stack = Stack::new();
+        panel_stack.set_vhomogeneous(false);
+        panel_stack.add_titled(navigator.widget(), Some("library"), "Library");
+        panel_stack.add_titled(&pages_scroller, Some("pages"), "Pages");
+
+        let switcher = gtk4::StackSwitcher::builder().stack(&panel_stack).build();
+        let panel_box = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+        panel_box.append(&switcher);
+        panel_box.append(&panel_stack);
+
         let paned = Paned::new(gtk4::Orientation::Horizontal);
-        paned.set_start_child(Some(navigator.widget()));
+        paned.set_start_child(Some(&panel_box));
         paned.set_shrink_start_child(false);
         paned.set_position(280);
         paned.set_end_child(Some(&item_scroller));
@@ -173,10 +224,25 @@ impl BrowserShell {
         browser_page.append(&paned);
         browser_page.append(&status);
 
-        // The stack: browser ⇄ reader (`BrowserVisible`).
+        // The quick-open page (the C# reader-area overlay shown when
+        // no book is open and `ShowQuickOpen`): the recent lists as
+        // captionless covers.
+        let quick_page = gtk4::Box::new(gtk4::Orientation::Vertical, 8);
+        let quick_label = Label::builder()
+            .label("Quick Open")
+            .halign(gtk4::Align::Start)
+            .margin_top(8)
+            .margin_start(8)
+            .build();
+        quick_page.append(&quick_label);
+        quick_page.append(&quick_scroller);
+
+        // The stack: quick open ⇄ browser ⇄ reader (`BrowserVisible`
+        // + the QuickOpen empty state).
         let stack = Stack::new();
         stack.set_vhomogeneous(false);
         stack.set_hhomogeneous(false);
+        stack.add_named(&quick_page, Some("quickopen"));
         stack.add_named(&browser_page, Some("browser"));
         stack.add_named(&reader_widgets.notebook(), Some("reader"));
         window.set_child(Some(&stack));
@@ -187,6 +253,9 @@ impl BrowserShell {
             status,
             navigator: Rc::clone(&navigator),
             item_view,
+            quick_view,
+            pages,
+            panel_stack,
             reader,
             app: app.clone(),
             current_list: RefCell::new(None),
@@ -232,7 +301,8 @@ impl BrowserShell {
                 .reader
                 .set_on_last_tab_closed(move || {
                     if let Some(sh) = state.upgrade() {
-                        sh.show_browser();
+                        sh.pages.clear_book();
+                        sh.show_quick_open();
                     }
                 });
         }
@@ -266,6 +336,51 @@ impl BrowserShell {
                     sh.show_browser();
                 }
             });
+        }
+
+        // The Pages panel: binds the open comic (the C#
+        // `ComicDisplay.Book`), follows page turns, and navigates on
+        // double-click.
+        {
+            let state = Rc::downgrade(state);
+            state
+                .upgrade()
+                .expect("state")
+                .reader
+                .set_on_page_change(move |page| {
+                    if let Some(sh) = state.upgrade() {
+                        sh.pages.set_current_page(page);
+                    }
+                });
+        }
+        {
+            let state = Rc::downgrade(state);
+            state
+                .upgrade()
+                .expect("state")
+                .pages
+                .connect_activate(move |page| {
+                    if let Some(sh) = state.upgrade() {
+                        sh.reader.navigate_current(page);
+                    }
+                });
+        }
+
+        // The QuickOpen covers: double-click opens the comic
+        // (`QuickOpenBookActivated`).
+        {
+            let state = Rc::downgrade(state);
+            state
+                .upgrade()
+                .expect("state")
+                .quick_view
+                .connect_activate(move |id| {
+                    if let Some(sh) = state.upgrade() {
+                        if let Some(path) = library::book_path(id) {
+                            sh.open_comic(Path::new(&path));
+                        }
+                    }
+                });
         }
 
         // The navigator selection → the ItemView book set (debounced
@@ -423,8 +538,22 @@ impl BrowserShell {
         // The view commands (mode/size/sort/group).
         self.install_actions();
 
-        // The initial fill.
+        // The initial fill. The startup view: the QuickOpen covers
+        // when the database has books (the C#
+        // `OpenCount == 0 && ShowQuickOpen`), the browser otherwise.
         state.navigator.refill(&library::comic_lists_snapshot());
+        {
+            let lists = library::quick_open_lists();
+            let total: usize = lists.iter().map(|(_, b)| b.len()).sum();
+            if total > 0 {
+                let mut books: Vec<ComicBook> = Vec::new();
+                for (_, group) in lists {
+                    books.extend(group);
+                }
+                state.quick_view.set_books(books);
+                state.stack.set_visible_child_name("quickopen");
+            }
+        }
     }
 
     fn install_actions(&self) {

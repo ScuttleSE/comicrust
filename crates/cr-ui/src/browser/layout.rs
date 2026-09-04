@@ -70,6 +70,9 @@ pub struct LayoutConfig {
     pub row_height: f64,
     /// The view font height in px (the label strip scales from it).
     pub font_height: f64,
+    /// `ThumbnailConfig.HideCaptions` — the QuickOpen covers draw
+    /// without the caption strip.
+    pub hide_captions: bool,
     /// The Detail column strip (visible columns in order).
     pub column_widths: Vec<f64>,
     pub header_visible: bool,
@@ -85,6 +88,7 @@ impl Default for LayoutConfig {
             mode: ItemViewMode::Thumbnail,
             view_width: 800.0,
             view_height: 600.0,
+            hide_captions: false,
             thumb_height: DEFAULT_THUMB_HEIGHT,
             tile_size: DEFAULT_TILE,
             row_height: DEFAULT_ROW_HEIGHT,
@@ -132,6 +136,9 @@ pub struct ItemLayout {
 /// The caption strip height (`ThumbnailLabelHeight`; the Thumbnail
 /// cell reserves it at the bottom).
 pub fn label_strip_height(config: &LayoutConfig) -> f64 {
+    if config.hide_captions {
+        return 0.0;
+    }
     let scale = (config.thumb_height / 192.0).clamp(0.7, 1.0);
     LABEL_LINES * (config.font_height * scale + 2.0)
 }

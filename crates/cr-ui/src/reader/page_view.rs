@@ -1310,6 +1310,13 @@ impl PageView {
         self.move_part((0, dy));
     }
 
+    /// Absolute navigation (`ComicBookNavigator.Navigate(page,
+    /// Absolute)`): jumps to `page`, clamped; the page callback
+    /// mirrors the state. Returns whether the navigation happened.
+    pub fn navigate(&self, page: usize) -> bool {
+        self.request_and_go(page, false)
+    }
+
     pub fn first_page(&self) -> bool {
         self.goto_page(0, false)
     }

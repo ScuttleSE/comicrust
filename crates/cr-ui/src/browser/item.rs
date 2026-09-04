@@ -392,6 +392,69 @@ pub fn tile_text_lines(book: &ComicBook) -> Vec<(String, f64, bool)> {
     lines
 }
 
+/// `DrawPageNumber` — the 1-based page badge: a rounded black-75%
+/// rect at the top-right with white text (Arial 7 pt in the C#;
+/// scaled here to the cell).
+pub fn draw_page_number(ctx: &Context, box_: (f64, f64, f64, f64), page: usize) {
+    let (x, y, w, _h) = box_;
+    let text = page.to_string();
+    ctx.select_font_face("Sans", cairo::FontSlant::Normal, cairo::FontWeight::Normal);
+    ctx.set_font_size(10.0);
+    let Ok(ext) = ctx.text_extents(&text) else {
+        return;
+    };
+    // Badge rect: min width 20, inflated 2 px around the text.
+    let bw = (ext.width() + 8.0).max(20.0);
+    let bh = 16.0;
+    let bx = x + w - bw - 4.0;
+    let by = y + 4.0;
+    ctx.set_source_rgba(0.0, 0.0, 0.0, 0.75);
+    rounded_rect(ctx, bx, by, bw, bh, 3.0);
+    ctx.fill().ok();
+    ctx.set_source_rgb(1.0, 1.0, 1.0);
+    ctx.move_to(
+        bx + (bw - ext.width()) / 2.0 - ext.x_bearing(),
+        by + bh * 0.78,
+    );
+    ctx.show_text(&text).ok();
+}
+
+/// `DrawBookmarkH` — the bookmarked-page pennant: a small red ribbon
+/// attached to the TOP edge (display-only; the editor is Phase 5).
+pub fn draw_bookmark_h(ctx: &Context, box_: (f64, f64, f64, f64)) {
+    let (x, y, _w, _h) = box_;
+    // The 8 px tall × 16 px wide ribbon at the top-left of the cover
+    // area, notch cut into the bottom edge.
+    let thickness = 8.0;
+    let length = 16.0;
+    let rx = x + 4.0;
+    let ry = y + 4.0;
+    // Shadow (+1,+1).
+    ctx.move_to(rx + 1.0, ry + 1.0);
+    ctx.line_to(rx + length + 1.0, ry + 1.0);
+    ctx.line_to(rx + length + 1.0, ry + thickness + 1.0);
+    ctx.line_to(rx + length / 2.0 + 1.0, ry + thickness / 2.0 + 1.0);
+    ctx.line_to(rx + 1.0, ry + thickness + 1.0);
+    ctx.close_path();
+    ctx.set_source_rgba(0.0, 0.0, 0.0, 1.0);
+    ctx.fill().ok();
+    // The red gradient fill (red → dark red).
+    let gradient = cairo::LinearGradient::new(rx, ry, rx, ry + thickness);
+    gradient.add_color_stop_rgb(0.0, 0.85, 0.1, 0.1);
+    gradient.add_color_stop_rgb(1.0, 0.42, 0.05, 0.05);
+    ctx.move_to(rx, ry);
+    ctx.line_to(rx + length, ry);
+    ctx.line_to(rx + length, ry + thickness);
+    ctx.line_to(rx + length / 2.0, ry + thickness / 2.0);
+    ctx.line_to(rx, ry + thickness);
+    ctx.close_path();
+    ctx.set_source(&gradient).ok();
+    ctx.fill().ok();
+    ctx.set_source_rgb(0.0, 0.0, 0.0);
+    ctx.set_line_width(1.0);
+    ctx.stroke().ok();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -1,0 +1,493 @@
+//! The Pages panel — the open comic's pages as a thumbnail grid
+//! (`PagesView` + `PageViewItem`). Bound to the currently OPEN
+//! reader book (never the browser selection — the C# `Book`
+//! property binds `ComicDisplay.Book`); visible as a browser-panel
+//! tab only while a comic is open (`MainView.OnGuiVisibility`).
+//!
+//! Ported behavior: one cell per page, sized to the page's stored
+//! aspect (the 2:3 estimate when the info lacks dimensions), the
+//! 1-based page-number badge (`DrawPageNumber`: top-right, black 75%
+//! rounded, white text), the red bookmark pennant on bookmarked
+//! pages (`DrawBookmarkH`, display-only — the bookmark editor is
+//! Phase 5), the current reader page highlighted and scrolled into
+//! view (`Navigation` → `EnsureVisible`), and double-click →
+//! `Navigate(page, Absolute)`.
+//!
+//! Deviations: the page-type filter rides on page metadata the
+//! reader does not surface yet (the default `All` filter excludes
+//! Deleted — honored once page types reach the panel), the 3D-book
+//! backdrop and drag-out copy are later polish, and the panel has no
+//! edit commands (Phase 5).
+
+use std::cell::RefCell;
+use std::collections::HashMap;
+use std::rc::Rc;
+use std::sync::Arc;
+
+use gtk4::glib;
+use gtk4::prelude::*;
+use gtk4::{cairo, DrawingArea, GestureClick, ScrolledWindow};
+
+use cr_core::model::comic_book::ComicBook;
+use cr_engine::image_pool::ImagePool;
+use cr_image::keys::{ImageKey, ThumbnailKey};
+
+/// The thumb-size range (`ItemSizeInfo`: [96, 512]).
+const MIN_THUMB: f64 = 96.0;
+const MAX_THUMB: f64 = 512.0;
+
+const BG: (f64, f64, f64) = (0.13, 0.13, 0.15);
+const SELECT_BG: (f64, f64, f64) = (0.2, 0.38, 0.62);
+const FOCUS_UNFOCUSED: (f64, f64, f64) = (0.5, 0.5, 0.55);
+
+#[derive(Clone)]
+struct PageCell {
+    /// The display page (0-based).
+    page: usize,
+    /// The archive image index (the thumb key's page; the C#
+    /// `TranslatePageToImageIndex`).
+    image_index: usize,
+    /// The page aspect (w/h) — the stored dims or the 2:3 estimate.
+    aspect: f64,
+    bookmarked: bool,
+}
+
+struct PageDone {
+    page: usize,
+    bytes: Option<Vec<u8>>,
+}
+
+struct PagesState {
+    /// The bound comic: the file path (the thumb key source) and the
+    /// page cells (the C# binds the whole `ComicBook`; the panel only
+    /// reads the path + pages, and a plain field dodges the Ref-deref
+    /// borrow fights).
+    bound: Option<(String, Vec<PageCell>)>,
+    pool: Arc<ImagePool>,
+    thumb_rx: std::sync::mpsc::Receiver<PageDone>,
+    thumb_tx: std::sync::mpsc::Sender<PageDone>,
+    thumbs: HashMap<usize, cairo::ImageSurface>,
+    queued: std::collections::HashSet<usize>,
+    pending: usize,
+    pump_active: bool,
+    thumb_height: f64,
+    current_page: usize,
+    on_activate: Option<Box<dyn Fn(usize)>>,
+    canvas: DrawingArea,
+}
+
+impl PagesState {
+    /// The greedy thumbnail flow (the ItemView Top layout: 1 px
+    /// padding → 2 px gaps; the cells size to the page aspect plus
+    /// border 4). Returns the placed cells for the draw.
+    fn relayout(&mut self, width: f64) -> Vec<(f64, f64, f64, f64, usize)> {
+        let Some((_, cells)) = &self.bound else {
+            return Vec::new();
+        };
+        let mut placed = Vec::with_capacity(cells.len());
+        let border = 4.0;
+        let pad = 1.0;
+        let mut x = 0.0;
+        let mut y = 0.0;
+        let mut row_h = 0.0f64;
+        let mut col = 0usize;
+        for cell in cells {
+            let w = self.thumb_height * cell.aspect + 2.0 * border;
+            let h = self.thumb_height + 2.0 * border;
+            let stride_w = w + 2.0 * pad;
+            if col > 0 && x + 2.0 * pad + w >= width {
+                y += 2.0 * pad + row_h;
+                x = 0.0;
+                col = 0;
+                row_h = 0.0;
+            }
+            placed.push((x + pad, y + pad, w, h, cell.page));
+            row_h = row_h.max(h);
+            x += stride_w;
+            col += 1;
+        }
+        placed
+    }
+
+    fn content_height(&mut self, width: f64) -> f64 {
+        self.relayout(width)
+            .last()
+            .map(|(_, y, _, h, _)| y + h + 4.0)
+            .unwrap_or(0.0)
+    }
+}
+
+/// The clone-able handle (the shell keeps it; the Rc must outlive
+/// the window).
+#[derive(Clone)]
+pub struct PagesPanel {
+    state: Rc<RefCell<PagesState>>,
+    canvas: DrawingArea,
+    scroller: ScrolledWindow,
+}
+
+pub struct PagesPanelWidgets {
+    pub scroller: ScrolledWindow,
+    pub panel: PagesPanel,
+}
+
+impl PagesPanel {
+    pub fn create(pool: Arc<ImagePool>) -> PagesPanelWidgets {
+        let canvas = DrawingArea::new();
+        canvas.set_focusable(true);
+        let scroller = ScrolledWindow::builder()
+            .child(&canvas)
+            .hscrollbar_policy(gtk4::PolicyType::Never)
+            .vscrollbar_policy(gtk4::PolicyType::Automatic)
+            .build();
+
+        let (tx, rx) = std::sync::mpsc::channel::<PageDone>();
+
+        let state = Rc::new(RefCell::new(PagesState {
+            bound: None,
+            pool,
+            thumb_rx: rx,
+            thumb_tx: tx,
+            thumbs: HashMap::new(),
+            queued: std::collections::HashSet::new(),
+            pending: 0,
+            pump_active: false,
+            thumb_height: 128.0,
+            current_page: 0,
+            on_activate: None,
+            canvas: canvas.clone(),
+        }));
+
+        let panel = PagesPanel {
+            state: Rc::clone(&state),
+            canvas: canvas.clone(),
+            scroller: scroller.clone(),
+        };
+
+        // The draw function (content coordinates; the canvas is
+        // sized to the content and scrolls under GTK).
+        {
+            let state = Rc::downgrade(&state);
+            let scroller = scroller.clone();
+            canvas.set_draw_func(move |_, ctx, _w, _h| {
+                let Some(state) = state.upgrade() else {
+                    return;
+                };
+                let v = scroller.vadjustment();
+                let window = (v.value(), v.page_size());
+                draw_frame(ctx, &state, window);
+            });
+        }
+
+        // Redraw on scroll.
+        {
+            let canvas = canvas.clone();
+            scroller.vadjustment().connect_value_changed(move |_| {
+                canvas.queue_draw();
+            });
+        }
+
+        // The thumb pump (the ItemView shape: lives while loads are
+        // in flight).
+        {
+            let state = Rc::downgrade(&state);
+            glib::timeout_add_local(std::time::Duration::from_millis(10), move || {
+                let Some(state) = state.upgrade() else {
+                    return glib::ControlFlow::Break;
+                };
+                let mut got = false;
+                loop {
+                    let next = state.borrow().thumb_rx.try_recv();
+                    match next {
+                        Ok(done) => {
+                            got = true;
+                            let mut s = state.borrow_mut();
+                            s.pending = s.pending.saturating_sub(1);
+                            if let Some(surface) =
+                                done.bytes.and_then(|bytes| decode_surface(&bytes))
+                            {
+                                s.thumbs.insert(done.page, surface);
+                            }
+                        }
+                        Err(_) => break,
+                    }
+                }
+                if got {
+                    state.borrow().canvas.queue_draw();
+                }
+                let more = state.borrow().pending > 0;
+                if !more {
+                    state.borrow_mut().pump_active = false;
+                }
+                if got || more {
+                    glib::ControlFlow::Continue
+                } else {
+                    glib::ControlFlow::Break
+                }
+            });
+        }
+
+        // Click: select + double-click activate; the activation
+        // navigates the reader (`ItemView_ItemActivate`).
+        {
+            let state = Rc::downgrade(&state);
+            let canvas_for_grab = canvas.clone();
+            let gesture = GestureClick::new();
+            gesture.set_button(1);
+            gesture.connect_pressed(move |gesture, n, x, y| {
+                let Some(state) = state.upgrade() else {
+                    return;
+                };
+                gesture.set_state(gtk4::EventSequenceState::Claimed);
+                let mut s = state.borrow_mut();
+                let width = s.canvas.width() as f64;
+                let placed = s.relayout(width);
+                let hit = placed
+                    .iter()
+                    .find(|(px, py, w, h, _)| x >= *px && x < px + w && y >= *py && y < py + h)
+                    .map(|(_, _, _, _, page)| *page);
+                if let Some(page) = hit {
+                    s.current_page = page;
+                }
+                drop(s);
+                canvas_for_grab.grab_focus();
+                if n > 1 {
+                    // Double-click → navigate (`ItemView_ItemActivate`).
+                    if let Some(page) = hit {
+                        let s = state.borrow();
+                        if let Some(f) = s.on_activate.as_ref() {
+                            f(page);
+                        }
+                    }
+                }
+                canvas_for_grab.queue_draw();
+            });
+            canvas.add_controller(gesture);
+        }
+
+        PagesPanelWidgets { scroller, panel }
+    }
+
+    /// Binds the open comic (the C# `PagesView.Book` setter — a
+    /// full refill).
+    pub fn set_book(&self, book: ComicBook) {
+        let path = book.file_path.clone();
+        let cells: Vec<PageCell> = book
+            .info
+            .pages
+            .iter()
+            .enumerate()
+            .map(|(page, info)| {
+                let image_index = if info.image_index() >= 0 {
+                    info.image_index() as usize
+                } else {
+                    page
+                };
+                let aspect = if info.image_width > 0 && info.image_height > 0 {
+                    f64::from(info.image_width) / f64::from(info.image_height)
+                } else {
+                    2.0 / 3.0
+                };
+                PageCell {
+                    page,
+                    image_index,
+                    aspect,
+                    bookmarked: info.bookmark.is_some(),
+                }
+            })
+            .collect();
+        let width = self.state.borrow().canvas.width() as f64;
+        {
+            let mut s = self.state.borrow_mut();
+            s.bound = Some((path, cells));
+            s.thumbs.clear();
+            s.queued.clear();
+            s.pending = 0;
+            s.current_page = 0;
+            s.relayout(width);
+        }
+        self.update_size_request();
+        self.canvas.queue_draw();
+    }
+
+    /// Clears the binding (the reader closed the comic — the C#
+    /// hides the panel).
+    pub fn clear_book(&self) {
+        let mut s = self.state.borrow_mut();
+        s.bound = None;
+        s.thumbs.clear();
+        s.queued.clear();
+        s.pending = 0;
+        s.current_page = 0;
+        self.canvas.queue_draw();
+    }
+
+    pub fn has_book(&self) -> bool {
+        self.state.borrow().bound.is_some()
+    }
+
+    /// The reader's current page — highlight + scroll into view
+    /// (`Navigation` → `EnsureVisible`).
+    pub fn set_current_page(&self, page: usize) {
+        let width = self.state.borrow().canvas.width() as f64;
+        let (rect, content) = {
+            let mut s = self.state.borrow_mut();
+            s.current_page = page;
+            let placed = s.relayout(width);
+            let rect = placed
+                .iter()
+                .find(|(_, _, _, _, p)| *p == page)
+                .map(|(x, y, w, h, _)| (*x, *y, *w, *h));
+            (rect, s.content_height(width))
+        };
+        self.update_size_request();
+        if let Some((x, y, _w, h)) = rect {
+            let adj = self.scroller.vadjustment();
+            let view_h = adj.page_size();
+            if y < adj.value() {
+                adj.set_value((y - 4.0).max(0.0));
+            } else if y + h > adj.value() + view_h {
+                adj.set_value(y + h - view_h + 4.0);
+            }
+            let _ = (x, content);
+        }
+        self.canvas.queue_draw();
+    }
+
+    /// Ctrl+wheel resize parity (the C# steps 16 within [96, 512]).
+    pub fn resize(&self, delta: f64) {
+        let h = {
+            let s = self.state.borrow();
+            (s.thumb_height + delta).clamp(MIN_THUMB, MAX_THUMB)
+        };
+        self.state.borrow_mut().thumb_height = h;
+        let width = self.state.borrow().canvas.width() as f64;
+        let content = self.state.borrow_mut().content_height(width);
+        self.canvas.set_content_height(content as i32);
+        self.canvas.queue_draw();
+    }
+
+    pub fn connect_activate<F: Fn(usize) + 'static>(&self, f: F) {
+        self.state.borrow_mut().on_activate = Some(Box::new(f));
+    }
+
+    fn update_size_request(&self) {
+        let width = self.state.borrow().canvas.width() as f64;
+        let content = self.state.borrow_mut().content_height(width);
+        self.canvas.set_content_height(content as i32);
+    }
+}
+
+fn draw_frame(
+    ctx: &cairo::Context,
+    state: &Rc<RefCell<PagesState>>,
+    (scroll_y, view_h): (f64, f64),
+) {
+    let (path, cells) = {
+        let binding = state.borrow();
+        match binding.bound.as_ref() {
+            Some((p, c)) => (p.clone(), c.clone()),
+            None => return,
+        }
+    };
+    let mut s = state.borrow_mut();
+    let (bg_r, bg_g, bg_b) = BG;
+    ctx.set_source_rgb(bg_r, bg_g, bg_b);
+    ctx.paint().ok();
+
+    let width = s.canvas.width() as f64;
+    let placed = s.relayout(width);
+
+    // Queue thumb loads for the visible cells (AddToTop semantics —
+    // the demanded pages skip the line).
+    for (x, y, w, h, page) in &placed {
+        let visible = *y + *h >= scroll_y && *y <= scroll_y + view_h;
+        if !visible || s.queued.contains(page) {
+            continue;
+        }
+        let Some(cell) = cells.iter().find(|c| c.page == *page) else {
+            continue;
+        };
+        let _ = (x, w);
+        s.queued.insert(*page);
+        s.pending += 1;
+        let key = ThumbnailKey::new(ImageKey::from_file(
+            path.clone(),
+            std::path::Path::new(&path),
+            cell.image_index,
+            cr_core::model::enums::ImageRotation::None,
+        ));
+        let pool = Arc::clone(&s.pool);
+        let tx = s.thumb_tx.clone();
+        let page_no = *page;
+        s.pool.add_thumb_to_queue(key.clone(), None, move |k| {
+            let bytes = pool.render_thumbnail(k);
+            let _ = tx.send(PageDone {
+                page: page_no,
+                bytes,
+            });
+        });
+    }
+
+    // Draw the visible cells.
+    for (x, y, w, h, page) in &placed {
+        if !(*y + *h >= scroll_y && *y <= scroll_y + view_h) {
+            continue;
+        }
+        let selected = s.current_page == *page;
+        let thumb = s.thumbs.get(page).cloned();
+        if thumb.is_none() {
+            ctx.set_source_rgb(0.08, 0.08, 0.09);
+            ctx.rectangle(x + 8.0, y + 8.0, w - 16.0, h - 16.0);
+            ctx.fill().ok();
+        }
+        super::item::draw_cover(ctx, thumb.as_ref(), (*x, *y, *w, *h), selected);
+        // The page-number badge (`DrawPageNumber`: 1-based, top
+        // right, black 75% rounded, white text).
+        super::item::draw_page_number(ctx, (*x, *y, *w, *h), page + 1);
+        // The bookmark pennant (display-only; the editor is Phase 5).
+        if let Some(cell) = cells.iter().find(|c| c.page == *page) {
+            if cell.bookmarked {
+                super::item::draw_bookmark_h(ctx, (*x, *y, *w, *h));
+            }
+        }
+        if selected {
+            ctx.set_source_rgb(FOCUS_UNFOCUSED.0, FOCUS_UNFOCUSED.1, FOCUS_UNFOCUSED.2);
+            ctx.set_line_width(1.0);
+            ctx.rectangle(*x - 1.0, *y - 1.0, w + 2.0, h + 2.0);
+            ctx.stroke().ok();
+            let _ = SELECT_BG;
+        }
+    }
+}
+
+fn decode_surface(bytes: &[u8]) -> Option<cairo::ImageSurface> {
+    // The pool caches the C# `ThumbnailImage` serialization (size
+    // header + JPEG data) — parse, then decode the JPEG.
+    let jpeg = cr_image::thumbnail::Thumbnail::from_bytes(bytes)
+        .map(|t| t.data)
+        .unwrap_or_else(|_| bytes.to_vec());
+    let img = cr_image::decode::decode(&jpeg).ok()?;
+    let stride = img.width as usize * 4;
+    let mut argb = vec![0u8; stride * img.height as usize];
+    for (src, dst) in rgba_chunks(&img.rgba).zip(argb.as_chunks_mut::<4>().0.iter_mut()) {
+        dst[0] = src[2];
+        dst[1] = src[1];
+        dst[2] = src[0];
+        dst[3] = src[3];
+    }
+    Some(
+        cairo::ImageSurface::create_for_data(
+            argb,
+            cairo::Format::ARgb32,
+            img.width as i32,
+            img.height as i32,
+            stride as i32,
+        )
+        .expect("surface"),
+    )
+}
+
+fn rgba_chunks(rgba: &[u8]) -> impl Iterator<Item = &[u8; 4]> {
+    rgba.as_chunks::<4>().0.iter()
+}

@@ -1023,7 +1023,10 @@ fn draw_thumbnail_item(
         }
     }
     // The caption: the exact `Comic.Caption`, centered, wrapping in
-    // the 3-line strip.
+    // the 3-line strip (skipped when captions hide — QuickOpen).
+    if s.config.hide_captions {
+        return;
+    }
     ctx.select_font_face("Sans", cairo::FontSlant::Normal, cairo::FontWeight::Normal);
     let scale = (s.config.thumb_height / 192.0).clamp(0.7, 1.0);
     ctx.set_font_size(s.config.font_height * scale);

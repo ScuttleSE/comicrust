@@ -6,5 +6,6 @@ pub mod item;
 pub mod item_view;
 pub mod layout;
 pub mod navigator;
+pub mod pages_view;
 pub mod shell;
 pub mod view_state;

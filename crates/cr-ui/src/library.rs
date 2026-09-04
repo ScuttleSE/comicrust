@@ -430,3 +430,71 @@ pub fn book_path(id: &CrGuid) -> Option<String> {
         .find(|b| b.id == *id)
         .map(|b| b.file_path.clone())
 }
+
+/// The QuickOpen lists (`FillWithQuickOpenBooks`): the three built-in
+/// lists — Reading (ReadPercentage in 10..95), Recently Read
+/// (OpenedTime in the last 14 days), Recently Added (AddedTime in
+/// the last 14 days) — deduped by book id across groups, sorted by
+/// OpenedTime desc (tie: AddedTime desc), 10 per group.
+pub fn quick_open_lists() -> Vec<(String, Vec<ComicBook>)> {
+    use cr_core::database::list_items::{
+        ComicBookMatcher, ComicListItem, ListItemBase, SmartListItem, ValueMatcher,
+    };
+    use cr_core::xml::scalar::CrGuid;
+
+    let matcher = |type_name: &str, v1: &str, v2: &str| {
+        ComicBookMatcher::Value(ValueMatcher {
+            type_name: type_name.into(),
+            match_operator: 3,
+            match_value: v1.into(),
+            match_value_2: v2.into(),
+            ..Default::default()
+        })
+    };
+    let groups: Vec<(&str, ComicBookMatcher)> = vec![
+        (
+            "Reading",
+            matcher("ComicBookReadPercentageMatcher", "10", "95"),
+        ),
+        ("Recently Read", matcher("ComicBookOpenedMatcher", "14", "")),
+        ("Recently Added", matcher("ComicBookAddedMatcher", "14", "")),
+    ];
+
+    let lib = session();
+    let l = lib.borrow();
+    let mut seen: Vec<CrGuid> = Vec::new();
+    let mut out: Vec<(String, Vec<ComicBook>)> = Vec::new();
+    for (name, m) in groups {
+        let item = ComicListItem::Smart(SmartListItem {
+            base: ListItemBase {
+                id: CrGuid::new_random(),
+                name: Some(name.into()),
+                ..Default::default()
+            },
+            matchers: vec![m],
+            ..Default::default()
+        });
+        let matched = cr_engine::lists::evaluate_list(&item, l.database());
+        let mut books: Vec<ComicBook> = matched
+            .into_iter()
+            .filter(|b| {
+                if seen.contains(&b.id) {
+                    return false;
+                }
+                seen.push(b.id);
+                true
+            })
+            .cloned()
+            .collect();
+        // OpenedTime desc, tie → AddedTime desc.
+        books.sort_by(|a, b| {
+            b.opened_time
+                .naive
+                .cmp(&a.opened_time.naive)
+                .then_with(|| b.added_time.naive.cmp(&a.added_time.naive))
+        });
+        books.truncate(10);
+        out.push((name.to_string(), books));
+    }
+    out
+}

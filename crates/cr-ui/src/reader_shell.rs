@@ -95,6 +95,8 @@ struct ShellState {
     /// The host runs this when undocking (`reader_visible == false`)
     /// or re-docking (`true`) — the main window swaps its stack page.
     on_view_change: Option<Box<dyn Fn(bool)>>,
+    /// The host runs this on every page change of the current slot.
+    on_page_change: Option<Box<dyn Fn(usize)>>,
 }
 
 impl ShellState {
@@ -168,6 +170,7 @@ impl ReaderShell {
                 next_slot: 0,
                 on_last_tab_closed: None,
                 on_view_change: None,
+                on_page_change: None,
             })),
         };
 
@@ -246,6 +249,19 @@ impl ReaderShell {
         self.state.borrow_mut().on_view_change = Some(Box::new(f));
     }
 
+    /// The host hook: every page change on the current slot (the
+    /// Pages panel's current-page marker).
+    pub fn set_on_page_change<F: Fn(usize) + 'static>(&self, f: F) {
+        self.state.borrow_mut().on_page_change = Some(Box::new(f));
+    }
+
+    /// The current slot's book (the Pages panel binding).
+    pub fn current_comic_book(&self) -> Option<ComicBook> {
+        let s = self.state.borrow();
+        let current = s.notebook.current_page()?;
+        s.books.get(&(s.tabs.get(current as usize)?.slot)).cloned()
+    }
+
     /// Focuses the current reader tab (the host's is-active handler
     /// calls this before any keypress can land).
     pub fn focus_current(&self) {
@@ -258,6 +274,34 @@ impl ReaderShell {
 
     pub fn is_empty(&self) -> bool {
         self.state.borrow().tabs.is_empty()
+    }
+
+    /// The currently visible reader book: (file path, page count).
+    /// The Pages panel binds this (the C# `ComicDisplay.Book`).
+    pub fn current_book(&self) -> Option<(String, usize)> {
+        let s = self.state.borrow();
+        let current = s.notebook.current_page()?;
+        let tab = s.tabs.get(current as usize)?;
+        Some((tab.path.to_string_lossy().into_owned(), tab.page_count))
+    }
+
+    /// `ComicBookNavigator.Navigate(page, Absolute)` on the current
+    /// reader slot — the Pages panel's double-click. The view handle
+    /// clones out FIRST: the navigation fires the page callback,
+    /// which re-enters this shell state (the RefCell lesson).
+    pub fn navigate_current(&self, page: usize) {
+        let view = {
+            let s = self.state.borrow();
+            let current = match s.notebook.current_page() {
+                Some(c) => c,
+                None => return,
+            };
+            match s.tabs.get(current as usize) {
+                Some(tab) => tab.view.clone(),
+                None => return,
+            }
+        };
+        view.navigate(page);
     }
 
     /// The host window closes: an undocked reader docks back first
@@ -352,6 +396,9 @@ impl ReaderShell {
                     }
                     if s.current_slot() == Some(slot) {
                         s.subtitle.set_text(&page_subtitle(page, count));
+                    }
+                    if let Some(f) = s.on_page_change.as_ref() {
+                        f(page);
                     }
                 })));
             }
