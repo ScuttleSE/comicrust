@@ -396,3 +396,13 @@ C# spec: `PagesView.cs` (833), `ComicPagesView.cs` (241),
   Probe: the browser renders the 255-book fixture grid with
   captions; Detail/Tile geometry unit-tested. T4 adds the real
   cover drawing/badges and the exact text lines.
+  T3 fix from the first user test ("no thumbnails, only black
+  rectangles"): the thumb pump broke permanently after the first
+  idle poll (the worker takes > 10 ms), stranding every completion
+  in the channel — the pump now starts whenever loads are in flight
+  (`pending_thumbs` counter, started by the draw path after
+  queueing). Second defect behind it: the pump decoded the pool's
+  cached blob raw — the pool caches the C# `ThumbnailImage`
+  serialization (20-byte header + JPEG); parse it with
+  `Thumbnail::from_bytes` first. Headless proof: seeded DB with real
+  Linux-path comics → the grid draws the actual pages.
