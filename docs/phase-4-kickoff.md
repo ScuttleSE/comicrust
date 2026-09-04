@@ -543,3 +543,12 @@ C# spec: `PagesView.cs` (833), `ComicPagesView.cs` (241),
   now drops the borrow first. Rule confirmed again: a callback
   registered on this widget must never fire while this widget
   holds its own borrow.
+  T5 fix from the user test round 2: the docked reader left no way
+  to open a second comic or see the grid (the browser page never
+  returned after an undock, leaving an empty reader page). Added:
+  the `BrowserVisible` toggle button (reveals the grid while comics
+  stay open — Open… adds tabs directly), the undock/re-dock view
+  swap (`set_on_view_change`: undock reveals the browser in the
+  main window, re-dock shows the reader again), and the reader's
+  "Page X of Y" subtitle now packs into the main header (it lived
+  in an unparented header since the docking).
