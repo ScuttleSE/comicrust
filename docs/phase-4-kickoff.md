@@ -552,3 +552,18 @@ C# spec: `PagesView.cs` (833), `ComicPagesView.cs` (241),
   main window, re-dock shows the reader again), and the reader's
   "Page X of Y" subtitle now packs into the main header (it lived
   in an unparented header since the docking).
+  T5 fixes from the user test round 3: Detail mode was blank with
+  squished headers (the layout never derived `column_widths` from
+  the column table — derive in `relayout`); Tile text overflowed the
+  96 px cell (the C# tile font rule `clamp(rect.H * 0.07, 0.8font,
+  1.0font)` + `SimpleTextRenderer`'s stop-at-rect-bottom); the
+  search query example failed because `starts_with("MATCH")` was
+  case-sensitive (the C# uses OrdinalIgnoreCase); the View radio
+  never moved (the action state was never set); removing a book
+  reset a narrowed view (`set_books` now carries the filter across);
+  the fullscreen cursor-hide crashed on removing a FIRED one-shot
+  glib source (the timeout clears its own slot now); and the
+  full-library slowness came from the caption path re-parsing file
+  names with regexes per book per frame (captions cached per book
+  id) plus a full layout reflow per draw frame (the draw path only
+  reflows on a viewport-width change now).
