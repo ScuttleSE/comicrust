@@ -650,3 +650,13 @@ C# spec: `PagesView.cs` (833), `ComicPagesView.cs` (241),
   collapses the layout; the first real draw detects the mismatch
   and applies the true height via an idle (plus the resize-signal
   reflow from the previous round).
+  T6 fix from the user test round 3 (the marker followed the wrong
+  comic's turns; the panel blank until a second comic): the panel
+  now REBINDS on every visible-book change (a `BookChanged` hook on
+  the reader — fired on open and on slot switch, the C#
+  `Viewer_BookChanged` parity) — switching reader tabs swaps the
+  panel to that comic and restores its current page. The page-turn
+  hook is slot-guarded (only the bound book's turns move the
+  marker). The blank-until-second-comic case: the panel reflows
+  when its tab becomes visible (`visible-child` notify → reflow)
+  on top of the resize signal and the draw-path self-correction.
