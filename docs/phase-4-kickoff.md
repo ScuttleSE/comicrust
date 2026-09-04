@@ -494,3 +494,13 @@ C# spec: `PagesView.cs` (833), `ComicPagesView.cs` (241),
   ride the right edge, the numeric tags render (gold personal,
   blue community, absent at 0), captions wrap centered with the
   C# group degradation. 236 tests green.
+- **T4 COMPLETE — USER-TESTED, ALL PASS (2026-09-04).** Covers
+  (frame/shadow), captions (the C# format with the group
+  degradation), the read-marker ribbons at the reading position
+  (moved after reading), the rating tags (gold personal / blue
+  community, none at 0), and the missing-file red cross after a
+  rescan all verified on the user's machine. Open question the
+  user raised: opening a comic shows the reader in a NEW window —
+  correct answer: docked (the C# main-form shape); that is T5's
+  deliverable (the reader as a view in the browser window, the
+  Phase 3 window becomes the undock path).
