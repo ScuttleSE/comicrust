@@ -241,6 +241,22 @@ was the gap (the C# navigates a FILTERED page list and reads by
   the nav buttons move the list highlight (`select_row`, the
   selection hook guards the same page).
 
+Third user-test round (2026-09-04) — the completion-payload bug:
+the page-queue callback reported `k.key.index` (the PROVIDER
+index) as the display page, so under a sequence every completed
+image landed in the wrong slot (blank page 1, scrambled flips).
+Fixed: the callback carries the requesting DISPLAY position.
+Proven end-to-end with the `reorder_probe` recipe (seed an
+isolated DB with a moved page, launch the app): display 0 renders
+archive index 1 (`dispatch: display=0 key_index=1`). The probe
+also exposed that GApplication hands the app ABSOLUTE paths — the
+seed must store absolute paths like the real scanner.
+Cover note: setting page N to Front Cover does NOT move the cover
+while an EARLIER FrontCover page exists — `FrontCoverPageIndex`
+takes the `PreferredFrontCover`-th (default 0) FrontCover page,
+C# parity. Moving the cover = change the old cover's type too
+(Story), or set the new cover when no earlier FrontCover exists.
+
 ### T3. The smart-list editor (`SmartListDialog` + matchers)
 
 - [ ] The visual matcher builder: property combo (the registry),

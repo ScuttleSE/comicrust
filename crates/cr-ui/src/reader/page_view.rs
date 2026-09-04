@@ -463,10 +463,23 @@ impl ViewState {
             if self.queued.contains(&(page, rotation)) {
                 continue;
             }
+            if std::env::var("CR_DEBUG_SEQ").is_ok() {
+                eprintln!(
+                    "dispatch: display={page} key_index={} rot={rotation:?}",
+                    self.page_indexes
+                        .as_ref()
+                        .map_or(page, |s| s.get(page).copied().unwrap_or(page))
+                );
+            }
             self.queued.insert((page, rotation));
             let tx = self.page_tx.clone();
             let pool = Arc::clone(&self.pool);
             let done_source = source.clone();
+            // The completion carries the DISPLAY position (the key
+            // holds the PROVIDER index — under a display sequence the
+            // two differ; reporting the key's index strands the
+            // requesting page forever).
+            let display_page = page;
             self.pool.add_page_to_queue(
                 key,
                 None,
@@ -474,7 +487,7 @@ impl ViewState {
                     let image = pool.render_page(k);
                     tx.send(PageDone {
                         source: done_source.clone(),
-                        page: k.key.index,
+                        page: display_page,
                         rotation: k.key.rotation,
                         image,
                     });
@@ -1042,6 +1055,14 @@ impl PageView {
 
     /// Applies a finished pool-queue render; recomposes.
     fn on_page_loaded(&self, done: PageDone) {
+        if std::env::var("CR_DEBUG_SEQ").is_ok() {
+            eprintln!(
+                "loaded: display={} some={} src_ok={}",
+                done.page,
+                done.image.is_some(),
+                done.source == self.state.borrow().source
+            );
+        }
         {
             let mut st = self.state.borrow_mut();
             if done.source != st.source {
