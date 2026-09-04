@@ -351,9 +351,12 @@ impl ItemView {
     }
 
     /// The right-click context menu (`tvQueries_MouseDown` shape):
-    /// (item under the cursor, x, y).
+    /// (item under the cursor, x, y) — the coordinates are TOPLEVEL
+    /// (window) coordinates, ready for a popover parented to the
+    /// window.
     pub fn connect_context<F: Fn(Option<CrGuid>, f64, f64) + 'static>(&self, f: F) {
         let state = Rc::downgrade(&self.state);
+        let canvas = self.canvas.clone();
         let gesture = GestureClick::new();
         gesture.set_button(3);
         gesture.connect_pressed(move |gesture, _n, x, y| {
@@ -364,7 +367,15 @@ impl ItemView {
             let s = state.borrow();
             let hit = hit_test(&s.layout, x, y).map(|d| s.view.book_id(d));
             drop(s);
-            f(hit, x, y);
+            // The canvas lives inside the pane — translate to the
+            // toplevel so a window-parented popover lands under the
+            // cursor.
+            let (wx, wy) = canvas
+                .ancestor(gtk4::Window::static_type())
+                .and_then(|w| w.downcast::<gtk4::Window>().ok())
+                .and_then(|win| canvas.translate_coordinates(&win, x, y))
+                .unwrap_or((x, y));
+            f(hit, wx, wy);
         });
         self.canvas.add_controller(gesture);
     }
@@ -863,11 +874,9 @@ fn draw_frame(ctx: &cairo::Context, state: &Rc<RefCell<ItemViewState>>, window: 
         ctx.set_source_rgb(TEXT.0, TEXT.1, TEXT.2);
         ctx.select_font_face("Sans", cairo::FontSlant::Normal, cairo::FontWeight::Normal);
         ctx.set_font_size(12.0);
-        let visible: Vec<&Column> = s
-            .detail_columns
-            .iter()
-            .filter(|c| c.visible && c.is_text_column())
-            .collect();
+        // All visible columns — the same list the cells draw (the
+        // image-only columns hold their slot).
+        let visible: Vec<&Column> = s.detail_columns.iter().filter(|c| c.visible).collect();
         let mut x = header.x + layout::COLUMN_OFFSET_X;
         for column in visible {
             ctx.move_to(x + 2.0, header.y + header.h * 0.7);
