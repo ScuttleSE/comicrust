@@ -298,10 +298,115 @@ impl ItemView {
         self.state.borrow().view.clone()
     }
 
+    /// Mutates the layout config (view mode, sizes) and reflows
+    /// (`ItemViewConfig` changes from the shell menus).
+    pub fn configure(&self, f: impl FnOnce(&mut LayoutConfig)) {
+        let width = self.state.borrow().config.view_width;
+        {
+            let mut s = self.state.borrow_mut();
+            f(&mut s.config);
+            s.relayout(width);
+        }
+        self.update_size_request();
+        self.canvas.queue_draw();
+    }
+
+    pub fn mode(&self) -> ItemViewMode {
+        self.state.borrow().config.mode
+    }
+
+    pub fn thumb_height(&self) -> f64 {
+        self.state.borrow().config.thumb_height
+    }
+
+    /// The quick-search filter (`UpdateQuickFilter`): `None` clears.
+    pub fn set_filter(&self, filter: Option<cr_engine::matcher::tree::Matcher>) {
+        let width = self.state.borrow().config.view_width;
+        {
+            let mut s = self.state.borrow_mut();
+            s.view.set_filter(filter);
+            s.relayout(width);
+        }
+        self.update_size_request();
+        self.notify_and_redraw();
+    }
+
+    pub fn book_count(&self) -> usize {
+        self.state.borrow().view.len()
+    }
+
+    /// The right-click context menu (`tvQueries_MouseDown` shape):
+    /// (item under the cursor, x, y).
+    pub fn connect_context<F: Fn(Option<CrGuid>, f64, f64) + 'static>(&self, f: F) {
+        let state = Rc::downgrade(&self.state);
+        let gesture = GestureClick::new();
+        gesture.set_button(3);
+        gesture.connect_pressed(move |gesture, _n, x, y| {
+            let Some(state) = state.upgrade() else {
+                return;
+            };
+            gesture.set_state(gtk4::EventSequenceState::Claimed);
+            let s = state.borrow();
+            let hit = hit_test(&s.layout, x, y).map(|d| s.view.book_id(d));
+            drop(s);
+            f(hit, x, y);
+        });
+        self.canvas.add_controller(gesture);
+    }
+
     /// Takes the keyboard focus onto the grid (the window-activation
     /// re-grab — the reader's dead-first-keypress fix).
     pub fn grab_focus(&self) {
         self.canvas.grab_focus();
+    }
+
+    /// Header sort click: push/flip the column (`OnHeaderClick`).
+    pub fn set_sort_column(&self, column: &str) {
+        let width = self.state.borrow().config.view_width;
+        {
+            let mut s = self.state.borrow_mut();
+            s.view.set_sort_column(column);
+            s.relayout(width);
+        }
+        self.canvas.queue_draw();
+    }
+
+    pub fn toggle_sort_direction(&self) {
+        let width = self.state.borrow().config.view_width;
+        {
+            let mut s = self.state.borrow_mut();
+            s.view.toggle_direction();
+            s.relayout(width);
+        }
+        self.canvas.queue_draw();
+    }
+
+    pub fn set_grouper(&self, grouper: Option<&'static str>) {
+        let width = self.state.borrow().config.view_width;
+        {
+            let mut s = self.state.borrow_mut();
+            s.view.set_grouper(grouper);
+            s.relayout(width);
+        }
+        self.update_size_request();
+        self.canvas.queue_draw();
+    }
+
+    /// Reveals a hidden Detail column (the columns menu; the full
+    /// visibility toggling is T5 polish).
+    pub fn set_column_visible(&self, property: &str, visible: bool) {
+        let width = self.state.borrow().config.view_width;
+        {
+            let mut s = self.state.borrow_mut();
+            for c in s.detail_columns.iter_mut() {
+                if c.property == property {
+                    c.visible = visible;
+                }
+            }
+            s.relayout(width);
+        }
+        self.update_size_request();
+        self.canvas.queue_draw();
     }
 
     fn update_size_request(&self) {

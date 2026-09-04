@@ -1,6 +1,7 @@
-//! The reader window shell around the page views — one window, one
-//! tab per open comic (the C# `MainForm` file tabs over the
-//! `OpenBooks` slots; the browser arrives in Phase 4).
+//! The reader shell — the tabbed page-view host (`MainForm` file
+//! tabs over the `OpenBooks` slots). Phase 5 docks it into the
+//! browser window as a view (the C# main-form shape); the standalone
+//! window remains only as the undock target (`D`).
 //!
 //! Shell duties ported from `MainForm`:
 //! - reading-state write-back (`OnBookOpened` stamps
@@ -72,7 +73,9 @@ struct UndockedTab {
 }
 
 struct ShellState {
-    window: ApplicationWindow,
+    /// The host window (the browser shell sets it; fullscreen chrome
+    /// and the Q exit ride it). `None` until docked.
+    host: RefCell<Option<ApplicationWindow>>,
     header: HeaderBar,
     subtitle: Label,
     notebook: Notebook,
@@ -86,6 +89,9 @@ struct ShellState {
     minimal_gui: bool,
     cursor_hide_source: Option<glib::SourceId>,
     next_slot: usize,
+    /// The host runs this when the last tab closes (the C# `Close`
+    /// makes the browser visible again).
+    on_last_tab_closed: Option<Box<dyn Fn()>>,
 }
 
 impl ShellState {
@@ -104,43 +110,39 @@ impl ShellState {
 /// Clone-able handle around the shell state. Callbacks hold a
 /// `Weak` so the tab's `PageView` closures never form a cycle.
 #[derive(Clone)]
-pub struct ReaderWindow {
+pub struct ReaderShell {
     state: Rc<RefCell<ShellState>>,
 }
 
-impl ReaderWindow {
-    /// Opens `path` as the first tab. Errors surface to the caller
-    /// (the app shows a dialog) — the C# treats an unopenable comic
-    /// the same way.
-    pub fn open(app: &Application, path: &Path) -> anyhow::Result<ReaderWindow> {
-        let window = ApplicationWindow::builder()
-            .application(app)
-            .title(Self::window_title(path))
-            .default_width(DEFAULT_WIDTH)
-            .default_height(DEFAULT_HEIGHT)
-            .css_classes(["reader-window"])
-            .build();
+/// The reader's visible pieces — the browser shell parents the
+/// notebook into its reader view and packs the header's subtitle
+/// where the C# shows it (the main window title area).
+pub struct ReaderShellWidgets {
+    notebook: Notebook,
+    pub header: HeaderBar,
+}
 
+impl ReaderShellWidgets {
+    pub fn notebook(&self) -> Notebook {
+        self.notebook.clone()
+    }
+}
+
+impl ReaderShell {
+    /// Builds the reader pane (no window — the host docks it).
+    pub fn new(app: &Application, pool: Arc<ImagePool>) -> (ReaderShell, ReaderShellWidgets) {
         let header = HeaderBar::new();
         let subtitle = Label::builder().css_classes(["placeholder-label"]).build();
         header.pack_end(&subtitle);
-        window.set_titlebar(Some(&header));
 
         let notebook = Notebook::new();
         notebook.set_vexpand(true);
         notebook.set_hexpand(true);
-        window.set_child(Some(&notebook));
 
-        // One render pool per reader shell (memory-only until the
-        // settings port decides the cache location) — the C#
-        // `Program.ImagePool` is global; per-window is the Phase 3
-        // scope.
-        let pool = Arc::new(ImagePool::new(None));
-
-        let shell = ReaderWindow {
+        let shell = ReaderShell {
             state: Rc::new(RefCell::new(ShellState {
-                window: window.clone(),
-                header,
+                host: RefCell::new(None),
+                header: header.clone(),
                 subtitle,
                 notebook: notebook.clone(),
                 app: app.clone(),
@@ -151,6 +153,7 @@ impl ReaderWindow {
                 minimal_gui: false,
                 cursor_hide_source: None,
                 next_slot: 0,
+                on_last_tab_closed: None,
             })),
         };
 
@@ -162,7 +165,30 @@ impl ReaderWindow {
                 let Some(sh) = st.upgrade() else {
                     return;
                 };
-                ReaderWindow::refresh_chrome(&sh, page_num as usize);
+                ReaderShell::refresh_chrome(&sh, page_num as usize);
+            });
+        }
+
+        let widgets = ReaderShellWidgets { notebook, header };
+        (shell, widgets)
+    }
+
+    /// The browser shell docks the reader: the host window drives
+    /// the fullscreen chrome, the title, and the Q exit.
+    pub fn set_host(&self, window: &ApplicationWindow) {
+        *self.state.borrow().host.borrow_mut() = Some(window.clone());
+
+        // Fullscreen chrome: the reader header hides with the
+        // decorations (`AutoMinimalGui` is false by default).
+        {
+            let st = Rc::downgrade(&self.state);
+            window.connect_notify_local(Some("fullscreened"), move |win, _| {
+                let Some(sh) = st.upgrade() else {
+                    return;
+                };
+                let fullscreen = win.is_fullscreen();
+                let minimal = sh.borrow().minimal_gui;
+                sh.borrow().header.set_visible(!fullscreen && !minimal);
             });
         }
 
@@ -171,7 +197,7 @@ impl ReaderWindow {
         // ignores it and keys never reach the reader. Re-grab when
         // the toplevel becomes active.
         {
-            let st = Rc::downgrade(&shell.state);
+            let st = Rc::downgrade(&self.state);
             window.connect_notify_local(Some("is-active"), move |win, _| {
                 if !win.is_active() {
                     return;
@@ -186,48 +212,39 @@ impl ReaderWindow {
                 }
             });
         }
+    }
 
-        // Fullscreen chrome: the header hides with the decorations
-        // (`AutoMinimalGui` is false by default, so the C# keeps the
-        // menu; the reveal strip below still applies).
-        {
-            let st = Rc::downgrade(&shell.state);
-            window.connect_notify_local(Some("fullscreened"), move |win, _| {
-                let Some(sh) = st.upgrade() else {
-                    return;
-                };
-                let s = sh.borrow_mut();
-                let fullscreen = win.is_fullscreen();
-                s.header.set_visible(!fullscreen && !s.minimal_gui);
-            });
+    /// The host hook: the last tab closed → the browser view shows
+    /// again (the C# `Close` reveals the browser).
+    pub fn set_on_last_tab_closed<F: Fn() + 'static>(&self, f: F) {
+        self.state.borrow_mut().on_last_tab_closed = Some(Box::new(f));
+    }
+
+    /// Focuses the current reader tab (the host's is-active handler
+    /// calls this before any keypress can land).
+    pub fn focus_current(&self) {
+        let s = self.state.borrow();
+        let current = s.notebook.current_page();
+        if let Some(tab) = s.tabs.get(current.unwrap_or(0) as usize) {
+            tab.view.widget().grab_focus();
         }
+    }
 
-        // Closing the main window with an undocked reader: the C#
-        // `ReaderFormFormClosing` re-docks, then the main form closes
-        // — everything goes together.
-        {
-            let st = Rc::downgrade(&shell.state);
-            window.connect_close_request(move |_| {
-                if let Some(sh) = st.upgrade() {
-                    let mut s = sh.borrow_mut();
-                    if let Some(undocked) = s.undocked.take() {
-                        undocked.window.close();
-                    }
-                }
-                // The exit save (`DatabaseManager.Dispose` → `Save`).
-                // The C# swallows save errors — log instead.
-                if let Err(err) = library::save() {
-                    eprintln!("library save failed: {err}");
-                }
-                // Drop the app's reader slot — a closed window must
-                // not silently receive the next open (Phase 4 T3).
-                crate::app::reader_closed();
-                glib::Propagation::Proceed
-            });
+    pub fn is_empty(&self) -> bool {
+        self.state.borrow().tabs.is_empty()
+    }
+
+    /// The host window closes: an undocked reader docks back first
+    /// (the C# `ReaderFormFormClosing`).
+    pub fn shutdown(&self) {
+        let mut s = self.state.borrow_mut();
+        if let Some(undocked) = s.undocked.take() {
+            undocked.window.close();
         }
+    }
 
-        shell.open_comic(path)?;
-        Ok(shell)
+    pub fn notebook(&self) -> Notebook {
+        self.state.borrow().notebook.clone()
     }
 
     /// Adds a comic as a new tab (the C# `OpenComic` into a free
@@ -275,9 +292,12 @@ impl ReaderWindow {
             }
         };
         // `ProviderIndexRetrievalCompleted`: resume position and
-        // read-progress clamp to the real page count.
-        let resume = book.current_page.clamp(0, page_count as i32 - 1).max(0) as usize;
-        book.last_page_read = book.last_page_read.clamp(0, page_count as i32 - 1);
+        // read-progress clamp to the real page count. An empty page
+        // list (a broken archive) must not panic — the display shows
+        // the error page instead.
+        let max_page = (page_count as i32 - 1).max(0);
+        let resume = book.current_page.clamp(0, max_page).max(0) as usize;
+        book.last_page_read = book.last_page_read.clamp(0, max_page);
         let last_read = book.last_page_read.max(0) as usize;
 
         let (slot, view, tab_widget);
@@ -317,10 +337,10 @@ impl ReaderWindow {
                         return;
                     };
                     match command {
-                        "NextTab" => ReaderWindow::switch_slot(&sh, 1),
-                        "PrevTab" => ReaderWindow::switch_slot(&sh, -1),
-                        "ToggleUndockReader" => ReaderWindow::toggle_undock(&sh),
-                        "ToggleMenu" => ReaderWindow::toggle_minimal_gui(&sh),
+                        "NextTab" => ReaderShell::switch_slot(&sh, 1),
+                        "PrevTab" => ReaderShell::switch_slot(&sh, -1),
+                        "ToggleUndockReader" => ReaderShell::toggle_undock(&sh),
+                        "ToggleMenu" => ReaderShell::toggle_minimal_gui(&sh),
                         _ => {}
                     }
                 }));
@@ -332,8 +352,9 @@ impl ReaderWindow {
                 let st_weak = Rc::downgrade(&self.state);
                 view.set_exit_callback(Box::new(move || {
                     if let Some(sh) = st_weak.upgrade() {
-                        let window = sh.borrow().window.clone();
-                        window.close();
+                        if let Some(window) = sh.borrow().host.borrow().clone() {
+                            window.close();
+                        }
                     }
                 }));
             }
@@ -348,7 +369,7 @@ impl ReaderWindow {
                     let Some(sh) = st_weak.upgrade() else {
                         return;
                     };
-                    ReaderWindow::on_pointer_moved(&sh, area.upcast_ref(), y);
+                    ReaderShell::on_pointer_moved(&sh, area.upcast_ref(), y);
                 });
                 view.widget().add_controller(controller);
             }
@@ -388,7 +409,7 @@ impl ReaderWindow {
         let clicked = Rc::downgrade(state);
         close.connect_clicked(move |_| {
             if let Some(sh) = clicked.upgrade() {
-                ReaderWindow::close_tab(&sh, slot);
+                ReaderShell::close_tab(&sh, slot);
             }
         });
         box_.append(&close);
@@ -416,15 +437,17 @@ impl ReaderWindow {
             let book = st.books.get(&tab.slot);
             let page = book.map(|b| b.current_page).unwrap_or(0).max(0) as usize;
             st.subtitle.set_text(&page_subtitle(page, tab.page_count));
-            st.window.set_title(Some(&Self::window_title(&tab.path)));
+            if let Some(window) = st.host.borrow().as_ref() {
+                window.set_title(Some(&Self::window_title(&tab.path)));
+            }
             tab.view.widget().grab_focus();
         }
     }
 
-    /// Closes one tab (`OpenBooks.Close`); the last close closes the
-    /// window.
+    /// Closes one tab (`OpenBooks.Close`); the last close hands the
+    /// view back to the browser (the host callback).
     fn close_tab(state: &Rc<RefCell<ShellState>>, slot: usize) {
-        let (pos, close_window, notebook) = {
+        let (pos, last_tab, notebook) = {
             let mut st = state.borrow_mut();
             let Some(pos) = st.position_of(slot) else {
                 return;
@@ -437,14 +460,13 @@ impl ReaderWindow {
         // neighbor synchronously and the switch-page handler borrows
         // the shell.
         notebook.remove_page(Some(pos as u32));
-        if close_window {
-            // The main window's close-request handler takes the
-            // undocked reader with it.
-            let window = state.borrow().window.clone();
-            window.close();
+        if last_tab {
+            if let Some(f) = state.borrow().on_last_tab_closed.as_ref() {
+                f();
+            }
         } else {
             let current = state.borrow().notebook.current_page().unwrap_or(0) as usize;
-            ReaderWindow::refresh_chrome(state, current);
+            ReaderShell::refresh_chrome(state, current);
         }
     }
 
@@ -493,7 +515,7 @@ impl ReaderWindow {
             notebook.insert_page(view.widget(), Some(&tab_widget), Some(position as u32));
             notebook.set_current_page(Some(position as u32));
             let current = notebook.current_page().unwrap_or(0) as usize;
-            ReaderWindow::refresh_chrome(state, current);
+            ReaderShell::refresh_chrome(state, current);
             return;
         }
         let Some((position, tab, view, _tab_widget, caption, app)) = undock else {
@@ -539,18 +561,31 @@ impl ReaderWindow {
 
     /// `MainForm.MinimalGui` (the K command): pins the chrome hidden.
     fn toggle_minimal_gui(state: &Rc<RefCell<ShellState>>) {
+        let fullscreen = state
+            .borrow()
+            .host
+            .borrow()
+            .as_ref()
+            .map(|w| w.is_fullscreen())
+            .unwrap_or(false);
         let mut st = state.borrow_mut();
         st.minimal_gui = !st.minimal_gui;
-        st.header
-            .set_visible(!st.minimal_gui && !st.window.is_fullscreen());
+        st.header.set_visible(!st.minimal_gui && !fullscreen);
     }
 
     /// `AutoHideMainMenu` (default true): the chrome reveals while
     /// the pointer is in the top strip and slides away elsewhere.
     /// The fullscreen cursor hides after the idle delay.
     fn on_pointer_moved(state: &Rc<RefCell<ShellState>>, area: &gtk4::Widget, y: f64) {
+        let fullscreen = state
+            .borrow()
+            .host
+            .borrow()
+            .as_ref()
+            .map(|w| w.is_fullscreen())
+            .unwrap_or(false);
         let mut st = state.borrow_mut();
-        if st.window.is_fullscreen() {
+        if fullscreen {
             // Cursor auto-hide: reset the idle timer on every motion.
             if let Some(source) = st.cursor_hide_source.take() {
                 source.remove();
@@ -567,10 +602,6 @@ impl ReaderWindow {
         }
         let reveal = y <= CHROME_REVEAL_EDGE;
         st.header.set_visible(reveal && !st.minimal_gui);
-    }
-
-    pub fn present(&self) {
-        self.state.borrow().window.present();
     }
 
     fn window_title(path: &Path) -> String {

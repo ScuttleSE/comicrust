@@ -11,22 +11,21 @@ use std::rc::Rc;
 use gtk4::prelude::*;
 use gtk4::{gio, glib};
 use gtk4::{
-    Application, ApplicationWindow, Button, FileChooserAction, FileChooserNative, FileFilter,
-    ResponseType, Window,
+    Application, ApplicationWindow, FileChooserAction, FileChooserNative, FileFilter, ResponseType,
+    Window,
 };
 
 use cr_core::xml::scalar::CrGuid;
 
 use crate::browser;
 use crate::library;
-use crate::reader_window::{self, ReaderWindow};
 use crate::theme;
 
 pub const APP_ID: &str = "org.comicrust.ComicRust";
 
 /// File-dialog filter extensions (`KnownFileFormats` + folders; the
 /// C# open dialog uses the same list from the provider registry).
-const OPEN_FILTER_EXTS: &[&str] = &[
+pub const OPEN_FILTER_EXTS: &[&str] = &[
     "cbz", "zip", "cbr", "rar", "cb7", "7z", "cbt", "tar", "pdf", "djvu",
 ];
 
@@ -97,114 +96,41 @@ fn set_open_message(message: Option<String>) {
     OPEN_MESSAGE.with(|cell| *cell.borrow_mut() = message);
 }
 
-/// The app shell — the future browser window (Phase 4 T5 replaces
-/// the placeholder center pane with the ItemView): the list navigator
-/// on the left, a placeholder that shows the evaluated list on the
-/// right, and the file commands in the header.
+/// The app shell — the browser main window (`MainForm`): the
+/// navigator + ItemView, the quick search and view commands, the
+/// status bar, and the reader docked as a view. A bare entry dialog
+/// still serves the navigator commands (the editors are Phase 5).
 fn show_shell(app: &Application) {
-    let win = ApplicationWindow::builder()
-        .application(app)
-        .title("comicrust")
-        .default_width(1100)
-        .default_height(700)
-        .build();
+    let shell = BROWSER.with(|cell| cell.borrow().as_ref().map(|s| s.clone()));
+    let shell = match shell {
+        Some(shell) => shell,
+        None => create_browser(app),
+    };
     if let Some(message) = OPEN_MESSAGE.with(|cell| cell.borrow().clone()) {
-        show_attention_dialog(&win, &message);
+        show_attention_dialog(&shell.window(), &message);
     }
+    shell.present();
+}
 
-    let header = gtk4::HeaderBar::new();
-    let open = Button::with_label("Open…");
-    let win_clone = win.clone();
-    open.connect_clicked(move |_| open_file_dialog(&win_clone));
-    header.pack_start(&open);
-
-    // `AddFolderToLibrary` (the browser command).
-    let add_folder = Button::with_label("Add Folder to Library…");
-    let win_for_click = win.clone();
-    add_folder.connect_clicked(move |_| {
-        add_folder_dialog(&win_for_click);
-    });
-    header.pack_start(&add_folder);
-    win.set_titlebar(Some(&header));
-
-    // Navigator pane + ItemView (the browser center).
-    let paned = gtk4::Paned::new(gtk4::Orientation::Horizontal);
-    let navigator = browser::navigator::Navigator::new();
-    paned.set_start_child(Some(navigator.widget()));
-    paned.set_shrink_start_child(false);
-    paned.set_position(280);
-
-    // One render pool for the browser (the C# `Program.ImagePool` is
-    // global; the reader windows keep their own until T5).
-    let pool = std::sync::Arc::new(cr_engine::image_pool::ImagePool::new(None));
-    let browser::item_view::ItemViewWidgets {
-        scroller,
-        view: item_view,
-    } = browser::item_view::ItemView::create(pool);
-    paned.set_end_child(Some(&scroller));
-    paned.set_shrink_end_child(false);
-    win.set_child(Some(&paned));
-
-    // Selection → evaluate the list (debounced inside the widget);
-    // the ItemView shows the books.
-    let item_view_select = item_view.clone();
-    navigator.connect_selected(move |id, _name| {
-        if let Some((_name, books)) = library::evaluate_books(id) {
-            item_view_select.set_books(books);
-        }
-    });
-
-    // The window-activation focus re-grab (the reader's dead
-    // first-keypress fix): the grid takes the keys when the window
-    // activates.
+/// Creates and registers the browser shell. Files can arrive through
+/// the `open` signal BEFORE `activate` (GApplication order); a shell
+/// created there keeps the app alive (a mapped window holds it).
+fn create_browser(app: &Application) -> browser::shell::BrowserShell {
+    let (window, shell) = browser::shell::BrowserShell::create(app);
     {
-        let item_view_focus = item_view.clone();
-        win.connect_notify_local(Some("is-active"), move |w, _| {
-            if w.is_active() {
-                item_view_focus.grab_focus();
-            }
+        let nav = shell.navigator();
+        let win_for_cmds = window.clone();
+        let nav_for_cmd = Rc::clone(&nav);
+        nav.connect_command(move |command, target| {
+            run_list_command(&win_for_cmds, &nav_for_cmd, command, target);
         });
     }
-
-    // Double-click / Enter → open the comic in the reader
-    // (`ItemActivate`; the browser stays — the C# main-form shape).
-    {
-        let app_for_open = app.clone();
-        let item_view = item_view.clone();
-        item_view.connect_activate(move |id| {
-            let path = library::book_path(id);
-            if let Some(path) = path {
-                open_reader(&app_for_open, std::path::Path::new(&path));
-            }
-        });
+    BROWSER.with(|cell| *cell.borrow_mut() = Some(shell.clone()));
+    if let Some(message) = OPEN_MESSAGE.with(|cell| cell.borrow().clone()) {
+        show_attention_dialog(&window, &message);
     }
-
-    // Context-menu commands (the C# navigator commands, dialogs are
-    // Phase 5 — bare entry dialogs here).
-    {
-        let nav = navigator.clone();
-        let win_for_cmds = win.clone();
-        navigator.connect_command(move |command, target| {
-            run_list_command(&win_for_cmds, &nav, command, target);
-        });
-    }
-
-    // Fill the tree from the session DB.
-    navigator.refill(&library::comic_lists_snapshot());
-
-    // The launcher is the app's main window until the browser lands:
-    // closing it is app exit — save the library
-    // (`MainFormFormClosed` → `CleanUp` parity). Without this, a scan
-    // or reading session that never opened a reader window would be
-    // discarded.
-    win.connect_close_request(|_| {
-        if let Err(err) = library::save() {
-            eprintln!("library save failed: {err}");
-        }
-        glib::Propagation::Proceed
-    });
-
-    win.present();
+    window.present();
+    shell
 }
 
 /// The navigator context-menu commands (`NewSmartList`, `NewFolder`,
@@ -350,7 +276,7 @@ pub fn open_file_dialog(parent: &impl IsA<Window>) {
 /// library on the scan worker (the UI stays responsive; the C# shows
 /// the scan progress in the status strip). The result dialog reports
 /// the scan.
-fn add_folder_dialog(parent: &impl IsA<Window>) {
+pub fn add_folder_dialog(parent: &impl IsA<Window>) {
     let chooser = FileChooserNative::builder()
         .title("Add Folder to Library")
         .action(FileChooserAction::SelectFolder)
@@ -425,51 +351,21 @@ fn show_attention_dialog(parent: &impl IsA<Window>, message: &str) {
     dialog.present();
 }
 
-// The session reader window (the C# single main form): every open
-// — command line, `open` signal, or the launcher dialog — becomes a
-// tab in this window.
-thread_local! {
-    static READER: RefCell<Option<reader_window::ReaderWindow>> =
-        const { RefCell::new(None) };
-}
-
 /// Opens a comic path into the session reader window; failures
 /// surface as a dialog (the C# shows an error box from
 /// `MainForm.OpenComic`).
 pub fn open_reader(app: &Application, path: &Path) {
-    let result = READER.with(|cell| {
-        let mut reader = cell.borrow_mut();
-        match reader.as_mut() {
-            Some(win) => win.open_comic(path),
-            None => ReaderWindow::open(app, path).map(|win| {
-                win.present();
-                *reader = Some(win);
-            }),
-        }
-    });
-    if let Err(err) = result {
-        show_error_dialog(app, &path.to_string_lossy(), &format!("{err:#}"));
-    }
+    let shell = BROWSER.with(|cell| cell.borrow().as_ref().map(|s| s.clone()));
+    let shell = match shell {
+        Some(shell) => shell,
+        // The first file can arrive through the `open` signal BEFORE
+        // `activate` — the shell must exist (and its window map) now,
+        // or the app exits with no mapped window.
+        None => create_browser(app),
+    };
+    shell.open_comic(path);
 }
 
-/// The reader window closed — drop the session slot so the next open
-/// creates a fresh window (a closed window still sits in the slot
-/// otherwise, and every later open lands in it invisibly).
-pub(crate) fn reader_closed() {
-    READER.with(|cell| {
-        *cell.borrow_mut() = None;
-    });
-}
-
-fn show_error_dialog(app: &Application, title: &str, message: &str) {
-    let dialog = gtk4::MessageDialog::builder()
-        .application(app)
-        .title("comicrust")
-        .text(format!("Cannot open {title}"))
-        .secondary_text(message.to_string())
-        .message_type(gtk4::MessageType::Error)
-        .buttons(gtk4::ButtonsType::Close)
-        .build();
-    dialog.connect_response(|dialog, _| dialog.destroy());
-    dialog.present();
+thread_local! {
+    static BROWSER: RefCell<Option<browser::shell::BrowserShell>> = const { RefCell::new(None) };
 }

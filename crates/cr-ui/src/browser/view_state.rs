@@ -13,6 +13,8 @@ use std::collections::HashSet;
 use cr_core::model::comic_book::ComicBook;
 use cr_core::xml::scalar::CrGuid;
 use cr_engine::group::{compare_by_column, groupers, GroupInfo, Grouper, UNSPECIFIED};
+use cr_engine::matcher::eval::{match_set, MatchContext};
+use cr_engine::matcher::tree::Matcher;
 use cr_io::extended_compare::extended_compare_ignore_articles_case;
 
 /// One sort key: a column key plus direction (`ItemViewColumn` +
@@ -67,6 +69,14 @@ impl SortChain {
         }
     }
 
+    /// Flips the first key's direction (the Reverse Direction
+    /// command).
+    pub fn toggle_direction(&mut self) {
+        if let Some(first) = self.keys.first_mut() {
+            first.descending = !first.descending;
+        }
+    }
+
     fn compare(&self, a: &ComicBook, b: &ComicBook) -> std::cmp::Ordering {
         let mut ord = std::cmp::Ordering::Equal;
         for key in &self.keys {
@@ -104,6 +114,9 @@ pub struct ViewState {
     sort: SortChain,
     /// The grouper column key (`None` = no grouping).
     grouper: Option<&'static str>,
+    /// The quick-search filter (`ComicBookAllPropertiesMatcher` /
+    /// a full query) — `None` shows everything.
+    filter: Option<Matcher>,
     selected: HashSet<CrGuid>,
     focus: Option<CrGuid>,
     anchor: Option<CrGuid>,
@@ -164,6 +177,13 @@ impl ViewState {
         self.rebuild();
     }
 
+    /// Flips the first sort key's direction (the Reverse Direction
+    /// command).
+    pub fn toggle_direction(&mut self) {
+        self.sort.toggle_direction();
+        self.rebuild();
+    }
+
     pub fn set_grouper(&mut self, grouper: Option<&'static str>) {
         self.grouper = grouper;
         self.rebuild();
@@ -183,6 +203,11 @@ impl ViewState {
 
     pub fn set_books(&mut self, books: Vec<ComicBook>) {
         self.books = books;
+        self.rebuild();
+    }
+
+    pub fn set_filter(&mut self, filter: Option<Matcher>) {
+        self.filter = filter;
         self.rebuild();
     }
 
@@ -225,7 +250,23 @@ impl ViewState {
                     buckets.len() - 1
                 })
         };
+        // The quick-search filter (the C# `quickFilter` in
+        // `FillBookList`).
+        let allowed: Option<Vec<CrGuid>> = self.filter.as_ref().map(|m| {
+            let items: Vec<&ComicBook> = self.books.iter().collect();
+            let ctx = MatchContext::new(&items);
+            let pairs = [(cr_core::model::enums::MatcherMode::And, false, m)];
+            match_set(&items, &pairs, &ctx)
+                .iter()
+                .map(|b| b.id)
+                .collect()
+        });
         for (index, book) in self.books.iter().enumerate() {
+            if let Some(allowed) = &allowed {
+                if !allowed.contains(&book.id) {
+                    continue;
+                }
+            }
             let (caption, sort_key) = match grouper_fn {
                 Some(g) => {
                     let info: GroupInfo = g(book);

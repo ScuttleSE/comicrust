@@ -408,6 +408,18 @@ pub fn evaluate_books(id: &CrGuid) -> Option<(String, Vec<ComicBook>)> {
     Some((name, books.into_iter().cloned().collect()))
 }
 
+/// Removes one book from the library by id (the context-menu
+/// command; the file on disk is untouched).
+pub fn remove_book(id: &CrGuid) {
+    let lib = session();
+    let mut l = lib.borrow_mut();
+    let before = l.database().books.len();
+    l.database_mut().books.retain(|b| b.id != *id);
+    if l.database().books.len() != before {
+        l.mark_dirty();
+    }
+}
+
 /// The file path of one library book (the ItemView activate path).
 pub fn book_path(id: &CrGuid) -> Option<String> {
     let lib = session();

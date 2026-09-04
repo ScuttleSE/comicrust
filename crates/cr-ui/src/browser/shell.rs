@@ -1,0 +1,673 @@
+//! The browser shell — the app's main window (the C# `MainForm`):
+//! the navigator pane + ItemView in a paned container with a status
+//! bar, the quick search, the view-mode/sort/group/size/columns
+//! commands, and the reader docked as a view (the C# reader replaces
+//! the browser view; `D` undocks it into its own window).
+
+use std::cell::RefCell;
+use std::path::Path;
+use std::rc::Rc;
+use std::sync::Arc;
+
+use gtk4::glib;
+use gtk4::prelude::*;
+use gtk4::{gio, Application, ApplicationWindow, Button, Entry, Label, MenuButton, Paned, Stack};
+
+use cr_core::xml::scalar::CrGuid;
+use cr_engine::image_pool::ImagePool;
+use cr_engine::matcher::tree::Matcher;
+
+use crate::library;
+use crate::reader_shell::ReaderShell;
+
+use super::columns::default_columns;
+use super::item_view::ItemView;
+use super::layout::ItemViewMode;
+use super::navigator::Navigator;
+
+/// The search debounce (`UpdateSearch` on text change; large sets
+/// re-filter).
+const SEARCH_DEBOUNCE_MS: u64 = 300;
+
+/// The thumbnail size range (`Program` limits: 96..512).
+const MIN_THUMB: f64 = 96.0;
+const MAX_THUMB: f64 = 512.0;
+const THUMB_STEP: f64 = 16.0;
+
+/// The clone-able handle (the app's session slot; the closures keep
+/// the window alive through the state's widgets).
+#[derive(Clone)]
+pub struct BrowserShell {
+    window: ApplicationWindow,
+    state: Rc<ShellState>,
+}
+
+struct ShellState {
+    window: ApplicationWindow,
+    stack: Stack,
+    status: Label,
+    navigator: Rc<Navigator>,
+    item_view: ItemView,
+    reader: ReaderShell,
+    app: Application,
+    /// The current navigator selection (refreshes after mutations).
+    current_list: RefCell<Option<CrGuid>>,
+}
+
+impl ShellState {
+    /// Opens a comic into the docked reader and shows it (the C#
+    /// `OpenComic`; the browser hides while the reader shows).
+    fn open_comic(&self, path: &Path) {
+        match self.reader.open_comic(path) {
+            Ok(()) => {
+                self.stack.set_visible_child_name("reader");
+                self.window.present();
+            }
+            Err(err) => {
+                show_error_dialog(&self.app, &path.to_string_lossy(), &format!("{err:#}"));
+            }
+        }
+    }
+
+    fn show_browser(&self) {
+        self.stack.set_visible_child_name("browser");
+    }
+
+    fn refresh_view_from_list(&self) {
+        let id = *self.current_list.borrow();
+        if let Some(id) = id {
+            if let Some((_name, books)) = library::evaluate_books(&id) {
+                self.item_view.set_books(books);
+            }
+        }
+    }
+
+    fn update_status(&self, count: usize, selected: usize) {
+        if selected > 0 {
+            self.status
+                .set_text(&format!("{count} book(s), {selected} selected"));
+        } else {
+            self.status.set_text(&format!("{count} book(s)"));
+        }
+    }
+}
+
+impl BrowserShell {
+    /// Builds the main window (`MainForm`): the browser view + the
+    /// docked reader + the header commands.
+    pub fn create(app: &Application) -> (ApplicationWindow, BrowserShell) {
+        let window = ApplicationWindow::builder()
+            .application(app)
+            .title("comicrust")
+            .default_width(1280)
+            .default_height(800)
+            .build();
+
+        // One pool for the whole app (the C# `Program.ImagePool` is
+        // global).
+        let pool = Arc::new(ImagePool::new(None));
+        let (reader, reader_widgets) = ReaderShell::new(app, Arc::clone(&pool));
+        let navigator = Navigator::new();
+        let super::item_view::ItemViewWidgets {
+            scroller: item_scroller,
+            view: item_view,
+        } = ItemView::create(Arc::clone(&pool));
+
+        // The header commands (the handlers wire in `wire`, where
+        // the shared state exists).
+        let header = gtk4::HeaderBar::new();
+        let open_button = Button::with_label("Open…");
+        header.pack_start(&open_button);
+        let add_folder_button = Button::with_label("Add Folder to Library…");
+        header.pack_start(&add_folder_button);
+        let search = Entry::builder()
+            .placeholder_text("Quick search (or a Match query)")
+            .hexpand(true)
+            .build();
+        header.pack_start(&search);
+
+        let view_button = MenuButton::builder()
+            .label("View")
+            .css_classes(["flat"])
+            .build();
+        view_button.set_menu_model(Some(&view_menu_model()));
+        header.pack_end(&view_button);
+        let sort_button = MenuButton::builder()
+            .label("Sort")
+            .css_classes(["flat"])
+            .build();
+        sort_button.set_menu_model(Some(&sort_menu_model()));
+        header.pack_end(&sort_button);
+        let group_button = MenuButton::builder()
+            .label("Group")
+            .css_classes(["flat"])
+            .build();
+        group_button.set_menu_model(Some(&group_menu_model()));
+        header.pack_end(&group_button);
+        let subtitle = Label::new(None);
+        header.pack_end(&subtitle);
+        window.set_titlebar(Some(&header));
+
+        // The browser page: navigator | ItemView, with the status
+        // bar below (the C# `ComicBrowserControl` status strip).
+        let paned = Paned::new(gtk4::Orientation::Horizontal);
+        paned.set_start_child(Some(navigator.widget()));
+        paned.set_shrink_start_child(false);
+        paned.set_position(280);
+        paned.set_end_child(Some(&item_scroller));
+        paned.set_shrink_end_child(false);
+        let status = Label::builder()
+            .halign(gtk4::Align::Start)
+            .margin_top(4)
+            .margin_bottom(4)
+            .margin_start(8)
+            .build();
+        status.set_text("0 book(s)");
+        let browser_page = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+        browser_page.append(&paned);
+        browser_page.append(&status);
+
+        // The stack: browser ⇄ reader (`BrowserVisible`).
+        let stack = Stack::new();
+        stack.set_vhomogeneous(false);
+        stack.set_hhomogeneous(false);
+        stack.add_named(&browser_page, Some("browser"));
+        stack.add_named(&reader_widgets.notebook(), Some("reader"));
+        window.set_child(Some(&stack));
+
+        let state = Rc::new(ShellState {
+            window: window.clone(),
+            stack: stack.clone(),
+            status,
+            navigator: Rc::clone(&navigator),
+            item_view,
+            reader,
+            app: app.clone(),
+            current_list: RefCell::new(None),
+        });
+        let shell = BrowserShell {
+            window: window.clone(),
+            state: Rc::clone(&state),
+        };
+        shell.wire(&open_button, &add_folder_button, &search);
+        (window, shell)
+    }
+
+    /// The navigator pane handle (the list-command host).
+    pub fn navigator(&self) -> Rc<Navigator> {
+        Rc::clone(&self.state.navigator)
+    }
+
+    /// The main window handle.
+    pub fn window(&self) -> ApplicationWindow {
+        self.window.clone()
+    }
+
+    fn wire(&self, open_button: &Button, add_folder_button: &Button, search: &Entry) {
+        let state = &self.state;
+
+        // The reader docks: the host window drives the fullscreen
+        // chrome and the Q exit.
+        state.reader.set_host(&self.window);
+
+        // The last reader tab closes → the browser view shows again
+        // (the C# `Close` reveals the browser).
+        {
+            let state = Rc::downgrade(state);
+            state
+                .upgrade()
+                .expect("state")
+                .reader
+                .set_on_last_tab_closed(move || {
+                    if let Some(sh) = state.upgrade() {
+                        sh.show_browser();
+                    }
+                });
+        }
+
+        // The navigator selection → the ItemView book set (debounced
+        // inside the widget) + the status bar count.
+        {
+            let state = Rc::downgrade(state);
+            state
+                .upgrade()
+                .expect("state")
+                .navigator
+                .connect_selected(move |id, _name| {
+                    if let Some(sh) = state.upgrade() {
+                        *sh.current_list.borrow_mut() = Some(*id);
+                        if let Some((_name, books)) = library::evaluate_books(id) {
+                            let count = books.len();
+                            sh.item_view.set_books(books);
+                            sh.update_status(count, 0);
+                        }
+                    }
+                });
+        }
+
+        // The selection count on the status bar.
+        {
+            let state = Rc::downgrade(state);
+            state
+                .upgrade()
+                .expect("state")
+                .item_view
+                .connect_selection_changed(move |selected| {
+                    if let Some(sh) = state.upgrade() {
+                        let count = sh.item_view.book_count();
+                        sh.update_status(count, selected);
+                    }
+                });
+        }
+
+        // Double-click / Enter → open in the (docked) reader.
+        {
+            let state = Rc::downgrade(state);
+            state
+                .upgrade()
+                .expect("state")
+                .item_view
+                .connect_activate(move |id| {
+                    if let Some(sh) = state.upgrade() {
+                        if let Some(path) = library::book_path(id) {
+                            sh.open_comic(Path::new(&path));
+                        }
+                    }
+                });
+        }
+
+        // The right-click context menu (open / reveal / remove /
+        // properties stub).
+        {
+            state.item_view.connect_context({
+                let state = Rc::downgrade(state);
+                move |id, x, y| {
+                    show_context_menu(&state, id, x, y);
+                }
+            });
+        }
+
+        // The quick search (`UpdateQuickFilter`): the AllProperties
+        // matcher, or a full query for MATCH/NOT text. Debounced.
+        {
+            let state = Rc::downgrade(state);
+            search.connect_changed(move |entry| {
+                let text = entry.text().to_string();
+                let state = state.clone();
+                glib::timeout_add_local(
+                    std::time::Duration::from_millis(SEARCH_DEBOUNCE_MS),
+                    move || {
+                        if let Some(sh) = state.upgrade() {
+                            let matcher = search_matcher(&text);
+                            sh.item_view.set_filter(matcher);
+                        }
+                        glib::ControlFlow::Break
+                    },
+                );
+            });
+        }
+
+        // Open… → the file dialog into the docked reader.
+        {
+            let state = Rc::downgrade(state);
+            let window = self.window.clone();
+            open_button.connect_clicked(move |_| {
+                let state = state.clone();
+                open_file_dialog(&window, move |path| {
+                    if let Some(sh) = state.upgrade() {
+                        sh.open_comic(Path::new(&path));
+                    }
+                });
+            });
+        }
+
+        // Add Folder to Library… → the scan; the navigator tree and
+        // the current view refresh.
+        {
+            let state = Rc::downgrade(state);
+            let window = self.window.clone();
+            add_folder_button.connect_clicked(move |_| {
+                crate::app::add_folder_dialog(&window);
+                // The scan is async; the tree refreshes with it
+                // (the scan result dialog confirms).
+                {
+                    let state2 = state.clone();
+                    glib::timeout_add_local(std::time::Duration::from_millis(500), move || {
+                        if let Some(sh) = state2.upgrade() {
+                            sh.navigator.refill(&library::comic_lists_snapshot());
+                        }
+                        glib::ControlFlow::Break
+                    });
+                }
+            });
+        }
+
+        // The window-activation focus: the browser page grabs the
+        // ItemView, the reader page its PageView (the Phase 3
+        // dead-first-keypress fix, now per view).
+        {
+            let state = Rc::downgrade(state);
+            self.window
+                .connect_notify_local(Some("is-active"), move |win, _| {
+                    if !win.is_active() {
+                        return;
+                    }
+                    if let Some(sh) = state.upgrade() {
+                        if sh.stack.visible_child_name().as_deref() == Some("reader") {
+                            sh.reader.focus_current();
+                        } else {
+                            sh.item_view.grab_focus();
+                        }
+                    }
+                });
+        }
+
+        // Closing the main window: dock the undocked reader back and
+        // save (`MainFormFormClosed` → `CleanUp`).
+        {
+            let state = Rc::downgrade(state);
+            self.window.connect_close_request(move |_| {
+                if let Some(sh) = state.upgrade() {
+                    sh.reader.shutdown();
+                }
+                if let Err(err) = library::save() {
+                    eprintln!("library save failed: {err}");
+                }
+                glib::Propagation::Proceed
+            });
+        }
+
+        // The view commands (mode/size/sort/group).
+        self.install_actions();
+
+        // The initial fill.
+        state.navigator.refill(&library::comic_lists_snapshot());
+    }
+
+    fn install_actions(&self) {
+        let state = Rc::downgrade(&self.state);
+        let actions = gio::SimpleActionGroup::new();
+
+        // view-mode: thumbnail | tile | detail (radio).
+        let mode_action = gio::SimpleAction::new_stateful(
+            "view-mode",
+            Some(glib::VariantTy::STRING),
+            &"thumbnail".to_variant(),
+        );
+        {
+            let state = state.clone();
+            mode_action.connect_activate(move |_, value| {
+                let Some(state) = state.upgrade() else {
+                    return;
+                };
+                let name = value.and_then(|v| v.get::<String>()).unwrap_or_default();
+                let mode = match name.as_str() {
+                    "tile" => ItemViewMode::Tile,
+                    "detail" => ItemViewMode::Detail,
+                    _ => ItemViewMode::Thumbnail,
+                };
+                state.item_view.configure(|c| c.mode = mode);
+            });
+        }
+        actions.add_action(&mode_action);
+
+        // thumb-size: grow / shrink (the C# Ctrl+wheel steps 16).
+        for (name, delta) in [("thumb-bigger", THUMB_STEP), ("thumb-smaller", -THUMB_STEP)] {
+            let action = gio::SimpleAction::new(name, None);
+            let state = state.clone();
+            action.connect_activate(move |_, _| {
+                if let Some(sh) = state.upgrade() {
+                    let current = sh.item_view.thumb_height();
+                    let next = (current + delta).clamp(MIN_THUMB, MAX_THUMB);
+                    sh.item_view.configure(|c| c.thumb_height = next);
+                }
+            });
+            actions.add_action(&action);
+        }
+
+        // sort-column (string parameter = the property name).
+        let sort_action = gio::SimpleAction::new("sort-column", Some(glib::VariantTy::STRING));
+        {
+            let state = state.clone();
+            sort_action.connect_activate(move |_, value| {
+                if let (Some(sh), Some(column)) =
+                    (state.upgrade(), value.and_then(|v| v.get::<String>()))
+                {
+                    sh.item_view.set_sort_column(&column);
+                }
+            });
+        }
+        actions.add_action(&sort_action);
+
+        // sort-direction toggle.
+        let dir_action = gio::SimpleAction::new("sort-direction", None);
+        {
+            let state = state.clone();
+            dir_action.connect_activate(move |_, _| {
+                if let Some(sh) = state.upgrade() {
+                    sh.item_view.toggle_sort_direction();
+                }
+            });
+        }
+        actions.add_action(&dir_action);
+
+        // group-by (string parameter; "" = none).
+        let group_action = gio::SimpleAction::new("group-by", Some(glib::VariantTy::STRING));
+        {
+            let state = state.clone();
+            group_action.connect_activate(move |_, value| {
+                if let Some(sh) = state.upgrade() {
+                    let name = value.and_then(|v| v.get::<String>()).unwrap_or_default();
+                    let grouper = if name.is_empty() {
+                        None
+                    } else {
+                        cr_engine::group::groupers()
+                            .iter()
+                            .find(|(k, _)| *k == name)
+                            .map(|(k, _)| *k)
+                    };
+                    sh.item_view.set_grouper(grouper);
+                }
+            });
+        }
+        actions.add_action(&group_action);
+
+        self.window.insert_action_group("win", Some(&actions));
+    }
+
+    /// Opens a comic into the docked reader (the app's `open_reader`
+    /// path).
+    pub fn open_comic(&self, path: &Path) {
+        self.state.open_comic(path);
+    }
+
+    pub fn present(&self) {
+        self.window.present();
+    }
+}
+
+fn show_context_menu(state: &std::rc::Weak<ShellState>, target: Option<CrGuid>, x: f64, y: f64) {
+    let popover = gtk4::Popover::new();
+    let box_ = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+    box_.set_margin_top(4);
+    box_.set_margin_bottom(4);
+    box_.set_margin_start(4);
+    box_.set_margin_end(4);
+
+    let window = state
+        .upgrade()
+        .map(|sh| sh.window.clone())
+        .expect("shell alive while the menu opens");
+    let add_item = |box_: &gtk4::Box, label: &str, action: &'static str| {
+        let popover = popover.clone();
+        let state = state.clone();
+        let window = window.clone();
+        let button = Button::with_label(label);
+        button.set_has_frame(false);
+        button.set_halign(gtk4::Align::Fill);
+        button.connect_clicked(move |_| {
+            popover.popdown();
+            let Some(sh) = state.upgrade() else {
+                return;
+            };
+            match action {
+                "open" => {
+                    if let Some(id) = target {
+                        if let Some(path) = library::book_path(&id) {
+                            sh.open_comic(Path::new(&path));
+                        }
+                    }
+                }
+                "reveal" => {
+                    if let Some(id) = target {
+                        if let Some(path) = library::book_path(&id) {
+                            let _ = std::process::Command::new("xdg-open")
+                                .arg(Path::new(&path).parent().unwrap_or(Path::new("/")))
+                                .spawn();
+                        }
+                    }
+                }
+                "remove" => {
+                    if let Some(id) = target {
+                        library::remove_book(&id);
+                        sh.refresh_view_from_list();
+                    }
+                }
+                "properties" => {
+                    if let Some(id) = target {
+                        if let Some(path) = library::book_path(&id) {
+                            show_info_dialog(
+                                &window,
+                                &format!("Properties (the editor lands in Phase 5):\n{path}"),
+                            );
+                        }
+                    }
+                }
+                _ => {}
+            }
+        });
+        box_.append(&button);
+    };
+    add_item(&box_, "Open", "open");
+    add_item(&box_, "Reveal in File Manager", "reveal");
+    add_item(&box_, "Remove from Library", "remove");
+    add_item(&box_, "Properties…", "properties");
+    popover.set_child(Some(&box_));
+    popover.set_parent(&window);
+    popover.connect_closed(|p| p.unparent());
+    let rect = gtk4::gdk::Rectangle::new(x as i32, y as i32 + 8, 1, 1);
+    popover.set_pointing_to(Some(&rect));
+    popover.popup();
+}
+
+/// `ComicBookAllPropertiesMatcher.Create` for the quick search: a
+/// contains over the All field set; MATCH/NOT text parses as a full
+/// query (`UpdateQuickFilter`).
+fn search_matcher(text: &str) -> Option<Matcher> {
+    let text = text.trim();
+    if text.is_empty() {
+        return None;
+    }
+    if text.starts_with("MATCH") || text.starts_with("NOT") {
+        let mut t = cr_engine::tokenizer::Tokenizer::new(text);
+        let group = cr_engine::matcher::query::parse_group_query(&mut t).ok()?;
+        return Some(Matcher::Group(group));
+    }
+    let raw = cr_core::database::list_items::ComicBookMatcher::Value(
+        cr_core::database::list_items::ValueMatcher {
+            type_name: "ComicBookAllPropertiesMatcher".into(),
+            match_operator: 1, // contains (STRING_OPS order)
+            match_value: text.to_string(),
+            option: Some("All".into()),
+            ..Default::default()
+        },
+    );
+    Matcher::from_raw(&raw)
+}
+
+fn open_file_dialog(window: &ApplicationWindow, on_open: impl Fn(&str) + 'static) {
+    let chooser = gtk4::FileChooserNative::builder()
+        .title("Open Comic")
+        .action(gtk4::FileChooserAction::Open)
+        .transient_for(window)
+        .modal(true)
+        .build();
+    let filter = gtk4::FileFilter::new();
+    filter.set_name(Some("Comic files"));
+    for ext in crate::app::OPEN_FILTER_EXTS {
+        filter.add_pattern(&format!("*.{ext}"));
+    }
+    chooser.add_filter(&filter);
+    chooser.connect_response(move |chooser, response| {
+        if response != gtk4::ResponseType::Accept {
+            return;
+        }
+        if let Some(path) = chooser.file().and_then(|f| f.path()) {
+            on_open(&path.to_string_lossy());
+        }
+    });
+    chooser.show();
+}
+
+fn view_menu_model() -> gio::Menu {
+    let menu = gio::Menu::new();
+    let mode = gio::Menu::new();
+    mode.append(Some("Thumbnails"), Some("win.view-mode::thumbnail"));
+    mode.append(Some("Tiles"), Some("win.view-mode::tile"));
+    mode.append(Some("Details"), Some("win.view-mode::detail"));
+    menu.append_section(None, &mode);
+    let size = gio::Menu::new();
+    size.append(Some("Bigger Covers"), Some("win.thumb-bigger"));
+    size.append(Some("Smaller Covers"), Some("win.thumb-smaller"));
+    menu.append_section(None, &size);
+    menu
+}
+
+fn sort_menu_model() -> gio::Menu {
+    let menu = gio::Menu::new();
+    let columns = gio::Menu::new();
+    for column in default_columns().iter().filter(|c| c.visible) {
+        columns.append(
+            Some(column.name),
+            Some(&format!("win.sort-column::{}", column.property)),
+        );
+    }
+    menu.append_section(None, &columns);
+    menu.append(Some("Reverse Direction"), Some("win.sort-direction"));
+    menu
+}
+
+fn group_menu_model() -> gio::Menu {
+    let menu = gio::Menu::new();
+    menu.append(Some("No Grouping"), Some("win.group-by::"));
+    for (key, _) in cr_engine::group::groupers() {
+        menu.append(Some(key), Some(&format!("win.group-by::{key}")));
+    }
+    menu
+}
+
+fn show_error_dialog(parent: &Application, title: &str, message: &str) {
+    let dialog = gtk4::MessageDialog::builder()
+        .application(parent)
+        .title("comicrust")
+        .text(format!("Cannot open {title}"))
+        .secondary_text(message.to_string())
+        .message_type(gtk4::MessageType::Error)
+        .buttons(gtk4::ButtonsType::Close)
+        .build();
+    dialog.connect_response(|dialog, _| dialog.destroy());
+    dialog.present();
+}
+
+fn show_info_dialog(parent: &ApplicationWindow, message: &str) {
+    let dialog = gtk4::MessageDialog::builder()
+        .transient_for(parent)
+        .modal(true)
+        .title("comicrust")
+        .text(message)
+        .message_type(gtk4::MessageType::Info)
+        .buttons(gtk4::ButtonsType::Close)
+        .build();
+    dialog.connect_response(|dialog, _| dialog.destroy());
+    dialog.present();
+}
