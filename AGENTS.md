@@ -53,9 +53,10 @@ Update this section at the **end of every work session**. The next agent must kn
 
 - **Phase:** 5 (the dialogs) — T1, T2, T3 COMPLETE (all
   user-tested, 2026-09-04; the records live in
-  `docs/phase-5-kickoff.md`). **Next: T4 (the export dialog + the
-  small dialogs — quick rating, delete-confirm, progress,
-  splash).** Phases 0-4 are complete (their gates stay green).
+  `docs/phase-5-kickoff.md`). T4 (the export dialog + engine + the
+  remove confirm) IMPLEMENTED (2026-09-04), user test pending.
+  **Next: run the T4 user test; then the phase-gate review.**
+  Phases 0-4 are complete (their gates stay green).
   Phase 1 gaps that remain open: WebComicProvider and the PDF/DjVu
   writers (tracked in `docs/phase-1-kickoff.md`). The Phase 0 exit
   review can close with the T1 wrap-up (the settings port it
@@ -185,7 +186,34 @@ returns the id. Headless probe: the full New Folder flow lands
 the typed name in the tree. The reading list's book management
 (drag-in ordering) stays with the browser drag-drop work.
 T3 TAIL COMPLETE — USER-TESTED, ALL PASS (2026-09-04). **T3 is
-COMPLETE. Next: T4 (the export dialog + the small dialogs).**
+COMPLETE.**
+### Phase 5 progress (2026-09-04, T4)
+T4 IMPLEMENTED — user test pending. The export engine:
+`cr-io/src/export.rs` grew the `ExportSetting` model (the C#
+enums verbatim, `[DefaultValue]` defaults), the
+GetTargetFilePath/GetTargetFileName/GetTargetPath port
+(filename/caption/custom+start naming, MakeValidFilename), and
+the sequential export engine (`export_book` +
+`export_books_combined`): CBZ/CBT native packing (Original
+pass-through with the original names, JPEG conversion via
+cr-image — PNG/WebP re-encode to JPEG, a documented deviation;
+CB7 reports not-ported), Store/Medium/Strong, overwrite,
+keep-original-names, tags-to-append, ComicInfo embed. The
+parallel/spill machinery stays single-threaded on purpose
+(documented). The dialog: `cr-ui/src/dialogs/export.rs`
+(target/folder/format/compression/naming/page-format/quality/
+flags + progress line + errors); the browser context menu gains
+"Export…"; the last-used settings persist for the session
+(`CurrentExportSetting` parity — session-only until the settings
+schema grows the export lists). Tests: the naming/target-path
+unit tests + the end-to-end engine test. The small dialogs: the
+remove flow gained the delete-confirm (list vs library vs also
+delete the files — `gio trash`, the ADR-006 parity); the export
+progress feeds inline in the export dialog. Deferred: the
+quick-rating dialog (batched with the reader close-flow polish),
+the splash (cosmetic), export presets (the settings schema).
+Headless probe: the export dialog renders all fields over a
+seeded book; the engine test proves the archive output.
 
 ### Phase 4 progress (sessions of 2026-09-03)
 
