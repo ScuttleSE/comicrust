@@ -535,3 +535,11 @@ C# spec: `PagesView.cs` (833), `ComicPagesView.cs` (241),
   inside the open handler, which masked this). Headless probe: the
   command-line comic docks into the browser window (tab strip +
   page render + window title).
+  T5 fix from the user test round 1 (crash on the first
+  double-click): the selection-changed callback (the status bar's
+  `book_count`) re-entered the ItemView while the click handler
+  still held the mutable borrow — a RefCell panic inside a
+  non-unwindable GTK closure. Every `notify_selection` call site
+  now drops the borrow first. Rule confirmed again: a callback
+  registered on this widget must never fire while this widget
+  holds its own borrow.
