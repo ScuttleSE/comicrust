@@ -752,6 +752,9 @@ pub fn update_smart_list(id: &CrGuid, item: cr_core::database::list_items::Smart
         false
     }
     let changed = apply(&mut l.database_mut().comic_lists, id, &item);
+    if std::env::var("CR_DEBUG_SL").is_ok() {
+        eprintln!("update_smart_list id={id} changed={changed}");
+    }
     if changed {
         l.mark_dirty();
     }

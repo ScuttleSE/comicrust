@@ -296,66 +296,87 @@ pub fn show_smart_list_editor(
     }
 
     // The query text syncs on tab switches: entering Query renders
-    // the item; entering Designer parses the text back (a failure
-    // keeps the OLD matchers and surfaces the error on OK).
+    // the item and marks the text clean; user edits mark it dirty.
+    // OK parses the text ONLY when it is dirty — a designer-only
+    // session commits the item the row widgets already wrote.
+    let query_dirty = Rc::new(RefCell::new(false));
     {
         let state = Rc::clone(&state);
         let query_view = query_view.clone();
+        let query_dirty = Rc::clone(&query_dirty);
         notebook.connect_switch_page(move |_, _page, page_no| {
             if page_no == 1 {
                 let q = item_to_query(&state.borrow());
                 query_view.buffer().set_text(&render_smart_list_query(&q));
+                *query_dirty.borrow_mut() = false;
             }
         });
     }
+    {
+        let query_dirty = Rc::clone(&query_dirty);
+        query_view
+            .buffer()
+            .connect_changed(move |_| *query_dirty.borrow_mut() = true);
+    }
 
-    // OK: apply the query text first (it may hold edits), then
-    // commit. A parse failure blocks the close with the error.
+    // OK applies the (dirty) query text, then commits; Cancel
+    // discards. `done` guards the RE-ENTRANT response that
+    // `dlg.close()` triggers (GtkDialog emits the delete-event
+    // response when closed programmatically — the close inside the
+    // Ok arm re-entered the Cancel arm and REMOVED the fresh list).
+    let done = Rc::new(RefCell::new(false));
     {
         let state = Rc::clone(&state);
         let query_view = query_view.clone();
         let error_label = error_label.clone();
-        let on_done = on_done;
-        dialog.connect_response(move |dlg, response| match response {
-            gtk4::ResponseType::Ok => {
-                let text = query_text(&query_view);
-                let parse = if text.trim().is_empty() {
-                    Ok(())
-                } else {
-                    parse_smart_list_query(&text)
-                        .map(|_| ())
-                        .map_err(|e| e.to_string())
-                };
-                match parse {
-                    Ok(()) => {
-                        if !text.trim().is_empty() {
-                            // Re-parse to move the fields over (the
-                            // shape above already validated). The
-                            // parser returns the ENGINE tree; the
-                            // item stores the RAW model.
-                            if let Ok(q) = parse_smart_list_query(&text) {
-                                let mut s = state.borrow_mut();
+        let query_dirty = Rc::clone(&query_dirty);
+        let done = Rc::clone(&done);
+        dialog.connect_response(move |dlg, response| {
+            if done.replace(true) {
+                return;
+            }
+            match response {
+                gtk4::ResponseType::Ok => {
+                    if *query_dirty.borrow() {
+                        let text = query_text(&query_view);
+                        let parsed = if text.trim().is_empty() {
+                            Ok(None)
+                        } else {
+                            parse_smart_list_query(&text)
+                                .map(Some)
+                                .map_err(|e| e.to_string())
+                        };
+                        let q = match parsed {
+                            Ok(q) => q,
+                            Err(err) => {
+                                error_label.set_text(&format!("Bad query: {err}"));
+                                error_label.set_visible(true);
+                                done.replace(false);
+                                return;
+                            }
+                        };
+                        // The parser returns the ENGINE tree; the
+                        // item stores the RAW model.
+                        let mut s = state.borrow_mut();
+                        match q {
+                            Some(q) => {
                                 s.matcher_mode = q.group.matcher_mode;
                                 s.matchers = q.group.matchers.iter().map(|m| m.to_raw()).collect();
                             }
-                        } else {
-                            let mut s = state.borrow_mut();
-                            s.matchers.clear();
-                            s.matcher_mode = MatcherMode::And;
+                            None => {
+                                s.matchers.clear();
+                                s.matcher_mode = MatcherMode::And;
+                            }
                         }
-                        let committed = state.borrow().clone();
-                        dlg.close();
-                        on_done(Some(committed));
                     }
-                    Err(err) => {
-                        error_label.set_text(&format!("Bad query: {err}"));
-                        error_label.set_visible(true);
-                    }
+                    let committed = state.borrow().clone();
+                    dlg.close();
+                    on_done(Some(committed));
                 }
-            }
-            _ => {
-                dlg.close();
-                on_done(None);
+                _ => {
+                    dlg.close();
+                    on_done(None);
+                }
             }
         });
     }

@@ -393,6 +393,13 @@ fn run_smart_list_editor(
         base_options,
         move |committed| match committed {
             Some(updated) => {
+                if std::env::var("CR_DEBUG_SL").is_ok() {
+                    eprintln!(
+                        "editor commit: name={:?} matchers={} id={id}",
+                        updated.base.name,
+                        updated.matchers.len()
+                    );
+                }
                 library::update_smart_list(&id, updated);
                 nav2.refill(&library::comic_lists_snapshot());
             }

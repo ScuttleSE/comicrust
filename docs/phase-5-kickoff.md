@@ -365,6 +365,21 @@ Headless proof: the app probe seeds a fresh DB, right-clicks the
 navigator, New Smart List… opens the editor with the head fields
 (the Base List combo showing Library, the limit row disabled).
 
+First user-test finding (the named list VANISHED after OK): two
+bugs, both probe-confirmed with `CR_DEBUG_SL` instrumentation —
+(1) the OK handler read the Query tab's text, which is EMPTY
+unless the user visited that tab, and an empty text CLEARED the
+matchers (the designer's rule was discarded); (2) `dlg.close()`
+inside the OK arm makes GtkDialog emit the delete-event Cancel
+response RE-ENTRANTLY, which ran the None arm and REMOVED the
+fresh uncommitted insert (`update changed=false` in the log —
+the item was already gone). Fixed: a `query_dirty` flag (set on
+query-buffer edits, cleared when the tab renders the item) makes
+OK parse the text only when edited — a designer-only session
+commits the state the row widgets wrote; a `done` Cell swallows
+the re-entrant response. The probe log after the fix: `matchers=1
+... changed=true`, and the tree shows the list.
+
 ### T4. Export + the remaining dialogs
 
 - [ ] Export dialog (`ExportComicsDialog`) over the `cr-io` export
