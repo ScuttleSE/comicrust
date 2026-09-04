@@ -19,6 +19,11 @@ use cr_engine::image_pool::ImagePool;
 use cr_engine::matcher::tree::Matcher;
 
 use crate::library;
+
+/// The user settings (`Program.Settings`).
+fn cr_ui_settings() -> std::rc::Rc<std::cell::RefCell<cr_core::settings::Settings>> {
+    library::settings()
+}
 use crate::reader_shell::ReaderShell;
 
 use super::columns::default_columns;
@@ -88,6 +93,10 @@ impl ShellState {
     /// The QuickOpen empty state (`UpdateQuickList`: visible when no
     /// book is open, `ShowQuickOpen`, and the database has books).
     fn show_quick_open(&self) {
+        if !cr_ui_settings().borrow().show_quick_open {
+            self.show_browser();
+            return;
+        }
         let lists = library::quick_open_lists();
         let total: usize = lists.iter().map(|(_, b)| b.len()).sum();
         if total == 0 {
@@ -169,6 +178,9 @@ impl BrowserShell {
         // open (the reader page returns on the next open or re-dock).
         let browser_button = Button::with_label("Browser");
         header.pack_end(&browser_button);
+        let prefs_button = Button::with_label("Preferences");
+        prefs_button.set_css_classes(&["flat"]);
+        header.pack_end(&prefs_button);
 
         let view_button = MenuButton::builder()
             .label("View")
@@ -264,7 +276,13 @@ impl BrowserShell {
             window: window.clone(),
             state: Rc::clone(&state),
         };
-        shell.wire(&open_button, &add_folder_button, &search, &browser_button);
+        shell.wire(
+            &open_button,
+            &add_folder_button,
+            &search,
+            &browser_button,
+            &prefs_button,
+        );
         (window, shell)
     }
 
@@ -284,6 +302,7 @@ impl BrowserShell {
         add_folder_button: &Button,
         search: &Entry,
         browser_button: &Button,
+        prefs_button: &Button,
     ) {
         let state = &self.state;
 
@@ -335,6 +354,27 @@ impl BrowserShell {
                 if let Some(sh) = state.upgrade() {
                     sh.show_browser();
                 }
+            });
+        }
+
+        // The Preferences dialog (the C# Tools → Preferences): a
+        // modal settings clone committed on OK; the reader views and
+        // the QuickOpen grid re-apply the changed values.
+        {
+            let state = Rc::downgrade(state);
+            prefs_button.connect_clicked(move |_| {
+                let Some(sh) = state.upgrade() else {
+                    return;
+                };
+                let window = sh.window.clone();
+                let state2 = state.clone();
+                crate::settings::preferences::show_preferences(&window, move || {
+                    if let Some(sh) = state2.upgrade() {
+                        sh.reader.apply_settings_to_open_views();
+                        let size = cr_ui_settings().borrow().quick_open_thumbnail_size as f64;
+                        sh.quick_view.configure(|c| c.thumb_height = size);
+                    }
+                });
             });
         }
 
@@ -556,16 +596,22 @@ impl BrowserShell {
         }
 
         // Closing the main window: dock the undocked reader back and
-        // save (`MainFormFormClosed` → `CleanUp`).
+        // save (`MainFormFormClosed` → `CleanUp`; the C# exit also
+        // stores `Settings.QuickOpenThumbnailSize` and saves the
+        // settings file).
         {
             let state = Rc::downgrade(state);
             self.window.connect_close_request(move |_| {
                 if let Some(sh) = state.upgrade() {
                     sh.reader.shutdown();
+                    // `Program.Settings.QuickOpenThumbnailSize = quickOpenView.ThumbnailSize`.
+                    let size = sh.quick_view.thumb_height() as i32;
+                    cr_ui_settings().borrow_mut().quick_open_thumbnail_size = size;
                 }
                 if let Err(err) = library::save() {
                     eprintln!("library save failed: {err}");
                 }
+                library::save_settings();
                 glib::Propagation::Proceed
             });
         }
@@ -577,6 +623,12 @@ impl BrowserShell {
         // when the database has books (the C#
         // `OpenCount == 0 && ShowQuickOpen`), the browser otherwise.
         state.navigator.refill(&library::comic_lists_snapshot());
+        // `UpdateSettings` applies the stored QuickOpen thumbnail size.
+        {
+            let size = cr_ui_settings().borrow().quick_open_thumbnail_size as f64;
+            state.quick_view.configure(|c| c.thumb_height = size);
+            let _ = &size;
+        }
         {
             let lists = library::quick_open_lists();
             let total: usize = lists.iter().map(|(_, b)| b.len()).sum();

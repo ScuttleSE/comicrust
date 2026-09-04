@@ -332,9 +332,13 @@ pub fn from_file_path_with_of(path: &str, of_values: &str) -> ComicNameInfo {
     info
 }
 
-/// NewParser with the default `OfValues` ("of,von,de").
+/// NewParser with the configured `OfValues`
+/// (`EngineConfiguration.Default.OfValues ?? "of,von,de"`).
 pub fn from_file_path(path: &str) -> ComicNameInfo {
-    from_file_path_with_of(path, "of,von,de")
+    from_file_path_with_of(
+        path,
+        &crate::settings::EngineConfiguration::global().of_values_or_default(),
+    )
 }
 
 /// The LegacyParser entry point.
@@ -394,13 +398,23 @@ pub fn from_file_path_legacy(path: &str) -> ComicNameInfo {
     info
 }
 
-/// Dispatch like `ComicNameInfo.FromFilePath(path, legacy)`.
+/// Dispatch like `ComicNameInfo.FromFilePath(path, legacy)` — the
+/// legacy flag comes from `EngineConfiguration.Default`.
 pub fn parse(path: &str, legacy: bool) -> ComicNameInfo {
     if legacy {
         from_file_path_legacy(path)
     } else {
         from_file_path(path)
     }
+}
+
+/// The C# `ComicNameInfo.FromFilePath(path)` single-argument entry:
+/// the legacy flag is `EngineConfiguration.Default.LegacyFilenameParser`.
+pub fn from_file_path_configured(path: &str) -> ComicNameInfo {
+    parse(
+        path,
+        crate::settings::EngineConfiguration::global().legacy_filename_parser,
+    )
 }
 
 #[cfg(test)]

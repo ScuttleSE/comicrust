@@ -9,6 +9,14 @@ use crate::xml::scalar::{net_f32, CrDateTime, CrGuid};
 use crate::xml::{Emitter, Start, Tok};
 use std::io::Write;
 
+/// `ComicBook.DefaultCaptionFormat`.
+pub const DEFAULT_CAPTION_FORMAT: &str =
+    "[{format} ][{series}][ {volume}][ #{number}][ - {title}][ ({year}[/{month}[/{day}]])]";
+
+/// `ComicBook.DefaultComicExportFileNameFormat`.
+pub const DEFAULT_COMIC_EXPORT_FILE_NAME_FORMAT: &str =
+    "[{format} ][{series}][ {volume}][ #{number}][ ({year}[/{month}])]";
+
 #[derive(Clone, Debug, PartialEq)]
 pub struct ComicBook {
     pub info: ComicInfo,

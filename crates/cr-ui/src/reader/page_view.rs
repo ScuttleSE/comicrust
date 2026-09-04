@@ -57,7 +57,10 @@ const KEYBOARD_ZOOM_STEPPING: f32 = 0.5;
 /// `ComicDisplay.DefaultPageWallTicks` — after a page change, further
 /// scroll input within this window is eaten (`EatScrolling`), and
 /// part navigation arms the page-change wall (`IsPageChangeWalled`).
-const PAGE_WALL: std::time::Duration = std::time::Duration::from_millis(300);
+/// The live value is the `page_wall` view-state field, set by the
+/// shell from `Settings.PageChangeDelay` (`PageWallTicks` maps to
+/// 300 or 0 in `MainForm.UpdateSettings`).
+const PAGE_WALL_DEFAULT: std::time::Duration = std::time::Duration::from_millis(300);
 
 /// Drag distance before a press becomes a pan/zoom
 /// (`ImageDisplayControl.OnMouseMove` 5 px threshold).
@@ -247,6 +250,9 @@ struct ViewState {
     scrolling_does_browse: bool,
     /// `ComicDisplay.MouseWheelSpeed` default.
     mouse_wheel_speed: f32,
+    /// `ComicDisplay.PageWallTicks` — the live wall window (300 or
+    /// 0 ms from `Settings.PageChangeDelay`).
+    page_wall: std::time::Duration,
     /// Lines per scroll command (`ComicDisplay.scrollLines` — 1 for
     /// keys, set per wheel event).
     scroll_lines: f32,
@@ -765,6 +771,7 @@ impl PageView {
             auto_scrolling: false,
             scrolling_does_browse: true,
             mouse_wheel_speed: 2.0,
+            page_wall: PAGE_WALL_DEFAULT,
             scroll_lines: 1.0,
             last_paging: None,
             last_part_navigation: None,
@@ -806,6 +813,26 @@ impl PageView {
 
     pub fn widget(&self) -> &DrawingArea {
         &self.area
+    }
+
+    /// Applies the display settings the C# copies in
+    /// `MainForm.UpdateSettings`: `MouseWheelSpeed`,
+    /// `ScrollingDoesBrowse`, and the `PageChangeDelay` wall window
+    /// (300 or 0 ms).
+    pub fn apply_display_settings(
+        &self,
+        mouse_wheel_speed: f32,
+        scrolling_does_browse: bool,
+        page_change_delay: bool,
+    ) {
+        let mut st = self.state.borrow_mut();
+        st.mouse_wheel_speed = mouse_wheel_speed;
+        st.scrolling_does_browse = scrolling_does_browse;
+        st.page_wall = if page_change_delay {
+            PAGE_WALL_DEFAULT
+        } else {
+            std::time::Duration::ZERO
+        };
     }
 
     /// Notified as `(current_page, page_count)` after every logical
@@ -1142,8 +1169,9 @@ impl PageView {
         if part_count == 1 {
             return false;
         }
+        let wall = st.page_wall;
         st.last_paging
-            .is_some_and(|t| Instant::now().duration_since(t) < PAGE_WALL)
+            .is_some_and(|t| Instant::now().duration_since(t) < wall)
     }
 
     /// `ComicDisplay.IsPageChangeWalled`: page changes within the
@@ -1156,9 +1184,10 @@ impl PageView {
             return false;
         }
         let now = Instant::now();
+        let wall = st.page_wall;
         let armed = st
             .last_part_navigation
-            .is_some_and(|t| now.duration_since(t) < PAGE_WALL);
+            .is_some_and(|t| now.duration_since(t) < wall);
         if !armed {
             st.wall_pending = false;
             return false;
@@ -1168,10 +1197,7 @@ impl PageView {
             st.wall_pending = true;
             return true;
         }
-        if st
-            .wall_start
-            .is_some_and(|t| now.duration_since(t) < PAGE_WALL)
-        {
+        if st.wall_start.is_some_and(|t| now.duration_since(t) < wall) {
             return true;
         }
         st.wall_pending = false;

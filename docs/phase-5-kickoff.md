@@ -64,23 +64,82 @@ from Phase 4 T4), and the QuickOpen thumbnail size.
 Order: T1 unblocks everything; T2 is the critical path (the
 deepest dialog); keep the editors pure-model first, GTK last.
 
-### T1. The settings port + the options builder
+### T1. The settings port + the options builder — IMPLEMENTED (2026-09-04), user test pending
 
-- [ ] `IniFile` + `EngineConfiguration` + Settings in cr-core (or
+- [x] `IniFile` + `EngineConfiguration` + Settings in cr-core (or
       `cr-settings`): field defaults = the C# `[DefaultValue]`
-      attributes; ini round-trip tests.
-- [ ] Reconcile the hard-coded stand-ups: `TRACK_CURRENT_PAGE`
-      (reader), `AddToLibraryOnOpen` (currently hard false — the
-      reader flow), the engine defaults 14/95/10 (list trees),
-      `ComicNameInfo`'s `OfValues`/legacy-parser flag (Phase 0
-      note).
-- [ ] The GTK options builder (`cr-ui/src/settings/`): walk the
-      typed registry → labeled widgets per type (bool check,
-      numeric spin, enum combo, string entry), grouped by
-      category — the `FormUtility` parity. Unit-test the
-      model↔widget mapping headlessly.
-- [ ] Wire the Preferences dialog shell (tree of categories +
+      attributes; ini round-trip tests. Done:
+      `cr-core/src/settings/` — `ini.rs` (the `IniFile` port:
+      sections, `;`/`#` comments, first-`=` split, key trim +
+      value trim-start, case-insensitive binding, the `|` file
+      chain, the unanchored `-switch=value` regex), `registry.rs`
+      (the typed `FieldDesc` tables + the `settings_fields!` macro +
+      the `EnumValue` currency — the reflection replacement),
+      `engine_config.rs` (all fields with the C# CONSTRUCTOR
+      defaults — the stale `[DefaultValue]` attributes noted:
+      BlendDuration 400 not 250, ParallelConversions 32 not 4 —,
+      the Size/Color converter texts, the setter clamps as a
+      post-load `normalize`), `extended.rs` (the command-line
+      switch table with short names, bool TOGGLE semantics, the
+      `[IniFile(false)]` command-line-only fields, `files` from the
+      plain args), `settings.rs` (the ~120 scalar Settings fields +
+      the Config.xml read/write via the Emitter — declaration-order
+      elements, null strings omitted, empty strings self-closing,
+      Size as Width/Height children, StringPair as Key/Value
+      attributes; unknown elements skip so a Windows Config.xml
+      loads). Tests: ini round-trip + binding, converter tests,
+      argv semantics (toggle, swallow, files), Settings byte-stable
+      round-trip + lenient read + corrupt→default.
+      IMPORTANT correction to this doc's original text: the C#
+      does NOT persist Settings as an ini — `Program` stores
+      `Config.xml` (`Settings.Load/Save` via `XmlUtility` =
+      XmlSerializer) and only `EngineConfiguration`/`ExtendedSettings`
+      ride the ini (`ComicRack.ini` → `comicrust.ini`). Ported as
+      the source says.
+- [x] Reconcile the hard-coded stand-ups: `TRACK_CURRENT_PAGE`
+      (reader — now `Settings.track_current_page`, read per open),
+      `AddToLibraryOnOpen` (the reader flow now mirrors
+      `ComicBookFactory.Create(file, AddToStorage)`: a new book with
+      `AddedTime = now` joins the library when the setting is on),
+      the engine defaults 14/95/10 (the default list tree in
+      `create_new()` + the QuickOpen built-in lists read
+      `EngineConfiguration::global()`), `ComicNameInfo`'s
+      `OfValues`/legacy-parser flag (the global engine config;
+      `from_file_path` uses `OfValues ?? "of,von,de"`). Also wired
+      live: `MouseWheelSpeed`, `ScrollingDoesBrowse`,
+      `PageChangeDelay` (the 300 ms page wall — `PageWallTicks`
+      parity), `HideCursorFullScreen` +
+      `ExtendedSettings.AutoHideCursorDuration` (5000 ms, was a
+      hard 1000), `AutoMinimalGui` (fullscreen toggles minimal GUI),
+      `ShowQuickOpen`, `QuickOpenThumbnailSize` (applied at startup,
+      stored on exit — the C# `UpdateSettings`/close flow). The
+      settings load at startup (`cr-ui/src/library.rs` — Config.xml
+      + the ini chain + argv into the `EngineConfiguration`/
+      `ExtendedSettings` globals) and save on the main-window close
+      (`library::save_settings`).
+- [x] The GTK options builder (`cr-ui/src/settings/options.rs`):
+      walks the typed registry → labeled check boxes per browsable
+      bool with a description, collapsible groups by category
+      (first-encounter order, later re-encounters merge — the C#
+      finds the existing `CollapsibleGroupBox`), rows sorted by
+      description — the `FormUtility` parity (which is bool-only:
+      the numeric/enum widgets are hand-built on the C# pages, as
+      here). Unit-tested row set + consolidation semantics.
+- [x] Wire the Preferences dialog shell (tree of categories +
       panels), OK/Cancel semantics (edit a clone, commit on OK).
+      Done: `cr-ui/src/settings/preferences.rs` — the sidebar shell
+      with the C# five-tab shape: Reader (wheel speed + RTL combo —
+      GTK 4.0-era widgets per ADR-018), Behavior (the auto panel),
+      Libraries (watch folders: list + Watch toggles persisted into
+      the DB + add/remove), Advanced (the cache spins with the C#
+      ranges 20..100 / 5..500, disk MB fields, the
+      `chkUpdateComicFiles` enable/uncheck chain). OK commits the
+      clone into the session, saves Config.xml, re-applies the
+      display settings to open reader views + the QuickOpen size.
+      Deviations recorded: the Scripts page hidden until Phase 6
+      (no plugin host), no language list until the TR loader port,
+      the backup/association groups are Windows-shell features
+      (Phase 8). Opened from the header "Preferences" button.
 
 ### T2. The book editor (`ComicBookDialog`)
 
@@ -171,3 +230,27 @@ The phase gate: a user edits a comic's metadata (single + bulk),
 saves it back to the file (verified outside the app), edits a
 smart list both visually and as a query, exports a comic, and
 changes preferences that visibly move the reader and browser.
+
+## Progress (2026-09-04)
+
+- **T1 IMPLEMENTED, user test pending.** The settings layer:
+  `cr-core/src/settings/` (ini/registry/engine-config/extended/
+  settings + the Config.xml layer) and `cr-ui/src/settings/`
+  (options builder + the Preferences dialog). ADR-023 records the
+  XDG layout the user directed: configuration in
+  `~/.config/comicrust` (Config.xml + comicrust.ini), data and
+  caches in `~/.local/share/comicrust`. The C# correction (this
+  doc's plan text said "config.ini beside the DB"): Settings
+  persists as Config.xml; the ini carries only engine/extended
+  overrides. The stand-ups are reconciled (track-current-page,
+  add-to-library-on-open with the AddToStorage parity, 14/95/10
+  from the engine config, OfValues/legacy parser) and the
+  reader/browser now consume the real settings (wheel speed, page
+  wall, browse-on-scroll, cursor hide + its 5000 ms duration,
+  auto-minimal-GUI, QuickOpen show + size). Headless probes (the
+  isolated-XDG recipe): the app boots with the config tree; the
+  Preferences dialog renders all four pages (Behavior = the C#
+  auto-panel groups with correct defaults and sort); toggling a
+  check box + OK writes `~/.config/comicrust/Config.xml` with the
+  change (NewsStartup=false observed) in the XmlSerializer form.
+  261 tests across 29 suites; fmt + clippy clean.

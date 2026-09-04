@@ -345,6 +345,15 @@ pub fn create_new() -> ComicDatabase {
         })
     };
 
+    // The values come from the engine configuration
+    // (`EngineConfiguration.Default`): IsRecentInDays (14),
+    // IsReadCompletionPercentage (95), IsNotReadCompletionPercentage
+    // (10).
+    let engine = crate::settings::EngineConfiguration::global();
+    let recent = engine.is_recent_in_days.to_string();
+    let read_at = engine.is_read_completion_percentage.to_string();
+    let not_read_at = engine.is_not_read_completion_percentage.to_string();
+
     let items = vec![
         smart(
             "My Favorites",
@@ -352,28 +361,38 @@ pub fn create_new() -> ComicDatabase {
         ),
         smart(
             "Recently Added",
-            vec![value_matcher("ComicBookAddedMatcher", 3, "14", "")],
+            vec![value_matcher("ComicBookAddedMatcher", 3, &recent, "")],
         ),
         smart(
             "Recently Read",
-            vec![value_matcher("ComicBookOpenedMatcher", 3, "14", "")],
+            vec![value_matcher("ComicBookOpenedMatcher", 3, &recent, "")],
         ),
         smart(
             "Never Read",
-            vec![value_matcher("ComicBookReadPercentageMatcher", 2, "10", "")],
+            vec![value_matcher(
+                "ComicBookReadPercentageMatcher",
+                2,
+                &not_read_at,
+                "",
+            )],
         ),
         smart(
             "Reading",
             vec![value_matcher(
                 "ComicBookReadPercentageMatcher",
                 3,
-                "10",
-                "95",
+                &not_read_at,
+                &read_at,
             )],
         ),
         smart(
             "Read",
-            vec![value_matcher("ComicBookReadPercentageMatcher", 1, "95", "")],
+            vec![value_matcher(
+                "ComicBookReadPercentageMatcher",
+                1,
+                &read_at,
+                "",
+            )],
         ),
         smart(
             "Files to update",

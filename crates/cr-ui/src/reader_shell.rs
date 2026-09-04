@@ -36,6 +36,11 @@ use cr_core::model::comic_book::ComicBook;
 use cr_engine::image_pool::ImagePool;
 
 use crate::library;
+
+/// The user settings (`Program.Settings`).
+fn cr_ui_settings() -> std::rc::Rc<std::cell::RefCell<cr_core::settings::Settings>> {
+    library::settings()
+}
 use crate::reader::page_view::PageView;
 
 /// Default reader window size (the C# persists its own window layout;
@@ -43,16 +48,9 @@ use crate::reader::page_view::PageView;
 const DEFAULT_WIDTH: i32 = 1200;
 const DEFAULT_HEIGHT: i32 = 800;
 
-/// `ComicBookNavigator.TrackCurrentPage` (the setting flips it; the
-/// settings port is still open).
-const TRACK_CURRENT_PAGE: bool = true;
-
 /// Pointer distance from the top edge that reveals the chrome
 /// (`AutoHideMainMenu` reveal strip).
 const CHROME_REVEAL_EDGE: f64 = 16.0;
-
-/// `HideCursorFullScreen` idle delay.
-const CURSOR_HIDE_MS: u64 = 1000;
 
 struct ReaderTab {
     /// Stable slot id — callbacks capture this, never a Vec index.
@@ -204,7 +202,9 @@ impl ReaderShell {
         *self.state.borrow().host.borrow_mut() = Some(window.clone());
 
         // Fullscreen chrome: the reader header hides with the
-        // decorations (`AutoMinimalGui` is false by default).
+        // decorations. `AutoMinimalGui` also toggles the minimal
+        // user interface with the fullscreen state (the C#
+        // `MainForm` fullscreen toggle).
         {
             let st = Rc::downgrade(&self.state);
             window.connect_notify_local(Some("fullscreened"), move |win, _| {
@@ -212,8 +212,13 @@ impl ReaderShell {
                     return;
                 };
                 let fullscreen = win.is_fullscreen();
-                let minimal = sh.borrow().minimal_gui;
-                sh.borrow().header.set_visible(!fullscreen && !minimal);
+                let auto_minimal = cr_ui_settings().borrow().auto_minimal_gui;
+                let mut sh = sh.borrow_mut();
+                if auto_minimal {
+                    sh.minimal_gui = fullscreen;
+                }
+                let minimal = sh.minimal_gui;
+                sh.header.set_visible(!fullscreen && !minimal);
             });
         }
 
@@ -295,6 +300,24 @@ impl ReaderShell {
         self.state.borrow().tabs.is_empty()
     }
 
+    /// Re-applies the display settings to every open reader view
+    /// (the C# `UpdateSettings` runs on `SettingsChanged` after OK).
+    pub fn apply_settings_to_open_views(&self) {
+        let s = self.state.borrow();
+        let (wheel, browse, wall) = {
+            let set = cr_ui_settings();
+            let b = set.borrow();
+            (
+                b.mouse_wheel_speed,
+                b.scrolling_does_browse,
+                b.page_change_delay,
+            )
+        };
+        for tab in &s.tabs {
+            tab.view.apply_display_settings(wheel, browse, wall);
+        }
+    }
+
     /// The currently visible reader book: (file path, page count).
     /// The Pages panel binds this (the C# `ComicDisplay.Book`).
     pub fn current_book(&self) -> Option<(String, usize)> {
@@ -371,8 +394,9 @@ impl ReaderShell {
                     ..ComicBook::default()
                 };
                 // `OnBookOpened` + the navigator `Opened` handler
-                // (`TrackCurrentPage` gates both stamps).
-                if TRACK_CURRENT_PAGE {
+                // (`TrackCurrentPage` gates both stamps — the setting).
+                let track = cr_ui_settings().borrow().track_current_page;
+                if track {
                     book.opened_time = cr_core::xml::scalar::CrDateTime::now();
                     book.opened_count += 1;
                     book.new_pages = 0;
@@ -407,6 +431,22 @@ impl ReaderShell {
             view = PageView::new(Arc::clone(&st.pool));
             slot = st.next_slot;
             st.next_slot += 1;
+
+            // The `MainForm.UpdateSettings` display copy: wheel speed,
+            // browse-on-scroll, and the page wall.
+            {
+                let s = cr_ui_settings();
+                let (wheel, browse, wall) = {
+                    let b = s.borrow();
+                    (
+                        b.mouse_wheel_speed,
+                        b.scrolling_does_browse,
+                        b.page_change_delay,
+                    )
+                };
+                drop(s);
+                view.apply_display_settings(wheel, browse, wall);
+            }
 
             // Reading-state write-back: every logical page change
             // lands in the book (`ComicBookNavigator.CurrentPage`
@@ -711,7 +751,9 @@ impl ReaderShell {
 
     /// `AutoHideMainMenu` (default true): the chrome reveals while
     /// the pointer is in the top strip and slides away elsewhere.
-    /// The fullscreen cursor hides after the idle delay.
+    /// The fullscreen cursor hides after the idle delay
+    /// (`Settings.HideCursorFullScreen` gates it; the delay is
+    /// `ExtendedSettings.AutoHideCursorDuration`).
     fn on_pointer_moved(state: &Rc<RefCell<ShellState>>, area: &gtk4::Widget, y: f64) {
         let fullscreen = state
             .borrow()
@@ -722,6 +764,12 @@ impl ReaderShell {
             .unwrap_or(false);
         let mut st = state.borrow_mut();
         if fullscreen {
+            let hide_cursor = cr_ui_settings().borrow().hide_cursor_full_screen;
+            let hide_ms =
+                cr_core::settings::ExtendedSettings::global().auto_hide_cursor_duration as u64;
+            if !hide_cursor {
+                return;
+            }
             // Cursor auto-hide: reset the idle timer on every motion.
             // A fired one-shot's SourceId must NOT be removed (glib
             // panics on removing a finished source) — the timeout
@@ -735,7 +783,7 @@ impl ReaderShell {
             let area = area.clone();
             let state = Rc::downgrade(state);
             st.cursor_hide_source = Some(glib::timeout_add_local(
-                std::time::Duration::from_millis(CURSOR_HIDE_MS),
+                std::time::Duration::from_millis(hide_ms),
                 move || {
                     area.set_cursor_from_name(Some("none"));
                     if let Some(st) = state.upgrade() {

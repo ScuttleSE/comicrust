@@ -23,6 +23,7 @@ macro_rules! xml_enum {
             pub const VALUES: &'static [(&'static str, $repr)] = &[ $( (stringify!($variant), $value as $repr) ),+ ];
 
             pub fn from_repr(v: $repr) -> Option<Self> {
+                #[allow(unreachable_patterns)] // C# aliases (Default = x, BestQuality = y)
                 match v {
                     $( $value => Some($name::$variant), )+
                     _ => None,
@@ -56,6 +57,25 @@ macro_rules! xml_enum {
                     }
                 }
                 s.trim().parse::<$repr>().ok().and_then(Self::from_repr)
+            }
+        }
+
+        impl $crate::settings::registry::EnumValue for $name {
+            fn from_int(v: i32) -> Option<Self> {
+                <$repr as TryFrom<i32>>::try_from(v).ok().and_then(Self::from_repr)
+            }
+
+            fn from_name(s: &str) -> Option<Self> {
+                Self::from_xml(s).or_else(|| {
+                    Self::VALUES
+                        .iter()
+                        .find(|(n, _)| n.eq_ignore_ascii_case(s))
+                        .and_then(|(_, v)| Self::from_repr(*v))
+                })
+            }
+
+            fn as_name(&self) -> String {
+                Self::to_xml(*self)
             }
         }
     };
@@ -127,6 +147,25 @@ macro_rules! xml_flags {
                     }
                 }
                 Some($name(acc))
+            }
+        }
+
+        impl $crate::settings::registry::EnumValue for $name {
+            fn from_int(v: i32) -> Option<Self> {
+                <$repr as TryFrom<i32>>::try_from(v).ok().map($name)
+            }
+
+            fn from_name(s: &str) -> Option<Self> {
+                Self::from_xml(s).or_else(|| {
+                    Self::MEMBERS
+                        .iter()
+                        .find(|(n, _)| n.eq_ignore_ascii_case(s))
+                        .map(|(_, v)| $name(*v))
+                })
+            }
+
+            fn as_name(&self) -> String {
+                Self::to_xml(*self)
             }
         }
     };
@@ -221,6 +260,9 @@ xml_flags! {
         DefaultPage = 0x8000000
     }
 }
+
+pub(crate) use xml_enum;
+pub(crate) use xml_flags;
 
 #[cfg(test)]
 mod tests {

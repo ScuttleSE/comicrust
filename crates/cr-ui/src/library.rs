@@ -25,18 +25,75 @@ thread_local! {
     /// while the worker runs wait here, in arrival order.
     static SCAN_QUEUE: RefCell<Vec<QueuedScan>> = const { RefCell::new(Vec::new()) };
     static SCAN_IN_FLIGHT: RefCell<bool> = const { RefCell::new(false) };
+    /// The user settings (`Program.Settings` static). The GTK code
+    /// reaches it through [`settings`].
+    static SETTINGS: RefCell<Option<Rc<RefCell<cr_core::settings::Settings>>>> =
+        const { RefCell::new(None) };
 }
 
 /// Opens the library database at the default location (`Program`'s
 /// startup `DatabaseManager.Open`). Returns the `OpenMessage` the C#
 /// would show in the attention dialog (None for a plain load).
+///
+/// Also loads the settings layer: `Config.xml` (the C#
+/// `Settings.Load(defaultSettingsFile)`) and the `comicrust.ini`
+/// chain + argv for `EngineConfiguration`/`ExtendedSettings` (the
+/// `IniFile.Default.Register` + `CommandLineParser` boot).
 pub fn initialize() -> Result<Option<String>, cr_core::database::DbError> {
     let (library, status) = Library::open_at_default_location()?;
     let message = open_message(status);
     SESSION.with(|cell| {
         *cell.borrow_mut() = Some(Rc::new(RefCell::new(library)));
     });
+    initialize_settings();
     Ok(message)
+}
+
+/// The settings boot (`Settings.Load` + the ini chain + argv).
+/// Unknown/corrupt config files fall back to the defaults (the C#
+/// catch parity).
+fn initialize_settings() {
+    let paths = cr_core::paths::Paths::new_default();
+    let settings = cr_core::settings::Settings::load(&cr_core::paths::settings_file(&paths));
+
+    // The ini chain (later files override earlier ones, C#
+    // `DefaultIniFile`), plus the command line.
+    let chain = cr_core::paths::ini_default_locations(&paths)
+        .iter()
+        .map(|p| p.to_string_lossy().into_owned())
+        .collect::<Vec<_>>()
+        .join("|");
+    let ini = cr_core::settings::IniValues::read_files(&chain);
+    let argv: Vec<String> = std::env::args().skip(1).collect();
+
+    let mut engine = cr_core::settings::EngineConfiguration::default();
+    engine.load(&ini);
+    cr_core::settings::EngineConfiguration::init_global(engine);
+
+    let mut extended = cr_core::settings::ExtendedSettings::default();
+    extended.load(&ini, &argv);
+    cr_core::settings::ExtendedSettings::init_global(extended);
+
+    SETTINGS.with(|cell| {
+        *cell.borrow_mut() = Some(Rc::new(RefCell::new(settings)));
+    });
+}
+
+/// The user settings (`Program.Settings`). Panics before
+/// [`initialize`].
+pub fn settings() -> Rc<RefCell<cr_core::settings::Settings>> {
+    SETTINGS.with(|cell| cell.borrow().clone().expect("settings not initialized"))
+}
+
+/// `Settings.Save(defaultSettingsFile)` (the C# app-exit step).
+pub fn save_settings() {
+    let paths = cr_core::paths::Paths::new_default();
+    let config_file = cr_core::paths::settings_file(&paths);
+    let s = settings();
+    let _ = s
+        .borrow()
+        .save(&config_file)
+        .inspect_err(|e| eprintln!("saving Config.xml failed: {e}"));
 }
 
 fn open_message(status: OpenStatus) -> Option<String> {
@@ -58,13 +115,14 @@ pub fn database_file() -> std::path::PathBuf {
     session().borrow().file().to_path_buf()
 }
 
-/// `ComicBookFactory.Create` on open (`AddToLibraryOnOpen` is false,
-/// the C# default): a comic that is in the library reuses the stored
-/// book — file-info refresh (`RefreshInfoFromFile`), the open stamps
-/// (`OnBookOpened` + the navigator `Opened`), and a dirty mark. The
-/// returned clone seeds the reader session. Returns `None` for comics
-/// outside the library — they stay temporary session books whose
-/// reading state is not persisted (C# `AddToTemporary` parity).
+/// `ComicBookFactory.Create` on open: a comic that is in the library
+/// reuses the stored book — file-info refresh (`RefreshInfoFromFile`),
+/// the open stamps (`OnBookOpened` + the navigator `Opened`), and a
+/// dirty mark. Returns `None` for comics outside the library — they
+/// stay temporary session books whose reading state is not persisted
+/// (C# `AddToTemporary` parity), UNLESS `Settings.AddToLibraryOnOpen`
+/// makes the create use `CreateBookOption.AddToStorage` (a new book
+/// with `AddedTime = now` joins the database).
 pub fn open_book(path: &str) -> Option<ComicBook> {
     let library = session();
     let mut lib = library.borrow_mut();
@@ -78,8 +136,23 @@ pub fn open_book(path: &str) -> Option<ComicBook> {
     }
     if found.is_some() {
         lib.mark_dirty();
+        return found;
     }
-    found
+    let add_to_library = settings().borrow().add_to_library_on_open;
+    if add_to_library && Path::new(path).exists() {
+        // `ComicBookFactory.Create(file, AddToStorage)`: the new book
+        // carries the scan defaults and joins the storage.
+        let mut book = ComicBook {
+            file_path: path.to_string(),
+            added_time: CrDateTime::now(),
+            ..ComicBook::default()
+        };
+        refresh_file_info(&mut book);
+        lib.database_mut().books.push(book.clone());
+        lib.mark_dirty();
+        return Some(book);
+    }
+    None
 }
 
 /// The page-turn write-back (`TrackCurrentPage` mirroring into the
@@ -451,13 +524,27 @@ pub fn quick_open_lists() -> Vec<(String, Vec<ComicBook>)> {
             ..Default::default()
         })
     };
+    // The engine-configuration values (the C# fills the built-in
+    // lists from `EngineConfiguration.Default`).
+    let engine = cr_core::settings::EngineConfiguration::global();
+    let (recent, read_at, not_read_at) = (
+        engine.is_recent_in_days.to_string(),
+        engine.is_read_completion_percentage.to_string(),
+        engine.is_not_read_completion_percentage.to_string(),
+    );
     let groups: Vec<(&str, ComicBookMatcher)> = vec![
         (
             "Reading",
-            matcher("ComicBookReadPercentageMatcher", "10", "95"),
+            matcher("ComicBookReadPercentageMatcher", &not_read_at, &read_at),
         ),
-        ("Recently Read", matcher("ComicBookOpenedMatcher", "14", "")),
-        ("Recently Added", matcher("ComicBookAddedMatcher", "14", "")),
+        (
+            "Recently Read",
+            matcher("ComicBookOpenedMatcher", &recent, ""),
+        ),
+        (
+            "Recently Added",
+            matcher("ComicBookAddedMatcher", &recent, ""),
+        ),
     ];
 
     let lib = session();
@@ -493,7 +580,7 @@ pub fn quick_open_lists() -> Vec<(String, Vec<ComicBook>)> {
                 .cmp(&a.opened_time.naive)
                 .then_with(|| b.added_time.naive.cmp(&a.added_time.naive))
         });
-        books.truncate(10);
+        books.truncate(cr_core::settings::ExtendedSettings::global().quick_open_list_size as usize);
         out.push((name.to_string(), books));
     }
     out
