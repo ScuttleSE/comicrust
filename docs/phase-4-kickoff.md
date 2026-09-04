@@ -223,20 +223,48 @@ modules with unit tests, one GTK4 drawing-area widget on top.
       composition over synthetic books, selection model. Done: 16
       new tests (232 total).
 
-### T4. The comic item (`cr-ui/src/browser/item.rs`)
+### T4. The comic item (`cr-ui/src/browser/item.rs`) — IMPLEMENTED (2026-09-04), user test pending
 
 C# spec: `CoverViewItem.cs` + the `CoverViewItem*Comparer/Grouper`
 family.
 
-- [ ] Cover drawing (fit-to-box scaling incl. the UP-scaling
+- [x] Cover drawing (fit-to-box scaling incl. the UP-scaling
       parity lesson from Phase 1), the overlay badges: read
       markers, page-count/rating text — port the C# `DrawItem`
-      visuals in cairo, one badge at a time, user-tested.
-- [ ] Tile/Detail text lines from the registry (the C# format
-      strings; start with the English defaults).
+      visuals in cairo, one badge at a time, user-tested. Done in
+      `item.rs`: `draw_cover` (border 4, shadow reserve, the
+      right-keeping crop of a landscape source, 1 px frame,
+      selection tint), `draw_bookmarks` (the `DrawBookmarkV`
+      swallowtail ribbons at the right edge — Orange = CurrentPage,
+      Green = LastPageRead, over the PageCount denominator),
+      `draw_rating_tags` (the default numeric mode: the personal
+      gold / community blue tags at the bottom-right with the
+      scaled number), and the file-missing marker (the bundled
+      RedCross, bottom-left strip). The caption is the exact
+      `Comic.Caption` — `display_text` ports the
+      `ExtendedStringFormater` group semantics over
+      `DefaultCaptionFormat` (a group emits iff every direct
+      placeholder resolved; nested failures do not fail the
+      parent), unit-tested. Deferred (assets/settings): the
+      dirty/open/last/new-pages state PNGs, the dog-ear page curl,
+      and the bow shadow.
+- [x] Tile/Detail text lines from the registry (the C# format
+      strings; start with the English defaults). Done: Detail used
+      the T3 column texts; Tile renders the
+      `ComicTextElements.DefaultFileComic` line list
+      (`CaptionWithoutTitle` bold, `ShadowTitle` bold,
+      `ArtistInfo` (the unique-name "/" join), the wrapped
+      Summary, and the two-column Size/Opened/Added/Format/File
+      block with the shared tab stop) via
+      `item::tile_text_lines` (unit-tested).
 - [ ] Custom book thumbnail: stored `ThumbnailKey` data wins over
       the generated cover (the C# `SetCustomThumbnail` path; the
-      backup format already carries `Thumbnails/*`).
+      backup format already carries `Thumbnails/*`). DEFERRED to
+      the settings port: the resource locator
+      (`ThumbnailKey::with_locator`) parses but the pool has no
+      `type://` loader and the CustomThumbnails folder path needs
+      the settings port. The model field (`custom_thumbnail_key`)
+      round-trips already.
 
 ### T5. The browser shell (`cr-ui/src/browser/` + app window)
 
@@ -459,3 +487,10 @@ C# spec: `PagesView.cs` (833), `ComicPagesView.cs` (241),
   verified on the user's machine. Known cosmetic startup critical:
   `gtk_css_node_insert_after` (GTK-internal CSS ordering; revisit
   with the T5 shell).
+- **T4 IMPLEMENTED (2026-09-04), user test pending.** The item
+  drawing lives in `cr-ui/src/browser/item.rs` (+ the caption
+  engine in `cr-engine/src/display_text.rs`). Headless probe: real
+  covers draw with border/shadow/frame, the read-marker ribbons
+  ride the right edge, the numeric tags render (gold personal,
+  blue community, absent at 0), captions wrap centered with the
+  C# group degradation. 236 tests green.
