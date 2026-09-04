@@ -483,7 +483,11 @@ impl ItemView {
                     }
                 }
             }
-            s.notify_selection();
+            // The selection callback re-enters this widget
+            // (`book_count` on the status bar) — drop the borrow
+            // first (the RefCell double-borrow lesson).
+            drop(s);
+            state.borrow().notify_selection();
             canvas.queue_draw();
         });
         gesture.connect_released(move |gesture, _n, _x, _y| {
@@ -503,7 +507,12 @@ impl ItemView {
                     &snap,
                     mods.contains(gtk4::gdk::ModifierType::CONTROL_MASK),
                 );
-                s.notify_selection();
+                drop(s);
+                state_released
+                    .upgrade()
+                    .expect("state")
+                    .borrow()
+                    .notify_selection();
                 canvas_released.queue_draw();
             }
         });
@@ -641,9 +650,10 @@ impl ItemView {
                                     glib::ControlFlow::Break
                                 },
                             ));
-                            // Handled — swallow the key.
-                            s.notify_selection();
+                            // Handled — swallow the key. The notify
+                            // re-enters this widget — drop first.
                             drop(s);
+                            state.borrow().notify_selection();
                             canvas.queue_draw();
                             return glib::Propagation::Stop;
                         }
@@ -652,8 +662,8 @@ impl ItemView {
                 }
             }
             s.type_ahead.clear();
-            s.notify_selection();
             drop(s);
+            state.borrow().notify_selection();
             canvas.queue_draw();
             glib::Propagation::Stop
         });
