@@ -47,6 +47,10 @@ pub const COMMANDS: &[CommandSpec] = &[
     cmd("add-folder", &["<Control><Shift>a"]),
     cmd("scan-folders", &["<Control><Shift>s"]),
     cmd("update-book-files", &["<Control><Shift>u"]),
+    // The C# binds NO menu shortcut (Ctrl+Shift+T is Tasks); the
+    // `Generate Cover Thumbnails` item is a stub until the thumbnail
+    // queue work lands.
+    cmd("generate-thumbnails", &[]),
     cmd("tasks", &["<Control><Shift>t"]),
     cmd("new-book-entry", &["<Control><Shift>n"]),
     cmd("restart", &["<Control><Shift>q"]),
@@ -72,6 +76,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     cmd("copy-page", &["<Control>c"]),
     cmd("export-page", &["<Control><Shift>c"]),
     cmd("refresh", &["F5"]),
+    cmd("display-settings", &["F9"]),
     cmd("preferences", &["<Control>F9"]),
     // Browse
     cmd("toggle-browser", &["F3"]),
@@ -108,6 +113,10 @@ pub const COMMANDS: &[CommandSpec] = &[
     // to Rotate Right: Ctrl+Shift+plus).
     cmd("zoom-in", &["<Control>equal", "<Control>plus"]),
     cmd("zoom-out", &["<Control>minus"]),
+    cmd("toggle-zoom", &["<Control><Alt>z"]),
+    // The Zoom preset items (100..400 %) carry no C# accelerators;
+    // the parameter is the percent ("win.zoom-preset::100").
+    cmd("zoom-preset", &[]),
     cmd("zoom-custom", &["<Control><Shift>z"]),
     cmd("rotate-left", &["<Control><Shift>minus"]),
     cmd("rotate-right", &["<Control><Shift>plus"]),

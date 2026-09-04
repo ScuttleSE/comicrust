@@ -5,6 +5,7 @@ pub mod columns;
 pub mod item;
 pub mod item_view;
 pub mod layout;
+pub mod menubar;
 pub mod navigator;
 pub mod pages_view;
 pub mod shell;

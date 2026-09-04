@@ -82,6 +82,11 @@ struct ShellState {
     /// repeats until the list changed or the cycle wrapped).
     random_list: RefCell<Vec<CrGuid>>,
     random_picked: RefCell<Vec<CrGuid>>,
+    /// The main-window menubar (Phase 5.5 T3; visibility is the
+    /// `OnGuiVisibilities` rule).
+    menubar: gtk4::PopoverMenuBar,
+    /// The Alt-reveal override (the `AutoHideMainMenu` toggle).
+    menubar_revealed: Cell<bool>,
 }
 
 impl ShellState {
@@ -276,7 +281,14 @@ impl BrowserShell {
         stack.add_named(&quick_page, Some("quickopen"));
         stack.add_named(&browser_page, Some("browser"));
         stack.add_named(&reader_widgets.notebook(), Some("reader"));
-        window.set_child(Some(&stack));
+
+        // The menubar (the C# `mainMenuStrip`) rides above the
+        // content — the T3 PopoverMenuBar.
+        let menubar = super::menubar::create_menubar();
+        let content = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+        content.append(&menubar);
+        content.append(&stack);
+        window.set_child(Some(&content));
 
         let state = Rc::new(ShellState {
             window: window.clone(),
@@ -297,6 +309,8 @@ impl BrowserShell {
             list_history_pos: Cell::new(0),
             random_list: RefCell::new(Vec::new()),
             random_picked: RefCell::new(Vec::new()),
+            menubar,
+            menubar_revealed: Cell::new(false),
         });
         let shell = BrowserShell {
             window: window.clone(),
@@ -315,6 +329,12 @@ impl BrowserShell {
     /// The navigator pane handle (the list-command host).
     pub fn navigator(&self) -> Rc<Navigator> {
         Rc::clone(&self.state.navigator)
+    }
+
+    /// The main-window menubar (the T3 PopoverMenuBar; the T14
+    /// layout persistence and the probes reach it here).
+    pub fn menubar(&self) -> &gtk4::PopoverMenuBar {
+        &self.state.menubar
     }
 
     /// The main window handle.
@@ -392,6 +412,8 @@ impl BrowserShell {
                         } else {
                             sh.stack.set_visible_child_name("browser");
                         }
+                        // Undock/re-dock changes the menubar rule.
+                        sh.sync_enabled();
                     }
                 });
         }
@@ -701,6 +723,7 @@ impl BrowserShell {
 
     fn install_actions(&self) {
         ShellState::install_commands(&self.state);
+        ShellState::install_menubar_keys(&self.state);
     }
 
     /// Opens a comic into the docked reader (the app's `open_reader`
@@ -739,6 +762,10 @@ impl ShellState {
         action.connect_activate(move |_, _| {
             if let Some(sh) = state.upgrade() {
                 f(&sh);
+                // The C# re-syncs the command enable/check states on
+                // every menu operation (`CommandMapper` idle update);
+                // every action dispatch refreshes ours.
+                sh.sync_enabled();
             }
         });
         group.add_action(&action);
@@ -809,6 +836,61 @@ impl ShellState {
                 a.set_state(&rtl.to_variant());
             }
         }
+        // The check states (`CommandMapper` check lambdas):
+        // `() => BrowserVisible`, `() => Program.Settings.AutoScrolling`
+        // (the view mirrors it), `() => ComicDisplay.TwoPageNavigation`,
+        // MinimalGui / FullScreen / Autorotate.
+        if let Some(a) = self.action("toggle-browser") {
+            let visible = self.stack.visible_child_name().as_deref() == Some("browser");
+            a.set_state(&visible.to_variant());
+        }
+        if let Some(v) = self.reader.current_auto_scrolling() {
+            if let Some(a) = self.action("auto-scroll") {
+                a.set_state(&v.to_variant());
+            }
+        }
+        if let Some(v) = self.reader.current_two_page_navigation() {
+            if let Some(a) = self.action("double-auto-scroll") {
+                a.set_state(&v.to_variant());
+            }
+        }
+        if let Some(v) = self.reader.current_auto_rotate() {
+            if let Some(a) = self.action("auto-rotate") {
+                a.set_state(&v.to_variant());
+            }
+        }
+        if let Some(a) = self.action("minimal-gui") {
+            a.set_state(&self.reader.is_minimal_gui().to_variant());
+        }
+        if let Some(a) = self.action("full-screen") {
+            a.set_state(&self.reader.is_fullscreen().to_variant());
+        }
+        self.update_menubar();
+    }
+
+    /// Applies the menubar visibility rule (`OnGuiVisibilities`
+    /// Fill-mode parity — `menubar::menubar_visible`).
+    fn update_menubar(&self) {
+        let minimal = self.reader.is_minimal_gui();
+        let undocked = self.reader.is_undocked();
+        let is_comic_viewer = self.stack.visible_child_name().as_deref() == Some("reader");
+        let has_book = !self.reader.is_empty();
+        let (auto_hide, show_no_comic) = {
+            let s = cr_ui_settings();
+            let b = s.borrow();
+            (b.auto_hide_main_menu, b.show_main_menu_no_comic_open)
+        };
+        let revealed = self.menubar_revealed.get();
+        let visible = super::menubar::menubar_visible(
+            minimal,
+            undocked,
+            is_comic_viewer,
+            has_book,
+            auto_hide,
+            show_no_comic,
+            revealed,
+        );
+        self.menubar.set_visible(visible);
     }
 
     /// `OpenNextComic(relative)`: the neighbor book in the current
@@ -1138,6 +1220,9 @@ impl ShellState {
         });
         // tasks — T13 lands the Tasks dialog.
         self.add_disabled(&group, "tasks");
+        // generate-thumbnails — the C# `CacheThumbnails` queue
+        // command; the thumbnail-queue work owns it.
+        self.add_disabled(&group, "generate-thumbnails");
         // new-book-entry — fileless books are unported.
         self.add_disabled(&group, "new-book-entry");
         self.add_simple(&group, "restart", |sh| {
@@ -1198,7 +1283,8 @@ impl ShellState {
         self.add_simple(&group, "preferences", ShellState::show_preferences);
 
         // --- Browse ---
-        self.add_simple(&group, "toggle-browser", |sh| sh.toggle_browser());
+        // `ToggleBrowser` with the `() => BrowserVisible` check.
+        self.add_check(&group, "toggle-browser", true, |sh| sh.toggle_browser());
         self.add_simple(&group, "view-library", |sh| {
             sh.show_browser();
             sh.panel_stack.set_visible_child_name("library");
@@ -1255,11 +1341,15 @@ impl ShellState {
         self.add_simple(&group, "next-tab", |sh| {
             sh.reader.dispatch_current("NextTab")
         });
-        self.add_simple(&group, "auto-scroll", |sh| {
-            sh.reader.dispatch_current("ToggleAutoScrolling")
+        // `() => Program.Settings.AutoScrolling` — the view field
+        // mirrors the C# setting (session-only here; the C# writes
+        // Config.xml).
+        self.add_check(&group, "auto-scroll", false, |sh| {
+            sh.reader.dispatch_current("ToggleAutoScrolling");
         });
-        self.add_simple(&group, "double-auto-scroll", |sh| {
-            sh.reader.dispatch_current("DoublePageAutoScroll")
+        // `() => ComicDisplay.TwoPageNavigation`.
+        self.add_check(&group, "double-auto-scroll", true, |sh| {
+            sh.reader.dispatch_current("DoublePageAutoScroll");
         });
         {
             let track = gio::SimpleAction::new_stateful(
@@ -1367,6 +1457,26 @@ impl ShellState {
         self.add_simple(&group, "zoom-out", |sh| {
             sh.reader.dispatch_current("ZoomOut")
         });
+        // `MainForm.ToggleZoom` (the menu item; the touch binding is
+        // a reader-internal no-op).
+        self.add_simple(&group, "toggle-zoom", |sh| sh.reader.toggle_zoom_current());
+        // The Zoom presets (`ComicDisplay.ImageZoom = v`).
+        {
+            let zoom = gio::SimpleAction::new("zoom-preset", Some(glib::VariantTy::STRING));
+            let state = Rc::downgrade(self);
+            zoom.connect_activate(move |_, value| {
+                if let Some(sh) = state.upgrade() {
+                    let Some(text) = value.and_then(|v| v.get::<String>()) else {
+                        return;
+                    };
+                    let percent: f32 = text.parse().unwrap_or(100.0);
+                    sh.reader.zoom_current(percent / 100.0);
+                    sh.sync_enabled();
+                }
+            });
+            group.add_action(&zoom);
+            self.actions.borrow_mut().insert("zoom-preset", zoom);
+        }
         // zoom-custom — T13 lands the dialog.
         self.add_disabled(&group, "zoom-custom");
         self.add_simple(&group, "rotate-left", |sh| {
@@ -1402,11 +1512,13 @@ impl ShellState {
             });
             group.add_action(&auto);
         }
-        self.add_simple(&group, "minimal-gui", |sh| {
-            sh.reader.dispatch_current("ToggleMenu")
+        // MinimalGui / FullScreen checks (the state lives in the
+        // reader shell / the root window; sync reads it back).
+        self.add_check(&group, "minimal-gui", false, |sh| {
+            sh.reader.dispatch_current("ToggleMenu");
         });
-        self.add_simple(&group, "full-screen", |sh| {
-            sh.reader.dispatch_current("ToggleFullScreen")
+        self.add_check(&group, "full-screen", false, |sh| {
+            sh.reader.dispatch_current("ToggleFullScreen");
         });
         self.add_simple(&group, "undock-reader", |sh| {
             sh.reader.dispatch_current("ToggleUndockReader")
@@ -1483,6 +1595,82 @@ impl ShellState {
             glib::Propagation::Stop
         });
         self.window.add_controller(controller);
+    }
+
+    /// The menubar wiring (Phase 5.5 T3): the chrome-visibility hook
+    /// (fullscreen enter/leave, MinimalGui) and the `AutoHideMainMenu`
+    /// Alt reveal — Alt pressed and released ALONE toggles the
+    /// reveal (`MainForm.OnKeyUp`; the 500 ms re-close debounce is
+    /// not ported). GTK4 has no way to OPEN a PopoverMenuBar from
+    /// code, so the C#'s "select the first item" step is not ported.
+    fn install_menubar_keys(self: &Rc<ShellState>) {
+        // Chrome changes (fullscreen notify, MinimalGui toggles) →
+        // the menubar rule re-evaluates with the sync.
+        {
+            let state = Rc::downgrade(self);
+            self.reader.set_on_chrome_change(move |_visible| {
+                if let Some(sh) = state.upgrade() {
+                    sh.sync_enabled();
+                }
+            });
+        }
+        // Alt alone reveals/hides the auto-hidden menubar.
+        let alt_alone = Rc::new(Cell::new(false));
+        let controller = gtk4::EventControllerKey::new();
+        {
+            let alt_alone = Rc::clone(&alt_alone);
+            controller.connect_key_pressed(move |_c, key, _code, _mods| {
+                alt_alone.set(matches!(key, gtk4::gdk::Key::Alt_L | gtk4::gdk::Key::Alt_R));
+                glib::Propagation::Proceed
+            });
+        }
+        {
+            let state = Rc::downgrade(self);
+            controller.connect_key_released(move |_c, key, _code, _mods| {
+                if !matches!(key, gtk4::gdk::Key::Alt_L | gtk4::gdk::Key::Alt_R) {
+                    return;
+                }
+                if !alt_alone.replace(false) {
+                    return; // Another key sat between press and release.
+                }
+                let Some(sh) = state.upgrade() else {
+                    return;
+                };
+                // `enableAutoHideMenu` parity: only while auto-hidden
+                // and not minimal.
+                let minimal = sh.reader.is_minimal_gui();
+                let auto_hide = cr_ui_settings().borrow().auto_hide_main_menu;
+                if !auto_hide || minimal {
+                    return;
+                }
+                sh.menubar_revealed.set(!sh.menubar_revealed.get());
+                sh.update_menubar();
+            });
+        }
+        self.window.add_controller(controller);
+    }
+
+    /// Registers one STATEFUL check action (`CommandMapper.Add(...
+    /// checkLambda)` parity): the handler runs, the check state
+    /// follows in the next sync (GTK renders stateful-action state
+    /// on menu items).
+    fn add_check<F: Fn(&Rc<ShellState>) + 'static>(
+        self: &Rc<ShellState>,
+        group: &gio::SimpleActionGroup,
+        name: &'static str,
+        initial: bool,
+        f: F,
+    ) {
+        let action = gio::SimpleAction::new_stateful(name, None, &initial.to_variant());
+        let state = Rc::downgrade(self);
+        action.connect_activate(move |_, _| {
+            if let Some(sh) = state.upgrade() {
+                f(&sh);
+                sh.sync_enabled();
+            }
+        });
+        group.add_action(&action);
+        self.actions.borrow_mut().insert(name, action);
     }
 
     /// A stub action that stays disabled until its feature task

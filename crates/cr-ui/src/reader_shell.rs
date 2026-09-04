@@ -107,6 +107,10 @@ struct ShellState {
     /// (`NextComic`/`PrevComic`/`RandomComic`/`ShowBrowser`) — the
     /// C# handlers live on `MainForm` (the browser list context).
     on_library_command: Option<LibraryCommandFn>,
+    /// The host runs this whenever the chrome visibility resolves
+    /// (fullscreen enter/leave, MinimalGui) — the T3 menubar rides
+    /// the same visibility.
+    on_chrome_change: Option<Rc<dyn Fn(bool)>>,
 }
 
 impl ShellState {
@@ -183,6 +187,7 @@ impl ReaderShell {
                 on_page_change: None,
                 on_book_changed: None,
                 on_library_command: None,
+                on_chrome_change: None,
             })),
         };
 
@@ -356,6 +361,56 @@ impl ReaderShell {
         Some(s.tabs.get(current as usize)?.view.rtl())
     }
 
+    /// The current view's auto-scroll state (the shell check sync).
+    pub fn current_auto_scrolling(&self) -> Option<bool> {
+        let s = self.state.borrow();
+        let current = s.notebook.current_page()?;
+        Some(s.tabs.get(current as usize)?.view.auto_scrolling())
+    }
+
+    /// The current view's Two Page Auto Scrolling state.
+    pub fn current_two_page_navigation(&self) -> Option<bool> {
+        let s = self.state.borrow();
+        let current = s.notebook.current_page()?;
+        Some(s.tabs.get(current as usize)?.view.two_page_navigation())
+    }
+
+    /// The current view's Autorotate state.
+    pub fn current_auto_rotate(&self) -> Option<bool> {
+        let s = self.state.borrow();
+        let current = s.notebook.current_page()?;
+        Some(s.tabs.get(current as usize)?.view.auto_rotate())
+    }
+
+    /// `MainForm.MinimalGui`.
+    pub fn is_minimal_gui(&self) -> bool {
+        self.state.borrow().minimal_gui
+    }
+
+    /// `MainForm.ReaderUndocked`.
+    pub fn is_undocked(&self) -> bool {
+        self.state.borrow().undocked.is_some()
+    }
+
+    /// The fullscreen state of the window the visible view lives in
+    /// (an undocked reader fullscreens its own window).
+    pub fn is_fullscreen(&self) -> bool {
+        let s = self.state.borrow();
+        let window = if let Some(undocked) = s.undocked.as_ref() {
+            Some(undocked.window.clone())
+        } else {
+            s.host.borrow().clone()
+        };
+        drop(s);
+        window.map(|w| w.is_fullscreen()).unwrap_or(false)
+    }
+
+    /// The host runs this whenever the chrome visibility resolves —
+    /// the T3 menubar rides the same visibility.
+    pub fn set_on_chrome_change<F: Fn(bool) + 'static>(&self, f: F) {
+        self.state.borrow_mut().on_chrome_change = Some(Rc::new(f));
+    }
+
     fn fire_book_changed(state: &Rc<RefCell<ShellState>>) {
         // Immutable borrows only — the host's rebind handler calls
         // `current_comic_book` (another immutable borrow).
@@ -410,6 +465,30 @@ impl ReaderShell {
         let current = s.notebook.current_page()?;
         let tab = s.tabs.get(current as usize)?;
         Some((tab.path.to_string_lossy().into_owned(), tab.page_count))
+    }
+
+    /// `MainForm.ToggleZoom` on the current reader slot.
+    pub fn toggle_zoom_current(&self) {
+        let Some(view) = self.current_view() else {
+            return;
+        };
+        view.toggle_zoom();
+    }
+
+    /// A Zoom preset on the current reader slot (`ImageZoom = v`).
+    pub fn zoom_current(&self, zoom: f32) {
+        let Some(view) = self.current_view() else {
+            return;
+        };
+        view.zoom_to(zoom);
+    }
+
+    /// The current slot's view handle (cloned out before any
+    /// callback fires — the RefCell lesson).
+    fn current_view(&self) -> Option<PageView> {
+        let s = self.state.borrow();
+        let current = s.notebook.current_page()?;
+        s.tabs.get(current as usize).map(|t| t.view.clone())
     }
 
     /// `ComicBookNavigator.Navigate(page, Absolute)` on the current
@@ -871,26 +950,37 @@ impl ReaderShell {
             .as_ref()
             .map(|w| w.is_fullscreen())
             .unwrap_or(false);
-        let mut st = state.borrow_mut();
-        st.minimal_gui = !st.minimal_gui;
-        let visible = !st.minimal_gui && !fullscreen;
-        st.header.set_visible(visible);
-        if st.undocked.is_none() {
-            if let Some(bar) = st.host.borrow().as_ref().and_then(|w| w.titlebar()) {
-                bar.set_visible(visible);
-            }
-        }
+        let visible = {
+            let mut st = state.borrow_mut();
+            st.minimal_gui = !st.minimal_gui;
+            !st.minimal_gui && !fullscreen
+        };
+        ReaderShell::apply_chrome_visibility(state, visible);
     }
 
     /// Applies one visibility state to the reader header and — when
-    /// docked — the host window's header bar.
+    /// docked — the host window's header bar. The chrome-change
+    /// callback fires AFTER the state borrow drops (the callback
+    /// re-enters this state — the Phase 3 lesson).
     fn apply_chrome_visibility(state: &Rc<RefCell<ShellState>>, visible: bool) {
-        let st = state.borrow();
-        st.header.set_visible(visible);
-        if st.undocked.is_none() {
-            if let Some(bar) = st.host.borrow().as_ref().and_then(|w| w.titlebar()) {
+        let (header, host, docked, callback) = {
+            let st = state.borrow();
+            let host = st.host.borrow().clone();
+            (
+                st.header.clone(),
+                host,
+                st.undocked.is_none(),
+                st.on_chrome_change.clone(),
+            )
+        };
+        header.set_visible(visible);
+        if docked {
+            if let Some(bar) = host.as_ref().and_then(|w| w.titlebar()) {
                 bar.set_visible(visible);
             }
+        }
+        if let Some(f) = callback {
+            f(visible);
         }
     }
 

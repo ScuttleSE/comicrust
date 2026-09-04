@@ -241,6 +241,8 @@ struct ViewState {
     auto_rotate: bool,
     rotation: ImageRotation,
     image_zoom: f32,
+    /// The zoom Toggle Zoom restores (`MainForm.lastZoom`).
+    last_zoom: f32,
     visible: ImagePartInfo,
     /// Cached resolution; rebuilt when the config or view size moves.
     cache: Option<(DisplayConfig, DisplayOutput)>,
@@ -792,6 +794,7 @@ impl PageView {
             auto_rotate: false,
             rotation: ImageRotation::None,
             image_zoom: 1.0,
+            last_zoom: 1.0,
             visible: ImagePartInfo::EMPTY,
             cache: None,
             page_callback: None,
@@ -932,6 +935,7 @@ impl PageView {
             st.composition = None;
             st.visible = ImagePartInfo::EMPTY;
             st.image_zoom = 1.0;
+            st.last_zoom = 1.0;
             st.rotation = ImageRotation::None;
             st.wanted.clear();
             st.transition_anim = None;
@@ -2170,7 +2174,8 @@ impl PageView {
             "ZoomOut" => self.zoom_add(-0.1, MINIMUM_ZOOM, MAXIMUM_ZOOM),
             "StepZoomIn" => self.zoom_add(KEYBOARD_ZOOM_STEPPING, MINIMUM_ZOOM, 4.0),
             "StepZoomOut" => self.zoom_add(-KEYBOARD_ZOOM_STEPPING, MINIMUM_ZOOM, 4.0),
-            // Touch-only binding in the C#.
+            // Touch-only binding in the C#; the Zoom MENU item lands
+            // on `toggle_zoom()` directly.
             "ToggleZoom" => {}
             "PageRotateC" => self.page_rotate(true),
             "PageRotateCC" => self.page_rotate(false),
@@ -2238,6 +2243,40 @@ impl PageView {
     /// action syncs from it).
     pub fn rtl(&self) -> bool {
         self.state.borrow().rtl
+    }
+
+    /// The current view's auto-scroll state (`ComicDisplay
+    /// .AutoScrolling`; the C# menu check reads the mirrored
+    /// `Program.Settings.AutoScrolling`).
+    pub fn auto_scrolling(&self) -> bool {
+        self.state.borrow().auto_scrolling
+    }
+
+    /// `ComicDisplay.TwoPageNavigation` (the Double Page Auto
+    /// Scrolling check).
+    pub fn two_page_navigation(&self) -> bool {
+        self.state.borrow().two_page_navigation
+    }
+
+    /// The view's `AutoRotate` (the Autorotate check).
+    pub fn auto_rotate(&self) -> bool {
+        self.state.borrow().auto_rotate
+    }
+
+    /// `MainForm.ToggleZoom`: below 1.05 restore the last zoom,
+    /// above save the current and reset to 100 %.
+    pub fn toggle_zoom(&self) {
+        let (current, last) = {
+            let st = self.state.borrow();
+            (st.image_zoom, st.last_zoom)
+        };
+        let next = if current < 1.05 {
+            last
+        } else {
+            self.state.borrow_mut().last_zoom = current;
+            1.0
+        };
+        self.zoom_to(next);
     }
 
     fn schedule_click(&self) {
