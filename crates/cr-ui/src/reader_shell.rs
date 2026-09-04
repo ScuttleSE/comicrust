@@ -92,6 +92,9 @@ struct ShellState {
     /// The host runs this when the last tab closes (the C# `Close`
     /// makes the browser visible again).
     on_last_tab_closed: Option<Box<dyn Fn()>>,
+    /// The host runs this when undocking (`reader_visible == false`)
+    /// or re-docking (`true`) — the main window swaps its stack page.
+    on_view_change: Option<Box<dyn Fn(bool)>>,
 }
 
 impl ShellState {
@@ -120,11 +123,18 @@ pub struct ReaderShell {
 pub struct ReaderShellWidgets {
     notebook: Notebook,
     pub header: HeaderBar,
+    subtitle: Label,
 }
 
 impl ReaderShellWidgets {
     pub fn notebook(&self) -> Notebook {
         self.notebook.clone()
+    }
+
+    /// The "Page X of Y" label — the host packs it where the C#
+    /// shows it (the main window title area).
+    pub fn subtitle(&self) -> Label {
+        self.subtitle.clone()
     }
 }
 
@@ -133,7 +143,7 @@ impl ReaderShell {
     pub fn new(app: &Application, pool: Arc<ImagePool>) -> (ReaderShell, ReaderShellWidgets) {
         let header = HeaderBar::new();
         let subtitle = Label::builder().css_classes(["placeholder-label"]).build();
-        header.pack_end(&subtitle);
+        header.pack_end(&subtitle.clone());
 
         let notebook = Notebook::new();
         notebook.set_vexpand(true);
@@ -143,7 +153,7 @@ impl ReaderShell {
             state: Rc::new(RefCell::new(ShellState {
                 host: RefCell::new(None),
                 header: header.clone(),
-                subtitle,
+                subtitle: subtitle.clone(),
                 notebook: notebook.clone(),
                 app: app.clone(),
                 pool,
@@ -154,6 +164,7 @@ impl ReaderShell {
                 cursor_hide_source: None,
                 next_slot: 0,
                 on_last_tab_closed: None,
+                on_view_change: None,
             })),
         };
 
@@ -169,7 +180,11 @@ impl ReaderShell {
             });
         }
 
-        let widgets = ReaderShellWidgets { notebook, header };
+        let widgets = ReaderShellWidgets {
+            notebook,
+            header,
+            subtitle,
+        };
         (shell, widgets)
     }
 
@@ -218,6 +233,14 @@ impl ReaderShell {
     /// again (the C# `Close` reveals the browser).
     pub fn set_on_last_tab_closed<F: Fn() + 'static>(&self, f: F) {
         self.state.borrow_mut().on_last_tab_closed = Some(Box::new(f));
+    }
+
+    /// The host hook: the undock state changed — `reader_visible`
+    /// tells whether the main window should show the reader page
+    /// (after an undock the C# reveals the browser in the main
+    /// form; after a re-dock the reader shows again).
+    pub fn set_on_view_change<F: Fn(bool) + 'static>(&self, f: F) {
+        self.state.borrow_mut().on_view_change = Some(Box::new(f));
     }
 
     /// Focuses the current reader tab (the host's is-active handler
@@ -516,6 +539,9 @@ impl ReaderShell {
             notebook.set_current_page(Some(position as u32));
             let current = notebook.current_page().unwrap_or(0) as usize;
             ReaderShell::refresh_chrome(state, current);
+            if let Some(f) = state.borrow().on_view_change.as_ref() {
+                f(true);
+            }
             return;
         }
         let Some((position, tab, view, _tab_widget, caption, app)) = undock else {
@@ -554,6 +580,9 @@ impl ReaderShell {
                 window: undocked_window.clone(),
                 tab,
             });
+        }
+        if let Some(f) = state.borrow().on_view_change.as_ref() {
+            f(false);
         }
         undocked_window.present();
         view.widget().grab_focus();

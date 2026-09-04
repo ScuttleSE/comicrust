@@ -126,6 +126,11 @@ impl BrowserShell {
             .build();
         header.pack_start(&search);
 
+        // `BrowserVisible` — reveals the browser while the reader is
+        // open (the reader page returns on the next open or re-dock).
+        let browser_button = Button::with_label("Browser");
+        header.pack_end(&browser_button);
+
         let view_button = MenuButton::builder()
             .label("View")
             .css_classes(["flat"])
@@ -144,8 +149,9 @@ impl BrowserShell {
             .build();
         group_button.set_menu_model(Some(&group_menu_model()));
         header.pack_end(&group_button);
-        let subtitle = Label::new(None);
-        header.pack_end(&subtitle);
+        // The reader's "Page X of Y" lives in the main window header
+        // (the C# main form shows it in the title area).
+        header.pack_end(&reader_widgets.subtitle());
         window.set_titlebar(Some(&header));
 
         // The browser page: navigator | ItemView, with the status
@@ -189,7 +195,7 @@ impl BrowserShell {
             window: window.clone(),
             state: Rc::clone(&state),
         };
-        shell.wire(&open_button, &add_folder_button, &search);
+        shell.wire(&open_button, &add_folder_button, &search, &browser_button);
         (window, shell)
     }
 
@@ -203,7 +209,13 @@ impl BrowserShell {
         self.window.clone()
     }
 
-    fn wire(&self, open_button: &Button, add_folder_button: &Button, search: &Entry) {
+    fn wire(
+        &self,
+        open_button: &Button,
+        add_folder_button: &Button,
+        search: &Entry,
+        browser_button: &Button,
+    ) {
         let state = &self.state;
 
         // The reader docks: the host window drives the fullscreen
@@ -223,6 +235,37 @@ impl BrowserShell {
                         sh.show_browser();
                     }
                 });
+        }
+
+        // Undock → the main window reveals the browser (the C#
+        // `ReaderUndocked` leaves the main form with its browser);
+        // re-dock → the reader page shows again.
+        {
+            let state = Rc::downgrade(state);
+            state
+                .upgrade()
+                .expect("state")
+                .reader
+                .set_on_view_change(move |reader_visible| {
+                    if let Some(sh) = state.upgrade() {
+                        if reader_visible {
+                            sh.stack.set_visible_child_name("reader");
+                        } else {
+                            sh.stack.set_visible_child_name("browser");
+                        }
+                    }
+                });
+        }
+
+        // The Browser button: reveal the browser grid while comics
+        // stay open in the reader (`BrowserVisible`).
+        {
+            let state = Rc::downgrade(state);
+            browser_button.connect_clicked(move |_| {
+                if let Some(sh) = state.upgrade() {
+                    sh.show_browser();
+                }
+            });
         }
 
         // The navigator selection → the ItemView book set (debounced
