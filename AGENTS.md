@@ -52,11 +52,11 @@ Update this section at the **end of every work session**. The next agent must kn
 ### State summary
 
 - **Phase:** 5 (the dialogs) — T1 COMPLETE (user-tested, all
-  pass). T2 (the book editor) CHECKPOINT 1 IMPLEMENTED (2026-09-04),
-  user test pending: the editor UI + the DB write-back. **Next: run
-  the T2 checkpoint-1 user test; then checkpoint 2 (the file
-  write-back queue + bulk edit).** Phases 0-4 are complete (their
-  gates stay green).
+  pass). T2 (the book editor) CHECKPOINT 1 COMPLETE (user-tested,
+  all pass, 2026-09-04 — six fix rounds; the record lives in
+  `docs/phase-5-kickoff.md`). **Next: T2 checkpoint 2 (the file
+  write-back queue + the bulk-edit dialog).** Phases 0-4 are
+  complete (their gates stay green).
   Phase 1 gaps that remain open: WebComicProvider and the PDF/DjVu
   writers (tracked in `docs/phase-1-kickoff.md`). The Phase 0 exit
   review can close with the T1 wrap-up (the settings port it
@@ -108,6 +108,18 @@ example under Xvfb renders the Details grid and the Pages tab; the
 probe caught the first-draft page-type values being shifted by one
 (FrontCover = 1, Deleted = 1024 — fixed). Deferred to checkpoint 2:
 the file write-back queue (`UpdateComicFiles` + never-write-
+defaults + "Files to update" flips), the bulk-edit dialog, the
+custom-thumbnail buttons (the `type://` pool loader), the
+white-point color pick, the library-wide custom-value key editor.
+T2 CHECKPOINT 1 COMPLETE — USER-TESTED, ALL PASS (2026-09-04,
+six fix rounds: cover blob parsing, page-list selection, the menu
+mechanism swap, the reader color-adjustment rendering, the
+completion-payload display-position fix (the sequence scrambling),
+the provider-count + stored-overlay merge in
+`cr-ui::pages::merged_page_entries` used by both the reader and
+the editor, and the editor's missing half of that merge — the
+scripted-edit lesson is recorded). Deferred to checkpoint 2: the
+file write-back queue (`UpdateComicFiles` + never-write-
 defaults + "Files to update" flips), the bulk-edit dialog, the
 custom-thumbnail buttons (the `type://` pool loader), the
 white-point color pick, the library-wide custom-value key editor. **Next: T2 (the book
