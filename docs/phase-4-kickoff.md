@@ -581,3 +581,9 @@ C# spec: `PagesView.cs` (833), `ComicPagesView.cs` (241),
   proposed-name regex fallback — 13 columns × rows. The row's cell
   texts now cache per book id (`detail_texts`, cleared with the
   other caches on a book-set swap).
+  Tiles-view slowness (user test round 5, follow-up): the same
+  per-frame regex hazard — `tile_text_lines` re-resolved the
+  proposed names for every visible row. The lines now cache per
+  book id (`tile_texts`, cleared with the other caches). All three
+  text paths (caption, Detail cells, Tile lines) are cached per
+  book; the remaining per-frame work is cairo drawing only.
