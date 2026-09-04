@@ -667,3 +667,12 @@ C# spec: `PagesView.cs` (833), `ComicPagesView.cs` (241),
   completions now carry the queued source path and the pump drops
   the stale ones (the ADR-019 stale-check pattern — the reader
   carries the comic source in its payloads for the same reason).
+  T6 fix from the user test round 5 (comic 1 showed one page,
+  comic 2 all pages): the reader's shell book never received the
+  page LIST — `refresh_file_info` sets only the page count, so
+  `info.pages` stayed whatever the metadata carried (comic 2's file
+  had a full in-archive ComicInfo page list; comic 1's had one
+  entry). The C# fills `ComicBook.Pages` from the provider index at
+  `ProviderIndexRetrievalCompleted` — the port now does the same on
+  open when `info.pages` is empty (keys from the archive entry
+  names).
