@@ -54,6 +54,10 @@ struct PageCell {
 struct PageDone {
     page: usize,
     bytes: Option<Vec<u8>>,
+    /// The comic the load was queued for — the pump drops stale
+    /// completions after a rebind (comic A's in-flight pages must
+    /// not land in comic B's map).
+    source: String,
 }
 
 struct PagesState {
@@ -233,9 +237,18 @@ impl PagesPanel {
                             got = true;
                             let mut s = state.borrow_mut();
                             s.pending = s.pending.saturating_sub(1);
-                            if let Some(surface) =
+                            // Drop stale completions: a load queued
+                            // for the PREVIOUS comic must not land in
+                            // the current map (the reader-tab flip
+                            // race).
+                            let current = s.bound.as_ref().map(|(p, _)| p.clone());
+                            let fresh = current.as_deref() == Some(done.source.as_str());
+                            let surface = if fresh {
                                 done.bytes.and_then(|bytes| decode_surface(&bytes))
-                            {
+                            } else {
+                                None
+                            };
+                            if let Some(surface) = surface {
                                 s.thumbs.insert(done.page, surface);
                             }
                         }
@@ -480,11 +493,13 @@ fn draw_frame(
         let pool = Arc::clone(&s.pool);
         let tx = s.thumb_tx.clone();
         let page_no = *page;
+        let source = path.clone();
         s.pool.add_thumb_to_queue(key.clone(), None, move |k| {
             let bytes = pool.render_thumbnail(k);
             let _ = tx.send(PageDone {
                 page: page_no,
                 bytes,
+                source: source.clone(),
             });
         });
     }
