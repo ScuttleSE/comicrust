@@ -587,3 +587,12 @@ C# spec: `PagesView.cs` (833), `ComicPagesView.cs` (241),
   book id (`tile_texts`, cleared with the other caches). All three
   text paths (caption, Detail cells, Tile lines) are cached per
   book; the remaining per-frame work is cairo drawing only.
+  Tiles slowness persisted after the line cache (user test round 6)
+  — the remaining per-frame costs: the tab-stop text_extents
+  measurement per row, and the truncation loop popping ONE
+  character per text_extents call (a long summary line measured
+  hundreds of extents per row per frame). The tile text now renders
+  to cached SEGMENTS per book (tab stops resolved, truncation via a
+  binary search over the prefix), rebuilt only when the cell width
+  changes or the book set swaps. The per-frame tile work is now
+  show_text calls only.
