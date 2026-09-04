@@ -51,7 +51,7 @@ Update this section at the **end of every work session**. The next agent must kn
 
 ### State summary
 
-- **Phase:** 4 (the browser) IN PROGRESS — T1-T4 COMPLETE and user-tested. Next T5 (the browser shell: the reader docks into the browser window as a view/tab — the C# main-form shape the user asked about). Read `docs/phase-4-kickoff.md` (its Progress section records the per-task state). Phases 0-3 are complete (their gates stay green). Phase 1 gaps that remain open: WebComicProvider and the PDF/DjVu writers (tracked in `docs/phase-1-kickoff.md`). Phase 0 tail still open: the settings port (`IniFile`/`EngineConfiguration`/the full `SystemPaths`); T1 shipped a minimal `cr-core::paths` slice (ADR-022). The Phase 0 exit review remains not done.
+- **Phase:** 4 (the browser) IN PROGRESS — T1-T4 COMPLETE and user-tested; T5 (browser shell) IMPLEMENTED, user test pending. Next T6 (PagesView + QuickOpen) after the T5 test. Read `docs/phase-4-kickoff.md` (its Progress section records the per-task state). Phases 0-3 are complete (their gates stay green). Phase 1 gaps that remain open: WebComicProvider and the PDF/DjVu writers (tracked in `docs/phase-1-kickoff.md`). Phase 0 tail still open: the settings port (`IniFile`/`EngineConfiguration`/the full `SystemPaths`); T1 shipped a minimal `cr-core::paths` slice (ADR-022). The Phase 0 exit review remains not done.
 - **State:** `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` are green. 211 tests pass across 29 suites. CI runs on the `docker-runner-amd64` container runner (ADR-020). The release tracks are `release.yaml` (rolling prerelease per push) and `tagged-release.yaml` (manual dispatch, stable release for an existing tag — ADR-021, 2026-09-03). Until the runner is registered and `comicrust-ci:latest` is built on the runner host, pushed and dispatched workflows sit queued on that label.
 - **Phase 0 gate status:** byte-stable ComicDb.xml round-trip proven on all three synthetic fixtures AND the real-world database `tests/realworld/ComicDb.xml` (255 books, 584 KB, 2026-09-02, user-approved commit).
 - **Phase 2 gate status:** every saved smart list in the real-world DB (a) binds to the matcher registry, (b) renders to a `Match` query string that re-parses and re-renders byte-identically, and (c) evaluates to the SAME book sets the C# cached in `CacheStorage` (Never Read = all 255, Files to update = the 3 dirty books, Reading/Read = empty). Evidence: `crates/cr-engine/tests/realworld_query.rs`.
@@ -117,7 +117,14 @@ pool's cached thumb blob is the C# `ThumbnailImage` serialization
 window activation (GTK4 has no click-to-focus); the app's reader
 slot must clear when the reader window closes (a closed window in
 the slot swallows every later open). Known cosmetic: a startup
-`gtk_css_node_insert_after` GTK critical.
+`gtk_css_node_insert_after` GTK critical. T5 lessons: GApplication
+routes the `open` signal BEFORE `activate` — the shell must be
+created on first need (a mapped window holds the app; without one
+it exits cleanly pre-activate); an "unreachable pattern" warning
+exposed a duplicated `Ok` match arm that silently skipped the
+reader stack switch; an empty page list must not `clamp(0, -1)`
+inside non-unwindable GTK closures (the C# tolerates empty
+comics).
 `cr-engine/src/lists.rs` evaluates the ComicLists tree (Library =
 all, folder Or = union / And = intersect / Empty, id lists, smart
 lists with recursive base-list resolution + a cycle guard; the
