@@ -662,3 +662,33 @@ change; it lands after the bars so they exist in both modes.
   view's books (the C# resolves the book's own container browser);
   the current book must be in the view. Update all Book Files
   covers library books only (temporary books are unported).
+- T1 FIX ROUND 1 (2026-09-04), user test pending. Three findings:
+  1. Alt+Shift+4 (My Rating) never fired: GTK accelerators match
+     the PRODUCED keyval — Shift+4 yields '¤'/'$' on US/Swedish
+     layouts — while the C# matched the WinForms VIRTUAL key
+     (Keys.D4, layout-independent). The same family broke
+     Ctrl+Shift+0/7/8/9 (Only fit, Rotate 0/90/180) and
+     Ctrl+Shift+OemMinus (Rotate Left). Fix: a window key
+     controller resolves the hardware keycode to its UNSHIFTED
+     keyval (`gdk_display_map_keycode`, level 0) and fires the
+     command (`commands::shifted_symbol_command`, unit-tested);
+     it fires ONLY when the raw keyval differs from the unshifted
+     one, so layouts where Shift keeps the symbol never
+     double-fire with the real accelerator. Zoom In additionally
+     registers `<Control>equal` (the '+' key's unshifted symbol —
+     Ctrl+Oemplus parity; `<Control>plus` covers the numpad).
+     Shifted-LETTER accels need no fallback (GTK matches letter
+     case variants — the user's Ctrl+Shift+J/K passed).
+  2. F10/K (MinimalGui) toggled the reader's own header — an
+     UNPARENTED widget in the docked shape, so nothing visible.
+     Fix: the chrome visibility applies to the HOST window's
+     header bar when docked (`apply_chrome_visibility`; the T3/T8
+     bars join when they exist). The fullscreen reveal strip and
+     the AutoMinimalGui path drive the same helper; the
+     fullscreen state now reads the view's own ROOT window (the
+     undocked reader fullscreens its own window, not the host).
+  3. Working-as-designed, explained to the user: Ctrl+0 toggles
+     Right-to-Left reading (manga page order — visible with
+     spreads), Ctrl+S toggles Auto Scrolling (the wheel turns
+     pages instead of scrolling). Both lack a check indicator
+     until the menus land (T3).

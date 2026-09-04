@@ -1428,7 +1428,61 @@ impl ShellState {
 
         self.window.insert_action_group("win", Some(&group));
         ShellState::register_accels(&self.app);
+        ShellState::install_shifted_key_fallback(self);
         self.sync_enabled();
+    }
+
+    /// The shifted-symbol key fallback (see
+    /// `commands::shifted_symbol_command`): a window key controller
+    /// resolves the hardware keycode to its UNSHIFTED keyval and
+    /// fires the command the accel table cannot match when Shift
+    /// rewrote the symbol (Alt+Shift+4 → '¤', Ctrl+Shift+7 → '/').
+    fn install_shifted_key_fallback(self: &Rc<ShellState>) {
+        let controller = gtk4::EventControllerKey::new();
+        let state = Rc::downgrade(self);
+        controller.connect_key_pressed(move |_c, key, keycode, state_bits| {
+            let Some(sh) = state.upgrade() else {
+                return glib::Propagation::Proceed;
+            };
+            let mask = gtk4::accelerator_get_default_mod_mask();
+            let mods = state_bits & mask;
+            let ctrl = mods.contains(gtk4::gdk::ModifierType::CONTROL_MASK);
+            let shift = mods.contains(gtk4::gdk::ModifierType::SHIFT_MASK);
+            let alt = mods.contains(gtk4::gdk::ModifierType::ALT_MASK);
+            // The unshifted keyval: the level-0 mapping of the
+            // hardware keycode (group 0 preferred).
+            let unshifted = gtk4::prelude::WidgetExt::display(&sh.window)
+                .map_keycode(keycode)
+                .and_then(|entries| {
+                    let pick = |group: Option<i32>| {
+                        entries
+                            .iter()
+                            .find(|(k, _)| k.level() == 0 && group.is_none_or(|g| k.group() == g))
+                            .map(|(_, v)| *v)
+                    };
+                    pick(Some(0)).or_else(|| pick(None))
+                });
+            let Some(unshifted) = unshifted else {
+                return glib::Propagation::Proceed;
+            };
+            // Only when Shift rewrote the symbol — otherwise the real
+            // accelerator handles the combo (never double-fire).
+            if unshifted == key {
+                return glib::Propagation::Proceed;
+            }
+            let Some(action) = crate::commands::shifted_symbol_command(ctrl, shift, alt, unshifted)
+            else {
+                return glib::Propagation::Proceed;
+            };
+            let _ = gtk4::prelude::WidgetExt::activate_action(
+                &sh.window,
+                &format!("win.{action}"),
+                None,
+            );
+            sh.sync_enabled();
+            glib::Propagation::Stop
+        });
+        self.window.add_controller(controller);
     }
 
     /// A stub action that stays disabled until its feature task

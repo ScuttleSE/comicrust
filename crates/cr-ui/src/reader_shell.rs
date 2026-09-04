@@ -212,23 +212,26 @@ impl ReaderShell {
         *self.state.borrow().host.borrow_mut() = Some(window.clone());
 
         // Fullscreen chrome: the reader header hides with the
-        // decorations. `AutoMinimalGui` also toggles the minimal
-        // user interface with the fullscreen state (the C#
-        // `MainForm` fullscreen toggle).
+        // decorations — docked, that is the HOST header bar.
+        // `AutoMinimalGui` also toggles the minimal user interface
+        // with the fullscreen state (the C# `MainForm` fullscreen
+        // toggle).
         {
             let st = Rc::downgrade(&self.state);
             window.connect_notify_local(Some("fullscreened"), move |win, _| {
-                let Some(sh) = st.upgrade() else {
+                let Some(rc) = st.upgrade() else {
                     return;
                 };
                 let fullscreen = win.is_fullscreen();
                 let auto_minimal = cr_ui_settings().borrow().auto_minimal_gui;
-                let mut sh = sh.borrow_mut();
-                if auto_minimal {
-                    sh.minimal_gui = fullscreen;
-                }
-                let minimal = sh.minimal_gui;
-                sh.header.set_visible(!fullscreen && !minimal);
+                let visible = {
+                    let mut sh = rc.borrow_mut();
+                    if auto_minimal {
+                        sh.minimal_gui = fullscreen;
+                    }
+                    !fullscreen && !sh.minimal_gui
+                };
+                ReaderShell::apply_chrome_visibility(&rc, visible);
             });
         }
 
@@ -855,6 +858,11 @@ impl ReaderShell {
     }
 
     /// `MainForm.MinimalGui` (the K command): pins the chrome hidden.
+    /// Docked, the chrome is the HOST window's header bar (the
+    /// reader's own header only exists inside the undocked shape);
+    /// the C# hides menubar + tab bars + status bar
+    /// (`MainForm.cs:3658-3716`) — the T3/T8 bars join when they
+    /// exist.
     fn toggle_minimal_gui(state: &Rc<RefCell<ShellState>>) {
         let fullscreen = state
             .borrow()
@@ -865,7 +873,25 @@ impl ReaderShell {
             .unwrap_or(false);
         let mut st = state.borrow_mut();
         st.minimal_gui = !st.minimal_gui;
-        st.header.set_visible(!st.minimal_gui && !fullscreen);
+        let visible = !st.minimal_gui && !fullscreen;
+        st.header.set_visible(visible);
+        if st.undocked.is_none() {
+            if let Some(bar) = st.host.borrow().as_ref().and_then(|w| w.titlebar()) {
+                bar.set_visible(visible);
+            }
+        }
+    }
+
+    /// Applies one visibility state to the reader header and — when
+    /// docked — the host window's header bar.
+    fn apply_chrome_visibility(state: &Rc<RefCell<ShellState>>, visible: bool) {
+        let st = state.borrow();
+        st.header.set_visible(visible);
+        if st.undocked.is_none() {
+            if let Some(bar) = st.host.borrow().as_ref().and_then(|w| w.titlebar()) {
+                bar.set_visible(visible);
+            }
+        }
     }
 
     /// `AutoHideMainMenu` (default true): the chrome reveals while
@@ -874,46 +900,51 @@ impl ReaderShell {
     /// (`Settings.HideCursorFullScreen` gates it; the delay is
     /// `ExtendedSettings.AutoHideCursorDuration`).
     fn on_pointer_moved(state: &Rc<RefCell<ShellState>>, area: &gtk4::Widget, y: f64) {
-        let fullscreen = state
-            .borrow()
-            .host
-            .borrow()
-            .as_ref()
+        // The fullscreen state of the window the view lives in (the
+        // undocked reader fullscreens its own window, not the host).
+        let fullscreen = area
+            .root()
+            .and_downcast::<gtk4::Window>()
             .map(|w| w.is_fullscreen())
             .unwrap_or(false);
-        let mut st = state.borrow_mut();
         if fullscreen {
             let hide_cursor = cr_ui_settings().borrow().hide_cursor_full_screen;
             let hide_ms =
                 cr_core::settings::ExtendedSettings::global().auto_hide_cursor_duration as u64;
-            if !hide_cursor {
-                return;
+            if hide_cursor {
+                let source = state.borrow_mut().cursor_hide_source.take();
+                // Cursor auto-hide: reset the idle timer on every
+                // motion. A fired one-shot's SourceId must NOT be
+                // removed (glib panics on removing a finished source)
+                // — the timeout clears its own slot; only a
+                // still-pending source gets removed.
+                if let Some(source) = source {
+                    source.remove();
+                }
+                area.set_cursor_from_name(None);
+                area.set_cursor_from_name(None);
+                let area = area.clone();
+                let weak = Rc::downgrade(state);
+                let source =
+                    glib::timeout_add_local(std::time::Duration::from_millis(hide_ms), move || {
+                        area.set_cursor_from_name(Some("none"));
+                        if let Some(st) = weak.upgrade() {
+                            st.borrow_mut().cursor_hide_source = None;
+                        }
+                        glib::ControlFlow::Break
+                    });
+                state.borrow_mut().cursor_hide_source = Some(source);
             }
-            // Cursor auto-hide: reset the idle timer on every motion.
-            // A fired one-shot's SourceId must NOT be removed (glib
-            // panics on removing a finished source) — the timeout
-            // clears its own slot; only a still-pending source gets
-            // removed.
-            if let Some(source) = st.cursor_hide_source.take() {
-                source.remove();
-            }
-            area.set_cursor_from_name(None);
-            area.set_cursor_from_name(None);
-            let area = area.clone();
-            let state = Rc::downgrade(state);
-            st.cursor_hide_source = Some(glib::timeout_add_local(
-                std::time::Duration::from_millis(hide_ms),
-                move || {
-                    area.set_cursor_from_name(Some("none"));
-                    if let Some(st) = state.upgrade() {
-                        st.borrow_mut().cursor_hide_source = None;
-                    }
-                    glib::ControlFlow::Break
-                },
-            ));
+            // The top strip reveals the chrome (docked: the host
+            // header bar); a PINNED MinimalGui stays hidden (the C#
+            // reveal serves the auto-hide menu, not MinimalGui).
+            let minimal = state.borrow().minimal_gui;
+            ReaderShell::apply_chrome_visibility(state, y <= CHROME_REVEAL_EDGE && !minimal);
+        } else {
+            let st = state.borrow_mut();
+            let reveal = y <= CHROME_REVEAL_EDGE;
+            st.header.set_visible(reveal && !st.minimal_gui);
         }
-        let reveal = y <= CHROME_REVEAL_EDGE;
-        st.header.set_visible(reveal && !st.minimal_gui);
     }
 
     fn window_title(path: &Path) -> String {

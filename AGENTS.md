@@ -60,8 +60,16 @@ Update this section at the **end of every work session**. The next agent must kn
   book/selection/history, and routes reader commands through
   `PageView::run_command` (the Library group forwards to the
   shell: Next/Prev/Random Book + ShowBrowser now work). Probe:
-  `cr-ui/examples/commands_probe.rs`. **Next: T2 (the bundled icon
-  set + `icon.rs`).** Phase 6 (scripting) starts only after 5.5.
+  `cr-ui/examples/commands_probe.rs`. T1 fix round 1 pending the
+  user retest: the shifted-symbol accel fallback (GTK matches the
+  PRODUCED keyval, the C# matched virtual keys — a window key
+  controller resolves the keycode's unshifted keyval for
+  Alt+Shift+digit ratings + Ctrl+Shift+0/7/8/9/minus; fires only
+  when the raw keyval differs so no double-fire; zoom-in gains
+  `<Control>equal`), and MinimalGui (F10/K) now hides the HOST
+  header bar when docked (the reader's own header is unparented
+  there). **Next: T2 (the bundled icon set + `icon.rs`).** Phase 6
+  (scripting) starts only after 5.5.
   Phases 0-5 are complete (their gates stay green). Open Phase 1
   gaps: WebComicProvider and the PDF/DjVu writers (tracked in
   `docs/phase-1-kickoff.md`).

@@ -102,7 +102,11 @@ pub const COMMANDS: &[CommandSpec] = &[
     cmd("page-layout", &[]),
     cmd("right-to-left", &["<Control>0"]),
     cmd("only-fit-oversized", &["<Control><Shift>0"]),
-    cmd("zoom-in", &["<Control>plus"]),
+    // Zoom In is Ctrl+Oemplus in the C# — the '+' key. Its unshifted
+    // symbol is '=' (keyval "equal"), the numpad '+' IS keyval
+    // "plus"; both spellings register (the shifted '+' key belongs
+    // to Rotate Right: Ctrl+Shift+plus).
+    cmd("zoom-in", &["<Control>equal", "<Control>plus"]),
     cmd("zoom-out", &["<Control>minus"]),
     cmd("zoom-custom", &["<Control><Shift>z"]),
     cmd("rotate-left", &["<Control><Shift>minus"]),
@@ -144,6 +148,52 @@ pub const LAYOUT_MODES: &[(&str, &str)] = &[
     ("double-adaptive", "<Control>9"),
     ("continuous", ""),
 ];
+
+/// The shifted-symbol accelerator fallback (`MainForm` matched the
+/// WinForms VIRTUAL keys — `Keys.D4` — which are layout-independent;
+/// GTK accelerators match the PRODUCED keyval, so Alt+Shift+4
+/// produces '¤'/'$' on most layouts and never matches
+/// `<Alt><Shift>4`). Given the modifiers and the UNSHIFTED keyval
+/// (resolved from the hardware keycode through
+/// `gdk_display_map_keycode`, level 0), returns the command the C#
+/// table binds. The caller fires it only when the raw event keyval
+/// DIFFERS from the unshifted one — layouts where Shift keeps the
+/// symbol let the real accelerator match, so the pair never
+/// double-fires.
+pub fn shifted_symbol_command(
+    ctrl: bool,
+    shift: bool,
+    alt: bool,
+    unshifted: gtk4::gdk::Key,
+) -> Option<&'static str> {
+    use gtk4::gdk::Key;
+    match (ctrl, shift, alt) {
+        // Alt+Shift+0..5 — the My Rating items.
+        (false, true, true) => match unshifted {
+            Key::_0 => Some("rating-0"),
+            Key::_1 => Some("rating-1"),
+            Key::_2 => Some("rating-2"),
+            Key::_3 => Some("rating-3"),
+            Key::_4 => Some("rating-4"),
+            Key::_5 => Some("rating-5"),
+            _ => None,
+        },
+        // Ctrl+Shift+D7/D8/D9/D0 — Rotate 0/90/180 and Only fit if
+        // oversized; Ctrl+Shift+OemMinus — Rotate Left. (The
+        // Ctrl+Shift+plus spelling of Rotate Right needs no
+        // fallback: '+' is the SHIFTED symbol of the key, the accel
+        // matches it directly.)
+        (true, true, false) => match unshifted {
+            Key::_0 => Some("only-fit-oversized"),
+            Key::_7 => Some("rotate-0"),
+            Key::_8 => Some("rotate-90"),
+            Key::_9 => Some("rotate-180"),
+            Key::minus => Some("rotate-left"),
+            _ => None,
+        },
+        _ => None,
+    }
+}
 
 #[cfg(test)]
 mod tests {
@@ -246,5 +296,41 @@ mod tests {
                 );
             }
         }
+    }
+
+    #[test]
+    fn shifted_symbol_fallback_maps_the_csharp_virtual_keys() {
+        use gtk4::gdk::Key;
+        // Alt+Shift+4 rates 4 stars whatever symbol Shift produces.
+        assert_eq!(
+            shifted_symbol_command(false, true, true, Key::_4),
+            Some("rating-4")
+        );
+        assert_eq!(
+            shifted_symbol_command(false, true, true, Key::_0),
+            Some("rating-0")
+        );
+        // Ctrl+Shift+D7/D8/D9/D0 — Rotate 0/90/180 + Only fit.
+        assert_eq!(
+            shifted_symbol_command(true, true, false, Key::_7),
+            Some("rotate-0")
+        );
+        assert_eq!(
+            shifted_symbol_command(true, true, false, Key::_0),
+            Some("only-fit-oversized")
+        );
+        // Ctrl+Shift+OemMinus — Rotate Left (the shifted symbol is
+        // 'underscore' on US layouts).
+        assert_eq!(
+            shifted_symbol_command(true, true, false, Key::minus),
+            Some("rotate-left")
+        );
+        // Letters and lone-Ctrl combos never route here (the real
+        // accelerators cover them).
+        assert_eq!(shifted_symbol_command(true, true, false, Key::x), None);
+        assert_eq!(shifted_symbol_command(true, false, false, Key::_4), None);
+        // Ctrl+Shift+'=' (the Rotate Right key) is NOT in the map —
+        // the raw keyval 'plus' matches the real accelerator.
+        assert_eq!(shifted_symbol_command(true, true, false, Key::equal), None);
     }
 }
