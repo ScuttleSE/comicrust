@@ -118,7 +118,26 @@ completion-payload display-position fix (the sequence scrambling),
 the provider-count + stored-overlay merge in
 `cr-ui::pages::merged_page_entries` used by both the reader and
 the editor, and the editor's missing half of that merge — the
-scripted-edit lesson is recorded). Deferred to checkpoint 2: the
+scripted-edit lesson is recorded).
+T2 CHECKPOINT 2 IMPLEMENTED (2026-09-04), user test pending: the
+file write-back + the bulk editor. `apply_edited` marks
+`comic_info_is_dirty` (the `WatchedBookHasChanged` parity) and
+schedules the 100 ms debounced `library::update_book_file` (the
+`AddBookToFileUpdate` gates: UpdateComicFiles, then
+AutoUpdateComicsFiles || alwaysWrite, then the dirty flag;
+`WriteInfoToFileWithCacheUpdate` parity: the scoped write via
+`cr_io::write::store_info_scoped` — ComicBook.xml only with
+`UpdateComicBookFiles` —, the file-properties refresh, the flag
+clear). The "Files to update" list flips (the matcher reads the
+flag). The context menu gains "Edit…" (the bulk editor,
+`bulk_edit.rs`: a Set check per field, the common-value gray cue,
+only checked fields apply) and "Update Book File(s)" (the manual
+alwaysWrite path). Probe-proven: the writeback_probe seeds an
+isolated library, edits through apply_edited, and the archive's
+ComicInfo.xml carries the edit with the flag cleared. Deferred:
+the exit SaveDirtyBooks ask-dialog for temporary books, the
+ComicBookIsDirty half (never set), the C# tri-state list-merge
+checkbox mode. Deferred to checkpoint 2: the
 file write-back queue (`UpdateComicFiles` + never-write-
 defaults + "Files to update" flips), the bulk-edit dialog, the
 custom-thumbnail buttons (the `type://` pool loader), the
