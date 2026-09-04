@@ -51,7 +51,7 @@ Update this section at the **end of every work session**. The next agent must kn
 
 ### State summary
 
-- **Phase:** 4 (the browser) IN PROGRESS — T1 and T2 COMPLETE and user-tested; T3 (ItemView core) IMPLEMENTED, user test pending. Next T4 (the comic item) after the T3 test. Read `docs/phase-4-kickoff.md` (its Progress section records the per-task state). Phases 0-3 are complete (their gates stay green). Phase 1 gaps that remain open: WebComicProvider and the PDF/DjVu writers (tracked in `docs/phase-1-kickoff.md`). Phase 0 tail still open: the settings port (`IniFile`/`EngineConfiguration`/the full `SystemPaths`); T1 shipped a minimal `cr-core::paths` slice (ADR-022). The Phase 0 exit review remains not done.
+- **Phase:** 4 (the browser) IN PROGRESS — T1, T2, and T3 COMPLETE and user-tested. Next T4 (the comic item: cover drawing, badges, exact text lines, custom thumbnails). Read `docs/phase-4-kickoff.md` (its Progress section records the per-task state). Phases 0-3 are complete (their gates stay green). Phase 1 gaps that remain open: WebComicProvider and the PDF/DjVu writers (tracked in `docs/phase-1-kickoff.md`). Phase 0 tail still open: the settings port (`IniFile`/`EngineConfiguration`/the full `SystemPaths`); T1 shipped a minimal `cr-core::paths` slice (ADR-022). The Phase 0 exit review remains not done.
 - **State:** `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` are green. 211 tests pass across 29 suites. CI runs on the `docker-runner-amd64` container runner (ADR-020). The release tracks are `release.yaml` (rolling prerelease per push) and `tagged-release.yaml` (manual dispatch, stable release for an existing tag — ADR-021, 2026-09-03). Until the runner is registered and `comicrust-ci:latest` is built on the runner host, pushed and dispatched workflows sit queued on that label.
 - **Phase 0 gate status:** byte-stable ComicDb.xml round-trip proven on all three synthetic fixtures AND the real-world database `tests/realworld/ComicDb.xml` (255 books, 584 KB, 2026-09-02, user-approved commit).
 - **Phase 2 gate status:** every saved smart list in the real-world DB (a) binds to the matcher registry, (b) renders to a `Match` query string that re-parses and re-renders byte-identically, and (c) evaluates to the SAME book sets the C# cached in `CacheStorage` (Never Read = all 255, Files to update = the 3 dirty books, Reading/Read = empty). Evidence: `crates/cr-engine/tests/realworld_query.rs`.
@@ -92,17 +92,26 @@ persisted across restart; the smart-list query needs the exact C#
 form `Match [Series] contains "Batman"` — the dialog example was
 fixed).
 
-T3 (the ItemView core) IMPLEMENTED — user test pending.
-`view_state.rs` (MRU-3 sort chain, group buckets, collapse,
-selection model), `layout.rs` (Thumbnail/Tile/Detail flow, group
-headers, culling, hit tests, keyboard movement), `columns.rs` (the
-C# default columns), the engine's `display_text.rs`
+T3 (the ItemView core) COMPLETE — USER-TESTED, all pass (grid with
+real covers, selection, keyboard nav, type-ahead, list-driven
+sets, double-click → reader repeatedly). `view_state.rs` (MRU-3
+sort chain, group buckets, collapse, selection model),
+`layout.rs` (Thumbnail/Tile/Detail flow, group headers, culling,
+hit tests, keyboard movement), `columns.rs` (the C# default
+columns), the engine's `display_text.rs`
 (`GetPropertyValue(proposed:true)` parity), and `item_view.rs` (the
 DrawingArea widget: covers through the thumb queues + pump,
 click/ctrl/shift/rubber band, full keyboard nav, type-ahead,
 group-header collapse, double-click/Enter → the reader). The
 launcher window is now the browser: navigator left, ItemView right.
-232 tests green.
+232 tests green. User-test lessons: the thumb pump must live while
+loads are in flight (a first-idle break strands completions); the
+pool's cached thumb blob is the C# `ThumbnailImage` serialization
+(parse before decoding); the canvas grabs focus on click AND on
+window activation (GTK4 has no click-to-focus); the app's reader
+slot must clear when the reader window closes (a closed window in
+the slot swallows every later open). Known cosmetic: a startup
+`gtk_css_node_insert_after` GTK critical.
 `cr-engine/src/lists.rs` evaluates the ComicLists tree (Library =
 all, folder Or = union / And = intersect / Empty, id lists, smart
 lists with recursive base-list resolution + a cycle guard; the
