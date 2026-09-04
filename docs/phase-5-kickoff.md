@@ -320,7 +320,7 @@ FrontCover"). Rule: a scripted multi-line replacement must be
 verified by grepping for the NEW symbol in the changed file, not
 by the build result.
 
-### T3. The smart-list editor (`SmartListDialog` + matchers) — COMPLETE (2026-09-04), user-tested
+### T3. The smart-list editor (`SmartListDialog` + matchers) — COMPLETE (2026-09-04), user-tested (checkpoint 1 + tail)
 
 - [x] The visual matcher builder: property combo (the registry),
       operator combo (the spec's operators), 1–2 argument fields,
@@ -399,7 +399,7 @@ the re-entrant response. The probe log after the fix: `matchers=1
 ... changed=true`, and the tree shows the list.
 **CHECKPOINT 1 COMPLETE — USER-TESTED, ALL PASS (2026-09-04).**
 
-### T4. Export + the remaining dialogs — IMPLEMENTED (2026-09-04), user test pending
+### T4. Export + the remaining dialogs — COMPLETE (2026-09-04), user-tested
 
 - [x] Export dialog (`ExportComicsDialog`) over the `cr-io` export
       skeleton. DONE: `cr-io/src/export.rs` grew the
@@ -487,8 +487,34 @@ the re-entrant response. The probe log after the fix: `matchers=1
 - [x] T1 settings port + options builder + Preferences shell
 - [x] T2 book editor + bulk edit + write-back wiring (both
       checkpoints user-tested)
-- [ ] T3 smart-list/reading-list editors
-- [ ] T4 export + small dialogs
+- [x] T3 smart-list/reading-list editors (checkpoint 1 + tail
+      both user-tested)
+- [x] T4 export + small dialogs (the export dialog + engine + the
+      remove confirm user-tested; quick-rating/splash/presets
+      deferred with reasons below)
+
+## Phase 5 gate (2026-09-04) — MET
+
+A user edits a comic's metadata (single via Properties… + bulk via
+Edit…), saves it back to the file (verified outside the app — the
+auto/manual write-back flows and the "Files to update" list),
+edits a smart list both visually (the Designer rows/groups) and as
+a query (the Query tab round-trip), exports a comic (CBZ/CBT with
+the naming/compression/combine flows), and changes preferences
+that visibly move the reader and browser (the page wall, the
+add-to-library flow, the cursor hide, the watch folders). All
+verified on the user's machine over the sessions of 2026-09-04.
+281 tests across 30 suites; fmt + clippy clean throughout.
+
+Deferred out of Phase 5 (with reasons recorded in the task
+sections above): quick-rating + splash dialogs, export presets +
+the settings export-list schema, the custom-thumbnail buttons
+(the `type://` pool loader), the white-point color pick, the
+library-wide custom-value key editor, the ComicBookIsDirty write
+half, the reading-list drag-in book management, and the C#
+tri-state list-merge checkbox. WebComicProvider and the PDF/DjVu
+writers remain Phase 1 gaps (tracked in
+`docs/phase-1-kickoff.md`).
 
 Check the boxes here and in `AGENTS.md`'s status as tasks close.
 The phase gate: a user edits a comic's metadata (single + bulk),
