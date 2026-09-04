@@ -625,10 +625,13 @@ C# spec: `PagesView.cs` (833), `ComicPagesView.cs` (241),
   (see the progress log). Performance: all three text paths cache
   per book; the remaining full-library smoothness work is recorded
   as a polish backlog item.
-- **T6 IMPLEMENTED (2026-09-04), user test pending.** The Pages
-  panel + QuickOpen per the spec above. Headless probes: the
-  QuickOpen page renders the captionless covers at startup; the
-  comic-open path binds the panel without panics.
+- **T6 COMPLETE — USER-TESTED, ALL PASS (2026-09-04).** The
+  Pages panel (grid renders on the first show, rebinds on reader
+  tab switches with each comic's own thumbnails and restored page,
+  double-click navigates + reveals the reader, the current-page
+  highlight follows turns) and QuickOpen (the startup/last-tab
+  state, captionless covers, double-click opens) verified on the
+  user's machine over five fix rounds (see the progress log).
   T6 fix from the user test round 1 (the Pages tab empty on the
   first comic, all-black on the second): two stale-lesson repeats —
   the panel's thumb pump started once and never restarted when the
@@ -676,3 +679,25 @@ C# spec: `PagesView.cs` (833), `ComicPagesView.cs` (241),
   `ProviderIndexRetrievalCompleted` — the port now does the same on
   open when `info.pages` is empty (keys from the archive entry
   names).
+
+## Phase 4 gate (2026-09-04) — MET
+
+A user browses their migrated library in daily-driver comfort: the
+navigator evaluates lists, the grid shows real covers in three view
+modes with sort/group/search, the status bar tracks the selection,
+the context menu covers the common commands, double-click opens the
+comic in the docked reader (tabs, undock), reading state round-trips
+through byte-stable ComicDb.xml saves (the Phase 0/2 gates stayed
+green throughout), the Pages panel shows the open comic's pages and
+navigates, and QuickOpen serves the recent lists at startup.
+236 tests across 29 suites; fmt + clippy clean. Deferred polish:
+full-library smoothness (thumbnail decode pacing, incremental
+relayout), the workspace/display-config persistence (Phase 7), the
+GL renderer swap (ADR-008), drag-out, and the unported state PNGs.
+
+## Phase 5 pointer
+
+The next phase is the dialogs (`docs/phase-5-kickoff.md`). The
+browser shell hooks this phase created (the context-menu stubs, the
+Properties placeholder, the navigator's bare entry dialogs) are the
+integration points.
