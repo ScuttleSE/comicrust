@@ -97,6 +97,12 @@ pub struct ItemViewState {
     /// The Tile text lines per book (the same hazard —
     /// `tile_text_lines` resolves proposed names through regexes).
     tile_texts: HashMap<CrGuid, Vec<(String, f64, bool)>>,
+    /// The RENDERED tile segments per book — tab stop resolved, long
+    /// lines truncated (a char-by-char trim per frame measured
+    /// hundreds of text_extents calls per row on summary lines).
+    tile_render: HashMap<CrGuid, Vec<TileSeg>>,
+    /// The text-block width the segment cache was built for.
+    tile_render_width: f64,
     /// Loads in flight (the pump stays alive while this is > 0).
     pending_thumbs: usize,
     pump_active: bool,
@@ -237,6 +243,8 @@ impl ItemView {
             captions: HashMap::new(),
             detail_texts: HashMap::new(),
             tile_texts: HashMap::new(),
+            tile_render: HashMap::new(),
+            tile_render_width: 0.0,
             pending_thumbs: 0,
             pump_active: false,
             band: None,
@@ -303,6 +311,7 @@ impl ItemView {
             s.captions.clear();
             s.detail_texts.clear();
             s.tile_texts.clear();
+            s.tile_render.clear();
             s.band = None;
             s.relayout(width);
         }
@@ -332,6 +341,8 @@ impl ItemView {
             let mut s = self.state.borrow_mut();
             f(&mut s.config);
             s.relayout(width);
+            // The tile segments carry per-cell font sizes — rebuild.
+            s.tile_render.clear();
         }
         self.update_size_request();
         self.canvas.queue_draw();
@@ -1075,16 +1086,89 @@ fn draw_tile_item(
         selected,
     );
     // The text block: the `DefaultFileComic` lines with the shared
-    // tab stop (`SimpleTextRenderer` two-column shape).
+    // tab stop (`SimpleTextRenderer` two-column shape). The segments
+    // render once per book (tab stops resolved, lines truncated) —
+    // the per-frame work is show_text only.
     ctx.save().ok();
     let text_x = rect.x + rect.w / 2.0 + 4.0;
     let text_w = rect.x + rect.w - text_x - 4.0;
     ctx.rectangle(text_x - 2.0, rect.y, text_w + 4.0, rect.h);
     ctx.clip();
-    let lines = super::item::tile_text_lines(s.view.book(display));
+    let segs = {
+        let book = s.view.book(display).clone();
+        tile_segments(s, &id, &book, rect.h, text_w, ctx)
+    };
+    let mut y = rect.y + 4.0;
+    for seg in &segs {
+        ctx.select_font_face(
+            "Sans",
+            cairo::FontSlant::Normal,
+            if seg.bold {
+                cairo::FontWeight::Bold
+            } else {
+                cairo::FontWeight::Normal
+            },
+        );
+        ctx.set_font_size(seg.size.max(6.0));
+        let line_h = super::item::line_height(ctx).max(2.0);
+        if y + line_h > rect.y + rect.h {
+            break;
+        }
+        if seg.text.is_empty() {
+            y += line_h * 0.5;
+            continue;
+        }
+        ctx.set_source_rgb(tr, tg, tb);
+        ctx.move_to(text_x, y + line_h * 0.85);
+        ctx.show_text(&seg.text).ok();
+        if let Some(label) = &seg.label {
+            ctx.move_to(text_x + seg.tab, y + line_h * 0.85);
+            ctx.show_text(label).ok();
+        }
+        y += line_h;
+    }
+    ctx.restore().ok();
+}
+
+/// One rendered tile text segment (a tab line carries the VALUE in
+/// `text`, the LABEL in `label`, and the shared tab stop in `tab`).
+#[derive(Clone)]
+struct TileSeg {
+    label: Option<String>,
+    text: String,
+    tab: f64,
+    size: f64,
+    bold: bool,
+}
+
+/// Builds (or fetches) the rendered segments for one book. The
+/// expensive parts — the proposed-name regexes, the tab-stop
+/// measurement, the truncation — run once per book and cell width.
+fn tile_segments(
+    s: &mut ItemViewState,
+    id: &CrGuid,
+    book: &ComicBook,
+    cell_h: f64,
+    text_w: f64,
+    ctx: &cairo::Context,
+) -> Vec<TileSeg> {
+    if s.tile_render_width == text_w {
+        if let Some(segs) = s.tile_render.get(id) {
+            return segs.clone();
+        }
+    }
+    if s.tile_render_width != text_w {
+        s.tile_render.clear();
+        s.tile_render_width = text_w;
+    }
+    let lines = super::item::tile_text_lines(book);
+    // The C# tile font: clamp(cell height * 0.07, 0.8font, 1.0font).
+    let tile_font = (cell_h * 0.07)
+        .clamp(s.config.font_height * 0.8, s.config.font_height)
+        .max(6.0);
     // The tab stop: the widest first-segment width + 8 px.
     ctx.select_font_face("Sans", cairo::FontSlant::Normal, cairo::FontWeight::Normal);
-    ctx.set_font_size(s.config.font_height * 0.9);
+    ctx.set_font_size(tile_font * 0.9);
     let mut tab = 0.0f64;
     for (text, _, _) in &lines {
         if let Some(pos) = text.find('\t') {
@@ -1094,8 +1178,9 @@ fn draw_tile_item(
         }
     }
     let tab = tab + 8.0;
-    let mut y = rect.y + 6.0;
+    let mut segs: Vec<TileSeg> = Vec::new();
     for (text, scale, bold) in &lines {
+        let size = (tile_font * scale).max(6.0);
         ctx.select_font_face(
             "Sans",
             cairo::FontSlant::Normal,
@@ -1105,35 +1190,70 @@ fn draw_tile_item(
                 cairo::FontWeight::Normal
             },
         );
-        ctx.set_font_size((s.config.font_height * scale).max(8.0));
-        let line_h = super::item::line_height(ctx).max(2.0);
+        ctx.set_font_size(size);
         if text.is_empty() {
-            y += line_h * 0.5;
+            segs.push(TileSeg {
+                label: None,
+                text: String::new(),
+                tab: 0.0,
+                size,
+                bold: *bold,
+            });
             continue;
         }
         if let Some(pos) = text.find('\t') {
-            let (label, value) = (&text[..pos], &text[pos + 1..]);
-            ctx.set_source_rgb(tr, tg, tb);
-            ctx.move_to(text_x, y + line_h * 0.85);
-            ctx.show_text(label).ok();
-            ctx.move_to(text_x + tab, y + line_h * 0.85);
-            ctx.show_text(value).ok();
+            segs.push(TileSeg {
+                label: Some(text[pos + 1..].to_string()),
+                text: text[..pos].to_string(),
+                tab,
+                size,
+                bold: *bold,
+            });
         } else {
-            // Trim with an ellipsis at the block width.
-            let mut line = text.clone();
-            while line.len() > 1 && ctx.text_extents(&line).is_ok_and(|e| e.width() > text_w) {
-                line.pop();
-            }
+            // Truncate with an ellipsis at the block width — a
+            // binary search over the prefix (the old per-character
+            // walk measured long summaries hundreds of times per
+            // frame).
+            let mut line = truncate_to_width(ctx, text, text_w);
             if line != *text {
                 line.push('…');
             }
-            ctx.set_source_rgb(tr, tg, tb);
-            ctx.move_to(text_x, y + line_h * 0.85);
-            ctx.show_text(&line).ok();
+            segs.push(TileSeg {
+                label: None,
+                text: line,
+                tab: 0.0,
+                size,
+                bold: *bold,
+            });
         }
-        y += line_h;
     }
-    ctx.restore().ok();
+    s.tile_render.insert(*id, segs.clone());
+    segs
+}
+
+/// The largest prefix of `text` whose measured width fits `width`
+/// (binary search over the character count).
+fn truncate_to_width(ctx: &cairo::Context, text: &str, width: f64) -> String {
+    let fits = |n: usize| -> bool {
+        let candidate: String = text.chars().take(n).collect();
+        ctx.text_extents(&candidate)
+            .map(|e| e.width() <= width)
+            .unwrap_or(true)
+    };
+    if fits(text.chars().count()) {
+        return text.to_string();
+    }
+    let total = text.chars().count();
+    let (mut lo, mut hi) = (0usize, total);
+    while lo < hi {
+        let mid = (lo + hi).div_ceil(2);
+        if fits(mid) {
+            lo = mid;
+        } else {
+            hi = mid - 1;
+        }
+    }
+    text.chars().take(lo).collect()
 }
 
 fn draw_detail_item(
