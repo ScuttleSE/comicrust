@@ -320,7 +320,7 @@ FrontCover"). Rule: a scripted multi-line replacement must be
 verified by grepping for the NEW symbol in the changed file, not
 by the build result.
 
-### T3. The smart-list editor (`SmartListDialog` + matchers) — CHECKPOINT 1 COMPLETE (2026-09-04), user-tested
+### T3. The smart-list editor (`SmartListDialog` + matchers) — COMPLETE (2026-09-04), user-tested
 
 - [x] The visual matcher builder: property combo (the registry),
       operator combo (the spec's operators), 1–2 argument fields,
@@ -378,6 +378,7 @@ by the build result.
       here too. The reading list's BOOK management (the orderable
       drag-in list) is the browser's "add to reading list" flow —
       Phase 6/7 polish with the drag-drop work.
+      **T3 TAIL COMPLETE — USER-TESTED, ALL PASS (2026-09-04).**
 Headless proof: the app probe seeds a fresh DB, right-clicks the
 navigator, New Smart List… opens the editor with the head fields
 (the Base List combo showing Library, the limit row disabled).
