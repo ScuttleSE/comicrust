@@ -155,39 +155,73 @@ C# spec: `NavigatorManager.cs`, `ComicListNavigator` usage in
       Done: `library::evaluate_list(id) -> (name, ids, count)` —
       T3 consumes the id set.
 
-### T3. The ItemView core (`cr-ui/src/browser/`) — the long pole
+### T3. The ItemView core (`cr-ui/src/browser/`) — the long pole — COMPLETE (2026-09-04)
 
 C# spec: `ItemView.cs` (4,770). Port the BEHAVIOR, not the WinForms
 machinery. Structure it like the reader: pure geometry + state
 modules with unit tests, one GTK4 drawing-area widget on top.
 
-- [ ] `view_state.rs` — the item set: book list, current sort
+- [x] `view_state.rs` — the item set: book list, current sort
       (`compare_by_column`), grouping (the `group.rs` ladders →
       group ranges), stacking (by the stack column), filtered
-      selection.
-- [ ] `layout.rs` — the pure layout engine: Thumbnail (cover grid,
+      selection. Done: the MRU-3 sort chain (`Descending` =
+      `comparer.Reverse()` parity), group buckets ordered by the
+      `GroupInfo.Compare` rule (bucket index →
+      ExtendedStringComparer IgnoreArticles|IgnoreCase → a
+      deterministic tie-break; the C# sort is unstable there),
+      collapse by caption across rebuilds, and the full selection
+      model (click/ctrl/shift/rubber-band-from-snapshot, focus,
+      anchor — the anchor moves only on plain clicks). Stacking
+      plumbing deferred with the browser default (no stacker) —
+      T5 wires the stack menu.
+- [x] `layout.rs` — the pure layout engine: Thumbnail (cover grid,
       per-thumb size), Tile (cover + text lines), Detail (the
       columned report view) modes; group headers (ItemViewLayout
       Top/Left semantics); item rects, hit testing, visible-window
       culling for virtualization (the continuous-mode lesson
-      applies: only visible items draw).
-- [ ] `columns.rs` — column set from the C# browser defaults
+      applies: only visible items draw). Done: the greedy flow with
+      the `>=` wrap rule and 2 px gaps, full-width group headers,
+      collapsed groups drop their items, Detail rows over the
+      column strip (x+8 first-column offset), column-aware
+      keyboard movement (`GetRelativeItem`), page steps, hit tests.
+      Left layout is NOT ported (nothing in ComicRack ever sets
+      it — documented deviation).
+- [x] `columns.rs` — column set from the C# browser defaults
       (the `MainForm` default columns), widths, visibility,
       order; cell text via the property registry
       (`cr-core/registry.rs`) — the same source the matchers use.
       Column drag-reorder and resize are GTK-overlay polish; ship
-      fixed order + configurable widths first.
-- [ ] The widget: scrolling (mouse wheel = scroll lines, the
+      fixed order + configurable widths first. Done: the full
+      default column table (13 visible + the hidden rest, ids and
+      widths from `ComicBrowserControl`); cell text through the
+      engine's `display_text.rs` (`GetPropertyValue(proposed:
+      true)` parity — Shadow*/AsText/FormatVolume/FormatYear/date
+      forms, registry fallback). Headers draw in Detail; drag-
+      reorder and resize stay T5.
+- [x] The widget: scrolling (mouse wheel = scroll lines, the
       reader's scroll machinery is the model), selection (click,
       ctrl/shift-click, rubber band — the C# `ItemView` selection
       semantics), keyboard navigation (arrows, Home/End, type-ahead
-      find), focus rectangle. NO drag-drop reorder yet (T5).
-- [ ] Thumbnails load through `ImagePool::add_thumb_to_queue`
+      find), focus rectangle. NO drag-drop reorder yet (T5). Done:
+      one DrawingArea in a ScrolledWindow sized to the virtual
+      size; native wheel scrolling is a DOCUMENTED DEVIATION (the
+      C# steps 16 px per line — the ScrolledWindow wheel scrolls
+      comfortably; revisit only with user evidence); selection,
+      keyboard, type-ahead (2500 ms buffer), focus visuals, the
+      focus grab on click and window activation (the Phase 3
+      lesson).
+- [x] Thumbnails load through `ImagePool::add_thumb_to_queue`
       (fast/slow thumb queues, ADR-019 pattern: callbacks + the
       pump). Failed covers render the error thumbnail
-      (`cr-image::error_assets`).
-- [ ] Unit tests: layout math (rects, groups, culling), sort/group
-      composition over synthetic books, selection model.
+      (`cr-image::error_assets`). Done — plus two defects the user
+      test caught: the pump broke after its first idle poll (now
+      lives while `pending_thumbs > 0`, started by the draw path),
+      and the completion blob is the C# `ThumbnailImage`
+      serialization (20-byte header + JPEG) — parse it before
+      decoding.
+- [x] Unit tests: layout math (rects, groups, culling), sort/group
+      composition over synthetic books, selection model. Done: 16
+      new tests (232 total).
 
 ### T4. The comic item (`cr-ui/src/browser/item.rs`)
 
@@ -416,3 +450,12 @@ C# spec: `PagesView.cs` (833), `ComicPagesView.cs` (241),
   (`app::reader_closed`). Known cosmetic critical at startup:
   `gtk_css_node_insert_after` assertion (GTK-internal CSS ordering,
   no user-visible effect — investigate when the shell lands in T5).
+- **T3 COMPLETE — USER-TESTED, ALL PASS (2026-09-04).** The grid
+  with real covers for the re-linked comics, selection
+  (click/ctrl/shift/rubber band), full keyboard navigation with the
+  focus split between tree and grid following the last click,
+  type-ahead, scroll, list-driven sets, and double-click → reader
+  (repeatedly; the reader window re-opens fresh after close) all
+  verified on the user's machine. Known cosmetic startup critical:
+  `gtk_css_node_insert_after` (GTK-internal CSS ordering; revisit
+  with the T5 shell).
