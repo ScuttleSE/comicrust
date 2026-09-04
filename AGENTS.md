@@ -52,23 +52,17 @@ Update this section at the **end of every work session**. The next agent must kn
 ### State summary
 
 - **Phase:** 5.5 (UI chrome parity). T1 (the command/action layer +
-  accelerators) IMPLEMENTED — user test pending (2026-09-04).
-  `cr-ui/src/commands.rs` holds the pure table (69 shell actions +
-  the C# menu accelerators; the two C# accel collisions resolve by
-  menu order — recorded); `browser/shell.rs::install_commands`
-  wires every `win.` action, syncs enable-state from
-  book/selection/history, and routes reader commands through
-  `PageView::run_command` (the Library group forwards to the
-  shell: Next/Prev/Random Book + ShowBrowser now work). Probe:
-  `cr-ui/examples/commands_probe.rs`. T1 fix round 1 pending the
-  user retest: the shifted-symbol accel fallback (GTK matches the
-  PRODUCED keyval, the C# matched virtual keys — a window key
-  controller resolves the keycode's unshifted keyval for
-  Alt+Shift+digit ratings + Ctrl+Shift+0/7/8/9/minus; fires only
-  when the raw keyval differs so no double-fire; zoom-in gains
-  `<Control>equal`), and MinimalGui (F10/K) now hides the HOST
-  header bar when docked (the reader's own header is unparented
-  there). **Next: T2 (the bundled icon set + `icon.rs`).** Phase 6
+  accelerators) COMPLETE — USER-TESTED, ALL PASS (2026-09-04, one
+  fix round). `cr-ui/src/commands.rs` holds the pure table (69
+  shell actions + the C# menu accelerators; the two C# accel
+  collisions resolve by menu order — recorded);
+  `browser/shell.rs::install_commands` wires every `win.` action
+  and syncs enable-state from book/selection/history. Reader
+  commands route through `PageView::run_command`; the Library
+  group (Next/Prev/Random Book + ShowBrowser) forwards to the
+  shell. Enable-state gates the accels (a disabled action swallows
+  its accelerator). Probe: `cr-ui/examples/commands_probe.rs`.
+  **Next: T2 (the bundled icon set + `icon.rs`).** Phase 6
   (scripting) starts only after 5.5.
   Phases 0-5 are complete (their gates stay green). Open Phase 1
   gaps: WebComicProvider and the PDF/DjVu writers (tracked in
@@ -865,6 +859,43 @@ Re-bless the `db-large.xml` snapshot after a deliberate model change: `CR_BLESS=
 - The C# `EditListDialog` routes FOLDERS and READING LISTS from
   the single Edit menu item; the C# `ListEditorDialog` is an
   UNRELATED workspaces editor — do not port it for lists.
+
+### Lessons from Phase 5.5 (do not re-learn these)
+
+- GTK accelerators match the PRODUCED keyval. Shift rewrites the
+  symbol on most layouts (Shift+4 → '¤'/'$'), so accels like
+  `<Alt><Shift>4` or `<Control><Shift>7` never fire — while the
+  C# matched WinForms VIRTUAL keys (layout-independent). Fix: the
+  window key controller in `browser/shell.rs::
+  install_shifted_key_fallback` + the pure
+  `commands::shifted_symbol_command` — resolve the keycode's
+  UNSHIFTED keyval via `gdk_display_map_keycode` (level 0) and
+  fire only when the raw keyval DIFFERS from the unshifted one
+  (layouts where Shift keeps the symbol stay on the real accel —
+  no double-fire). Shifted LETTERS need no fallback (GTK matches
+  letter-case variants). `<Control>equal` is zoom-in's primary
+  spelling; `<Control>plus` is the numpad.
+- Register radio accels through DETAILED action names
+  (`win.page-fit::<value>`), not the bare stateful action.
+- `gtk_application` accels for `win.*` resolve only in windows
+  that insert the `win.` group — the undocked reader window gets
+  NO shell accels (ReaderForm parity, no menubar there).
+- A disabled `SimpleAction` swallows its accelerator — the
+  enable-state sync is what keeps stale accels inert.
+- The reader's own HeaderBar is UNPARENTED in the docked shape —
+  toggling it hides nothing. Docked chrome changes go through
+  `reader_shell.rs::apply_chrome_visibility`, which reaches the
+  HOST window's titlebar. The fullscreen state of a reader view
+  must come from the view's ROOT window (an undocked reader
+  fullscreens its own window, not the host).
+- In a headless probe, NEVER blanket-activate every shell action:
+  the `restart` action spawns the binary and self-perpetuates.
+  Skip side-effecting commands (`restart`, `quit`) and the
+  parametered radio actions.
+- Xvfb screenshots come back all-black for GTK4 windows on this
+  machine now (GL/DRI3; `GSK_RENDERER=cairo` did not help). The
+  probe log lines are the evidence; the user test decides
+  rendering.
 
 ### Blockers / open questions
 

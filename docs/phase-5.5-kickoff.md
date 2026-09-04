@@ -692,3 +692,9 @@ change; it lands after the bars so they exist in both modes.
      spreads), Ctrl+S toggles Auto Scrolling (the wheel turns
      pages instead of scrolling). Both lack a check indicator
      until the menus land (T3).
+- T1 COMPLETE — USER-TESTED, ALL PASS (2026-09-04; one fix round).
+  The retest covered: Alt+Shift+1..5 rating updates the grid,
+  Ctrl+Shift+0/7/8/9/minus rotate and only-fit, F10 and K toggle
+  the header chrome, plus the whole original keyboard sweep
+  (open/close/tabs/history/fit/layout/zoom/fullscreen/undock).
+  **Next: T2 (the bundled icon set + `icon.rs`).**
