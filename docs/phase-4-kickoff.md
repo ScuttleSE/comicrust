@@ -660,3 +660,10 @@ C# spec: `PagesView.cs` (833), `ComicPagesView.cs` (241),
   marker). The blank-until-second-comic case: the panel reflows
   when its tab becomes visible (`visible-child` notify → reflow)
   on top of the resize signal and the draw-path self-correction.
+  T6 fix from the user test round 4 (flipping between two open
+  comics eventually showed the wrong comic's pages): page-thumb
+  completions carried only a page number, so comic A's in-flight
+  loads landed in comic B's thumbnail map after a rebind. The
+  completions now carry the queued source path and the pump drops
+  the stale ones (the ADR-019 stale-check pattern — the reader
+  carries the comic source in its payloads for the same reason).
