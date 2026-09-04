@@ -8,6 +8,7 @@ pub mod bitmap;
 pub mod browser;
 pub mod commands;
 pub mod dialogs;
+pub mod icon;
 pub mod library;
 pub mod pages;
 pub mod reader;

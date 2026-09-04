@@ -11,12 +11,15 @@
 //! (`RemoveListOrFolder` guard).
 //!
 //! Custom per-item thumbnails (`LibraryTreeSkin`) are Phase 5 polish;
-//! the icons come from the GTK theme for now.
+//! the kind icons come from the bundled ComicRack set (`icon.rs`) —
+//! the C# `treeImages` table (`ComicListLibraryBrowser.cs:313-317`)
+//! with the `ComicListItem.ImageKey` keys.
 
 use std::cell::RefCell;
 use std::collections::HashSet;
 use std::rc::Rc;
 
+use gtk4::gdk;
 use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::{
@@ -26,6 +29,8 @@ use gtk4::{
 
 use cr_core::database::list_items::ComicListItem;
 use cr_core::xml::scalar::CrGuid;
+
+use crate::icon;
 
 /// Selection-change debounce (`updateTimer`; large sets re-evaluate).
 const SELECT_DEBOUNCE_MS: u64 = 200;
@@ -66,7 +71,7 @@ impl Navigator {
     pub fn new() -> Rc<Navigator> {
         let store = TreeStore::new(&[
             String::static_type(),
-            String::static_type(),
+            gdk::Texture::static_type(),
             String::static_type(),
         ]);
         let view = TreeView::with_model(&store);
@@ -227,11 +232,13 @@ impl Navigator {
             let iter = self.store.append(parent);
             let name = item.base().name.clone().unwrap_or_default();
             let id = item.base().id.to_d_string();
-            let icon = Self::icon_for(item);
-            self.store.set(
-                &iter,
-                &[(COL_NAME, &name), (COL_ICON, &icon), (COL_ID, &id)],
-            );
+            let texture = icon::icon(Self::icon_for(item));
+            let mut values: Vec<(u32, &dyn gtk4::glib::prelude::ToValue)> =
+                vec![(COL_NAME, &name), (COL_ID, &id)];
+            if let Some(tex) = texture.as_ref() {
+                values.push((COL_ICON, tex));
+            }
+            self.store.set(&iter, &values);
             if let ComicListItem::Folder(folder) = item {
                 self.fill_items(Some(&iter), &folder.items);
             }
@@ -391,7 +398,7 @@ impl Navigator {
         let cell = gtk4::CellRendererPixbuf::new();
         let col = TreeViewColumn::new();
         col.pack_start(&cell, true);
-        col.add_attribute(&cell, "icon-name", COL_NAME_I + 1);
+        col.add_attribute(&cell, "texture", COL_NAME_I + 1);
         col
     }
 
@@ -403,12 +410,16 @@ impl Navigator {
         col
     }
 
+    /// The resx icon name for an item — the C# `treeImages` table
+    /// (`ComicListLibraryBrowser.cs:313-317`): the ImageKey "Folder"
+    /// shows `Resources.SearchFolder`, "Search" shows
+    /// `Resources.SearchDocument`; the rest are identity.
     fn icon_for(item: &ComicListItem) -> &'static str {
         match item {
-            ComicListItem::Library(_) => "view-list-symbolic",
-            ComicListItem::Folder(_) => "folder-symbolic",
-            ComicListItem::Smart(_) => "edit-find-symbolic",
-            ComicListItem::IdList(_) => "text-x-generic-symbolic",
+            ComicListItem::Library(_) => "Library",
+            ComicListItem::Folder(_) => "SearchFolder",
+            ComicListItem::Smart(_) => "SearchDocument",
+            ComicListItem::IdList(_) => "List",
         }
     }
 }
