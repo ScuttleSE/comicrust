@@ -266,29 +266,44 @@ family.
       the settings port. The model field (`custom_thumbnail_key`)
       round-trips already.
 
-### T5. The browser shell (`cr-ui/src/browser/` + app window)
+### T5. The browser shell (`cr-ui/src/browser/` + app window) — IMPLEMENTED (2026-09-04), user test pending
 
 C# spec: `ComicBrowserControl.cs` (3,536) — port the user-visible
 subset; `MainForm` browser regions.
 
-- [ ] The main window layout: navigator pane (T2) + ItemView (T3)
+- [x] The main window layout: navigator pane (T2) + ItemView (T3)
       in a GTK paned container; the reader opens as a view/tab in
       the same window (the Phase 3 shell moves under it — keep
-      undock/re-dock and the session tabs working).
-- [ ] The search box (`ToolStripSearchTextBox` + 
+      undock/re-dock and the session tabs working). Done:
+      `browser/shell.rs` — the main window hosts a GtkStack
+      (browser ⇄ reader); `reader_window.rs` became
+      `reader_shell.rs` (a dockable pane; the standalone window is
+      now only the `D` undock target); the last reader tab close
+      shows the browser again; the command-line/`open`-signal path
+      docks into the same window (the shell is created on first
+      need — the open signal can fire BEFORE activate, and without
+      a mapped window the app would exit).
+- [x] The search box (`ToolStripSearchTextBox` +
       `SearchContextMenuBuilder`): text → matcher query over the
       registry properties (`ComicBookMatcher` search mapping),
-      filters the current list's book set. The C# search field
-      builds `ComicBookMatcher` queries — reuse the Phase 2
-      matcher plumbing, not a new filter language.
-- [ ] View-mode switcher (Thumbnail/Tile/Detail), thumbnail-size
+      filters the current list's book set. Done: a debounced header
+      entry; text → the `ComicBookAllPropertiesMatcher` (Option
+      All, contains) through the Phase 2 matcher plumbing; MATCH/
+      NOT text parses as a full query; `ViewState::set_filter`
+      applies it in the rebuild (the C# `UpdateQuickFilter`
+      quickFilter).
+- [x] View-mode switcher (Thumbnail/Tile/Detail), thumbnail-size
       control, sort menu (column + direction), group menu (the
-      grouper registry), column visibility.
-- [ ] The status bar: book count/selection count (the C#
-      `ComicBrowserControl` status strip).
-- [ ] Double-click / Enter → open the book in the reader (in-tab,
-      per the C#); the reading-state write-back loop closes.
-- [ ] Context menu (right-click): the common commands only —
+      grouper registry), column visibility. Done: window action
+      groups (view-mode radio, thumb-size ±16 within 96..512, sort
+      column/direction, group-by over the grouper registry) wired
+      to gio menus in the header.
+- [x] The status bar: book count/selection count (the C#
+      `ComicBrowserControl` status strip). Done.
+- [x] Double-click / Enter → open the book in the reader (in-tab,
+      per the C#); the reading-state write-back loop closes. Done —
+      the reader docks into the browser window.
+- [x] Context menu (right-click): the common commands only —
       open, reveal in file manager (xdg-open), remove from
       library, properties stub (the editor dialog is Phase 5).
 - [ ] Rubber-band drag of books onto folders/desktop = OUT for
@@ -504,3 +519,19 @@ C# spec: `PagesView.cs` (833), `ComicPagesView.cs` (241),
   correct answer: docked (the C# main-form shape); that is T5's
   deliverable (the reader as a view in the browser window, the
   Phase 3 window becomes the undock path).
+- **T5 IMPLEMENTED (2026-09-04), user test pending.** The browser
+  shell: the main window hosts the navigator + ItemView + status
+  bar + quick search + View/Sort/Group menus, and the docked reader
+  (browser ⇄ reader stack; the reader pane is `reader_shell.rs`;
+  undock/re-dock and the session tabs keep working). Fixes on the
+  way: a duplicated `Ok` match arm silently skipped the reader
+  stack switch (the "unreachable pattern" warning was the symptom
+  — take those warnings seriously), an empty page list panicked the
+  reader open path inside a non-unwindable GTK closure (clamp on
+  `page_count - 1`; empty comics now fall to the error page), and
+  the open-before-activate GApplication ordering required creating
+  the shell on first need (without a mapped window the app exits
+  cleanly before `activate` — the Phase 3 reader presented a window
+  inside the open handler, which masked this). Headless probe: the
+  command-line comic docks into the browser window (tab strip +
+  page render + window title).
