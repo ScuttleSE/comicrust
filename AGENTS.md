@@ -579,6 +579,7 @@ Do not edit or reformat that fixture; byte identity is the test.
 | `crates/cr-engine/src/queue.rs`, `queue_manager.rs`, `image_pool.rs` | ProcessingQueue port, ComicBook queues, the five ImagePool queues + render chain. |
 | `crates/cr-engine/src/scanner.rs`, `watch.rs` | Library scanner (add/move/remove parity) + notify watch folders. |
 | `crates/cr-engine/src/backup.rs` | Backup zip create/restore + the `.restore` flow. |
+| `crates/cr-core/src/settings/` | The settings layer: `ini.rs` (IniFile), `registry.rs` (typed field tables + `settings_fields!`), `engine_config.rs` (EngineConfiguration), `extended.rs` (ExtendedSettings, the argv switches), `enums.rs` (the C# settings enums), `settings.rs` (the ~120-field Settings + the Config.xml Emitter/reader). |
 | `crates/cr-cli/src/main.rs` | `info`, `db-dump`, `db-roundtrip`, `pages`, `extract`, `thumb`, `rewrite`, `metron`, `lists`. |
 
 The UI crate (Phase 3):
@@ -594,6 +595,19 @@ The UI crate (Phase 3):
 | `crates/cr-ui/src/reader_window.rs` | Reader shell: session tabs (closable, Tab cycling), undock/re-dock, fullscreen chrome hide + reveal strip, MinimalGui, cursor auto-hide, reading-state write-back. |
 | `crates/cr-ui/assets/papers/` | Paper textures copied from the C# `Resources/Textures/Papers`. |
 | `crates/cr-image/src/error_assets.rs` | `CreateErrorPage`/`CreateErrorThumbnail` port with the bundled `ErrorPage.jpg` + `RedCross.png`. Unit-tested. |
+| `crates/cr-ui/src/library.rs` | The app session (`Program` statics): the Library open/save/scan wiring, the Settings + engine-config load/save, `apply_edited` (the editor commit + the dirty mark + the debounced file write), `update_book_file` (the write-back gates), list CRUD (new smart list/folder/id list, update, evaluate), QuickOpen lists, the last-export setting. |
+| `crates/cr-ui/src/browser/shell.rs` | The browser window: navigator + ItemView + reader dock, the header commands, the context menu (open/reveal/edit/update-file/export/remove/properties), the quick search, view/sort/group actions. |
+| `crates/cr-ui/src/browser/navigator.rs` | The list tree (Library/Smart Lists/folders/reading lists) with the context menu + the command dispatch. |
+| `crates/cr-ui/src/browser/item_view.rs` | The book grid: view modes, sort/group, selection, type-ahead, thumbs via the pool queues. |
+| `crates/cr-ui/src/browser/pages_view.rs` | The Pages panel: the open comic's page grid, the current-page marker, double-click navigation. |
+| `crates/cr-ui/src/dialogs/book_editor.rs` | The book editor (Properties…): Details/Plot/Catalog/Pages/Colors/Custom tabs, the proposed-value placeholders, the per-page edit menu, the Colors sliders, Apply/OK/Cancel commit points. |
+| `crates/cr-ui/src/dialogs/bulk_edit.rs` | The bulk editor (Edit…): a Set check per field, the common-value cue, only checked fields apply. |
+| `crates/cr-ui/src/dialogs/smart_list.rs` | The smart-list editor: Designer (matcher rows/groups with the type/operator/value/not combos + the structure menu) | Query (the rendered query text round-trip). |
+| `crates/cr-ui/src/dialogs/list_editor.rs` | The list editor for folders (name/notes/combine) and reading lists (name/notes/quick-open). |
+| `crates/cr-ui/src/dialogs/export.rs` | The export dialog: target/folder/format/compression/naming/page-format/quality + the flags, the inline progress, the session-persisted last settings. |
+| `crates/cr-ui/src/settings/` | The Preferences dialog (`preferences.rs`) + the options builder (`options.rs`, the `FillPanelWithOptions` parity). |
+| `crates/cr-ui/src/pages.rs` | The page-entry merge (`merged_page_entries`): the provider count + the stored overlay — the reader and the editor both use it. |
+| `crates/cr-ui/src/bitmap.rs` | The cairo surface helpers (RGBA→premultiplied ARGB, the thumbnail-blob split). |
 
 Tests: `crates/cr-core/tests/golden_roundtrip.rs`, `crates/cr-engine/tests/realworld_query.rs` (the Phase 2 gate), `crates/cr-engine/tests/eval.rs`, `crates/cr-engine/tests/queues.rs`, `crates/cr-engine/tests/image_pool.rs`, `crates/cr-engine/tests/scanner_lib.rs`, `crates/cr-cli/tests/cli.rs`, plus the in-crate unit tests (`cr-ui` geometry/continuous/spread suites). Fixtures: `tests/golden/` (read `tests/golden/README.md` before you touch the XML layer).
 
@@ -807,6 +821,44 @@ Re-bless the `db-large.xml` snapshot after a deliberate model change: `CR_BLESS=
 - `MemoryPool::get` (cache-hit without produce) was added for the
   C# `GetPage(onlyMemory)` ordering; `ImagePool::render_page` checks
   the pages pool before any provider work.
+
+### Lessons from Phase 5 (do not re-learn these)
+
+- GtkDialog dialogs that call `dlg.close()` inside a response arm
+  get a RE-ENTRANT delete-event response (the C# WinForms
+  `DialogResult` shape does not do this). Every dialog that ends
+  in close() needs a one-shot `done` Cell guard, or the Cancel
+  path runs twice (the fresh-insert removal bug).
+- The provider-count + stored-overlay merge
+  (`cr-ui::pages::merged_page_entries`) is THE open semantics:
+  PageCount always comes from the PROVIDER and the stored page
+  entries overlay it. A partial metadata list must never shrink
+  the display. The reader sequence + the editor both consume it.
+- The page-queue completion payload must carry the DISPLAY
+  position, never the key's provider index — under a display
+  sequence they differ, and reporting the key's index scrambles
+  every landing slot (blank pages).
+- The pool's thumbnail blob carries the `ThumbnailImage`
+  serialization header — parse (`Thumbnail::from_bytes`) before
+  decoding. Shared helper: `cr_ui::bitmap::surface_from_thumb_blob`.
+- Env-gated `eprintln!` probes (`CR_DEBUG_SL`) + an isolated-XDG
+  app run is the fastest way to get commit-path evidence. ALWAYS
+  rebuild `cr-app --release` before probing — a stale release
+  binary cost a full round once.
+- Verify scripted multi-line edits by grepping the NEW symbol in
+  the changed file, not by the build result — a drifted target
+  text matches nothing and the build still passes (the editor's
+  missing merge half).
+- GTK widgets are the single source of truth for dialog fields:
+  write picker results INTO the widget and let the widget's sync
+  write the model — a direct model write gets overwritten by the
+  next widget sync (the export folder chooser).
+- `FileChooserNative`/`MessageDialog` internals: a MessageDialog's
+  message_area is reachable via
+  `child().and_downcast::<Box>().and_then(|v| first_child()...)`.
+- The C# `EditListDialog` routes FOLDERS and READING LISTS from
+  the single Edit menu item; the C# `ListEditorDialog` is an
+  UNRELATED workspaces editor — do not port it for lists.
 
 ### Blockers / open questions
 
