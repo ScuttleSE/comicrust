@@ -300,8 +300,7 @@ pub fn show_export_dialog(
     // The folder chooser (the target combo gates it — the OnIdle
     // enable/disable parity is the visibility here).
     {
-        let setting_rc = Rc::clone(&setting_rc);
-        let _ = Rc::clone(&sync);
+        let folder_entry = folder_entry.clone();
         choose.connect_clicked(move |_| {
             let chooser = gtk4::FileChooserNative::new(
                 Some("Select the export folder"),
@@ -310,13 +309,18 @@ pub fn show_export_dialog(
                 Some("Select"),
                 Some("Cancel"),
             );
-            let setting_rc = Rc::clone(&setting_rc);
+            let folder_entry = folder_entry.clone();
             chooser.connect_response(move |dlg, resp| {
                 if resp == gtk4::ResponseType::Accept {
                     if let Some(file) = dlg.file() {
                         if let Some(path) = file.path() {
-                            setting_rc.borrow_mut().target_folder =
-                                path.to_string_lossy().into_owned();
+                            let text = path.to_string_lossy().into_owned();
+                            // The entry is the single source of truth:
+                            // setting its text triggers the sync that
+                            // stores it into the settings (a direct
+                            // settings write would be overwritten by
+                            // the next sync from the stale entry).
+                            folder_entry.set_text(&text);
                         }
                     }
                 }

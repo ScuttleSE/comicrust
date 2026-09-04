@@ -432,7 +432,11 @@ the re-entrant response. The probe log after the fix: `matchers=1
       exported CBZ with the pages + ComicInfo).
 - [x] Quick rating (the reader's close flow), delete-confirm,
       progress dialog, splash. PARTIAL — the flows that need them
-      landed: the delete-confirm ships in the browser remove flow
+      landed (plus the first user-test finding: the folder chooser
+      wrote the settings object but never the folder ENTRY, and the
+      next sync overwrote the choice from the stale entry — the
+      entry is now the single source of truth: the chooser sets its
+      text and the sync stores it): the delete-confirm ships in the browser remove flow
       (the C# AskRemoveComics question: remove from the list vs
       also delete the files — the files move to the trash via the
       `gio` CLI, the ADR-006 GIO-trash parity), and the export
