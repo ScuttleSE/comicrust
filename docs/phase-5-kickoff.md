@@ -141,7 +141,7 @@ deepest dialog); keep the editors pure-model first, GTK last.
       the backup/association groups are Windows-shell features
       (Phase 8). Opened from the header "Preferences" button.
 
-### T2. The book editor (`ComicBookDialog`) — CHECKPOINT 1 COMPLETE (2026-09-04), user-tested
+### T2. The book editor (`ComicBookDialog`) — COMPLETE (2026-09-04), user-tested (both checkpoints)
 
 - [ ] The metadata form: every ComicInfo field the registry
       exposes, the proposed-value flow (`EnableProposed` — the
@@ -209,6 +209,12 @@ deepest dialog); keep the editors pure-model first, GTK last.
       only the checked fields through the registry to every book
       and commits each changed one. The context menu gains
       "Edit…" over the selection.
+      First user-test finding (the grid did not show the edits):
+      the context-menu commands never refreshed the ItemView —
+      both the bulk "Edit…" and the single "Properties…" commit
+      closures now call `refresh_view_from_list` per commit (the
+      "remove" command pattern).
+      **CHECKPOINT 2 COMPLETE — USER-TESTED, ALL PASS (2026-09-04).**
 
 **CHECKPOINT 1 COMPLETE — USER-TESTED, ALL PASS (2026-09-04).**
 Six fix rounds total (the record below). The user confirmed: the
@@ -376,9 +382,8 @@ by the build result.
 ## Update at the end of every task
 
 - [x] T1 settings port + options builder + Preferences shell
-- [ ] T2 book editor + bulk edit + write-back wiring (checkpoint 1
-      in, user test pending; checkpoint 2 = file write-back + bulk
-      edit)
+- [x] T2 book editor + bulk edit + write-back wiring (both
+      checkpoints user-tested)
 - [ ] T3 smart-list/reading-list editors
 - [ ] T4 export + small dialogs
 

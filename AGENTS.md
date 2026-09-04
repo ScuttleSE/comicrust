@@ -51,12 +51,10 @@ Update this section at the **end of every work session**. The next agent must kn
 
 ### State summary
 
-- **Phase:** 5 (the dialogs) — T1 COMPLETE (user-tested, all
-  pass). T2 (the book editor) CHECKPOINT 1 COMPLETE (user-tested,
-  all pass, 2026-09-04 — six fix rounds; the record lives in
-  `docs/phase-5-kickoff.md`). **Next: T2 checkpoint 2 (the file
-  write-back queue + the bulk-edit dialog).** Phases 0-4 are
-  complete (their gates stay green).
+- **Phase:** 5 (the dialogs) — T1 COMPLETE, T2 COMPLETE (both
+  user-tested, all pass, 2026-09-04; the records live in
+  `docs/phase-5-kickoff.md`). **Next: T3 (the smart-list editor).**
+  Phases 0-4 are complete (their gates stay green).
   Phase 1 gaps that remain open: WebComicProvider and the PDF/DjVu
   writers (tracked in `docs/phase-1-kickoff.md`). The Phase 0 exit
   review can close with the T1 wrap-up (the settings port it
@@ -137,12 +135,10 @@ isolated library, edits through apply_edited, and the archive's
 ComicInfo.xml carries the edit with the flag cleared. Deferred:
 the exit SaveDirtyBooks ask-dialog for temporary books, the
 ComicBookIsDirty half (never set), the C# tri-state list-merge
-checkbox mode. Deferred to checkpoint 2: the
-file write-back queue (`UpdateComicFiles` + never-write-
-defaults + "Files to update" flips), the bulk-edit dialog, the
-custom-thumbnail buttons (the `type://` pool loader), the
-white-point color pick, the library-wide custom-value key editor. **Next: T2 (the book
-editor `ComicBookDialog` + bulk edit + the write-back wiring).**
+checkbox mode. T2 CHECKPOINT 2 COMPLETE — USER-TESTED, ALL PASS
+(2026-09-04; one fix round: the editor commits now refresh the
+browser grid). **T2 is COMPLETE. Next: T3 (the smart-list editor
+`SmartListDialog` + the matcher editors).**
 
 ### Phase 4 progress (sessions of 2026-09-03)
 
