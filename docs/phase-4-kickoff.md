@@ -629,3 +629,12 @@ C# spec: `PagesView.cs` (833), `ComicPagesView.cs` (241),
   panel + QuickOpen per the spec above. Headless probes: the
   QuickOpen page renders the captionless covers at startup; the
   comic-open path binds the panel without panics.
+  T6 fix from the user test round 1 (the Pages tab empty on the
+  first comic, all-black on the second): two stale-lesson repeats —
+  the panel's thumb pump started once and never restarted when the
+  draw queued loads (the ItemView dead-pump lesson), and the panel
+  bound its comic while the tab was hidden, where `canvas.width()`
+  is 0 — the content height computed to 0 and the grid never laid
+  out (the reflow now also runs on the canvas `resize` signal).
+  Both fixed with the established patterns (draw-path pump start +
+  a resize reflow).
