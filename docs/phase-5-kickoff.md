@@ -266,6 +266,17 @@ and the filled list persists on save (`comic.SetPages` parity).
 Probe-proven with a page-list-cleared book: the list, preview, and
 cover render.
 
+Fifth round (2026-09-04) — the real C# open semantics: PageCount
+always comes from the PROVIDER and the stored entries OVERLAY it
+(`ProviderIndexRetrievalCompleted` → PageCount = provider count +
+`TrimExcessPageInfo`; `GetPage(i)` returns the entry or a default).
+A PARTIAL stored list (1-2 entries — most migrated books) must not
+shrink the display. New `cr-ui::pages::merged_page_entries` builds
+the full provider-count list with the stored entries overlaid
+(usable-Image fallback to the position); the reader shell and the
+editor both use it (unit-tested with a folder provider). The
+merged list persists on save like the C# navigator's book.
+
 ### T3. The smart-list editor (`SmartListDialog` + matchers)
 
 - [ ] The visual matcher builder: property combo (the registry),

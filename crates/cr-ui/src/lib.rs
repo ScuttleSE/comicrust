@@ -8,6 +8,7 @@ pub mod bitmap;
 pub mod browser;
 pub mod dialogs;
 pub mod library;
+pub mod pages;
 pub mod reader;
 pub mod reader_shell;
 pub mod settings;

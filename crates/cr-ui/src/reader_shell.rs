@@ -404,25 +404,11 @@ impl ReaderShell {
                 book
             }
         };
-        // `ProviderIndexRetrievalCompleted`: the C# fills
-        // `ComicBook.Pages` from the provider index when the metadata
-        // carries no page list — the Pages panel reads it.
-        if book.info.pages.is_empty() {
-            book.info.pages = provider
-                .pages()
-                .iter()
-                .enumerate()
-                .map(|(i, p)| {
-                    let mut pg = cr_core::model::comic_page_info::ComicPageInfo {
-                        key: Some(p.name.clone()),
-                        ..Default::default()
-                    };
-                    // The C# provider index fills `Image` (raw +1).
-                    pg.set_image_index(i as i32);
-                    pg
-                })
-                .collect();
-        }
+        // `ProviderIndexRetrievalCompleted`: PageCount comes from the
+        // provider and the stored page entries OVERLAY it (a partial
+        // metadata list does not shrink the display — the C#
+        // `GetPage(i)` returns the entry or a default).
+        book.info.pages = crate::pages::merged_page_entries(&book, &provider);
         // The display sequence (the C# `GetPageList` with the default
         // PageFilter = All: Deleted pages drop; reads resolve by the
         // entry ImageIndex). Books without page entries keep the
