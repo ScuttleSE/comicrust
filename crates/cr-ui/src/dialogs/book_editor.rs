@@ -27,7 +27,7 @@ use std::sync::Arc;
 use gtk4::prelude::*;
 use gtk4::{
     Align, Box as GtkBox, Button, ComboBoxText, Dialog, DrawingArea, Entry, Grid, Label, Notebook,
-    Orientation, PopoverMenu, ScrolledWindow, TextView,
+    Orientation, ScrolledWindow, TextView,
 };
 
 use cr_core::model::bitmap_adjustment::BitmapAdjustment;
@@ -38,7 +38,6 @@ use cr_engine::image_pool::ImagePool;
 
 use gtk4::cairo;
 use gtk4::gdk;
-use gtk4::gio;
 use gtk4::glib;
 
 // ---------- Pure helpers (the `EditControlUtility` parity) ----------
@@ -1275,7 +1274,9 @@ fn start_editor_pump(
             match msg {
                 EditorMsg::Cover { key_text, bytes } => {
                     if s.pending_cover.as_deref() == Some(key_text.as_str()) {
-                        s.cover = bytes.and_then(|b| crate::bitmap::surface_from_bytes(&b));
+                        // The pool blob carries the ThumbnailImage
+                        // serialization header — parse before decode.
+                        s.cover = bytes.and_then(|b| crate::bitmap::surface_from_thumb_blob(&b));
                         s.pending_cover = None;
                         drew = true;
                     }
@@ -1304,7 +1305,6 @@ struct PagesWidgets {
     root: GtkBox,
     list: gtk4::ListBox,
     preview: DrawingArea,
-    label: Label,
 }
 
 fn build_pages_tab(state: &StateRef) -> PagesWidgets {
@@ -1314,8 +1314,10 @@ fn build_pages_tab(state: &StateRef) -> PagesWidgets {
     root.set_margin_start(8);
     root.set_margin_end(8);
 
-    // The list of pages (left).
+    // The list of pages (left). A click selects the row and shows
+    // the page (`PagesViewSelectedIndexChanged` → `SetPageView`).
     let list = gtk4::ListBox::new();
+    list.set_selection_mode(gtk4::SelectionMode::Single);
     let list_scroll = ScrolledWindow::builder()
         .child(&list)
         .hscrollbar_policy(gtk4::PolicyType::Never)
@@ -1420,6 +1422,31 @@ fn build_pages_tab(state: &StateRef) -> PagesWidgets {
         });
     }
 
+    // Selection → preview (`PagesViewSelectedIndexChanged`).
+    {
+        let state = Rc::clone(state);
+        let preview = preview.clone();
+        let label = label.clone();
+        let list = list.clone();
+        list.connect_row_selected(move |_, row| {
+            let Some(row) = row else {
+                return;
+            };
+            let page = row.index() as usize;
+            // A rebuild re-selects the current row; the guard keeps
+            // the loop trivial (same page → no re-queue).
+            let changed = state.borrow().page_view_page != page;
+            if !changed {
+                return;
+            }
+            state.borrow_mut().page_view_page = page;
+            label.set_text(&format!("Page {}", page + 1));
+            let book = current_book(&state);
+            queue_preview(&state, &book);
+            preview.queue_draw();
+        });
+    }
+
     // The per-page context menu (`PagesView` commands).
     {
         let state = Rc::clone(state);
@@ -1427,7 +1454,6 @@ fn build_pages_tab(state: &StateRef) -> PagesWidgets {
             root: root.clone(),
             list: list.clone(),
             preview: preview.clone(),
-            label: label.clone(),
         };
         let gesture = gtk4::GestureClick::new();
         gesture.set_button(3);
@@ -1446,7 +1472,6 @@ fn build_pages_tab(state: &StateRef) -> PagesWidgets {
         root,
         list,
         preview,
-        label,
     }
 }
 
@@ -1455,6 +1480,7 @@ fn rebuild_pages_list(widgets: &PagesWidgets, state: &StateRef) {
         widgets.list.remove(&child);
     }
     let book = current_book(state);
+    let current = state.borrow().page_view_page;
     for (i, p) in book.info.pages.iter().enumerate() {
         let type_name = ComicPageType::MEMBERS
             .iter()
@@ -1481,188 +1507,222 @@ fn rebuild_pages_list(widgets: &PagesWidgets, state: &StateRef) {
         label.set_margin_bottom(2);
         row.set_child(Some(&label));
         widgets.list.append(&row);
+        if i == current {
+            widgets.list.select_row(Some(&row));
+        }
     }
 }
 
-/// The page-row context menu: Set Page Type / Rotate / Position /
-/// Mark as Deleted / Move to Top / Move to Bottom / Reset Order —
-/// the `PagesView` command set over the working book.
+/// The page-row context menu (`PagesView` commands): Set Page Type /
+/// Rotate / Position / Mark as Deleted / Move to Top / Move to
+/// Bottom / Reset Original Order. Built as a manual popover with
+/// buttons — the same mechanism as the browser context menu (the
+/// action-muxer route proved inert in the first user test).
 fn show_page_menu(state: &StateRef, widgets: &PagesWidgets, index: usize, x: f64, y: f64) {
-    let menu_model = gio::Menu::new();
-    let types = gio::Menu::new();
-    for (i, (name, _)) in PAGE_TYPE_ITEMS.iter().enumerate() {
-        types.append(Some(name), Some(&format!("editor.type-{i}")));
-    }
-    menu_model.append_submenu(Some("Set Page Type"), &types);
-    let rotations = gio::Menu::new();
-    const ROTATION_ITEMS: [(&str, ImageRotation); 4] = [
-        ("None", ImageRotation::None),
-        ("90°", ImageRotation::Rotate90),
-        ("180°", ImageRotation::Rotate180),
-        ("270°", ImageRotation::Rotate270),
-    ];
-    let rotation_items = ROTATION_ITEMS;
-    for (i, (name, _)) in rotation_items.iter().enumerate() {
-        rotations.append(Some(name), Some(&format!("editor.rot-{i}")));
-    }
-    menu_model.append_submenu(Some("Rotate"), &rotations);
-    let positions = gio::Menu::new();
-    const POSITION_ITEMS: [(&str, ComicPagePosition); 3] = [
-        ("Default", ComicPagePosition::Default),
-        ("Near", ComicPagePosition::Near),
-        ("Far", ComicPagePosition::Far),
-    ];
-    let position_items = POSITION_ITEMS;
-    for (i, (name, _)) in position_items.iter().enumerate() {
-        positions.append(Some(name), Some(&format!("editor.pos-{i}")));
-    }
-    menu_model.append_submenu(Some("Position"), &positions);
-    menu_model.append(Some("Mark as Deleted"), Some("editor.deleted"));
-    menu_model.append(Some("Move to Top"), Some("editor.top"));
-    menu_model.append(Some("Move to Bottom"), Some("editor.bottom"));
-    menu_model.append(Some("Reset Original Order"), Some("editor.reset"));
+    let popover = gtk4::Popover::new();
+    let outer = GtkBox::new(Orientation::Vertical, 0);
+    outer.set_margin_top(4);
+    outer.set_margin_bottom(4);
+    outer.set_margin_start(4);
+    outer.set_margin_end(4);
 
-    // The action group lives on the LIST (the popover's action muxer
-    // resolves `editor.*` through the parent chain).
-    let group = gio::SimpleActionGroup::new();
     // A page mutation: apply → rebuild the list → refresh the
-    // preview + label (the C# `pagesView.UpdateList`).
-    let after = {
+    // preview (the C# `pagesView.UpdateList`).
+    let after: Rc<dyn Fn()> = Rc::new({
         let state = Rc::clone(state);
-        let widgets = PagesWidgets {
-            root: widgets.root.clone(),
-            list: widgets.list.clone(),
-            preview: widgets.preview.clone(),
-            label: widgets.label.clone(),
-        };
+        let widgets = widgets.clone();
         move || {
             rebuild_pages_list(&widgets, &state);
             let book = current_book(&state);
             queue_preview(&state, &book);
             widgets.preview.queue_draw();
         }
-    };
-    for (i, (_, page_type)) in PAGE_TYPE_ITEMS.iter().enumerate() {
-        let page_type = *page_type;
-        let action = gio::SimpleAction::new(&format!("type-{i}"), None);
+    });
+    fn add_button(
+        outer: &GtkBox,
+        label: &str,
+        popover: &gtk4::Popover,
+        run: impl Fn(&StateRef) + 'static,
+        state: &StateRef,
+        after: &Rc<dyn Fn()>,
+    ) {
+        let button = Button::with_label(label);
+        button.set_has_frame(false);
+        button.set_halign(Align::Fill);
+        let popover = popover.clone();
+        let after = Rc::clone(after);
         let state = Rc::clone(state);
-        let after = after.clone();
-        action.connect_activate(move |_, _| {
-            let cur = state.borrow().current;
-            if let Some(b) = state.borrow_mut().books.get_mut(cur) {
-                b.info.update_page_type(index, page_type);
-            }
+        button.connect_clicked(move |_| {
+            popover.popdown();
+            run(&state);
             after();
         });
-        group.add_action(&action);
+        outer.append(&button);
     }
-    for (i, (_, rotation)) in rotation_items.iter().enumerate() {
-        let rotation = *rotation;
-        let action = gio::SimpleAction::new(&format!("rot-{i}"), None);
-        let state = Rc::clone(state);
-        let after = after.clone();
-        action.connect_activate(move |_, _| {
-            let cur = state.borrow().current;
-            if let Some(b) = state.borrow_mut().books.get_mut(cur) {
-                b.info.update_page_rotation(index, rotation);
-            }
-            after();
-        });
-        group.add_action(&action);
-    }
-    for (i, (_, position)) in position_items.iter().enumerate() {
-        let position = *position;
-        let action = gio::SimpleAction::new(&format!("pos-{i}"), None);
-        let state = Rc::clone(state);
-        let after = after.clone();
-        action.connect_activate(move |_, _| {
-            let cur = state.borrow().current;
-            if let Some(b) = state.borrow_mut().books.get_mut(cur) {
-                b.info.update_page_position(index, position);
-            }
-            after();
-        });
-        group.add_action(&action);
-    }
-    {
-        // `MarkAsDeleted`: toggles between Deleted and Story.
-        let action = gio::SimpleAction::new("deleted", None);
-        let state = Rc::clone(state);
-        let after = after.clone();
-        action.connect_activate(move |_, _| {
-            let mut s = state.borrow_mut();
-            let cur_idx = s.current;
-            let cur = s.books[cur_idx].info.pages.get(index).map(|p| p.page_type);
-            let next = if cur == Some(ComicPageType(1024)) {
-                ComicPageType(8) // Story
-            } else {
-                ComicPageType(1024) // Deleted
-            };
-            if let Some(b) = s.books.get_mut(cur_idx) {
-                b.info.update_page_type(index, next);
-            }
-            drop(s);
-            after();
-        });
-        group.add_action(&action);
-    }
-    {
-        // `MoveSelectedPageStart`.
-        let action = gio::SimpleAction::new("top", None);
-        let state = Rc::clone(state);
-        let after = after.clone();
-        action.connect_activate(move |_, _| {
-            let cur = state.borrow().current;
-            if let Some(b) = state.borrow_mut().books.get_mut(cur) {
-                b.info.move_pages(0, &[index]);
-            }
-            after();
-        });
-        group.add_action(&action);
-    }
-    {
-        // `MoveSelectedPageEnd` (position = PageCount; the C#
-        // FrontCover demotion rides along only for all-cover
-        // selections — a single row here).
-        let action = gio::SimpleAction::new("bottom", None);
-        let state = Rc::clone(state);
-        let after = after.clone();
-        action.connect_activate(move |_, _| {
-            let count = {
-                let s = state.borrow();
-                s.books[s.current].info.pages.len() as i32
-            };
-            let cur = state.borrow().current;
-            if let Some(b) = state.borrow_mut().books.get_mut(cur) {
-                b.info.move_pages(count, &[index]);
-            }
-            after();
-        });
-        group.add_action(&action);
-    }
-    {
-        // `ResetPageOrder` (the C# catches and resets the sequence).
-        let action = gio::SimpleAction::new("reset", None);
-        let state = Rc::clone(state);
-        let after = after.clone();
-        action.connect_activate(move |_, _| {
-            let cur = state.borrow().current;
-            if let Some(b) = state.borrow_mut().books.get_mut(cur) {
-                b.info.reset_page_sequence();
-            }
-            after();
-        });
-        group.add_action(&action);
-    }
-    widgets.list.insert_action_group("editor", Some(&group));
 
-    let menu = PopoverMenu::from_model(Some(&menu_model));
-    menu.set_parent(&widgets.list);
-    // Translate to toplevel coordinates (the Phase 4 lesson).
+    let add_section = |outer: &GtkBox, caption: &str| {
+        let label = Label::builder()
+            .label(caption)
+            .halign(Align::Start)
+            .css_classes(["heading"])
+            .margin_top(6)
+            .margin_start(4)
+            .build();
+        outer.append(&label);
+    };
+
+    // Set Page Type (the 11 single values).
+    add_section(&outer, "Set Page Type");
+    for (name, page_type) in PAGE_TYPE_ITEMS {
+        let state = Rc::clone(state);
+        add_button(
+            &outer,
+            name,
+            &popover,
+            move |state| {
+                let cur = state.borrow().current;
+                if let Some(b) = state.borrow_mut().books.get_mut(cur) {
+                    b.info.update_page_type(index, page_type);
+                }
+            },
+            &state,
+            &after,
+        );
+    }
+    // Rotate.
+    add_section(&outer, "Rotate");
+    const ROTATIONS: [(&str, ImageRotation); 4] = [
+        ("None", ImageRotation::None),
+        ("90°", ImageRotation::Rotate90),
+        ("180°", ImageRotation::Rotate180),
+        ("270°", ImageRotation::Rotate270),
+    ];
+    for (name, rotation) in ROTATIONS {
+        let state = Rc::clone(state);
+        add_button(
+            &outer,
+            name,
+            &popover,
+            move |state| {
+                let cur = state.borrow().current;
+                if let Some(b) = state.borrow_mut().books.get_mut(cur) {
+                    b.info.update_page_rotation(index, rotation);
+                }
+            },
+            &state,
+            &after,
+        );
+    }
+    // Position.
+    add_section(&outer, "Position");
+    const POSITIONS: [(&str, ComicPagePosition); 3] = [
+        ("Default", ComicPagePosition::Default),
+        ("Near", ComicPagePosition::Near),
+        ("Far", ComicPagePosition::Far),
+    ];
+    for (name, position) in POSITIONS {
+        let state = Rc::clone(state);
+        add_button(
+            &outer,
+            name,
+            &popover,
+            move |state| {
+                let cur = state.borrow().current;
+                if let Some(b) = state.borrow_mut().books.get_mut(cur) {
+                    b.info.update_page_position(index, position);
+                }
+            },
+            &state,
+            &after,
+        );
+    }
+    // Commands.
+    add_section(&outer, "Pages");
+    {
+        let state = Rc::clone(state);
+        add_button(
+            &outer,
+            "Mark as Deleted",
+            &popover,
+            move |state| {
+                let cur = state.borrow().current;
+                let mut s = state.borrow_mut();
+                let cur_type = s.books[cur].info.pages.get(index).map(|p| p.page_type);
+                let next = if cur_type == Some(ComicPageType(1024)) {
+                    ComicPageType(8) // Story
+                } else {
+                    ComicPageType(1024) // Deleted
+                };
+                if let Some(b) = s.books.get_mut(cur) {
+                    b.info.update_page_type(index, next);
+                }
+            },
+            &state,
+            &after,
+        );
+    }
+    {
+        let state = Rc::clone(state);
+        add_button(
+            &outer,
+            "Move to Top",
+            &popover,
+            move |state| {
+                let cur = state.borrow().current;
+                if let Some(b) = state.borrow_mut().books.get_mut(cur) {
+                    b.info.move_pages(0, &[index]);
+                }
+            },
+            &state,
+            &after,
+        );
+    }
+    {
+        let state = Rc::clone(state);
+        add_button(
+            &outer,
+            "Move to Bottom",
+            &popover,
+            move |state| {
+                let cur = state.borrow().current;
+                let count = state.borrow().books[cur].info.pages.len() as i32;
+                if let Some(b) = state.borrow_mut().books.get_mut(cur) {
+                    b.info.move_pages(count, &[index]);
+                }
+            },
+            &state,
+            &after,
+        );
+    }
+    {
+        let state = Rc::clone(state);
+        add_button(
+            &outer,
+            "Reset Original Order",
+            &popover,
+            move |state| {
+                let cur = state.borrow().current;
+                if let Some(b) = state.borrow_mut().books.get_mut(cur) {
+                    b.info.reset_page_sequence();
+                }
+            },
+            &state,
+            &after,
+        );
+    }
+
+    let scroll = ScrolledWindow::builder()
+        .child(&outer)
+        .hscrollbar_policy(gtk4::PolicyType::Never)
+        .max_content_height(430)
+        .propagate_natural_height(true)
+        .build();
+    popover.set_child(Some(&scroll));
+    popover.set_parent(&widgets.list);
     // set_pointing_to is in the popover PARENT's coordinates; the
     // menu parents to the list, so the pick coordinates are direct.
     let rect = gdk::Rectangle::new(x as i32, y as i32 + 4, 1, 1);
-    menu.set_pointing_to(Some(&rect));
-    menu.connect_closed(|m| m.unparent());
-    menu.popup();
+    popover.set_pointing_to(Some(&rect));
+    popover.connect_closed(|p| p.unparent());
+    popover.popup();
 }

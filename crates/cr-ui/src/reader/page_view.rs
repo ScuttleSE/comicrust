@@ -229,6 +229,9 @@ struct ViewState {
     background_mode: ImageBackgroundMode,
     /// White-composited paper texture (`workingPaperTexture`).
     paper: Option<cairo::ImageSurface>,
+    /// The BOOK's color adjustment — the page keys carry it (the
+    /// pool renders it; the disk cache tiers by it).
+    base_adjustment: BitmapAdjustment,
     two_page_navigation: bool,
     auto_rotate: bool,
     rotation: ImageRotation,
@@ -423,7 +426,7 @@ impl ViewState {
             page,
             rotation,
         );
-        cr_image::keys::PageKey::new(key, BitmapAdjustment::default())
+        cr_image::keys::PageKey::new(key, self.base_adjustment)
     }
 
     /// Enqueues every missing wanted page (`CachePage` →
@@ -756,6 +759,8 @@ impl PageView {
             transition: PageTransitionEffect::Fade,
             background_mode: ImageBackgroundMode::Color,
             paper: None,
+            // The BOOK's color adjustment (the page keys carry it).
+            base_adjustment: BitmapAdjustment::default(),
             two_page_navigation: true,
             // `AutoRotate` defaults to false (workspace
             // `[DefaultValue(false)]`; the MainForm toggles it).
@@ -813,6 +818,12 @@ impl PageView {
 
     pub fn widget(&self) -> &DrawingArea {
         &self.area
+    }
+
+    /// Sets the book's color adjustment (the page keys carry it —
+    /// `ComicBook.ColorAdjustment` reaching `GetPageKey`).
+    pub fn set_base_adjustment(&self, adjustment: BitmapAdjustment) {
+        self.state.borrow_mut().base_adjustment = adjustment;
     }
 
     /// Applies the display settings the C# copies in

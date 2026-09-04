@@ -200,6 +200,30 @@ caught by the probe). The context menus (browser + page rows) are
 user-test scope (the synthetic button-3 injection does not reach
 GTK gestures — the standing probe lesson).
 
+First user-test round (2026-09-04) — five defects, all fixed:
+1. No cover thumbnail: the pool blob carries the `ThumbnailImage`
+   serialization header — the editor decoded it raw. Fixed with
+   `surface_from_thumb_blob` (the pages_view lesson re-learned —
+   it is now in bitmap.rs for shared use).
+5. Page clicks did nothing: the list had SelectionMode::None and NO
+   selection handler. Fixed: SelectionMode::Single +
+   `connect_row_selected` → page/preview (`PagesViewSelectedIndex
+   Changed` parity); rebuilds re-select the current page's row.
+6/7/8. The page menu items did nothing: the PopoverMenu +
+   action-group route did not activate. Replaced with the
+   user-tested manual popover + buttons (the browser context menu
+   mechanism), sections for type/rotation/position + the commands.
+9. Colors "no change": the READER never passed the book's color
+   adjustment into the page keys (`page_key` used an empty
+   adjustment). Fixed: `PageView::set_base_adjustment` from the
+   book on open (the C# `ComicDisplay` renders with
+   `book.ColorAdjustment`); the dialog preview now uses the
+   WORKING adjustment (the slider state) — live preview parity.
+Verified after the fixes (probe, real comic from
+`tests/testfiles/`): the cover renders, the preview shows pages
+with the nav buttons ("Page 2" renders page 2 — the debug build
+needs ~5 s per page decode; the release build is fast).
+
 ### T3. The smart-list editor (`SmartListDialog` + matchers)
 
 - [ ] The visual matcher builder: property combo (the registry),

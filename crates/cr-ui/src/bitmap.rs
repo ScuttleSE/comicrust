@@ -38,9 +38,18 @@ pub fn surface_from_image(img: &Image) -> ImageSurface {
     image_surface_from_rgba(&img.rgba, img.width, img.height)
 }
 
-/// Decoded JPEG/PNG bytes → surface (the thumbnail serialization
-/// payload after the header split).
+/// Decoded JPEG/PNG bytes → surface.
 pub fn surface_from_bytes(bytes: &[u8]) -> Option<ImageSurface> {
     let img = cr_image::decode::decode(bytes).ok()?;
     Some(surface_from_image(&img))
+}
+
+/// The pool's thumbnail blob (the C# `ThumbnailImage`
+/// serialization: size header + JPEG) → surface. A plain image
+/// falls back to a direct decode (the pages_view tolerance).
+pub fn surface_from_thumb_blob(bytes: &[u8]) -> Option<ImageSurface> {
+    let jpeg = cr_image::thumbnail::Thumbnail::from_bytes(bytes)
+        .map(|t| t.data)
+        .unwrap_or_else(|_| bytes.to_vec());
+    surface_from_bytes(&jpeg)
 }

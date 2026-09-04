@@ -446,6 +446,9 @@ impl ReaderShell {
                 };
                 drop(s);
                 view.apply_display_settings(wheel, browse, wall);
+                // The book's color adjustment rides the page keys
+                // (`ComicDisplay` renders with `book.ColorAdjustment`).
+                view.set_base_adjustment(book.color_adjustment);
             }
 
             // Reading-state write-back: every logical page change
