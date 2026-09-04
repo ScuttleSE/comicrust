@@ -52,9 +52,11 @@ Update this section at the **end of every work session**. The next agent must kn
 ### State summary
 
 - **Phase:** 5 (the dialogs) — T1 COMPLETE, T2 COMPLETE (both
-  user-tested, all pass, 2026-09-04; the records live in
-  `docs/phase-5-kickoff.md`). **Next: T3 (the smart-list editor).**
-  Phases 0-4 are complete (their gates stay green).
+  user-tested). T3 (the smart-list editor) checkpoint 1
+  IMPLEMENTED (2026-09-04), user test pending: the visual
+  designer + the query tab. **Next: run the T3 user test; then
+  the reading-list editor (T3 tail).** Phases 0-4 are complete
+  (their gates stay green).
   Phase 1 gaps that remain open: WebComicProvider and the PDF/DjVu
   writers (tracked in `docs/phase-1-kickoff.md`). The Phase 0 exit
   review can close with the T1 wrap-up (the settings port it
@@ -139,6 +141,36 @@ checkbox mode. T2 CHECKPOINT 2 COMPLETE — USER-TESTED, ALL PASS
 (2026-09-04; one fix round: the editor commits now refresh the
 browser grid). **T2 is COMPLETE. Next: T3 (the smart-list editor
 `SmartListDialog` + the matcher editors).**
+
+### Phase 5 progress (2026-09-04, T3)
+
+T3 checkpoint 1 IMPLEMENTED — user test pending. The model layer:
+`cr-engine/src/matcher/edit_ops.rs` (add_rule duplicates after the
+node, add_group wraps a clone in a new And-group, remove blocked
+at one node, move up/down, switch_type keeping values + clamping
+the operator into the new spec — the C# `newMatcher.Set(current)`
+parity; MAX_LEVEL 5; nested index paths; 5 unit tests). The
+dialog: `cr-ui/src/dialogs/smart_list.rs` — one Designer | Query
+notebook (the C# Ctrl-swaps two dialogs): the head fields
+(name/notes/base combo with the recursion-filtered options via
+`library::smart_list_base_options` — the chain-walk
+RecursionTest parity; Library = the empty Guid / ALL-ANY / Not-
+in-base / limit type+value / QuickOpen) + the matcher rows (the
+type combo over all 97 spec descriptions, the per-spec operator
+combo, 0-2 value fields by argument count, the Not check, the
+right-click menu New Rule / New Group / Delete / Move Up /
+Down — `cr_ui::library::{find_smart_list, update_smart_list}`
+with the `SetList` id/count/cache parity). The Query tab renders
+the item (`Matcher::from_raw` → `render_smart_list_query`) and OK
+parses it back (`to_raw`); a parse failure blocks the close with
+the error line (the C# keeps the old item). Navigator: "New Smart
+List…" inserts an empty list and opens the editor (Cancel removes
+the fresh empty insert — the C# flow; `new_smart_list` now
+returns the id); "Edit Smart List…" opens pre-filled. Headless
+probe: the editor opens from the navigator menu with all head
+fields. Deferred to the next step: the reading-list editor
+(`ListEditorDialog`, the `IdListItem` model) and the folder
+`EditListDialog` (still the bare name prompt).
 
 ### Phase 4 progress (sessions of 2026-09-03)
 
