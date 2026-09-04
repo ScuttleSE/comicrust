@@ -320,7 +320,7 @@ FrontCover"). Rule: a scripted multi-line replacement must be
 verified by grepping for the NEW symbol in the changed file, not
 by the build result.
 
-### T3. The smart-list editor (`SmartListDialog` + matchers) — IMPLEMENTED (2026-09-04), user test pending
+### T3. The smart-list editor (`SmartListDialog` + matchers) — CHECKPOINT 1 COMPLETE (2026-09-04), user-tested
 
 - [x] The visual matcher builder: property combo (the registry),
       operator combo (the spec's operators), 1–2 argument fields,
@@ -379,6 +379,7 @@ OK parse the text only when edited — a designer-only session
 commits the state the row widgets wrote; a `done` Cell swallows
 the re-entrant response. The probe log after the fix: `matchers=1
 ... changed=true`, and the tree shows the list.
+**CHECKPOINT 1 COMPLETE — USER-TESTED, ALL PASS (2026-09-04).**
 
 ### T4. Export + the remaining dialogs
 
