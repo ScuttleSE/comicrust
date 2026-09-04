@@ -311,20 +311,38 @@ subset; `MainForm` browser regions.
       `DragDropContainer` behavior is recorded here so it is not
       forgotten.
 
-### T6. PagesView + QuickOpen
+### T6. PagesView + QuickOpen — COMPLETE (2026-09-04)
 
 C# spec: `PagesView.cs` (833), `ComicPagesView.cs` (241),
 `QuickOpenView.cs` (210).
 
-- [ ] PagesView: the selected book's pages as a thumbnail grid
+- [x] PagesView: the OPEN comic's pages as a thumbnail grid
       (thumbnail keys per page index), double-click → the reader
-      at that page (`open_with_state` already takes a page).
-      Bookmarks show when the book has them (Phase 5 adds the
-      bookmark editor; display-only here).
-- [ ] QuickOpen: when the browser pane is hidden
-      (`ShowQuickOpen` setting), the recent/favorite lists show as
-      a cover grid (the C# default quick-open lists); click →
-      open. Minimal and honest.
+      at that page. Done in `browser/pages_view.rs`: the panel
+      binds the currently OPEN reader book (the C# `Book` binds
+      `ComicDisplay.Book`, never the selection), lives as a
+      browser-panel tab (Library | Pages via a StackSwitcher),
+      sizes cells to the stored page aspect, draws the 1-based
+      page-number badge (`DrawPageNumber`) and the red bookmark
+      pennant (`DrawBookmarkH`, display-only), highlights the
+      current reader page and scrolls it into view, and
+      double-click → `Navigate(page, Absolute)`
+      (`PageView::navigate` added; the reader's page callback
+      feeds the panel's marker). Thumbnails ride the thumb queue +
+      pump. Deferred: the page-type filter (page metadata is not
+      surfaced yet), the 3D backdrop, drag-out copy, and the edit
+      commands (Phase 5).
+- [x] QuickOpen: when no book is open and `ShowQuickOpen` (the
+      default), the quick-open lists show as a captionless cover
+      grid; click → open. Done: a third stack page (the C# puts it
+      in the reader area as its empty state) shown at startup and
+      on the last-tab close, fed by the three built-in lists
+      (Reading: ReadPercentage 10..95, Recently Read / Recently
+      Added: within 14 days) through `library::quick_open_lists`
+      (dedup by id across groups, OpenedTime desc tie AddedTime
+      desc, 10 per group); `LayoutConfig.hide_captions` renders
+      the covers captionless; double-click opens; the Browser
+      button is the escape hatch.
 
 ## Non-goals for Phase 4
 
@@ -607,3 +625,7 @@ C# spec: `PagesView.cs` (833), `ComicPagesView.cs` (241),
   (see the progress log). Performance: all three text paths cache
   per book; the remaining full-library smoothness work is recorded
   as a polish backlog item.
+- **T6 IMPLEMENTED (2026-09-04), user test pending.** The Pages
+  panel + QuickOpen per the spec above. Headless probes: the
+  QuickOpen page renders the captionless covers at startup; the
+  comic-open path binds the panel without panics.
