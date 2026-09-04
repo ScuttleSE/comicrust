@@ -338,9 +338,25 @@ impl BrowserShell {
             });
         }
 
-        // The Pages panel: binds the open comic (the C#
-        // `ComicDisplay.Book`), follows page turns, and navigates on
-        // double-click.
+        // The Pages panel: rebinds on every visible-book change (the
+        // C# `Viewer_BookChanged` → `pagesView.Book`), follows the
+        // bound book's page turns, and navigates on double-click.
+        {
+            let state = Rc::downgrade(state);
+            state
+                .upgrade()
+                .expect("state")
+                .reader
+                .set_on_book_changed(move || {
+                    if let Some(sh) = state.upgrade() {
+                        if let Some(book) = sh.reader.current_comic_book() {
+                            let page = book.current_page.max(0) as usize;
+                            sh.pages.set_book(book);
+                            sh.pages.set_current_page(page);
+                        }
+                    }
+                });
+        }
         {
             let state = Rc::downgrade(state);
             state
@@ -366,6 +382,21 @@ impl BrowserShell {
                         // comic (the reader page wins over the
                         // browser).
                         sh.stack.set_visible_child_name("reader");
+                    }
+                });
+        }
+
+        // The Pages tab became visible — reflow with the real
+        // allocation (the first show after a hidden binding).
+        {
+            let state = Rc::downgrade(state);
+            state
+                .upgrade()
+                .expect("state")
+                .panel_stack
+                .connect_visible_child_notify(move |_stack| {
+                    if let Some(sh) = state.upgrade() {
+                        sh.pages.reflow();
                     }
                 });
         }

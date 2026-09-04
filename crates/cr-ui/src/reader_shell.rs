@@ -97,6 +97,9 @@ struct ShellState {
     on_view_change: Option<Box<dyn Fn(bool)>>,
     /// The host runs this on every page change of the current slot.
     on_page_change: Option<Box<dyn Fn(usize)>>,
+    /// The host runs this when the visible book changes (open or
+    /// slot switch) — the Pages panel rebinds.
+    on_book_changed: Option<Box<dyn Fn()>>,
 }
 
 impl ShellState {
@@ -171,6 +174,7 @@ impl ReaderShell {
                 on_last_tab_closed: None,
                 on_view_change: None,
                 on_page_change: None,
+                on_book_changed: None,
             })),
         };
 
@@ -253,6 +257,21 @@ impl ReaderShell {
     /// Pages panel's current-page marker).
     pub fn set_on_page_change<F: Fn(usize) + 'static>(&self, f: F) {
         self.state.borrow_mut().on_page_change = Some(Box::new(f));
+    }
+
+    /// The host hook: the visible book changed — a comic opened or
+    /// the reader slot switched (the C# `ComicDisplay.BookChanged` →
+    /// `pagesView.Book` rebind).
+    pub fn set_on_book_changed<F: Fn() + 'static>(&self, f: F) {
+        self.state.borrow_mut().on_book_changed = Some(Box::new(f));
+    }
+
+    fn fire_book_changed(state: &Rc<RefCell<ShellState>>) {
+        // Immutable borrows only — the host's rebind handler calls
+        // `current_comic_book` (another immutable borrow).
+        if let Some(f) = state.borrow().on_book_changed.as_ref() {
+            f();
+        }
     }
 
     /// The current slot's book (the Pages panel binding).
@@ -396,9 +415,11 @@ impl ReaderShell {
                     }
                     if s.current_slot() == Some(slot) {
                         s.subtitle.set_text(&page_subtitle(page, count));
-                    }
-                    if let Some(f) = s.on_page_change.as_ref() {
-                        f(page);
+                        // Only the bound book's turns reach the host
+                        // (the C# per-item `Navigation` subscription).
+                        if let Some(f) = s.on_page_change.as_ref() {
+                            f(page);
+                        }
                     }
                 })));
             }
@@ -470,6 +491,7 @@ impl ReaderShell {
         // switch-page handler borrows the shell itself.
         let last = (self.state.borrow().tabs.len() as u32).saturating_sub(1);
         notebook.set_current_page(Some(last));
+        Self::fire_book_changed(&self.state);
         Ok(())
     }
 
@@ -505,15 +527,38 @@ impl ReaderShell {
     }
 
     fn refresh_chrome(state: &Rc<RefCell<ShellState>>, page_num: usize) {
-        let st = state.borrow();
-        if let Some(tab) = st.tabs.get(page_num) {
-            let book = st.books.get(&tab.slot);
-            let page = book.map(|b| b.current_page).unwrap_or(0).max(0) as usize;
-            st.subtitle.set_text(&page_subtitle(page, tab.page_count));
-            if let Some(window) = st.host.borrow().as_ref() {
-                window.set_title(Some(&Self::window_title(&tab.path)));
+        let (subtitle_text, title, view, _book_page, has_book) = {
+            let st = state.borrow();
+            match st.tabs.get(page_num) {
+                Some(tab) => {
+                    let book = st.books.get(&tab.slot);
+                    let page = book.map(|b| b.current_page).unwrap_or(0).max(0) as usize;
+                    (
+                        Some(page_subtitle(page, tab.page_count)),
+                        Some(Self::window_title(&tab.path)),
+                        Some(tab.view.clone()),
+                        page,
+                        true,
+                    )
+                }
+                None => (None, None, None, 0, false),
             }
-            tab.view.widget().grab_focus();
+        };
+        if let Some(text) = subtitle_text {
+            state.borrow().subtitle.set_text(&text);
+        }
+        if let Some(title) = title {
+            if let Some(window) = state.borrow().host.borrow().as_ref() {
+                window.set_title(Some(&title));
+            }
+        }
+        if let Some(view) = view {
+            view.widget().grab_focus();
+        }
+        // The visible book changed — the host rebinds the Pages
+        // panel (`ComicDisplay.BookChanged`).
+        if has_book {
+            Self::fire_book_changed(state);
         }
     }
 

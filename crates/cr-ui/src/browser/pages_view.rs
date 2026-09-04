@@ -358,6 +358,19 @@ impl PagesPanel {
         self.state.borrow().bound.is_some()
     }
 
+    /// Reflows with the current allocation — the panel's tab may
+    /// have been hidden through its first binding (width 0 collapses
+    /// the layout; the draw-path self-correction covers the rest).
+    pub fn reflow(&self) {
+        let width = self.state.borrow().canvas.width() as f64;
+        if width < 2.0 {
+            return;
+        }
+        let content = self.state.borrow_mut().content_height(width);
+        self.canvas.set_content_height(content as i32);
+        self.canvas.queue_draw();
+    }
+
     /// The reader's current page — highlight + scroll into view
     /// (`Navigation` → `EnsureVisible`).
     pub fn set_current_page(&self, page: usize) {
