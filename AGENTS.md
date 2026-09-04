@@ -51,17 +51,17 @@ Update this section at the **end of every work session**. The next agent must kn
 
 ### State summary
 
-- **Phase:** 5.5 (UI chrome parity) — NEW PHASE, planning done
-  (2026-09-04). The user asked for a phase between 5 and 6 to bring
-  the chrome (menubar, toolbars, status bar, book tabs, dock
-  modes, icons, layout persistence) close to the original
-  ComicRack. The full C# chrome inventory (with file:line refs),
-  the locked scope (ADR-024: Fill+Bottom dock only, Detail column
-  chooser IN, Info Panel OUT, bundled CR PNG icons, named
-  workspaces OUT) and the omissions list live in
-  `docs/phase-5.5-kickoff.md`. **Next: Phase 5.5 T1 (the
-  command/action layer + accelerators); T2 (the bundled icon set)
-  lands second.** Phase 6 (scripting) starts only after 5.5.
+- **Phase:** 5.5 (UI chrome parity). T1 (the command/action layer +
+  accelerators) IMPLEMENTED — user test pending (2026-09-04).
+  `cr-ui/src/commands.rs` holds the pure table (69 shell actions +
+  the C# menu accelerators; the two C# accel collisions resolve by
+  menu order — recorded); `browser/shell.rs::install_commands`
+  wires every `win.` action, syncs enable-state from
+  book/selection/history, and routes reader commands through
+  `PageView::run_command` (the Library group forwards to the
+  shell: Next/Prev/Random Book + ShowBrowser now work). Probe:
+  `cr-ui/examples/commands_probe.rs`. **Next: T2 (the bundled icon
+  set + `icon.rs`).** Phase 6 (scripting) starts only after 5.5.
   Phases 0-5 are complete (their gates stay green). Open Phase 1
   gaps: WebComicProvider and the PDF/DjVu writers (tracked in
   `docs/phase-1-kickoff.md`).

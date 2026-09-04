@@ -613,3 +613,52 @@ change; it lands after the bars so they exist in both modes.
 - T0: kickoff written (2026-09-04). Scope locked with the user:
   Fill+Bottom only, column chooser IN, Info panel OUT, bundled CR
   icons, omissions as listed. User provides screenshots on demand.
+- T1 IMPLEMENTED (2026-09-04), user test pending. `cr-ui/src/
+  commands.rs`: the pure command table (69 shell actions with the
+  C# menu accelerators; FIT_MODES/LAYOUT_MODES carry the radio
+  values) + 4 unit tests (unique actions, unique accels, accel
+  syntax, no plain-key shell accels). The wiring lives in
+  `browser/shell.rs` `install_commands`: every command a
+  `gio::SimpleAction` in `win.`; accels on the application
+  (detailed names for the radio targets). Enable-state syncs from
+  book-open/selection/history (`sync_enabled`; hooks on
+  selection_changed, book_changed, last_tab_closed, list select).
+  Fit/layout/rtl radios take state from the reader (new getters
+  `current_fit_mode/page_layout/rtl`). Reader commands route
+  through `PageView::run_command` (public) — the Library group
+  (Next/Prev/Random Comic, ShowBrowser) forwards to the shell via
+  the new `set_on_library_command` hook; Next/Prev/Random Book
+  opens from the current list's view order (`OpenNextComic` port,
+  random without repeats, `DotNetRandom` time-seeded). Show in
+  Browser selects the open book (new `ItemView::select_book`/
+  `selection_ids`; `Navigator::select_list`). Scan Book Folders
+  scans the watch-folder roots. Update all Book Files drains the
+  DIRTY books one per main-loop tick (`library::
+  update_all_book_files` — the dirty flag gates even with
+  alwaysWrite, verified against `AddBookToFileUpdate`). Previous/
+  Next List walks a new list history (recorded on navigator
+  selection; a history jump does not append). Restart re-launches
+  the binary after the save. Fixed-angle Rotate 0/90/180/270
+  dispatch (new `PageView::set_rotation`). The editor context-menu
+  paths share the shell commits (`ShellState::open_editor/
+  open_bulk_editor` — `apply_edited` semantics everywhere now;
+  the old Properties commit was a bare replace). Stub actions
+  (Tasks, Zoom Custom, Display Settings, About, Set/Remove
+  Bookmark, Quick Rating, Copy/Export Page, Small Preview, New
+  Book Entry, navigator search) stay DISABLED until their tasks
+  land. Headless probe `examples/commands_probe.rs`: 65/65
+  parameterless actions resolve, accels registered (incl. per-value
+  radio), page flips dispatch, clean exit. Probe lesson: never
+  blanket-activate every action in a probe — `restart` spawns the
+  binary and self-perpetuates; skip side-effecting commands.
+- T1 DEVIATIONS (recorded): the C# accelerator table has TWO
+  collisions, resolved by menu order (File before Edit, Page Layout
+  before Rotation): Only fit if oversized keeps Ctrl+Shift+D0 (the
+  C# also gives it to Rotate 270 — unbound here) and New fileless
+  Book Entry keeps Ctrl+Shift+N (Next Bookmark unbound). Shell
+  accels resolve per window — the undocked reader window has NO
+  shell accels (no `win.` group there), matching the C# ReaderForm
+  (no menubar). Next/Prev/Random Book resolves against the ACTIVE
+  view's books (the C# resolves the book's own container browser);
+  the current book must be in the view. Update all Book Files
+  covers library books only (temporary books are unported).
