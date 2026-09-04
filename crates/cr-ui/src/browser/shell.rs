@@ -787,6 +787,67 @@ fn show_context_menu(state: &std::rc::Weak<ShellState>, target: Option<CrGuid>, 
                         }
                     }
                 }
+                "edit" => {
+                    // The bulk editor over the selection (the C#
+                    // `MultipleComicBooksDialog`).
+                    let selection = sh.item_view.view_state().selection_snapshot();
+                    let mut ids: Vec<CrGuid> = selection.into_iter().collect();
+                    if let Some(id) = target {
+                        if !ids.contains(&id) {
+                            ids.push(id);
+                        }
+                    }
+                    if ids.is_empty() {
+                        return;
+                    }
+                    let books: Vec<cr_core::model::comic_book::ComicBook> = {
+                        let lib = library::session();
+                        let l = lib.borrow();
+                        l.database()
+                            .books
+                            .iter()
+                            .filter(|b| ids.contains(&b.id))
+                            .cloned()
+                            .collect()
+                    };
+                    if books.is_empty() {
+                        return;
+                    }
+                    let commit: crate::dialogs::book_editor::CommitFn = Rc::new(|edited| {
+                        library::apply_edited(edited);
+                    });
+                    let window2 = window.clone();
+                    crate::dialogs::bulk_edit::show(&window2, books, commit);
+                }
+                "update-file" => {
+                    // The manual write (the C# `AddBookToFileUpdate(cb,
+                    // alwaysWrite: true)`): the UpdateComicFiles gate
+                    // still applies.
+                    let selection = sh.item_view.view_state().selection_snapshot();
+                    let mut ids: Vec<CrGuid> = selection.into_iter().collect();
+                    if let Some(id) = target {
+                        if !ids.contains(&id) {
+                            ids.push(id);
+                        }
+                    }
+                    let mut errors: Vec<String> = Vec::new();
+                    let mut written = 0usize;
+                    for id in &ids {
+                        match library::update_book_file(id, true) {
+                            Ok(true) => written += 1,
+                            Ok(false) => {}
+                            Err(e) => errors.push(e),
+                        }
+                    }
+                    if let Some(last) = errors.last() {
+                        show_error_dialog(
+                            &sh.app,
+                            "Update Book Files",
+                            &format!("{}/{} written. Last error: {}", written, ids.len(), last),
+                        );
+                    }
+                    sh.refresh_view_from_list();
+                }
                 "remove" => {
                     if let Some(id) = target {
                         library::remove_book(&id);
@@ -843,6 +904,8 @@ fn show_context_menu(state: &std::rc::Weak<ShellState>, target: Option<CrGuid>, 
     };
     add_item(&box_, "Open", "open");
     add_item(&box_, "Reveal in File Manager", "reveal");
+    add_item(&box_, "Edit…", "edit");
+    add_item(&box_, "Update Book File(s)", "update-file");
     add_item(&box_, "Remove from Library", "remove");
     add_item(&box_, "Properties…", "properties");
     popover.set_child(Some(&box_));

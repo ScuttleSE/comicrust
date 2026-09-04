@@ -12,5 +12,8 @@ cr-engine.workspace = true
 gtk4 = "0.11"
 chrono.workspace = true
 
+[dev-dependencies]
+zip.workspace = true
+
 [lints]
 workspace = true

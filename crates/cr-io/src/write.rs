@@ -35,6 +35,18 @@ const COMIC_BOOK_XML: &str = "ComicBook.xml";
 /// (`FileFormatAttribute(EnableUpdate = true)`). Returns whether the
 /// archive content changed.
 pub fn store_info(provider: &ComicProvider, book: &ComicBook) -> Result<bool> {
+    store_info_scoped(provider, book, true)
+}
+
+/// The `ComicBook.WriteInfoToFile` scope: the ComicBook.xml library
+/// info only writes when the caller allows it (the C# passes
+/// `GetInfo()` — ComicInfo only — when `UpdateComicBookFiles` is
+/// off).
+pub fn store_info_scoped(
+    provider: &ComicProvider,
+    book: &ComicBook,
+    with_book_info: bool,
+) -> Result<bool> {
     if !provider.format().supports_update {
         return Ok(false);
     }
@@ -42,30 +54,36 @@ pub fn store_info(provider: &ComicProvider, book: &ComicBook) -> Result<bool> {
         .info
         .serialize_bytes()
         .map_err(|e| Error::Access(format!("serializing ComicInfo.xml: {e}")))?;
-    let book_bytes = book
-        .serialize_bytes()
-        .map_err(|e| Error::Access(format!("serializing ComicBook.xml: {e}")))?;
+    let book_bytes = if with_book_info {
+        Some(
+            book.serialize_bytes()
+                .map_err(|e| Error::Access(format!("serializing ComicBook.xml: {e}")))?,
+        )
+    } else {
+        None
+    };
+    let mut pairs: Vec<(&str, &[u8])> = vec![(COMIC_INFO_XML, &info_bytes)];
+    if let Some(bytes) = &book_bytes {
+        pairs.push((COMIC_BOOK_XML, bytes));
+    }
 
     match provider.format().id {
-        ids::CBZ => rewrite_zip(
-            provider.source(),
-            &[(COMIC_INFO_XML, &info_bytes), (COMIC_BOOK_XML, &book_bytes)],
-        ),
-        ids::CBT => rewrite_tar(
-            provider.source(),
-            &[(COMIC_INFO_XML, &info_bytes), (COMIC_BOOK_XML, &book_bytes)],
-        ),
+        ids::CBZ => rewrite_zip(provider.source(), &pairs),
+        ids::CBT => rewrite_tar(provider.source(), &pairs),
         ids::CB7 => {
-            let changed1 =
-                sevenzip_update(provider.source(), ids::CB7, COMIC_INFO_XML, &info_bytes)?;
-            let changed2 =
-                sevenzip_update(provider.source(), ids::CB7, COMIC_BOOK_XML, &book_bytes)?;
-            Ok(changed1 || changed2)
+            let mut changed = false;
+            for (name, bytes) in &pairs {
+                if sevenzip_update(provider.source(), ids::CB7, name, bytes)? {
+                    changed = true;
+                }
+            }
+            Ok(changed)
         }
         ids::FOLDER => {
             let base = provider.source();
-            std::fs::write(base.join(COMIC_INFO_XML), &info_bytes)?;
-            std::fs::write(base.join(COMIC_BOOK_XML), &book_bytes)?;
+            for (name, bytes) in &pairs {
+                std::fs::write(base.join(name), bytes)?;
+            }
             Ok(true)
         }
         _ => Ok(false),

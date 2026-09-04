@@ -484,8 +484,12 @@ pub fn evaluate_books(id: &CrGuid) -> Option<(String, Vec<ComicBook>)> {
 /// Applies an edited book (the book editor's commit callback): the
 /// library entry with the same id is REPLACED (the C# edits the live
 /// object; the clone round-trip through the dialog is the port's
-/// shape) and the database marks dirty. Returns false when the book
-/// is not in the library (a temporary session book).
+/// shape), the database marks dirty, and the book's file info is
+/// marked stale (`ComicInfoIsDirty` — the C#
+/// `WatchedBookHasChanged` fires on every property edit). The
+/// auto-update timer then decides about the file write. Returns
+/// false when the book is not in the library (a temporary session
+/// book).
 pub fn apply_edited(edited: &ComicBook) -> bool {
     let lib = session();
     let mut l = lib.borrow_mut();
@@ -497,9 +501,103 @@ pub fn apply_edited(edited: &ComicBook) -> bool {
     else {
         return false;
     };
-    *slot = edited.clone();
+    let mut edited = edited.clone();
+    edited.comic_info_is_dirty = true;
+    let id = edited.id;
+    *slot = edited;
     l.mark_dirty();
+    drop(l);
+    schedule_book_file_update(&id);
     true
+}
+
+// ---------- The file write-back (the C# `QueueManager.AddBookToFileUpdate`) ----------
+
+thread_local! {
+    /// The debounced write timers (one per book id; the C# keeps a
+    /// 100 ms `Timer` per book so batched property edits write once).
+    static WRITE_TIMERS: RefCell<std::collections::HashMap<CrGuid, glib::SourceId>> =
+        RefCell::new(std::collections::HashMap::new());
+}
+
+/// Schedules the (debounced) automatic file write for one book — the
+/// `AutoUpdateComicsFiles` path. The gates run again when the timer
+/// fires.
+pub fn schedule_book_file_update(id: &CrGuid) {
+    WRITE_TIMERS.with(|cell| {
+        let mut timers = cell.borrow_mut();
+        if let Some(old) = timers.remove(id) {
+            old.remove();
+        }
+        let id = *id;
+        let source = glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
+            WRITE_TIMERS.with(|c| {
+                c.borrow_mut().remove(&id);
+            });
+            let _ = update_book_file(&id, false);
+            glib::ControlFlow::Break
+        });
+        timers.insert(id, source);
+    });
+}
+
+/// `QueueManager.AddBookToFileUpdate` + `WriteInfoToFileWithCacheUpdate`
+/// for one library book: the settings gates, the metadata write into
+/// the file (ComicInfo.xml, plus ComicBook.xml when
+/// `UpdateComicBookFiles` is on), the file-properties refresh, and
+/// the dirty-flag clear. Returns whether a write happened.
+///
+/// `always_write` is the manual command path (the C#
+/// `AddBookToFileUpdate(cb, alwaysWrite: true)`): it bypasses the
+/// `AutoUpdateComicsFiles` setting but still honors
+/// `UpdateComicFiles`.
+pub fn update_book_file(id: &CrGuid, always_write: bool) -> Result<bool, String> {
+    let settings = settings();
+    let (update_files, auto_update, update_book_files) = {
+        let s = settings.borrow();
+        (
+            s.update_comic_files,
+            s.auto_update_comics_files,
+            s.update_comic_book_files,
+        )
+    };
+    // `AddBookToFileUpdate` gates.
+    if !update_files || !(auto_update || always_write) {
+        return Ok(false);
+    }
+
+    let mut book = {
+        let lib = session();
+        let mut l = lib.borrow_mut();
+        let Some(book) = l.database_mut().books.iter_mut().find(|b| b.id == *id) else {
+            return Ok(false);
+        };
+        // Only a dirty book writes (`ComicInfoIsDirty || ...`).
+        if !book.comic_info_is_dirty {
+            return Ok(false);
+        }
+        book.clone()
+    };
+    if !Path::new(&book.file_path).exists() {
+        return Err(format!("file not found: {}", book.file_path));
+    }
+
+    let provider =
+        cr_io::ComicProvider::open(Path::new(&book.file_path)).map_err(|e| e.to_string())?;
+    let written = cr_io::write::store_info_scoped(&provider, &book, update_book_files)
+        .map_err(|e| e.to_string())?;
+    if written {
+        // `RefreshFileProperties` + the dirty-flag clear.
+        crate::library::refresh_file_info(&mut book);
+        book.comic_info_is_dirty = false;
+        let lib = session();
+        let mut l = lib.borrow_mut();
+        if let Some(slot) = l.database_mut().books.iter_mut().find(|b| b.id == *id) {
+            *slot = book;
+            l.mark_dirty();
+        }
+    }
+    Ok(written)
 }
 
 /// Removes one book from the library by id (the context-menu

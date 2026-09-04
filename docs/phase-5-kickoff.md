@@ -180,15 +180,35 @@ deepest dialog); keep the editors pure-model first, GTK last.
       contrast/gamma ±100%, sharpening 0..3) with the loaded values
       on every load. Custom values: read-only list in checkpoint 1
       (the library-wide key editor joins with the write-back).
-- [ ] Write-back: `ComicBook.IsDirty` → the write-info queue
+- [x] Write-back: `ComicBook.IsDirty` → the write-info queue
       (`write.rs` — the CBZ/CBT native rewrite, CB7 `7z u`) with
-      the Phase 1 rules (never write defaults over file metadata).
-      The "Files to update" smart list flips as the user saves.
-      CHECKPOINT 2 (next) — the DB write-back works (mark-dirty +
-      the byte-stable save); the FILE write-back is not wired yet.
-- [ ] Bulk edit (`MultipleComicBooksDialog`): the union/intersection
-      field model over a selection (the browser context menu gains
-      "Edit" on multi-select). CHECKPOINT 2 (next).
+      the Phase 1 rules. DONE (checkpoint 2): `apply_edited` marks
+      the book `comic_info_is_dirty` (the C#
+      `WatchedBookHasChanged` parity) and schedules the debounced
+      100 ms write; `library::update_book_file` ports
+      `AddBookToFileUpdate` + `WriteInfoToFileWithCacheUpdate` —
+      the gates (`UpdateComicFiles`, then
+      `AutoUpdateComicsFiles || alwaysWrite`, then the dirty flag),
+      the scoped write (ComicBook.xml only when
+      `UpdateComicBookFiles` — `store_info_scoped`, the C#
+      `GetInfo()` scope parity), the file-properties refresh, and
+      the flag clear. The "Files to update" smart list flips (the
+      matcher reads the flag). The browser context menu gains
+      "Update Book File(s)" (the `alwaysWrite: true` manual path).
+      Probe-proven end-to-end (`writeback_probe`): an isolated
+      library + settings, an edit through `apply_edited`, and the
+      archive's ComicInfo.xml carries the edit with the flag
+      cleared. Deferred: the exit-time `SaveDirtyBooks` ask-dialog
+      for TEMPORARY books (session books stay session-only), and
+      the ComicBookIsDirty half (the port never sets it).
+- [x] Bulk edit (`MultipleComicBooksDialog`): DONE (checkpoint 2):
+      `cr-ui/src/dialogs/bulk_edit.rs` — the same row set as the
+      single editor, a "Set" check per field (unchecked = leave;
+      the C# tri-state list-merge mode deferred, recorded), the
+      gray cue = the common value (`GetSameValue`), OK applies
+      only the checked fields through the registry to every book
+      and commits each changed one. The context menu gains
+      "Edit…" over the selection.
 
 **CHECKPOINT 1 COMPLETE — USER-TESTED, ALL PASS (2026-09-04).**
 Six fix rounds total (the record below). The user confirmed: the

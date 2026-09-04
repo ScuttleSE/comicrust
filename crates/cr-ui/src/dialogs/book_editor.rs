@@ -102,7 +102,7 @@ pub fn combo_index_of_manga(v: MangaYesNo) -> u32 {
 
 /// A rating field: parse + clamp; an unparseable text keeps the
 /// current value (the C# star control cannot hold invalid text).
-fn rating_from_text(text: &str, current: f32) -> f32 {
+pub(crate) fn rating_from_text(text: &str, current: f32) -> f32 {
     match text.trim().parse::<f32>() {
         Ok(v) => v.clamp(0.0, 5.0),
         Err(_) => current,
@@ -203,12 +203,12 @@ mod pure_tests {
 
 /// A labeled text row bound to a registry property (the save writes
 /// the TRIMMED text unconditionally — `GetText(control, comic.X)`).
-struct TextRow {
-    caption: &'static str,
-    property: &'static str,
+pub(crate) struct TextRow {
+    pub(crate) caption: &'static str,
+    pub(crate) property: &'static str,
 }
 
-const DETAIL_ROWS: [TextRow; 14] = [
+pub(crate) const DETAIL_ROWS: [TextRow; 14] = [
     TextRow {
         caption: "Title",
         property: "Title",
@@ -267,7 +267,7 @@ const DETAIL_ROWS: [TextRow; 14] = [
     },
 ];
 
-const DETAIL_ROWS_2: [TextRow; 5] = [
+pub(crate) const DETAIL_ROWS_2: [TextRow; 5] = [
     TextRow {
         caption: "Translator",
         property: "Translator",
@@ -290,7 +290,7 @@ const DETAIL_ROWS_2: [TextRow; 5] = [
     },
 ];
 
-const NUM_ROWS: [(&str, &str); 5] = [
+pub(crate) const NUM_ROWS: [(&str, &str); 5] = [
     ("Volume", "Volume"),
     ("Count", "Count"),
     ("Year", "Year"),
@@ -298,7 +298,7 @@ const NUM_ROWS: [(&str, &str); 5] = [
     ("Day", "Day"),
 ];
 
-const CATALOG_ROWS: [TextRow; 9] = [
+pub(crate) const CATALOG_ROWS: [TextRow; 9] = [
     TextRow {
         caption: "Book Age",
         property: "BookAge",
@@ -337,7 +337,7 @@ const CATALOG_ROWS: [TextRow; 9] = [
     },
 ];
 
-const PLOT_ROWS: [TextRow; 4] = [
+pub(crate) const PLOT_ROWS: [TextRow; 4] = [
     TextRow {
         caption: "Characters",
         property: "Characters",

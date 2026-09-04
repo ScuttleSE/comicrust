@@ -456,6 +456,7 @@ dependencies = [
  "cr-image",
  "cr-io",
  "gtk4",
+ "zip",
 ]
 
 [[package]]
