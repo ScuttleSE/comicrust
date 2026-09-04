@@ -439,7 +439,7 @@ impl BrowserShell {
         );
         {
             let state = state.clone();
-            mode_action.connect_activate(move |_, value| {
+            mode_action.connect_activate(move |action, value| {
                 let Some(state) = state.upgrade() else {
                     return;
                 };
@@ -450,6 +450,7 @@ impl BrowserShell {
                     _ => ItemViewMode::Thumbnail,
                 };
                 state.item_view.configure(|c| c.mode = mode);
+                action.set_state(&name.to_variant());
             });
         }
         actions.add_action(&mode_action);
@@ -611,7 +612,8 @@ fn search_matcher(text: &str) -> Option<Matcher> {
     if text.is_empty() {
         return None;
     }
-    if text.starts_with("MATCH") || text.starts_with("NOT") {
+    let upper = text.to_ascii_uppercase();
+    if upper.starts_with("MATCH") || upper.starts_with("NOT") {
         let mut t = cr_engine::tokenizer::Tokenizer::new(text);
         let group = cr_engine::matcher::query::parse_group_query(&mut t).ok()?;
         return Some(Matcher::Group(group));

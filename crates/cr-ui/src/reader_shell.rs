@@ -141,9 +141,12 @@ impl ReaderShellWidgets {
 impl ReaderShell {
     /// Builds the reader pane (no window — the host docks it).
     pub fn new(app: &Application, pool: Arc<ImagePool>) -> (ReaderShell, ReaderShellWidgets) {
+        // The header stays unparented when docked (the undocked
+        // window is chrome-less) — the HOST packs the subtitle label
+        // where the C# shows it. Do not pack it here: a widget
+        // packed twice keeps its first parent.
         let header = HeaderBar::new();
         let subtitle = Label::builder().css_classes(["placeholder-label"]).build();
-        header.pack_end(&subtitle.clone());
 
         let notebook = Notebook::new();
         notebook.set_vexpand(true);
@@ -616,15 +619,24 @@ impl ReaderShell {
         let mut st = state.borrow_mut();
         if fullscreen {
             // Cursor auto-hide: reset the idle timer on every motion.
+            // A fired one-shot's SourceId must NOT be removed (glib
+            // panics on removing a finished source) — the timeout
+            // clears its own slot; only a still-pending source gets
+            // removed.
             if let Some(source) = st.cursor_hide_source.take() {
                 source.remove();
             }
             area.set_cursor_from_name(None);
+            area.set_cursor_from_name(None);
             let area = area.clone();
+            let state = Rc::downgrade(state);
             st.cursor_hide_source = Some(glib::timeout_add_local(
                 std::time::Duration::from_millis(CURSOR_HIDE_MS),
                 move || {
                     area.set_cursor_from_name(Some("none"));
+                    if let Some(st) = state.upgrade() {
+                        st.borrow_mut().cursor_hide_source = None;
+                    }
                     glib::ControlFlow::Break
                 },
             ));

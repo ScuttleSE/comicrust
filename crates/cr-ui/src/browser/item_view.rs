@@ -87,6 +87,9 @@ pub struct ItemViewState {
     thumb_tx: ThumbTx,
     thumbs: HashMap<CrGuid, ThumbState>,
     queued: HashSet<CrGuid>,
+    /// The rendered captions/derived text per book (the proposed-name
+    /// fallback parses file names with regexes — never per frame).
+    captions: HashMap<CrGuid, String>,
     /// Loads in flight (the pump stays alive while this is > 0).
     pending_thumbs: usize,
     pump_active: bool,
@@ -108,6 +111,14 @@ impl ItemViewState {
         if canvas_width > 1.0 {
             self.config.view_width = canvas_width;
         }
+        // The Detail column strip follows the column table (the C#
+        // `GetColumnHeadersWidth`).
+        self.config.column_widths = self
+            .detail_columns
+            .iter()
+            .filter(|c| c.visible)
+            .map(|c| c.width)
+            .collect();
         self.layout = layout::compute(&self.view, &self.config);
     }
 
@@ -159,18 +170,18 @@ impl ItemViewState {
         self.pending_thumbs > 0
     }
 
-    /// The caption line (`Comic.Caption`; the display-text resolver's
-    /// stand-in until the C# text builder lands).
-    fn caption(&self, display: usize) -> String {
+    /// The caption line (`Comic.Caption`), cached per book — the
+    /// proposed-name fallback parses file names with regexes and must
+    /// never run per draw frame.
+    fn caption(&mut self, display: usize) -> String {
         let book = self.view.book(display);
-        let prop = cr_engine::matcher::book_view::proposed(book);
-        let series = cr_engine::matcher::book_view::shadow_series(book, &prop);
-        let number = cr_engine::matcher::book_view::shadow_number(book, &prop);
-        if number.is_empty() {
-            series.to_string()
-        } else {
-            format!("{series} #{number}")
+        let id = book.id;
+        if let Some(cached) = self.captions.get(&id) {
+            return cached.clone();
         }
+        let text = cr_engine::display_text::caption(book);
+        self.captions.insert(id, text.clone());
+        text
     }
 }
 
@@ -216,6 +227,7 @@ impl ItemView {
             thumb_tx,
             thumbs: HashMap::new(),
             queued: HashSet::new(),
+            captions: HashMap::new(),
             pending_thumbs: 0,
             pump_active: false,
             band: None,
@@ -274,9 +286,12 @@ impl ItemView {
         let width = self.state.borrow().config.view_width;
         {
             let mut s = self.state.borrow_mut();
+            let filter = s.view.filter_clone();
             s.view = ViewState::new(books);
+            s.view.set_filter(filter);
             s.thumbs.clear();
             s.queued.clear();
+            s.captions.clear();
             s.band = None;
             s.relayout(width);
         }
@@ -807,7 +822,12 @@ fn start_thumb_pump(state: &Rc<RefCell<ItemViewState>>) {
 fn draw_frame(ctx: &cairo::Context, state: &Rc<RefCell<ItemViewState>>, window: Rect) -> bool {
     let mut s = state.borrow_mut();
     s.config.view_height = window.h;
-    s.relayout(window.w);
+    // The layout is maintained by the setters; the draw path only
+    // tracks the viewport width (a full reflow per frame made the
+    // full-library view crawl).
+    if (window.w - s.config.view_width).abs() > 0.5 {
+        s.relayout(window.w);
+    }
     let (bg_r, bg_g, bg_b) = BG;
     ctx.set_source_rgb(bg_r, bg_g, bg_b);
     ctx.paint().ok();
@@ -976,7 +996,7 @@ fn draw_thumbnail_item(
     ctx.select_font_face("Sans", cairo::FontSlant::Normal, cairo::FontWeight::Normal);
     let scale = (s.config.thumb_height / 192.0).clamp(0.7, 1.0);
     ctx.set_font_size(s.config.font_height * scale);
-    let caption = cr_engine::display_text::caption(s.view.book(display));
+    let caption = s.caption(display);
     super::item::draw_wrapped_centered(
         ctx,
         &caption,

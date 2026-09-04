@@ -211,6 +211,12 @@ impl ViewState {
         self.rebuild();
     }
 
+    /// The current filter (kept across book-set swaps — a removal
+    /// inside a narrowed view stays narrowed).
+    pub fn filter_clone(&self) -> Option<Matcher> {
+        self.filter.clone()
+    }
+
     fn rebuild(&mut self) {
         // The group buckets: `GroupManager` → containers keyed by
         // (sort_key, caption), ordered by the `GroupInfo.Compare`
