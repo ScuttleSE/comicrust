@@ -380,10 +380,22 @@ impl ReaderShell {
                 book
             }
         };
-        // `ProviderIndexRetrievalCompleted`: resume position and
-        // read-progress clamp to the real page count. An empty page
-        // list (a broken archive) must not panic — the display shows
-        // the error page instead.
+        // `ProviderIndexRetrievalCompleted`: the C# fills
+        // `ComicBook.Pages` from the provider index when the metadata
+        // carries no page list — the Pages panel reads it.
+        if book.info.pages.is_empty() {
+            book.info.pages = provider
+                .pages()
+                .iter()
+                .map(|p| cr_core::model::comic_page_info::ComicPageInfo {
+                    key: Some(p.name.clone()),
+                    ..Default::default()
+                })
+                .collect();
+        }
+        // Resume position and read-progress clamp to the real page
+        // count. An empty page list (a broken archive) must not
+        // panic — the display shows the error page instead.
         let max_page = (page_count as i32 - 1).max(0);
         let resume = book.current_page.clamp(0, max_page).max(0) as usize;
         book.last_page_read = book.last_page_read.clamp(0, max_page);
