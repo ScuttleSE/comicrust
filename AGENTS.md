@@ -62,7 +62,17 @@ Update this section at the **end of every work session**. The next agent must kn
   group (Next/Prev/Random Book + ShowBrowser) forwards to the
   shell. Enable-state gates the accels (a disabled action swallows
   its accelerator). Probe: `cr-ui/examples/commands_probe.rs`.
-  **Next: T2 (the bundled icon set + `icon.rs`).** Phase 6
+  T2 (the bundled icon set) COMPLETE (2026-09-04; no user test —
+  the acceptance is the resx gate + headless probe, user directed
+  continue). 212 PNGs under `cr-ui/assets/icons/` (identity resx
+  mapping except the 29 `Dark*` names → `Dark/<base>.png`; the 17
+  GIF animations + ICO not bundled — deviation recorded),
+  `cr-ui/src/icon.rs` (`path_for_name` + cached `gdk::Texture`,
+  `#variant` fallback), the navigator renders the C# `treeImages`
+  icons through a texture column, `cr-ui/tests/icons.rs` gates all
+  212 resx names, `icons_probe` proves the loads + the visible
+  gallery. Release tarballs ship `assets/icons` now.
+  **Next: T3 (the menubar skeleton).** Phase 6
   (scripting) starts only after 5.5.
   Phases 0-5 are complete (their gates stay green). Open Phase 1
   gaps: WebComicProvider and the PDF/DjVu writers (tracked in
@@ -896,6 +906,12 @@ Re-bless the `db-large.xml` snapshot after a deliberate model change: `CR_BLESS=
   machine now (GL/DRI3; `GSK_RENDERER=cairo` did not help). The
   probe log lines are the evidence; the user test decides
   rendering.
+- A probe dwell window MUST be an `ApplicationWindow` built with
+  `.application(app)` (the shell's builder pattern). A plain
+  `gtk4::Window` holds nothing — the GApplication loop exits the
+  moment activate returns, before any timeout fires; `app.hold()`
+  did not rescue it (the icon probe needed the ApplicationWindow
+  to reach its 1.5 s screenshot dwell).
 
 ### Blockers / open questions
 

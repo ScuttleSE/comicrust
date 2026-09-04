@@ -698,3 +698,38 @@ change; it lands after the bars so they exist in both modes.
   the header chrome, plus the whole original keyboard sweep
   (open/close/tabs/history/fit/layout/zoom/fullscreen/undock).
   **Next: T2 (the bundled icon set + `icon.rs`).**
+- T2 COMPLETE (2026-09-04) — NO USER TEST (the kickoff acceptance
+  is machine-checkable: probe + resx test; the user directed
+  commit-and-continue). Assets: the 212 resx PNGs copied verbatim —
+  183 top-level + 29 `Dark/*` (`crates/cr-ui/assets/icons/`,
+  1.4 MB, same origin as the papers). The resx name → file mapping
+  is IDENTITY for every non-Dark name (a first positional parse
+  suggested swaps — an extraction artifact; a proper per-element
+  parse of `Resources.resx` settles it: only the 29 `Dark*` names
+  map to `Dark\<base>.png`). DEVIATION: the 17 resx GIFs (scan/
+  export/device-sync task animations) and `ComicRackAppSmall.ico`
+  are NOT bundled — no ported consumer; the T8 lamps will use the
+  static PNGs instead. `cr-ui/src/icon.rs`: `path_for_name` (pure
+  rule: identity, `Dark` prefix → `Dark/`, `#variant` suffix falls
+  back to the base — no C# fetcher produces `#` names for these
+  resources, the rule is loader-side per the kickoff) +
+  `icon(name) → Option<gdk::Texture>` cached per name (negatives
+  too), loaded via `Texture::from_file` (GDK 4.0-era, ADR-018).
+  Navigator: the tree now renders the bundled icons through a
+  texture column — the C# `treeImages` table parity
+  (`ComicListLibraryBrowser.cs:313-317`): Library → Library.png,
+  the "Folder" key → SearchFolder.png, the "Search" key →
+  SearchDocument.png, reading lists → List.png (the C# ImageKeys
+  are NOT all resx names — "Folder"/"Search" re-map). Gate:
+  `cr-ui/tests/icons.rs` — all 212 resx PNG names resolve to their
+  exact asset files, the 17 GIF + 1 ICO names stay unresolved, the
+  `#` fallback works. Probe `examples/icons_probe.rs`: LOADED
+  212/212 headless, the navigator fills from the library snapshot,
+  and the gallery window SCREENSHOTS with the icons visible (the
+  all-black-screenshot streak broke on the first non-GL run).
+  Probe lesson: a probe dwell window MUST be an `ApplicationWindow`
+  built with `.application(app)` — a plain `gtk4::Window` holds
+  nothing and the loop exits before any timeout fires (even with
+  the window leaked). Release workflows now copy `assets/icons`
+  next to `assets/papers` in the tarball (both release.yaml and
+  tagged-release.yaml). **Next: T3 (the menubar skeleton).**
