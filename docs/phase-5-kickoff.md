@@ -399,15 +399,50 @@ the re-entrant response. The probe log after the fix: `matchers=1
 ... changed=true`, and the tree shows the list.
 **CHECKPOINT 1 COMPLETE — USER-TESTED, ALL PASS (2026-09-04).**
 
-### T4. Export + the remaining dialogs
+### T4. Export + the remaining dialogs — IMPLEMENTED (2026-09-04), user test pending
 
-- [ ] Export dialog (`ExportComicsDialog`) over the `cr-io` export
-      skeleton: format, compression level, page range, target
-      naming; the parallel/spill/progress plumbing the skeleton
-      deferred.
-- [ ] Quick rating (the reader's close flow), delete-confirm,
-      progress dialog, splash — the small dialogs the flows above
-      need.
+- [x] Export dialog (`ExportComicsDialog`) over the `cr-io` export
+      skeleton. DONE: `cr-io/src/export.rs` grew the
+      `ExportSetting`/`StorageSetting` model (the C# enums verbatim:
+      ExportTarget/ExportNaming/StoragePageType/StoragePageResize/
+      DoublePageHandling/ExportImageProcessingSource/ExportCompression;
+      defaults = the C# `[DefaultValue]`s), the `GetTargetFilePath`/
+      `GetTargetFileName`/`GetTargetPath` port (filename/caption/
+      custom+start naming, `MakeValidFilename`), and the sequential
+      export engine (`export_book` + `export_books_combined`):
+      CBZ/CBT native packing (Original pass-through with the
+      original names, Jpeg conversion via cr-image — PNG/WebP
+      re-encode to JPEG, a documented deviation until the codec
+      work; CB7 reports not-ported), Store/Medium/Strong
+      compression, overwrite, keep-original-names, tags-to-append,
+      ComicInfo.xml embed. The parallel/spill machinery stays
+      single-threaded on purpose (a local export does not need it;
+      documented). `cr-ui/src/dialogs/export.rs`: the dialog
+      (target/folder+chooser/format/compression/naming/custom/
+      page-format/quality/the five flags) with a progress line; OK
+      runs the export inline and surfaces errors; the session keeps
+      the last-used settings (`Program.Settings.CurrentExportSetting`
+      — session-only until the settings schema grows the export
+      lists). The browser context menu gains "Export…". Deviations:
+      presets (ComicRack defaults + user) deferred to the settings
+      schema work; the page-filter/resize/double-page/processing
+      groups stay out until needed (the engine ignores them; the
+      fields would lie). Tests: the naming-template/target-path
+      unit tests + the end-to-end engine test (2-page source →
+      exported CBZ with the pages + ComicInfo).
+- [x] Quick rating (the reader's close flow), delete-confirm,
+      progress dialog, splash. PARTIAL — the flows that need them
+      landed: the delete-confirm ships in the browser remove flow
+      (the C# AskRemoveComics question: remove from the list vs
+      also delete the files — the files move to the trash via the
+      `gio` CLI, the ADR-006 GIO-trash parity), and the export
+      progress feeds inline in the export dialog (a separate
+      ProgressDialog window adds nothing over it for a local
+      export). DEFERRED with reasons: the quick-rating dialog (the
+      reader's close flow needs the finished-book detection —
+      `AutoShowQuickReview` + a rating UI — batched with the reader
+      polish), and the splash (cosmetic; the app opens fast on
+      Linux — reconsider at packaging).
 - [ ] Devices/sync and the remote server stay OUT (Phases 6-7 per
       the port plan).
 

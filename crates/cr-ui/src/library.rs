@@ -907,3 +907,18 @@ pub fn find_list_item_any(id: &CrGuid) -> Option<cr_core::database::list_items::
     let l = lib.borrow();
     cr_engine::lists::find_list_item(&l.database().comic_lists, id)
 }
+
+thread_local! {
+    /// `Program.Settings.CurrentExportSetting` (session-only; the
+    /// Config.xml block joins when the settings schema grows the
+    /// export lists).
+    static LAST_EXPORT: RefCell<Option<cr_io::export::ExportSetting>> = const { RefCell::new(None) };
+}
+
+pub fn remember_export_setting(setting: cr_io::export::ExportSetting) {
+    LAST_EXPORT.with(|c| *c.borrow_mut() = Some(setting));
+}
+
+pub fn last_export_setting() -> Option<cr_io::export::ExportSetting> {
+    LAST_EXPORT.with(|c| c.borrow().clone())
+}

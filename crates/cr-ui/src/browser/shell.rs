@@ -861,11 +861,115 @@ fn show_context_menu(state: &std::rc::Weak<ShellState>, target: Option<CrGuid>, 
                     }
                     sh.refresh_view_from_list();
                 }
-                "remove" => {
+                "export" => {
+                    // The export dialog over the selection (the C#
+                    // `ConvertComic`).
+                    let selection = sh.item_view.view_state().selection_snapshot();
+                    let mut ids: Vec<CrGuid> = selection.into_iter().collect();
                     if let Some(id) = target {
-                        library::remove_book(&id);
-                        sh.refresh_view_from_list();
+                        if !ids.contains(&id) {
+                            ids.push(id);
+                        }
                     }
+                    if ids.is_empty() {
+                        return;
+                    }
+                    let books: Vec<cr_core::model::comic_book::ComicBook> = {
+                        let lib = library::session();
+                        let l = lib.borrow();
+                        l.database()
+                            .books
+                            .iter()
+                            .filter(|b| ids.contains(&b.id))
+                            .cloned()
+                            .collect()
+                    };
+                    if books.is_empty() {
+                        return;
+                    }
+                    let captions: Vec<String> =
+                        books.iter().map(cr_engine::display_text::caption).collect();
+                    // `Program.Settings.CurrentExportSetting` —
+                    // session-only here (the persistence joins when
+                    // the settings schema carries the export block).
+                    let session_default = library::last_export_setting().unwrap_or_default();
+                    let refresh_state = state.clone();
+                    crate::dialogs::export::show_export_dialog(
+                        &window,
+                        books,
+                        captions,
+                        session_default,
+                        move |result| {
+                            if let Some(r) = result {
+                                library::remember_export_setting(r.setting);
+                                if let Some(sh) = refresh_state.upgrade() {
+                                    sh.refresh_view_from_list();
+                                }
+                            }
+                        },
+                    );
+                }
+                "remove" => {
+                    // The C# remove flow asks: remove from the list
+                    // only, or from the Library, and whether to move
+                    // the files to the trash.
+                    let selection = sh.item_view.view_state().selection_snapshot();
+                    let mut ids: Vec<CrGuid> = selection.into_iter().collect();
+                    if let Some(id) = target {
+                        if !ids.contains(&id) {
+                            ids.push(id);
+                        }
+                    }
+                    if ids.is_empty() {
+                        return;
+                    }
+                    let count = ids.len();
+                    let confirm = gtk4::MessageDialog::builder()
+                        .transient_for(&window)
+                        .modal(true)
+                        .title("Remove Books")
+                        .text(format!("Remove {count} book(s) from the current list?"))
+                        .message_type(gtk4::MessageType::Question)
+                        .buttons(gtk4::ButtonsType::OkCancel)
+                        .build();
+                    let also_files =
+                        gtk4::CheckButton::with_label("Also delete the files (moved to the trash)");
+                    // The MessageDialog message_area is a Box; reach
+                    // it through the child hierarchy.
+                    let area = confirm
+                        .child()
+                        .and_downcast::<gtk4::Box>()
+                        .and_then(|vbox| vbox.first_child().and_downcast::<gtk4::Box>());
+                    if let Some(area) = area {
+                        area.append(&also_files);
+                    }
+                    let refresh_state = state.clone();
+                    let ids_for_ok = ids.clone();
+                    confirm.connect_response(move |dlg, resp| {
+                        let remove_files = also_files.is_active();
+                        dlg.destroy();
+                        if resp != gtk4::ResponseType::Ok {
+                            return;
+                        }
+                        let Some(sh) = refresh_state.upgrade() else {
+                            return;
+                        };
+                        for id in &ids_for_ok {
+                            if remove_files {
+                                if let Some(path) = library::book_path(id) {
+                                    // ADR-006: the recycle bin → GIO
+                                    // trash (the `gio` CLI; a libgio
+                                    // binding is Phase 7 polish).
+                                    let _ = std::process::Command::new("gio")
+                                        .args(["trash", &path])
+                                        .status();
+                                }
+                            }
+                            library::remove_book(id);
+                        }
+                        sh.refresh_view_from_list();
+                    });
+                    confirm.present();
                 }
                 "properties" => {
                     // The selection (plus the right-clicked row when
@@ -919,6 +1023,7 @@ fn show_context_menu(state: &std::rc::Weak<ShellState>, target: Option<CrGuid>, 
     add_item(&box_, "Reveal in File Manager", "reveal");
     add_item(&box_, "Edit…", "edit");
     add_item(&box_, "Update Book File(s)", "update-file");
+    add_item(&box_, "Export…", "export");
     add_item(&box_, "Remove from Library", "remove");
     add_item(&box_, "Properties…", "properties");
     popover.set_child(Some(&box_));
