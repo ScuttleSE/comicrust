@@ -32,7 +32,6 @@ use gtk4::{
 
 use cr_core::model::bitmap_adjustment::BitmapAdjustment;
 use cr_core::model::comic_book::ComicBook;
-use cr_core::model::comic_page_info::ComicPageInfo;
 use cr_core::model::enums::{ComicPagePosition, ComicPageType, ImageRotation, MangaYesNo, YesNo};
 use cr_core::registry::{self, PropValue};
 use cr_engine::image_pool::ImagePool;
