@@ -638,3 +638,15 @@ C# spec: `PagesView.cs` (833), `ComicPagesView.cs` (241),
   out (the reflow now also runs on the canvas `resize` signal).
   Both fixed with the established patterns (draw-path pump start +
   a resize reflow).
+  T6 fix from the user test round 2 (double-click crash + the first
+  comic still empty): the double-click invoked `on_activate` under
+  the panel's own borrow — the callee chain (navigate → page
+  callback → `set_current_page`) re-entered the same RefCell. The
+  activation callback moved OUT of the state into a separate cell,
+  invoked with no borrow held (third occurrence of the rule: a
+  widget-owned callback must never fire under the widget's own
+  borrow). The empty-first-panel case: the draw path now
+  self-corrects the content height — a bind while hidden (width 0)
+  collapses the layout; the first real draw detects the mismatch
+  and applies the true height via an idle (plus the resize-signal
+  reflow from the previous round).
