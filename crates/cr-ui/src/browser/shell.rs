@@ -813,11 +813,24 @@ fn show_context_menu(state: &std::rc::Weak<ShellState>, target: Option<CrGuid>, 
                     if books.is_empty() {
                         return;
                     }
-                    let commit: crate::dialogs::book_editor::CommitFn = Rc::new(|edited| {
-                        library::apply_edited(edited);
-                    });
-                    let window2 = window.clone();
-                    crate::dialogs::bulk_edit::show(&window2, books, commit);
+                    // The grid shows the edited values on commit (the
+                    // "remove" command pattern; the single editor
+                    // path refreshes per save point too).
+                    {
+                        let commit_state = state.clone();
+                        let commit_refresh = Rc::new(move || {
+                            if let Some(sh) = commit_state.upgrade() {
+                                sh.refresh_view_from_list();
+                            }
+                        }) as Rc<dyn Fn()>;
+                        let commit: crate::dialogs::book_editor::CommitFn =
+                            Rc::new(move |edited| {
+                                library::apply_edited(edited);
+                                commit_refresh();
+                            });
+                        let window2 = window.clone();
+                        crate::dialogs::bulk_edit::show(&window2, books, commit);
+                    }
                 }
                 "update-file" => {
                     // The manual write (the C# `AddBookToFileUpdate(cb,
