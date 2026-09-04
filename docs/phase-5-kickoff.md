@@ -141,7 +141,7 @@ deepest dialog); keep the editors pure-model first, GTK last.
       the backup/association groups are Windows-shell features
       (Phase 8). Opened from the header "Preferences" button.
 
-### T2. The book editor (`ComicBookDialog`) — CHECKPOINT 1 IMPLEMENTED (2026-09-04), user test pending
+### T2. The book editor (`ComicBookDialog`) — CHECKPOINT 1 COMPLETE (2026-09-04), user-tested
 
 - [ ] The metadata form: every ComicInfo field the registry
       exposes, the proposed-value flow (`EnableProposed` — the
@@ -184,12 +184,22 @@ deepest dialog); keep the editors pure-model first, GTK last.
       (`write.rs` — the CBZ/CBT native rewrite, CB7 `7z u`) with
       the Phase 1 rules (never write defaults over file metadata).
       The "Files to update" smart list flips as the user saves.
-      CHECKPOINT 2 (next session) — the DB write-back works
-      (mark-dirty + the byte-stable save); the FILE write-back is
-      not wired yet.
+      CHECKPOINT 2 (next) — the DB write-back works (mark-dirty +
+      the byte-stable save); the FILE write-back is not wired yet.
 - [ ] Bulk edit (`MultipleComicBooksDialog`): the union/intersection
       field model over a selection (the browser context menu gains
-      "Edit" on multi-select). CHECKPOINT 2.
+      "Edit" on multi-select). CHECKPOINT 2 (next).
+
+**CHECKPOINT 1 COMPLETE — USER-TESTED, ALL PASS (2026-09-04).**
+Six fix rounds total (the record below). The user confirmed: the
+editor opens with the cover, the full metadata round-trips through
+OK + restart, the Pages tab lists every page for all three stored-
+list shapes (full / partial / none) with the stored overlays, page
+type/rotation/position edits land, mark-deleted hides the page
+from the reader flips, move/reset reorder correctly, the cover
+follows the FrontCover rule, the colors apply in the reader, the
+nav buttons move the preview + highlight, and the proposed-value
+placeholders toggle with EnableProposed.
 
 Headless proof: the probe binary (`cr-ui/examples/editor_probe.rs`)
 opens the editor over synthetic books under Xvfb — the Details grid
