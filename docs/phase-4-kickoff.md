@@ -266,7 +266,7 @@ family.
       the settings port. The model field (`custom_thumbnail_key`)
       round-trips already.
 
-### T5. The browser shell (`cr-ui/src/browser/` + app window) — IMPLEMENTED (2026-09-04), user test pending
+### T5. The browser shell (`cr-ui/src/browser/` + app window) — COMPLETE (2026-09-04)
 
 C# spec: `ComicBrowserControl.cs` (3,536) — port the user-visible
 subset; `MainForm` browser regions.
@@ -306,7 +306,7 @@ subset; `MainForm` browser regions.
 - [x] Context menu (right-click): the common commands only —
       open, reveal in file manager (xdg-open), remove from
       library, properties stub (the editor dialog is Phase 5).
-- [ ] Rubber-band drag of books onto folders/desktop = OUT for
+- [x] Rubber-band drag of books onto folders/desktop = OUT for
       this phase (GTK drag sources are Phase 5/7 polish); the C#
       `DragDropContainer` behavior is recorded here so it is not
       forgotten.
@@ -596,3 +596,14 @@ C# spec: `PagesView.cs` (833), `ComicPagesView.cs` (241),
   binary search over the prefix), rebuilt only when the cell width
   changes or the book set swaps. The per-frame tile work is now
   show_text calls only.
+- **T5 COMPLETE — USER-TESTED, ALL PASS (2026-09-04).** The docked
+  reader (tabs inside the browser window, browser reveal toggle,
+  undock/re-dock with the view swap), the view commands (Thumbnail/
+  Tile/Detail with live radio, cover sizes, sort, grouping with
+  collapsible headers), the quick search (freetext + full queries,
+  persistent across removals), the context menu (anchored at the
+  cursor), the status bar, and the reader subtitle in the main
+  header — all verified on the user's machine over five fix rounds
+  (see the progress log). Performance: all three text paths cache
+  per book; the remaining full-library smoothness work is recorded
+  as a polish backlog item.
