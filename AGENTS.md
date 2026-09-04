@@ -172,6 +172,20 @@ probe: the editor opens from the navigator menu with all head
 fields. Deferred to the next step: the reading-list editor
 (`ListEditorDialog`, the `IdListItem` model) and the folder
 `EditListDialog` (still the bare name prompt).
+T3 CHECKPOINT 1 COMPLETE — USER-TESTED, ALL PASS (2026-09-04; one
+fix round: the re-entrant close response + the query-text
+clearing — the record lives in `docs/phase-5-kickoff.md`).
+T3 TAIL COMPLETE (2026-09-04), user test pending: the
+`EditListDialog` port (`cr-ui/src/dialogs/list_editor.rs`) — the
+C# routes FOLDERS (name/notes + combine mode) and READING LISTS
+(name/notes + QuickOpen) through it from the one Edit… item (the
+C# `ListEditorDialog` is an unrelated workspaces editor). The
+navigator gains "New List…" (dialog-first, then insert; a
+cancelled fresh insert pops) and Rename routes through Edit.
+`library::{new_id_list, update_list_fields}` + `new_folder` now
+returns the id. Headless probe: the full New Folder flow lands
+the typed name in the tree. The reading list's book management
+(drag-in ordering) stays with the browser drag-drop work.
 
 ### Phase 4 progress (sessions of 2026-09-03)
 
