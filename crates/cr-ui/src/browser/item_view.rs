@@ -90,6 +90,10 @@ pub struct ItemViewState {
     /// The rendered captions/derived text per book (the proposed-name
     /// fallback parses file names with regexes — never per frame).
     captions: HashMap<CrGuid, String>,
+    /// The Detail cell texts per book, aligned with the visible
+    /// columns (the same regex hazard as the captions — the Detail
+    /// view draws visible_rows × columns cells per frame).
+    detail_texts: HashMap<CrGuid, Vec<String>>,
     /// Loads in flight (the pump stays alive while this is > 0).
     pending_thumbs: usize,
     pump_active: bool,
@@ -228,6 +232,7 @@ impl ItemView {
             thumbs: HashMap::new(),
             queued: HashSet::new(),
             captions: HashMap::new(),
+            detail_texts: HashMap::new(),
             pending_thumbs: 0,
             pump_active: false,
             band: None,
@@ -292,6 +297,7 @@ impl ItemView {
             s.thumbs.clear();
             s.queued.clear();
             s.captions.clear();
+            s.detail_texts.clear();
             s.band = None;
             s.relayout(width);
         }
@@ -908,7 +914,7 @@ fn draw_frame(ctx: &cairo::Context, state: &Rc<RefCell<ItemViewState>>, window: 
                 draw_tile_item(ctx, &mut s, item.display, rect, selected);
             }
             ItemViewMode::Detail => {
-                draw_detail_item(ctx, &s, item.display, rect, selected);
+                draw_detail_item(ctx, &mut s, item.display, rect, selected);
             }
         }
 
@@ -1127,7 +1133,7 @@ fn draw_tile_item(
 
 fn draw_detail_item(
     ctx: &cairo::Context,
-    s: &ItemViewState,
+    s: &mut ItemViewState,
     display: usize,
     rect: Rect,
     selected: bool,
@@ -1136,8 +1142,31 @@ fn draw_detail_item(
     ctx.set_source_rgb(tr, tg, tb);
     ctx.select_font_face("Sans", cairo::FontSlant::Normal, cairo::FontWeight::Normal);
     ctx.set_font_size(12.0);
+    // The row's cell texts, cached per book (the same regex hazard
+    // as the captions — the resolver's proposed fallback parses file
+    // names).
+    let visible: Vec<Column> = s
+        .detail_columns
+        .iter()
+        .filter(|c| c.visible)
+        .cloned()
+        .collect();
     let book = s.view.book(display);
-    let visible: Vec<&Column> = s.detail_columns.iter().filter(|c| c.visible).collect();
+    let id = book.id;
+    let texts: Vec<String> = match s.detail_texts.get(&id) {
+        Some(texts) => texts.clone(),
+        None => {
+            let row: Vec<String> = visible
+                .iter()
+                .map(|column| match column.name {
+                    "Cover" => String::new(),
+                    _ => columns::cell_text(column, s.view.book(display)),
+                })
+                .collect();
+            s.detail_texts.insert(id, row.clone());
+            row
+        }
+    };
     let column_rects = layout::detail_column_rects(&s.config, &rect);
     for (i, column) in visible.iter().enumerate() {
         let Some(cell) = column_rects.get(i) else {
@@ -1145,8 +1174,7 @@ fn draw_detail_item(
         };
         let text = match column.name {
             "Position" => (display + 1).to_string(),
-            "Cover" => String::new(),
-            _ => columns::cell_text(column, book),
+            _ => texts.get(i).cloned().unwrap_or_default(),
         };
         if text.is_empty() {
             continue;
