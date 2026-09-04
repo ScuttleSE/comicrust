@@ -406,3 +406,13 @@ C# spec: `PagesView.cs` (833), `ComicPagesView.cs` (241),
   serialization (20-byte header + JPEG); parse it with
   `Thumbnail::from_bytes` first. Headless proof: seeded DB with real
   Linux-path comics → the grid draws the actual pages.
+  T3 fixes from the user test round 2: (1) arrows/type-ahead never
+  reached the grid — the canvas takes focus on click (`grab_focus`
+  in the press handler; GTK4 has no click-to-focus) and on window
+  activation (the reader's is-active re-grab on the shell window);
+  (2) double-click opened the reader once — the closed reader window
+  stayed in the app's session slot and silently swallowed every
+  later open; the main window's close-request now clears the slot
+  (`app::reader_closed`). Known cosmetic critical at startup:
+  `gtk_css_node_insert_after` assertion (GTK-internal CSS ordering,
+  no user-visible effect — investigate when the shell lands in T5).
