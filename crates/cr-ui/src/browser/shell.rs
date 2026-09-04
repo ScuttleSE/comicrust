@@ -362,6 +362,10 @@ impl BrowserShell {
                 .connect_activate(move |page| {
                     if let Some(sh) = state.upgrade() {
                         sh.reader.navigate_current(page);
+                        // `ShowComic()`: the double-click reveals the
+                        // comic (the reader page wins over the
+                        // browser).
+                        sh.stack.set_visible_child_name("reader");
                     }
                 });
         }
