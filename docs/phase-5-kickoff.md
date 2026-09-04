@@ -276,6 +276,13 @@ the full provider-count list with the stored entries overlaid
 (usable-Image fallback to the position); the reader shell and the
 editor both use it (unit-tested with a folder provider). The
 merged list persists on save like the C# navigator's book.
+PROCESS lesson from the round: the editor half of the fix was
+landed by a scripted edit that silently matched NOTHING (the
+target text had drifted) — the compile stayed green because
+nothing changed, and the user retest caught it ("just showed
+FrontCover"). Rule: a scripted multi-line replacement must be
+verified by grepping for the NEW symbol in the changed file, not
+by the build result.
 
 ### T3. The smart-list editor (`SmartListDialog` + matchers)
 

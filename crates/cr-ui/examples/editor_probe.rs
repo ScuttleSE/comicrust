@@ -11,7 +11,17 @@ fn main() {
     let mut books = Vec::new();
     if let Some(mut b) = real_book("tests/testfiles/Absolute Flash (2025) Volume 01 Issue 009.cbz")
     {
-        // The user's failing shape: NO stored page list.
+        // The user's failing shape: a single stored FrontCover entry
+        // (the migrated-DB shape) must still display the full list,
+        // with the stored overlay on page 1.
+        let mut partial = b.clone();
+        partial.info.number = "PARTIAL".into();
+        partial.info.pages.truncate(1);
+        partial.info.pages[0].page_type = cr_core::model::enums::ComicPageType(1); // FrontCover
+        books.push(partial);
+
+        // NO stored page list.
+        b.info.number = "EMPTY".into();
         b.info.pages.clear();
         books.push(b);
     }
