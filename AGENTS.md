@@ -233,65 +233,61 @@ Update this section at the **end of every work session**. The next agent must kn
   Detail mode keeps scrolling), pages Tile scales with the same
   height.
   T7 COMPLETE — USER-TESTED, ALL PASS (2026-09-05; one fix round).
-  T9 (the workspace tab strip) IMPLEMENTED (2026-09-05), user test
-  pending — the user report: the old CR tab bar sits DIRECTLY under
-  the menubar with Library, Folders, Pages (if a comic is open) and
-  every open comic as separate FULL-WINDOW tabs; the port's
-  docked-reader Notebook tabs + the left Library|Pages mini-switcher
-  did not follow that model. `browser/tabstrip.rs` — the strip row
-  under the menubar: fixed Library/Pages items (resx `Library`/
+  T9 (the workspace tab strip) COMPLETE — USER-TESTED, ALL PASS
+  (2026-09-05; one fix round of six items). The user report that
+  drove it: the old CR tab bar sits DIRECTLY under the menubar with
+  Library, Folders, Pages (if a comic is open) and every open comic
+  as separate FULL-WINDOW tabs. `browser/tabstrip.rs` — the strip
+  row under the menubar: fixed Library/Pages items (resx `Library`/
   `ComicPage`), one comic tab per open slot (async 16 px cover
   through the thumb pool + `gdk::MemoryTexture` from the
   ThumbnailImage blob, display-name caption, close button, bold =
-  current slot), the `+` (AddSlot → an EMPTY slot, silent per user
-  decision), and the right-aligned HOST box that parents the T5
-  reader toolbar (the C# Fill `MainToolStripVisible=false` shape;
-  the undock chrome keeps riding it — docked home = the strip
-  host). The reader Notebook carries NO tabs (`set_show_tabs`
-  false). The stack pages: quickopen (startup) ⇄ browser ⇄ pages
-  (FULL-WINDOW now, was the left mini-tab) ⇄ reader; the left
-  StackSwitcher is gone (Sidebar hides the plain navigator pane);
-  the status label moved BELOW the stack and rides the C# `flag4`
-  with the strip (`tabstrip::tabstrip_visible`, unit-tested:
-  visible unless MinimalGui+reader, always on the browser, the
+  current slot; every tab is one CSS `.tab` BOX — caption click AND
+  the close button inside it), the `+` (AddSlot → an EMPTY slot,
+  silent per user decision), and the right-aligned HOST box that
+  parents the T5 reader toolbar (the C# Fill
+  `MainToolStripVisible=false` shape; the undock chrome keeps
+  riding it — docked home = the strip host). The reader Notebook
+  carries NO tabs (`set_show_tabs` false). The stack pages:
+  quickopen (startup) ⇄ browser ⇄ pages (FULL-WINDOW, was the left
+  mini-tab) ⇄ reader; the left StackSwitcher is gone (Sidebar hides
+  the plain navigator pane); the status label sits BELOW the stack
+  and rides the C# `flag4` with the strip
+  (`tabstrip::tabstrip_visible`, unit-tested: visible unless
+  MinimalGui+reader, always on the browser, the
   ShowMainMenuNoComicOpen escape, undocked always). Reader shell:
   `tab_infos()` (cached captions), `has_current_book()/
   open_book_count()` (the empty slot gates the reader commands +
   the Pages tab on the CURRENT book; flag2 counts book slots),
-  `add_empty_slot`/`close_slot`/`cycle_slot`, the
-  `on_tabs_changed` hook, refresh_chrome fires book_changed ALWAYS
-  (an empty slot clears the Pages panel). Behavior: strip clicks
-  swap the workspace, a RE-click on the selected item toggles
-  browser/reader (the C# `tab_CaptionClick`), Browse ▸
-  Library/Pages select tabs, prev/next-tab + Open Books rows reveal
-  the reader (the C# `ShowView(i)`), the sync derives the strip
-  selection from the visible workspace (the first probe run caught
-  the selection never moving). Folders tab HIDDEN (no engine;
-  `DisableFoldersView` parity — its own follow-up task), dock
-  modes deferred (T10). Probe `tabstrip_probe` gates the whole
-  flow; `navpages_probe` gained the pages-workspace step (the
-  Views drop needs a MAPPED anchor); all other probes stay green;
-  315 tests. T9 FIX ROUND 1 (user report, six items): tabs too
-  tall (valign Center + `min-height: 0` + a scoped `.tabstrip
-  button` compaction — the row went 48→36 px, the probe gates
-  < 40), tabs now DISTINCT boxes (`.tab` border/background, the
-  caption click + the close button INSIDE one box), the menubar
-  ALWAYS visible (AutoHideMainMenu + the Alt-alone reveal REMOVED —
-  this also resolves the deferred T3 hide-rule observation; the
-  setting stays in the schema but no longer drives visibility),
-  the X-close bug (retain dropped only the Rust handle — a GTK
-  widget leaves its parent only via an explicit remove; the probe
-  now gates slots == WIDGETS), and the Pages workspace collapse
-  (the stack/paned/scrollers need vexpand; the probe gates stack-h
-  == pages-h). Probe lessons: the probes never loaded the theme
-  CSS (`theme::init` lives in `app::run`) — CSS-dependent gates
-  measured unstyled defaults until the probe loads it; and an
-  allocation read in the SAME tick as the widget switch reads
-  stale — measure one frame later. Deviations in the kickoff
+  `add_empty_slot`/`close_slot`/`cycle_slot`, the `on_tabs_changed`
+  hook, refresh_chrome fires book_changed ALWAYS (an empty slot
+  clears the Pages panel). Behavior: strip clicks swap the
+  workspace, a RE-click on the selected item toggles
+  browser/reader (the C# `tab_CaptionClick`), Browse ▸ Library/
+  Pages select tabs, prev/next-tab + Open Books rows reveal the
+  reader (the C# `ShowView(i)`), the sync derives the strip
+  selection from the visible workspace. The MENUBAR is ALWAYS
+  visible now (user decision): `AutoHideMainMenu` + the Alt-alone
+  reveal are REMOVED — `menubar::menubar_visible` + its tests keep
+  the C# formula for the record; the setting no longer drives
+  visibility (this resolves the deferred T3 hide-rule observation).
+  Fix-round facts a fresh agent needs: dropping a Rust widget
+  handle does NOT unparent a GTK widget (the X-close bug — the
+  strip's retain removes the root explicitly, and the probe gates
+  slots == WIDGETS); the workspace stack + paned + scrollers need
+  vexpand (the Pages page collapsed without it; the probe gates
+  stack-h == pages-h); the strip compacts via valign Center +
+  `min-height: 0` + a scoped `.tabstrip button` rule (row 36 px,
+  probe gates < 40). Folders tab HIDDEN (no engine;
+  `DisableFoldersView` parity — its own follow-up task), dock modes
+  deferred (T10). Probe `tabstrip_probe` gates the whole flow (it
+  loads the theme CSS itself); `navpages_probe` gained the
+  pages-workspace step (the Views drop needs a MAPPED anchor); all
+  other probes stay green; 315 tests. Deviations in the kickoff
   tracker (no tab context menu, no drag-reorder, silent empty
   slot, one undocked reader).
-  **Next: T8 (the status bar) — user test of the T9 fix round
-  first.** Phase 6 (scripting) starts only after 5.5.
+  **Next: T8 (the status bar).** Phase 6 (scripting) starts only
+  after 5.5.
   Phases 0-5 are complete (their gates stay green). Open Phase 1
   gaps: WebComicProvider and the PDF/DjVu writers (tracked in
   `docs/phase-1-kickoff.md`).
@@ -1222,6 +1218,21 @@ Re-bless the `db-large.xml` snapshot after a deliberate model change: `CR_BLESS=
   scroll events) — wire them, then the user test decides (the T7
   Ctrl+wheel round: the handler existed but nothing called it;
   grep the CALLER, not the method).
+- Dropping a Rust widget handle does NOT unparent a GTK widget —
+  the parent holds its own ref, so a "removed" item stays visible
+  until an explicit `parent.remove(child)` (the T9 X-close bug:
+  the strip's retain looked right while the tab widgets piled up;
+  gate slots == WIDGETS, not just the model vec).
+- The workspace stack (and every Box page under it) needs vexpand —
+  without it a stack page collapses to its toolbar's height (the
+  T9 Pages report). The probe gates stack-h == pages-h, measured
+  one frame AFTER the switch (an allocation read in the SAME tick
+  reads 0/stale).
+- Probes run UNSTYLED unless they call `cr_ui::theme::init()`
+  themselves — the app loads the CSS in `app::run` only, so every
+  CSS-dependent gate (tab boxes, compact buttons, heights)
+  measured theme defaults until the probe loads it (the T9 height
+  round: 48 px was the unstyled number, 36 px the real one).
 
 ### Blockers / open questions
 

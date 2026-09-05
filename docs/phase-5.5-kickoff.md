@@ -1668,7 +1668,7 @@ owns the Phase 5.5 omissions).
   and Ctrl+wheel resizes both grids. **Next: T8 (the status
   bar).**
 
-### T9 — Workspace tab strip (IMPLEMENTED — user test pending)
+### T9 — Workspace tab strip (COMPLETE — USER-TESTED)
 
 The user report that drove the re-layout: the C# tab bar sits
 DIRECTLY under the menubar and holds Library, Folders, Pages (if a
@@ -1750,7 +1750,7 @@ did not follow that model.
   ones; blanket re-append spams Gtk-CRITICALs and silently keeps
   the old order (a widget packed twice keeps its first parent).
 
-### T9 — Workspace tab strip (IMPLEMENTED — user test pending)
+### T9 — Workspace tab strip (COMPLETE — USER-TESTED)
 - The FOLDERS tab is ABSENT (recorded decision, user-approved
   2026-09-05): the C# `tsbFolders` opens the `ComicListFolderFilesBrowser`
   (a file-system navigator over `Settings.FavoriteFolders` + the
@@ -1830,3 +1830,9 @@ did not follow that model.
   - PROBE LESSON: an allocation read in the SAME timeout tick as
     the widget switch reads 0/STALE — measure one frame later (the
     F step split into F + F2 at +300 ms).
+- T9 COMPLETE — USER-TESTED, ALL PASS (2026-09-05; one fix round
+  of six items: compact tab boxes, the close bug, the always-on
+  menubar, the X inside the box, the pages fill, the row height).
+  The user verified: the strip look (boxes, height), the
+  always-visible menubar, the tab close, and the full-window
+  Pages view. **Next: T8 (the status bar).**
