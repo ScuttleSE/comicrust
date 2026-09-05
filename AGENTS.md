@@ -329,16 +329,18 @@ Update this section at the **end of every work session**. The next agent must kn
   `menubar_probe` gained the
   dark-click gate; `commands_probe` 70/70; 317 tests. Deviations
   recorded in the kickoff tracker + ADR-025.
-  T8 (the status bar) IMPLEMENTED (2026-09-05), user test pending.
-  `browser/status_bar.rs` — the panel row under the workspace stack:
-  the selection-info spring panel (the `SelectionInfo` port —
-  "ListName: N Books (M filtered) / size - K selected / size", the
-  single selection shows the file path, sizes via the
-  `FileLengthFormat` port; EMPTY without an active browser
-  workspace — the C# `FindActiveService` shape; "Ready" is only the
-  Designer default), three image lamps (export/write/scan, static
-  PNGs per the T2 record, click → the `win.tasks` T13 stub, the
-  ported 1 s `updateActivityTimer` poll; `library::is_scanning`/
+  T8 (the status bar) COMPLETE — USER-TESTED, ALL PASS (2026-09-05;
+  two fix rounds + one clarification; the full fix-round record
+  lives in `docs/phase-5.5-kickoff.md`, the T8 entries).
+  `browser/status_bar.rs` — the panel row under the workspace stack
+  (the C# `statusStrip`): the selection-info spring panel (the
+  `SelectionInfo` port — "ListName: N Books (M filtered) / size -
+  K selected / size", the single selection shows the file path,
+  sizes via the `FileLengthFormat` port; EMPTY without an active
+  browser workspace — the C# `FindActiveService` shape; "Ready" is
+  only the Designer default), three image lamps (export/write/scan,
+  static PNGs per the T2 record, click → the `win.tasks` T13 stub,
+  the ported 1 s `updateActivityTimer` poll; `library::is_scanning`/
   `writes_pending`/`export_in_flight` flag the activities), the
   data-source light (always connected), the book caption ("None",
   60-char ellipsis), the page panel (1-based display page, "NA"
@@ -347,66 +349,41 @@ Update this section at the **end of every work session**. The next agent must kn
   and the thumb-size slider (a 120 px GtkScale, browser-workspace
   only, `layout::item_size_range`/`clamp_item_size` — the
   `GetItemSize`/`SetItemSize` ports; Thumbnail 96..512 thumb height,
-  Tile 64..512 tile HEIGHT with the width doubled, Detail 12..48 row
-  height; the drag → `ItemView::set_item_size`). The panel updates
-  fold into `sync_enabled` + `rebuild_filter`. `track-current-page`
-  became a proper `add_check` action (the check derives from the
-  SETTING in the sync — the old manual registration never re-synced
-  so the lock icon could not follow the click). The Ctrl+wheel now
-  routes through `set_item_size` — FIXES a T7 gap (the browser Tile
-  mode never resized from the wheel). Deviations: the export lamp
-  shows only between synchronous export runs (in-dialog UI-thread
-  export; the C# uses a background queue), the read-info/page/
-  backup/device-sync lamps + the server panel omitted, the Win7
-  overlay icon not portable. Gate: 321 tests, `statusbar_probe`
+  Tile 64..512 tile HEIGHT with the width doubled, Detail 12..48
+  row height; the drag → `ItemView::set_item_size`). The panel
+  updates fold into `sync_enabled` + `rebuild_filter`; the page
+  panel also follows the `page_change` hook (wheel/click turns
+  dispatch no action — inside the reader borrow, so only the
+  passed page value). `track-current-page` is a proper `add_check`
+  action (the check derives from the SETTING in the sync). The
+  Ctrl+wheel routes through `set_item_size` (FIXES a T7 gap — the
+  browser Tile mode never resized from the wheel). Fix-round facts
+  a fresh agent needs: the reader page CLICK is `ToggleBrowserFromReader`
+  Fill parity = MinimalGui (MainForm.cs:1585 + 2133-2144; the shell
+  forwards to `dispatch_current("ToggleMenu")`, the workspace never
+  switches; double-click → Full Screen matches the C# 1664);
+  GTK's built-in `GtkWindow:handle-menubar-accel` (capture-phase
+  F10, default on) consumes F10 before any app accel — the main
+  window sets it false (the C# F10 is MinimalGui); comic file tabs
+  never toggle on re-click (the C# wires CaptionClick only on the
+  workspace items, MainView.cs:161-163); `.tabstrip .tab button`
+  is transparent so the active-tab highlight covers the X; probes
+  that seed books REFUSE without an isolated `XDG_DATA_HOME=/tmp/
+  opencode/...` (an unisolated run polluted the real library once;
+  cleaned through the cr-core byte-stable writer). Deviations: the
+  export lamp shows only between synchronous export runs (in-dialog
+  UI-thread export; the C# uses a background queue), the read-info/
+  page/backup/device-sync lamps + the server panel omitted, the
+  Win7 overlay icon not portable. Gate: 321 tests, `statusbar_probe`
   (defaults, the info line, the slider resize/sync, the page click,
-  the lamp flags), all other probes green. **RETEST (the T8
-  acceptance):** the steps in `docs/phase-5.5-kickoff.md` (the T8
-  entry): the bar layout + the info line on selection/search, the
-  book/page/count panels on open, the page-panel click lock, the
-  slider resize + re-range per mode, the scan/write lamps, the
-  MinimalGui hide.
-  T8 FIX ROUND 1 (2026-09-05), user test: comic-tab re-click, tab
-  highlight, F10, page panel. (1) A re-click on the current comic's
-  tab toggled to the Library — the C# wires CaptionClick ONLY on
-  the workspace items (MainView.cs:161-163); comic file tabs never
-  toggle. Fix: comic-tab clicks (re-click included) always activate
-  the slot; Library/Pages keep the toggle (the tabstrip probe's E
-  step flipped). (2) The tab highlight stopped before the X — the
-  inner buttons painted the theme surface; `.tabstrip .tab button`
-  is transparent now (+ a hover shade). (3) F10 was consumed by
-  GTK's built-in `GtkWindow:handle-menubar-accel` (a CAPTURE-phase
-  F10 shortcut since 4.2, default on — it focuses a MODEL menubar;
-  the custom T3 bar is invisible to it, the app accel never fired).
-  Fix: `set_handle_menubar_accel(false)` (the C# F10 is MinimalGui).
-  The probe proves the action path; the accel itself is
-  user-test-only (the F8-control injection also missed — the Xvfb
-  key path is dead). (4) The page panel missed wheel/click turns
-  (no action dispatch) — the `page_change` hook writes the panel
-  now (inside the reader borrow: only the passed page value, no
-  reader access). CLEANUP: a non-isolated probe run had pushed
-  probe books into the real library — 4 `/tmp/opencode` entries
-  removed through the cr-core byte-stable writer, and the probe now
-  REFUSES without `XDG_DATA_HOME=/tmp/opencode/...` (it seeds
-  books into the DB it opens). Retest: the tab click, F10/K, the
-  page panel on turns, the tab highlight.
-  T8 FIX ROUND 2 (2026-09-05), user clarification: the reader page
-  CLICK is the `ShowBrowser` command (MainForm.cs:1585 — MouseLeft
-  + Escape) → `ToggleBrowserFromReader` (2133-2144): Fill mode
-  flips MINIMAL GUI, the browser toggle only with the
-  `MouseSwitchesToFullLibrary` setting. The port's forward now
-  dispatches ToggleMenu (MinimalGui) — the workspace never
-  switches on a page click. Double-click → Full Screen matches the
-  C# (1664). Gate: the tabstrip probe's J step (menubar
-  true→false→true, page stays reader).
-  **Next: T9 tail is done; after the T8 PASS, the phase continues
-  with T10 (dock modes) or the remaining small tasks (T11 preview,
-  T12 display settings, T13 dialogs, T14 persistence).** Phase 6
-  (scripting) starts only after 5.5.
+  the lamp flags, the MinimalGui action), all other probes green.
+  **Next: T10 (dock modes) or the remaining small tasks (T11
+  preview, T12 display settings, T13 dialogs, T14 persistence).**
+  Phase 6 (scripting) starts only after 5.5.
   Phases 0-5 are complete (their gates stay green). Open Phase 1
   gaps: WebComicProvider and the PDF/DjVu writers (tracked in
   `docs/phase-1-kickoff.md`).
-- **State:** `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` are green. 317 tests. CI runs on the `docker-runner-amd64` container runner (ADR-020). The release tracks are `release.yaml` (rolling prerelease per push) and `tagged-release.yaml` (manual dispatch, stable release for an existing tag — ADR-021, 2026-09-03). Until the runner is registered and `comicrust-ci:latest` is built on the runner host, pushed and dispatched workflows sit queued on that label.
+- **State:** `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` are green. 321 tests. CI runs on the `docker-runner-amd64` container runner (ADR-020). The release tracks are `release.yaml` (rolling prerelease per push) and `tagged-release.yaml` (manual dispatch, stable release for an existing tag — ADR-021, 2026-09-03). Until the runner is registered and `comicrust-ci:latest` is built on the runner host, pushed and dispatched workflows sit queued on that label.
 - **Phase 0 gate status:** byte-stable ComicDb.xml round-trip proven on all three synthetic fixtures AND the real-world database `tests/realworld/ComicDb.xml` (255 books, 584 KB, 2026-09-02, user-approved commit).
 - **Phase 2 gate status:** every saved smart list in the real-world DB (a) binds to the matcher registry, (b) renders to a `Match` query string that re-parses and re-renders byte-identically, and (c) evaluates to the SAME book sets the C# cached in `CacheStorage` (Never Read = all 255, Files to update = the 3 dirty books, Reading/Read = empty). Evidence: `crates/cr-engine/tests/realworld_query.rs`.
 - **Phase 3 gate status (COMPLETE):** a real comic (`tests/testfiles/`, git-ignored, user-supplied) opens in a GTK4 window and reads comfortably: single/double/adaptive/continuous layouts, spread composition with cover-right + binding-edge rules, fit modes with anamorphic tolerance, zoom/pan/rotation, RTL, continuous scroll with anchor-stable layout rebuilds, fade/slide transitions, paper texture, Auto/Color/Texture backgrounds, the real `MainForm` input map, session tabs with undock, fullscreen chrome with cursor auto-hide, reading-state tracking, the magnifier, error pages, and pool-queue page loads. User-verified after each task; UI smoke tests on this machine run headless under Xvfb + screenshots (see the probe lessons below — the key-injection tools are unreliable; only user tests decide input behavior).
@@ -940,6 +917,7 @@ The UI crate (Phase 3):
 | `crates/cr-ui/src/browser/toolbar.rs` | The T5 reader toolbar: the nine-button strip (prev/next splits, layout/fit/zoom/rotate drops with state text, magnifier/fullscreen, Tools) + the `Dropdown` tables (PREV/NEXT/FIT/ZOOM/ROTATE/TOOLS); the bar rides the undock (docked home since T9: the tab strip's right host). |
 | `crates/cr-ui/src/browser/tabstrip.rs` | The T9 workspace tab strip (`MainView.tabStrip`): Library/Pages/comic-tabs/`+` under the menubar, the comic tabs with async 16 px covers + close + the bold current-slot marker, the right HOST box for the reader toolbar, `tabstrip_visible` (the Fill `flag4` rule, unit-tested). |
 | `crates/cr-ui/src/browser/browser_toolbar.rs` | The T6 browser toolbar: the strip in the item pane (Sidebar, Browse prev/next, Views/Group/Arrange drops, right-aligned Quick Search with the scope menu, List Layouts stub, Duplicate List drop) + the `VIEWS`/`SEARCH_SCOPE`/`DUPLICATE` tables and the dynamic `sort_defs`/`group_defs`; the `sync`/`sync_labels` push the action states + the Group/Arrange labels. |
+| `crates/cr-ui/src/browser/status_bar.rs` | The T8 status bar (`statusStrip`): the selection-info spring panel (`selection_info` — the C# `SelectionInfo` port, unit-tested), export/write/scan lamps + the data-source light, the book/page/page-count panels, the thumb-size slider (`item_size_range`/`clamp_item_size` in `layout.rs`, unit-tested); the 1 s activity poll (`start_activity_timer`). |
 | `crates/cr-ui/src/browser/navigator.rs` | The list tree (Library/Smart Lists/folders/reading lists) with the context menu + the command dispatch. |
 | `crates/cr-ui/src/browser/item_view.rs` | The book grid: view modes, sort/group, selection (select_book/reselect), type-ahead, thumbs via the pool queues. |
 | `crates/cr-ui/src/browser/pages_view.rs` | The Pages panel: the open comic's page grid, the current-page marker, double-click navigation. |
@@ -950,7 +928,7 @@ The UI crate (Phase 3):
 | `crates/cr-ui/src/dialogs/smart_list.rs` | The smart-list editor: Designer (matcher rows/groups with the type/operator/value/not combos + the structure menu) | Query (the rendered query text round-trip). |
 | `crates/cr-ui/src/dialogs/list_editor.rs` | The list editor for folders (name/notes/combine) and reading lists (name/notes/quick-open). |
 | `crates/cr-ui/src/dialogs/export.rs` | The export dialog: target/folder/format/compression/naming/page-format/quality + the flags, the inline progress, the session-persisted last settings. |
-| `crates/cr-ui/examples/` | The headless probes: `commands_probe` (69 actions + accels), `menubar_probe` (the T3 bar), `dynmenus_probe` (the T4 fills), `toolbar_probe` (the T5 strip + the dropdown OPEN gate), `browserbar_probe` (the T6 browser toolbar: OPEN gates, the read/scope filters, the column chooser open/height/toggle, the duplicate landing), `navpages_probe` (the T7 navigator/Pages toolbars: the dispatch, the search filter, the expand flip, the Views OPEN + radio), `tabstrip_probe` (the T9 workspace strip: open/close/+/select flows, the Pages visibility, the bold slot, the re-click toggle), `menubarvis_probe` (the visibility evidence), `icons_probe`, `editor_probe`, `writeback_probe`. |
+| `crates/cr-ui/examples/` | The headless probes: `commands_probe` (69 actions + accels), `menubar_probe` (the T3 bar), `dynmenus_probe` (the T4 fills), `toolbar_probe` (the T5 strip + the dropdown OPEN gate), `browserbar_probe` (the T6 browser toolbar: OPEN gates, the read/scope filters, the column chooser open/height/toggle, the duplicate landing), `navpages_probe` (the T7 navigator/Pages toolbars: the dispatch, the search filter, the expand flip, the Views OPEN + radio), `tabstrip_probe` (the T9 workspace strip: open/close/+/select flows, the Pages visibility, the bold slot, the comic-tab re-click, the reader-click MinimalGui gate), `statusbar_probe` (the T8 bar: defaults, the info line, the slider resize/sync, the page click, the lamp flags, the MinimalGui action; REFUSES a non-isolated XDG), `menubarvis_probe` (the visibility evidence), `icons_probe`, `editor_probe`, `writeback_probe`. |
 | `crates/cr-ui/src/settings/` | The Preferences dialog (`preferences.rs`) + the options builder (`options.rs`, the `FillPanelWithOptions` parity). |
 | `crates/cr-ui/src/pages.rs` | The page-entry merge (`merged_page_entries`): the provider count + the stored overlay — the reader and the editor both use it. |
 | `crates/cr-ui/src/bitmap.rs` | The cairo surface helpers (RGBA→premultiplied ARGB, the thumbnail-blob split). |

@@ -1668,6 +1668,31 @@ owns the Phase 5.5 omissions).
   and Ctrl+wheel resizes both grids. **Next: T8 (the status
   bar).**
 
+### T8 — Status bar (COMPLETE — USER-TESTED)
+- The export lamp shows only between synchronous export runs: the
+  port runs the export IN the dialog on the UI thread; the C#
+  funnels exports through a background queue (`QueueManager`), so
+  its lamp stays lit while the dialog is open. The
+  `export_in_flight` flag + the 1 s poll exist; a future export
+  queue can keep driving them.
+- The read-info/page/backup/device-sync lamps are ABSENT: those
+  activities have no ported engine yet (the C# lamps:
+  `tsReadInfoActivity`/`tsPageActivity`/`tsBackupActivity`/
+  `tsDeviceSyncActivity`). The lamp family extends when the
+  engines land.
+- The server-activity panel is ABSENT (ADR-024: remote dropped).
+- The Win7 taskbar overlay icon (the C# mirrors the lamp state
+  into it, `Win7.SetOverlayIcon`) is not portable.
+- The lamp icons are the static PNGs `Export.png`/`UpdateBig.png`/
+  `Scan.png` — the C# animations are resx GIFs, not bundled (the
+  T2 record).
+- The data-source light always shows "connected": the local XML
+  database has no disconnect state (the C# flips
+  `DataSourceConnected/Disconnected` with the storage state).
+- The page panel shows the 1-based DISPLAY page; with Deleted
+  pages present the C# shows the provider page (the same
+  deviation family as the T4 bookmark captions).
+
 ### T9 — Workspace tab strip (COMPLETE — USER-TESTED)
 
 The user report that drove the re-layout: the C# tab bar sits
@@ -2047,6 +2072,33 @@ the C# Auto mode gives on white comics.
   **RETEST:** open a comic, click the page — the chrome collapses
   to the page (MinimalGui); click again — it returns. The
   workspace must never switch on a page click.
+- T8 COMPLETE — USER-TESTED, ALL PASS (2026-09-05; two fix rounds
+  + the round-2 clarification). The user verified: the bar layout,
+  the info line (list name + count + filtered + the
+  single-selection path + sizes), the book/page/count panels with
+  turns, the page-panel click lock, the slider resize + re-range
+  per mode, the MinimalGui hide, the comic-tab re-click (no
+  Library flip), the tab highlight covering the X, F10/K, and the
+  reader page click collapsing the chrome. Fix-round facts a fresh
+  agent needs:
+  - The reader page CLICK is `ToggleBrowserFromReader` in Fill
+    mode = MinimalGui (MainForm.cs:1585 + 2133-2144). The shell
+    forwards it to `dispatch_current("ToggleMenu")`; the
+    workspace never switches. Gate: the tabstrip probe's J step.
+  - GTK's built-in `GtkWindow:handle-menubar-accel` (capture-phase
+    F10, default on) consumes F10 before any app accel — the main
+    window sets it false (the C# F10 is MinimalGui; the custom T3
+    menubar is invisible to GTK's model-menubar focus).
+  - Comic file tabs never toggle on re-click (the C# wires
+    CaptionClick only on the workspace items, MainView.cs:161-163).
+  - The page panel updates come from the `page_change` hook (wheel
+    and click turns dispatch no action); the hook runs inside the
+    reader-state borrow, so it may only use the passed page value.
+  - Probes that seed books must refuse a non-isolated
+    XDG_DATA_HOME (the statusbar probe seeds; an unisolated run
+    polluted the real library once).
+  **Next: T10 (dock modes) or the small tasks T11-T14.** Phase 6
+  (scripting) starts only after 5.5.
   **RETEST:** items 1 (click an open comic's tab — the page shows,
   no Library flip), 3 (F10/K toggles the MinimalGui chrome), 4
   (turn pages with the wheel — the page panel follows) and the tab
