@@ -100,8 +100,11 @@ struct ShellState {
     /// Duplicate List source (`GetCurrentMatcher`).
     current_filter: RefCell<Option<Matcher>>,
     /// The Detail header column chooser (the C#
-    /// `autoHeaderContextMenuStrip`).
-    columns_drop: super::menubar::Dropdown,
+    /// `autoHeaderContextMenuStrip`): a FRESH popover per open; the
+    /// last one is kept for the probe.
+    columns_drop: RefCell<Option<super::menubar::Dropdown>>,
+    /// The shared dynamic fill provider (the chooser rebuilds it).
+    dyn_fill: RefCell<Option<super::menubar::DynFillFn>>,
 }
 
 impl ShellState {
@@ -243,8 +246,6 @@ impl BrowserShell {
         paned.set_start_child(Some(&panel_box));
         paned.set_shrink_start_child(false);
         paned.set_position(280);
-        paned.set_end_child(Some(&item_scroller));
-        paned.set_shrink_end_child(false);
         let status = Label::builder()
             .halign(gtk4::Align::Start)
             .margin_top(4)
@@ -252,8 +253,16 @@ impl BrowserShell {
             .margin_start(8)
             .build();
         status.set_text("0 book(s)");
+        // The browser toolbar rides the ITEM VIEW pane (the C#
+        // toolStrip spans the ComicBrowserControl's list area — the
+        // user report: it must start at the left edge of the RIGHT
+        // view window, not cover the navigator).
+        let item_box = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+        item_box.append(browser_toolbar.widget());
+        item_box.append(&item_scroller);
+        paned.set_end_child(Some(&item_box));
+        paned.set_shrink_end_child(false);
         let browser_page = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
-        browser_page.append(browser_toolbar.widget());
         browser_page.append(&paned);
         browser_page.append(&status);
 
@@ -282,15 +291,21 @@ impl BrowserShell {
         // content — the T3 custom bar (GTK4 model menus cannot show
         // the C# menu-item icons).
         let menubar = super::menubar::create_menubar(&window);
-        // The reader toolbar (the T5 `mainToolStrip`): rides above
-        // the reader content (the C# Dock=Right inside the tab row).
+        // The reader toolbar (the T5 `mainToolStrip`): mounts UNDER
+        // the menubar, above the view stack (the C# strip lives in
+        // the tab-strip row, visible in BOTH the browser and reader
+        // views — OnGuiVisibilities keeps MainToolStripVisible on in
+        // Fill mode; only MinimalGui hides it). Tools/Fullscreen are
+        // reachable from the library view (the user report).
         let toolbar = super::toolbar::ReaderToolbar::create(&window);
+        let toolbar_box = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+        toolbar_box.append(toolbar.widget());
         let reader_page = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
-        reader_page.append(toolbar.widget());
         reader_page.append(&reader_widgets.notebook());
         stack.add_named(&reader_page, Some("reader"));
         let content = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
         content.append(menubar.widget());
+        content.append(&toolbar_box);
         content.append(&stack);
         window.set_child(Some(&content));
 
@@ -316,14 +331,17 @@ impl BrowserShell {
             menubar,
             menubar_revealed: Cell::new(false),
             toolbar,
-            reader_page_box: reader_page.clone(),
+            // The undock re-dock parent: the strip's DOCKED home is
+            // the box under the menubar (above the stack).
+            reader_page_box: toolbar_box.clone(),
             browser_toolbar,
             search_text: RefCell::new(String::new()),
             current_filter: RefCell::new(None),
-            columns_drop: super::menubar::build_dropdown(
-                &[super::menubar::MenuNode::Dyn("detail-columns")],
-                &window,
-            ),
+            // The column chooser builds a FRESH popover per open
+            // (the exact shape of the proven book context menu; the
+            // last one stays here for the probe).
+            columns_drop: RefCell::new(None),
+            dyn_fill: RefCell::new(None),
         });
         let shell = BrowserShell {
             window: window.clone(),
@@ -842,16 +860,26 @@ impl BrowserShell {
         self.state.item_view.detail_columns_snapshot()
     }
 
+    /// The visible stack page name (the probe).
+    pub fn state_visible_page(&self) -> Option<String> {
+        self.state.stack.visible_child_name().map(|s| s.to_string())
+    }
+
     /// Opens the column chooser through the real hook path (the
     /// probe's OPEN gate).
     pub fn state_open_column_chooser(&self, wx: f64, wy: f64) -> bool {
         self.state.popup_column_chooser(wx, wy);
-        self.state.columns_drop.popover().is_mapped()
+        self.state
+            .columns_drop
+            .borrow()
+            .as_ref()
+            .is_some_and(|d| d.popover().is_mapped())
     }
 
-    /// The Detail header column chooser dropdown (the probe).
-    pub fn state_column_chooser(&self) -> crate::browser::menubar::Dropdown {
-        self.state.columns_drop.clone()
+    /// The LAST built column chooser dropdown (the probe — a fresh
+    /// popover per open; open first).
+    pub fn state_column_chooser(&self) -> Option<crate::browser::menubar::Dropdown> {
+        self.state.columns_drop.borrow().clone()
     }
 
     /// The browser toolbar's Group/Arrange label texts (the probe).
@@ -1049,6 +1077,16 @@ impl ShellState {
             }
         }
         // The check states (`CommandMapper` check lambdas):
+        // The view-mode radio state follows the VIEW (the source of
+        // truth — the T6 report: the Views check never moved).
+        if let Some(a) = self.action("view-mode") {
+            let name = match self.item_view.mode() {
+                ItemViewMode::Thumbnail => "thumbnail",
+                ItemViewMode::Tile => "tile",
+                ItemViewMode::Detail => "detail",
+            };
+            a.set_state(&name.to_variant());
+        }
         // `() => BrowserVisible`, `() => Program.Settings.AutoScrolling`
         // (the view mirrors it), `() => ComicDisplay.TwoPageNavigation`,
         // MinimalGui / FullScreen / Autorotate.
@@ -1402,10 +1440,10 @@ impl ShellState {
         });
         self.menubar.set_dyn_fill(Rc::clone(&fill));
         self.toolbar.set_dyn_fill(fill.clone());
-        // The browser toolbar's Duplicate List drop + the Detail
-        // header column chooser share the provider.
+        // The browser toolbar's Duplicate List drop shares it; the
+        // column chooser takes a clone per open.
         self.browser_toolbar.set_dyn_fill(fill.clone());
-        self.columns_drop.set_dyn_fill(fill);
+        *self.dyn_fill.borrow_mut() = Some(fill);
         // The toolbar rides into the undocked window (the T5
         // chrome).
         self.reader.set_undock_chrome(
@@ -1699,16 +1737,33 @@ impl ShellState {
         self.item_view.set_filter(matcher);
     }
 
-    /// The Detail header column chooser (parented to the window,
-    /// pointing at the click — the C# `autoHeaderContextMenuStrip`).
+    /// The Detail header column chooser: a FRESH popover per open —
+    /// the exact shape of the proven book context menu (build,
+    /// parent to the window, point at the click, popup, unparent on
+    /// close). The fill refreshes before the popup (the fill rows
+    /// carry the live check states).
     fn popup_column_chooser(&self, wx: f64, wy: f64) {
-        let popover = self.columns_drop.popover();
-        if popover.parent().is_none() {
-            popover.set_parent(&self.window);
+        if std::env::var_os("CR_DEBUG_CHOOSER").is_some() {
+            eprintln!("CHOOSER popup at ({wx}, {wy})");
         }
-        self.columns_drop.refresh_slot("detail-columns");
+        let Some(fill) = self.dyn_fill.borrow().clone() else {
+            return;
+        };
+        let drop = super::menubar::build_dropdown(
+            &[super::menubar::MenuNode::Dyn("detail-columns")],
+            &self.window,
+        );
+        drop.set_dyn_fill(fill);
+        drop.refresh_slot("detail-columns");
+        let popover = drop.popover().clone();
+        popover.set_parent(&self.window);
+        {
+            let unparent = popover.clone();
+            popover.connect_closed(move |_| unparent.unparent());
+        }
         let rect = gtk4::gdk::Rectangle::new(wx as i32, wy as i32, 1, 1);
         popover.set_pointing_to(Some(&rect));
+        *self.columns_drop.borrow_mut() = Some(drop);
         popover.popup();
     }
 
@@ -1732,8 +1787,10 @@ impl ShellState {
         });
     }
 
-    /// `ToggleBrowser`: the browser and reader pages flip; without a
-    /// book the browser/QuickOpen stays.
+    /// `ToggleBrowser`: the browser and reader pages flip. From the
+    /// QuickOpen page the browser shows (the user report: Browse ▸
+    /// Browser did nothing there); without an open book the reader
+    /// side stays on the browser/QuickOpen.
     fn toggle_browser(&self) {
         let visible = self
             .stack
@@ -1742,7 +1799,8 @@ impl ShellState {
             .unwrap_or_default();
         match visible.as_str() {
             "reader" => self.show_browser(),
-            "browser" | "quickopen" if !self.reader.is_empty() => {
+            "quickopen" => self.show_browser(),
+            "browser" if !self.reader.is_empty() => {
                 self.stack.set_visible_child_name("reader");
             }
             _ => {}
@@ -1765,7 +1823,7 @@ impl ShellState {
         );
         {
             let state = state.clone();
-            mode_action.connect_activate(move |action, value| {
+            mode_action.connect_activate(move |_, value| {
                 let Some(state) = state.upgrade() else {
                     return;
                 };
@@ -1776,7 +1834,11 @@ impl ShellState {
                     _ => ItemViewMode::Thumbnail,
                 };
                 state.item_view.configure(|c| c.mode = mode);
-                action.set_state(&name.to_variant());
+                // The check state follows the VIEW (the T6 user
+                // report: the Views check never moved — the state
+                // was set here but the dropdown rows only re-render
+                // on the sync, which this handler never ran).
+                state.sync_enabled();
             });
         }
         group.add_action(&mode_action);
@@ -1859,6 +1921,7 @@ impl ShellState {
                 };
                 sh.item_view.set_grouper(grouper);
                 action.set_state(&name.to_variant());
+                sh.sync_enabled();
             });
         }
         group.add_action(&group_action);
@@ -1883,6 +1946,7 @@ impl ShellState {
                 }
                 action.set_state(&name.to_variant());
                 sh.rebuild_filter();
+                sh.sync_enabled();
             });
         }
         group.add_action(&view_filter);
@@ -1915,6 +1979,7 @@ impl ShellState {
                 };
                 action.set_state(&next.to_variant());
                 sh.rebuild_filter();
+                sh.sync_enabled();
             });
         }
         group.add_action(&comic_type);
@@ -1934,6 +1999,7 @@ impl ShellState {
                     .unwrap_or(false);
                 action.set_state(&next.to_variant());
                 sh.rebuild_filter();
+                sh.sync_enabled();
             });
         }
         group.add_action(&duplicates);
@@ -1968,6 +2034,7 @@ impl ShellState {
                         .map(|(_, l)| *l)
                         .unwrap_or("Search All"),
                 ));
+                sh.sync_enabled();
             });
         }
         group.add_action(&scope);
@@ -1988,6 +2055,7 @@ impl ShellState {
                     return;
                 };
                 sh.item_view.toggle_column_visible(id);
+                sh.sync_enabled();
             });
         }
         group.add_action(&toggle_column);

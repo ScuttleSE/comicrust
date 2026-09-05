@@ -442,10 +442,23 @@ impl ItemView {
             gesture.set_state(gtk4::EventSequenceState::Claimed);
             // The header hit test needs the config — read it BEFORE
             // the branch (the if-condition temporaries lesson).
-            let header_hit = {
+            let (header_hit, dbg) = {
                 let s = state.borrow();
-                layout::header_visible(&s.config) && y <= s.config.header_height
+                let hv = layout::header_visible(&s.config);
+                let hit = hv && y <= s.config.header_height;
+                let d = format!(
+                    "mode={:?} header_visible_cfg={} computed_hv={} header_h={} hook={}",
+                    s.config.mode,
+                    s.config.header_visible,
+                    hv,
+                    s.config.header_height,
+                    s.on_header_context.is_some(),
+                );
+                (hit, d)
             };
+            if std::env::var_os("CR_DEBUG_CHOOSER").is_some() {
+                eprintln!("CONTEXT right-click canvas=({x}, {y}) header_hit={header_hit} {dbg}");
+            }
             if header_hit {
                 let hook = state.borrow().on_header_context.clone();
                 if let Some(f) = hook {

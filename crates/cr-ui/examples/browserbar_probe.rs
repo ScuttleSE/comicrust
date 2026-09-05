@@ -83,6 +83,12 @@ fn main() {
     app.connect_activate(move |app| {
         let (window, shell) = cr_ui::browser::shell::BrowserShell::create(app);
         window.present();
+        {
+            glib::timeout_add_local(std::time::Duration::from_millis(3600), move || {
+                println!("DWELL WINDOW ready for the external right-click");
+                glib::ControlFlow::Break
+            });
+        }
         std::mem::forget(shell.clone());
         let base_nodes = tree_nodes();
 
@@ -103,6 +109,33 @@ fn main() {
                 let mapped = shell.browserbar_drop_mapped("views");
                 println!("A views-drop mapped={mapped} (expect true, no segv)");
                 shell.browserbar_close_dropdown("views");
+                // The check SYNC (the T6 round-1 report: the Views
+                // check never moved): switch to Tiles and read the
+                // action state back.
+                shell.state_dispatch_param("win.view-mode", "tile");
+                println!(
+                    "A view-mode state={:?} (expect tile)",
+                    shell.state_action_string("view-mode")
+                );
+                shell.state_dispatch_param("win.view-mode", "thumbnail");
+                glib::ControlFlow::Break
+            }
+        });
+
+        // A2. Browse ▸ Browser from the QuickOpen page (the round-1
+        //     report: nothing happened there).
+        glib::timeout_add_local(std::time::Duration::from_millis(1300), {
+            let shell = shell.clone();
+            move || {
+                println!(
+                    "A2 before page={:?}",
+                    shell.state_visible_page()
+                );
+                shell.state_dispatch("win.toggle-browser");
+                println!(
+                    "A2 after toggle page={:?} (expect browser)",
+                    shell.state_visible_page()
+                );
                 glib::ControlFlow::Break
             }
         });
@@ -200,7 +233,7 @@ fn main() {
                     Some(id) => id,
                     None => return glib::ControlFlow::Break,
                 };
-                let clicked = drop.click_row(&format!("win.toggle-column::{id}"));
+                let clicked = drop.is_some_and(|d| d.click_row(&format!("win.toggle-column::{id}")));
                 let after = shell
                     .state_columns_snapshot()
                     .iter()
@@ -240,7 +273,6 @@ fn main() {
             }
         });
         glib::timeout_add_local(std::time::Duration::from_millis(3300), {
-            let app = app.clone();
             let shell = shell.clone();
             move || {
                 let nodes = tree_nodes();
@@ -248,6 +280,19 @@ fn main() {
                     "E tree-nodes {base_nodes} -> {nodes} (expect +1: the smart list)"
                 );
                 let _ = &shell;
+                // F. A long dwell in Detail mode with the browser
+                // page shown: an external xdotool right-click on the
+                // header exercises the REAL gesture path (the trace
+                // prints CONTEXT/CHOOSER).
+                shell.state_dispatch("win.view-library");
+                shell.state_dispatch_param("win.view-mode", "detail");
+                println!("DWELL START");
+                glib::ControlFlow::Break
+            }
+        });
+        glib::timeout_add_local(std::time::Duration::from_millis(60000), {
+            let app = app.clone();
+            move || {
                 println!("PROBE COMPLETE");
                 app.quit();
                 glib::ControlFlow::Break
