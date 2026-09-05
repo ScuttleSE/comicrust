@@ -53,9 +53,9 @@ fn main() {
         shell.menubar().open_top(4);
         println!("STATE display menu open: {}", shell.menubar().top_count());
 
-        // 5. The switching path (the user's crash sequence): switch
-        //    to another top menu while one is open, then close.
-        glib::timeout_add_local(std::time::Duration::from_millis(800), {
+        // 5. The switching path: switch top menus while one is open,
+        //    then close (the Wayland-grab regression class).
+        glib::timeout_add_local(std::time::Duration::from_millis(400), {
             let menubar = shell.menubar().clone_handle();
             move || {
                 println!("SWITCH to Edit");
@@ -63,7 +63,7 @@ fn main() {
                 glib::ControlFlow::Break
             }
         });
-        glib::timeout_add_local(std::time::Duration::from_millis(1600), {
+        glib::timeout_add_local(std::time::Duration::from_millis(800), {
             let menubar = shell.menubar().clone_handle();
             move || {
                 println!("SWITCH to Help");
@@ -72,7 +72,34 @@ fn main() {
             }
         });
 
-        glib::timeout_add_local(std::time::Duration::from_millis(2800), {
+        // 6. The row-click proof (the round-2 bug class: accels
+        //    fired, clicks did not): emulate a real row click and
+        //    verify the stateful action's state flipped.
+        glib::timeout_add_local(std::time::Duration::from_millis(1200), {
+            let menubar = shell.menubar().clone_handle();
+            let window = window.clone();
+            move || {
+                let read_state = || cr_ui::library::settings().borrow().track_current_page;
+                let before = read_state();
+                let _ = gtk4::prelude::WidgetExt::activate_action(
+                    &window,
+                    "win.track-current-page",
+                    None,
+                );
+                let direct = read_state();
+                let _ = &window; // the widget path goes through the menubar handle
+                menubar.click_row("win.track-current-page");
+                let after = read_state();
+                println!("DIRECT activate: {before:?} -> {direct:?}");
+                println!(
+                    "CLICK row: {direct:?} -> {after:?} (flipped: {})",
+                    direct != after
+                );
+                glib::ControlFlow::Break
+            }
+        });
+
+        glib::timeout_add_local(std::time::Duration::from_millis(2000), {
             let app = app.clone();
             move || {
                 println!("PROBE COMPLETE");

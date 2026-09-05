@@ -69,6 +69,17 @@ Every phase ends shippable and testable. Phases 0-2 are fully headless. They de-
 
 ## 5. Kickoff
 
+## 6. Backlog
+
+- **Build selected bundled scripts into the app natively** (Phase 5.5
+  T3 finding, 2026-09-05): some of the C#'s menu items are actually
+  IronPython scripts under `ComicRack/Output/Scripts/` — e.g. File ▸
+  Automation ▸ "New fileless Book Series..." is `NewComics.py`
+  (`#@Hook NewBooks`). Candidates worth a native Rust port instead of
+  Python-plugin machinery: NewComics.py (fileless series/entries),
+  and any other high-traffic sample scripts reviewed at Phase 6. The
+  rest keep the Phase 6 plugin host.
+
 Phase task breakdowns with acceptance criteria:
 
 - Phase 0: `phase-0-kickoff.md` — built and validated (see `AGENTS.md` status).

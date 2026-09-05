@@ -551,6 +551,9 @@ pub struct ItemRow {
     base: &'static str,
     /// The radio value for parametered targets.
     value: Option<&'static str>,
+    /// The full detailed action ("win.next-page") — the probe's
+    /// row-click path keys on it.
+    action: &'static str,
     button: gtk4::Button,
     indicator: gtk4::Image,
 }
@@ -582,7 +585,9 @@ type ActiveSlot = Rc<Cell<Option<usize>>>;
 pub struct MenubarWidget {
     bar: gtk4::Box,
     tops: Vec<TopMenu>,
-    rows: Vec<ItemRow>,
+    /// Shared with every clone/handle (the sync and the row-click
+    /// path both walk it).
+    rows: Rc<Vec<ItemRow>>,
     active: ActiveSlot,
 }
 
@@ -598,19 +603,17 @@ impl Clone for MenubarWidget {
                     popover: t.popover.clone(),
                 })
                 .collect(),
-            rows: Vec::new(),
+            rows: Rc::clone(&self.rows),
             active: Rc::clone(&self.active),
         }
     }
 }
 
 impl MenubarWidget {
-    /// A sync-capable handle (the sync rows live in the original —
-    /// cloned handles skip the state sync).
+    /// A handle for the probes (the rows are shared, so the handle
+    /// clicks and syncs like the original).
     pub fn clone_handle(&self) -> MenubarWidget {
-        let mut cloned = self.clone();
-        cloned.rows = Vec::new();
-        cloned
+        self.clone()
     }
 
     pub fn widget(&self) -> &gtk4::Box {
@@ -628,11 +631,25 @@ impl MenubarWidget {
         set_active_item(&self.tops, &self.active, index);
     }
 
+    /// Emulates a row CLICK through the real widget path
+    /// (`emit_clicked` → the row's handler → popdown +
+    /// `activate_action`) — the probe proof that menu rows fire
+    /// actions (the round-2 bug class: accels fired, clicks did
+    /// not). No-op for an unknown action.
+    pub fn click_row(&self, action: &str) {
+        for row in self.rows.iter() {
+            if row.action == action {
+                row.button.emit_clicked();
+                return;
+            }
+        }
+    }
+
     /// Applies the action states: check marks (checks and radio
     /// targets) and disabled graying. `resolve` maps an action base
     /// name to (enabled, state).
     pub fn sync(&self, resolve: &dyn Fn(&str) -> Option<ActionState>) {
-        for row in &self.rows {
+        for row in self.rows.iter() {
             if row.base.is_empty() {
                 continue;
             }
@@ -758,7 +775,13 @@ fn build_menu_content(
                     .build();
                 button.set_halign(gtk4::Align::Fill);
                 // Click → close the popover, fire the action (a
-                // custom row has no model auto-close).
+                // custom row has no model auto-close). The action
+                // name keeps its FULL "win." group form — GTK
+                // resolves actions through action GROUPS; a stripped
+                // "next-page" finds no group and silently fails
+                // (the T3 round-2 bug: accels worked, clicks did
+                // not). Radio targets split at "::": the value
+                // becomes the parameter.
                 {
                     let window = window.clone();
                     let detailed = (*action).to_string();
@@ -775,7 +798,7 @@ fn build_menu_content(
                             .map(|v| gtk4::glib::Variant::from(v.as_str()));
                         let _ = gtk4::prelude::WidgetExt::activate_action(
                             &window,
-                            detailed.strip_prefix("win.").unwrap_or(detailed.as_str()),
+                            detailed.as_str(),
                             variant.as_ref(),
                         );
                     });
@@ -789,6 +812,7 @@ fn build_menu_content(
                 rows.push(ItemRow {
                     base,
                     value,
+                    action,
                     button,
                     indicator,
                 });
@@ -986,7 +1010,7 @@ pub fn create_menubar(window: &gtk4::ApplicationWindow) -> MenubarWidget {
                 popover: t.popover.clone(),
             })
             .collect(),
-        rows,
+        rows: Rc::new(rows),
         active,
     }
 }
