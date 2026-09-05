@@ -884,3 +884,32 @@ change; it lands after the bars so they exist in both modes.
      100–400 % presets work in the reader; the menu shows the C#
      shortcuts.
   9. Accelerator DISPLAY text reads "Ctrl+Shift+X"-style like CR.
+- T3 FIX ROUND 1 (2026-09-05), user-tested FAIL → fix → retest
+  pending. Symptom: clicking one top menu left the whole window
+  unclickable, console full of "Tried to map a grabbing popup with
+  a non-top most parent". Root cause (evidence-first): the warning
+  is in the WAYLAND backend only
+  (`gdk/wayland/gdkpopup-wayland.c:981`, `can_map_grabbing_popup`
+  904-918 — an autohide popup may map only when its parent is the
+  current TOP-MOST grabbing popup; X11 has no such rule, which is
+  why Xvfb never reproduced it). The rework's top row used
+  `MenuButton`s: the hover controller set the next button active
+  WHILE the previous popover still held the Wayland grab → the new
+  popover failed to map but `gdk_seat_grab` had already succeeded →
+  a live grab with no visible popup → every click swallowed. Two
+  warnings in one instant = the pointer crossed two top buttons in
+  one motion. Fix: the `GtkPopoverMenuBar.set_active_item` state
+  machine ported (`gtkpopovermenubar.c:124-175` is the spec): ONE
+  active slot (Rc<Cell<Option<usize>>>); `set_active_item` pops
+  down EVERY other mapped popover first, then presents the target;
+  the click handler toggle-closes the open menu; hover and
+  Left/Right route through the same funnel; every popover close
+  clears the slot (guarded against a stale old-popover close
+  clearing a new one). The row focus grab moved off the map
+  callback into an idle (it ran inside the Wayland grab setup).
+  MenuButton is gone from the top row (plain flat Buttons +
+  explicit `popover.popup()/popdown()`; popovers parent
+  explicitly). Probe covers the switching sequence (File → Edit →
+  Help); 294 tests, clippy clean. LESSON: on Wayland NEVER present
+  a second popover while one is open — popdown first, every time;
+  and the grab-focus-on-map pattern belongs in an idle.

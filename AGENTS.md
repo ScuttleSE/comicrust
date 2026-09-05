@@ -934,6 +934,17 @@ Re-bless the `db-large.xml` snapshot after a deliberate model change: `CR_BLESS=
   moment activate returns, before any timeout fires; `app.hold()`
   did not rescue it (the icon probe needed the ApplicationWindow
   to reach its 1.5 s screenshot dwell).
+- On Wayland NEVER present a second popover while one is open —
+  the autohide popup only maps when no other grabbing popup is up
+  (`can_map_grabbing_popup`, `gdkpopup-wayland.c`); a failed map
+  leaves the seat grab LIVE and the whole window goes unclickable
+  (the "non-top most parent" warning spam). Port the
+  `GtkPopoverMenuBar.set_active_item` shape: one active slot,
+  popdown-ALL-others-then-popup, close clears the slot. X11
+  tolerates parallel popovers, so Xvfb probes CANNOT catch this —
+  the user test is the only evidence. Grab-focus-on-map belongs
+  in an idle, not the map callback (it runs inside the grab
+  setup).
 
 ### Blockers / open questions
 
