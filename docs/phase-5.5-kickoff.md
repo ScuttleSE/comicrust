@@ -457,6 +457,17 @@ change; it lands after the bars so they exist in both modes.
   header's Open/Preferences/View/Sort/Group buttons move into the
   new structure. Column chooser: right-click a Detail column
   header → check-list of all registered columns (persist in T14).
+- Port notes (the T4/T5 learnings apply): build the browser
+  toolbar's menus with `menubar::build_dropdown` (the same
+  machinery the reader toolbar uses — parent to the anchor button
+  before popup, one popover per instance); the Views/Group/Sort
+  state pushes through the SAME `sync_menubar` resolve closure
+  (add the view-mode/read-filter radio states to the actions
+  registry — the C# reads them from `IComicBrowser`); the View
+  menu tables live in `toolbar.rs`-style consts; new stateful
+  actions (`view-filter`/`duplicate-only`/the scope menu) follow
+  the `page-fit` radio pattern (BARE name + variant parameter on
+  clicks — the T4 lesson).
 - Acceptance: toggles work (Sidebar hides the left panel); the
   read-state filter changes the grid; column chooser shows/hides
   Detail columns live; sort/group still work.
@@ -1166,7 +1177,14 @@ change; it lands after the bars so they exist in both modes.
   through the real anchor → `is_mapped() == true`, alive, clean
   exit. LESSON: every popover needs a parent BEFORE popup(); a
   probe that only clicks rows never exercises the present path —
-  gate the OPEN, not just the click. 299 tests, all probes green. **USER TEST (the T5 acceptance):**
+  gate the OPEN, not just the click. 299 tests, all probes green.
+- T5 COMPLETE — USER-TESTED, ALL PASS (2026-09-05; one fix round:
+  the unparented dropdown-popover segfault). The user verified: the
+  strip mounts with the C# icons, the page-turn main clicks, all
+  seven dropdowns open and fire (radios, bookmark rows), the
+  state text (zoom %/rotation °) tracks, the undock carries the
+  strip, no crash. **Next: T6 (the browser toolbar reorg + the
+  Detail column chooser).** **USER TEST (the T5 acceptance):**
     1. Open a comic — the strip sits at the top right of the
        reader: [prev][next] | layout fit zoom% rotate° | magnifier
        fullscreen | tools, with the C# icons.
@@ -1191,6 +1209,30 @@ change; it lands after the bars so they exist in both modes.
        stops hiding the bar).
     8. Undock (D) — the strip rides into the undocked window and
        works; D returns it.
+
+### T5 — Reader toolbar (COMPLETE — see the closure entry in the progress log)
+- DEVIATIONS (vs the C# ToolStrip):
+  - The strip mounts as a right-aligned row ABOVE the reader
+    content, not Dock=Right inside the tab row (the C# moves the
+    strip INTO the browser's tab strip in Fill mode — that
+    placement is T9 dock-mode work).
+  - The prev/next drops open DOWNWARD from the chevron (the C#
+    ToolStripSplitButton opens its drop below the whole button);
+    the chevron is a separate click target (a GTK split look via
+    the `linked` CSS class, not one composite widget).
+  - The bookmark rows in the prev/next drops navigate by provider
+    page (the same Deleted-page caveat as the Edit ▸ Bookmarks
+    fill — a bookmark on a Deleted page lists but cannot jump).
+  - The zoom/rotate buttons are DROP-ONLY (no main click); the C#
+    split buttons have no main-click handler either — parity.
+  - The Tools menu omits the ADR-024 omissions (Open Remote
+    Library, Workspaces, Update Web Comics, Synchronize Devices);
+    the Bookmarks submenu inside it carries the dynamic list.
+  - `Generate Cover Thumbnails` stays a disabled stub (the
+    thumbnail-queue work owns it).
+- LESSON (the crash round): every popover needs a parent BEFORE
+  popup(); a probe that only clicks rows never exercises the
+  present path — gate the OPEN, not just the click.
 
 ## Omitted / postponed per task (the tracker)
 

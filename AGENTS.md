@@ -103,25 +103,28 @@ Update this section at the **end of every work session**. The next agent must kn
   when its entries are resolved or re-homed); cross-phase ideas in
   `docs/port-plan.md` §6 (e.g. port NewComics.py natively instead
   of the Python host).
-  T4 (the dynamic menus) IMPLEMENTED (2026-09-05), user test
-  pending. `MenuNode::Dyn(id)` slots in the pure table (File ▸
-  Open Books / Recent Books, Edit ▸ Page Type / Page Rotation, and
-  the Bookmarks dynamic list) rebuilt by a shell-owned fill
-  provider at every menu open (`MenubarWidget::set_dyn_fill` +
-  `refresh_top` in the open funnel — the C# `DropDownOpening`
-  shape; check/disabled state is BAKED at fill). New actions:
-  `open-tab`/`recent-book`/`open-bookmark`/`page-type`/
-  `page-rotation` (string parameters) + Set/Remove Bookmark now
-  real (the C# `UpdateBookmark` parity; the name prompt is
-  `dialogs::name_prompt.rs` — the `SelectItemDialog.GetName`
-  shape). `cr-core::ComicInfo::seek_bookmark` (the collection
-  SeekBookmark port; the callers pass `current + dir`) + the
-  reader-key bookmark commands forward from the view to
-  `ReaderShell::bookmark_nav`. Page edits (`edit_open_book`) go
-  through the session book → `apply_edited` (the gates) → the
-  Pages panel rebind; the Y page-rotations write through now and
-  the stored rotations seed the view at open. My Rating became
-  STATEFUL checks (`selection_common_rating` = the
+  T4 (the dynamic menus) COMPLETE — USER-TESTED, ALL PASS
+  (2026-09-05; one fix round: the dynamic submenus re-fill on
+  their OWN popover open — the top-menu funnel missed revisits
+  inside an open menu; the Preferences OK path re-runs the sync so
+  the update-book-files hide rule is immediate). `MenuNode::Dyn(id)`
+  slots in the pure table (File ▸ Open Books / Recent Books, Edit ▸
+  Page Type / Page Rotation, and the Bookmarks dynamic list)
+  rebuilt by a shell-owned fill provider at every menu open
+  (`MenubarWidget::set_dyn_fill` + `refresh_top` in the open
+  funnel — the C# `DropDownOpening` shape; check/disabled state is
+  BAKED at fill). New actions: `open-tab`/`recent-book`/
+  `open-bookmark`/`page-type`/`page-rotation` (string parameters)
+  + Set/Remove Bookmark real (the C# `UpdateBookmark` parity; the
+  name prompt is `dialogs::name_prompt.rs` — the
+  `SelectItemDialog.GetName` shape). `cr-core::ComicInfo::
+  seek_bookmark` (the collection SeekBookmark port; the callers
+  pass `current + dir`) + the reader-key bookmark commands forward
+  from the view to `ReaderShell::bookmark_nav`. Page edits
+  (`edit_open_book`) go through the session book → `apply_edited`
+  (the gates) → the Pages panel rebind; the Y page-rotations write
+  through now and the stored rotations seed the view at open. My
+  Rating became STATEFUL checks (`selection_common_rating` = the
   `RatingEditor.GetRating` port) — the rating actions had silently
   skipped the actions registry (a T1 gap); `refresh_view_from_list`
   now RESTORES the selection (`ItemView::reselect` — the C#
@@ -130,40 +133,42 @@ Update this section at the **end of every work session**. The next agent must kn
   detailed name + an explicit parameter — `activate_action` parses
   a detailed name only WITHOUT args, so the radio rows never fired
   from clicks; the handlers pass the BARE name + the parameter
-  now. Probe `dynmenus_probe` gates all five fills + the row-click
-  switch + the bookmark/page-type/rating round-trips;
-  `menubar_probe`/`commands_probe` 69/69 unchanged; 296 tests.
+  now. The menubar-hides-in-browser-with-a-book-open observation
+  is DEFERRED to T9 (the port matches the C# formula per the
+  menubarvis_probe evidence; side-by-side then).
   Deviations in the kickoff tracker: Recent Books text-only (no
   16 px cover thumbs), a Deleted-page bookmark unreachable, the
   hide rule in the sync (not menu-open), slot accels live from the
   first fill.
-  T4 COMPLETE — USER-TESTED, ALL PASS (2026-09-05; one fix round:
-  the dynamic submenus re-fill on their OWN popover open — the
-  top-menu funnel missed revisits inside an open menu; the
-  Preferences OK path re-runs the sync so the update-book-files
-  hide rule is immediate). The menubar-hides-in-browser-with-a-
-  book-open observation is DEFERRED to T9 (the port matches the
-  C# formula per the menubarvis_probe evidence; side-by-side then).
-  296 tests.
-  T5 (the reader toolbar) IMPLEMENTED (2026-09-05), user test
-  pending. `browser/toolbar.rs` — the nine-button strip (prev/next
-  split buttons with page-turn main clicks, layout/fit drop-only,
-  zoom% + rotate° state text, magnifier/fullscreen toggles, the
-  Tools flattened menu) above the reader, right-aligned; the drops
-  reuse the menubar row machinery (`menubar::build_dropdown` —
-  one shared resolve closure pushes the action states into both
-  bars); the RTL/fit/layout icons track the reader; the bar rides
-  the undock (`ReaderShell::set_undock_chrome`); `win.show-main-
-  menu` (check = !AutoHideMainMenu). FIXED: `do_zoom` dropped a
-  preset with no composed page (the C# ImageZoom setter stores
-  unconditionally). Fill-mode placement into the browser tab strip
-  is T9. 299 tests, probes green. **Next: T6 (the browser toolbar
-  reorg + the Detail column chooser).** Phase 6 (scripting) starts
-  only after 5.5.
+  T5 (the reader toolbar) COMPLETE — USER-TESTED, ALL PASS
+  (2026-09-05; one fix round: the unparented dropdown-popover
+  segfault — `Dropdown::open` now parents the popover to its
+  stored ANCHOR BUTTON before presenting; parenting to the window
+  would break the undock; the probe gained the OPEN gate — a probe
+  that only clicks rows never exercises the present path). The
+  user verified: the strip mounts with the C# icons, the page-turn
+  main clicks, all seven dropdowns open and fire (radios, bookmark
+  rows), the state text (zoom %/rotation °) tracks, the undock
+  carries the strip, no crash. `browser/toolbar.rs` — the
+  nine-button strip (prev/next split buttons with page-turn main
+  clicks, layout/fit drop-only, zoom% + rotate° state text,
+  magnifier/fullscreen toggles, the Tools flattened menu) above
+  the reader, right-aligned; the drops reuse the menubar row
+  machinery (`menubar::build_dropdown` — one shared resolve
+  closure pushes the action states into both bars); the RTL/fit/
+  layout icons track the reader; the bar rides the undock
+  (`ReaderShell::set_undock_chrome`); `win.show-main-menu` (check
+  = !AutoHideMainMenu). FIXED: `do_zoom` dropped a preset with no
+  composed page (the C# ImageZoom setter stores unconditionally).
+  Fill-mode placement into the browser tab strip is T9.
+  Deviations in the kickoff tracker (row-above-reader mount,
+  drop-only zoom/rotate, the ADR-024 Tools omissions).
+  **Next: T6 (the browser toolbar reorg + the Detail column
+  chooser).** Phase 6 (scripting) starts only after 5.5.
   Phases 0-5 are complete (their gates stay green). Open Phase 1
   gaps: WebComicProvider and the PDF/DjVu writers (tracked in
   `docs/phase-1-kickoff.md`).
-- **State:** `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` are green. 281 tests pass across 30 suites. CI runs on the `docker-runner-amd64` container runner (ADR-020). The release tracks are `release.yaml` (rolling prerelease per push) and `tagged-release.yaml` (manual dispatch, stable release for an existing tag — ADR-021, 2026-09-03). Until the runner is registered and `comicrust-ci:latest` is built on the runner host, pushed and dispatched workflows sit queued on that label.
+- **State:** `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` are green. 299 tests. CI runs on the `docker-runner-amd64` container runner (ADR-020). The release tracks are `release.yaml` (rolling prerelease per push) and `tagged-release.yaml` (manual dispatch, stable release for an existing tag — ADR-021, 2026-09-03). Until the runner is registered and `comicrust-ci:latest` is built on the runner host, pushed and dispatched workflows sit queued on that label.
 - **Phase 0 gate status:** byte-stable ComicDb.xml round-trip proven on all three synthetic fixtures AND the real-world database `tests/realworld/ComicDb.xml` (255 books, 584 KB, 2026-09-02, user-approved commit).
 - **Phase 2 gate status:** every saved smart list in the real-world DB (a) binds to the matcher registry, (b) renders to a `Match` query string that re-parses and re-renders byte-identically, and (c) evaluates to the SAME book sets the C# cached in `CacheStorage` (Never Read = all 255, Files to update = the 3 dirty books, Reading/Read = empty). Evidence: `crates/cr-engine/tests/realworld_query.rs`.
 - **Phase 3 gate status (COMPLETE):** a real comic (`tests/testfiles/`, git-ignored, user-supplied) opens in a GTK4 window and reads comfortably: single/double/adaptive/continuous layouts, spread composition with cover-right + binding-edge rules, fit modes with anamorphic tolerance, zoom/pan/rotation, RTL, continuous scroll with anchor-stable layout rebuilds, fade/slide transitions, paper texture, Auto/Color/Texture backgrounds, the real `MainForm` input map, session tabs with undock, fullscreen chrome with cursor auto-hide, reading-state tracking, the magnifier, error pages, and pool-queue page loads. User-verified after each task; UI smoke tests on this machine run headless under Xvfb + screenshots (see the probe lessons below — the key-injection tools are unreliable; only user tests decide input behavior).
@@ -692,15 +697,20 @@ The UI crate (Phase 3):
 | `crates/cr-ui/assets/papers/` | Paper textures copied from the C# `Resources/Textures/Papers`. |
 | `crates/cr-image/src/error_assets.rs` | `CreateErrorPage`/`CreateErrorThumbnail` port with the bundled `ErrorPage.jpg` + `RedCross.png`. Unit-tested. |
 | `crates/cr-ui/src/library.rs` | The app session (`Program` statics): the Library open/save/scan wiring, the Settings + engine-config load/save, `apply_edited` (the editor commit + the dirty mark + the debounced file write), `update_book_file` (the write-back gates), list CRUD (new smart list/folder/id list, update, evaluate), QuickOpen lists, the last-export setting. |
-| `crates/cr-ui/src/browser/shell.rs` | The browser window: navigator + ItemView + reader dock, the header commands, the context menu (open/reveal/edit/update-file/export/remove/properties), the quick search, view/sort/group actions. |
+| `crates/cr-ui/src/browser/shell.rs` | The browser window: navigator + ItemView + reader dock, the header commands, the context menu (open/reveal/edit/update-file/export/remove/properties), the quick search, view/sort/group actions, the dynamic menu fills (`dyn_fill`), the probe accessors (`state_*`/`toolbar_*`). |
+| `crates/cr-ui/src/browser/menubar.rs` | The T3 custom menubar: the pure six-menu table (MenuNode Item/Sub/Sep/Dyn) + the popover widget (one-active-popover state machine, the Designer icon mapping) + the standalone `Dropdown` (`build_dropdown`) + the dynamic fill machinery (`set_dyn_fill`, `refresh_top`, per-slot map hooks) + the `menubar_visible` rule. |
+| `crates/cr-ui/src/browser/toolbar.rs` | The T5 reader toolbar: the nine-button strip (prev/next splits, layout/fit/zoom/rotate drops with state text, magnifier/fullscreen, Tools) + the `Dropdown` tables (PREV/NEXT/FIT/ZOOM/ROTATE/TOOLS); the bar rides the undock. |
 | `crates/cr-ui/src/browser/navigator.rs` | The list tree (Library/Smart Lists/folders/reading lists) with the context menu + the command dispatch. |
-| `crates/cr-ui/src/browser/item_view.rs` | The book grid: view modes, sort/group, selection, type-ahead, thumbs via the pool queues. |
+| `crates/cr-ui/src/browser/item_view.rs` | The book grid: view modes, sort/group, selection (select_book/reselect), type-ahead, thumbs via the pool queues. |
 | `crates/cr-ui/src/browser/pages_view.rs` | The Pages panel: the open comic's page grid, the current-page marker, double-click navigation. |
+| `crates/cr-ui/src/reader_shell.rs` | The reader shell: session tabs, undock/re-dock (the T5 toolbar rides via `set_undock_chrome`), bookmark navigation (`bookmark_nav`), page-rotation write-through, fullscreen chrome, reading-state write-back. |
+| `crates/cr-ui/src/dialogs/name_prompt.rs` | The name prompt (`SelectItemDialog.GetName` shape): caption + prefilled entry, used by Set Bookmark. |
 | `crates/cr-ui/src/dialogs/book_editor.rs` | The book editor (Properties…): Details/Plot/Catalog/Pages/Colors/Custom tabs, the proposed-value placeholders, the per-page edit menu, the Colors sliders, Apply/OK/Cancel commit points. |
 | `crates/cr-ui/src/dialogs/bulk_edit.rs` | The bulk editor (Edit…): a Set check per field, the common-value cue, only checked fields apply. |
 | `crates/cr-ui/src/dialogs/smart_list.rs` | The smart-list editor: Designer (matcher rows/groups with the type/operator/value/not combos + the structure menu) | Query (the rendered query text round-trip). |
 | `crates/cr-ui/src/dialogs/list_editor.rs` | The list editor for folders (name/notes/combine) and reading lists (name/notes/quick-open). |
 | `crates/cr-ui/src/dialogs/export.rs` | The export dialog: target/folder/format/compression/naming/page-format/quality + the flags, the inline progress, the session-persisted last settings. |
+| `crates/cr-ui/examples/` | The headless probes: `commands_probe` (69 actions + accels), `menubar_probe` (the T3 bar), `dynmenus_probe` (the T4 fills), `toolbar_probe` (the T5 strip + the dropdown OPEN gate), `menubarvis_probe` (the visibility evidence), `icons_probe`, `editor_probe`, `writeback_probe`. |
 | `crates/cr-ui/src/settings/` | The Preferences dialog (`preferences.rs`) + the options builder (`options.rs`, the `FillPanelWithOptions` parity). |
 | `crates/cr-ui/src/pages.rs` | The page-entry merge (`merged_page_entries`): the provider count + the stored overlay — the reader and the editor both use it. |
 | `crates/cr-ui/src/bitmap.rs` | The cairo surface helpers (RGBA→premultiplied ARGB, the thumbnail-blob split). |
@@ -1031,6 +1041,24 @@ Re-bless the `db-large.xml` snapshot after a deliberate model change: `CR_BLESS=
 - stdout/stderr interleave UNRELIABLY when piped (stdout is
   block-buffered, stderr is not) — debug prints that must be
   order-compared go through println! on ONE stream.
+- A popover needs a PARENT (a widget inside a toplevel) BEFORE
+  popup() — an unparented popover realizes nothing and the present
+  segfaults (`gtk_widget_realize() on a widget that isn't inside a
+  toplevel` → `gdk_surface_new_popup: no parent surface` → SIGSEGV;
+  the T5 toolbar dropdowns). Parent to the ANCHOR BUTTON, not the
+  window, when the widget can re-parent across toplevels (the
+  undock). A probe that only CLICKS rows never exercises the
+  present path — gate the OPEN (`popover.is_mapped() == true`
+  after `open()`), not just the click.
+- `activate_action` with a DETAILED name AND an explicit parameter
+  errors silently (`Gtk-CRITICAL ... detailed action name ... in
+  conjunction` — the T4 probe caught the radio rows dead on
+  click): the detailed form parses only WITHOUT args; pass the
+  BARE name + the variant parameter.
+- Revisit-within-an-open-menu: a dropdown submenu re-fills on its
+  OWN popover map (the child-popover `connect_map` hook) — the
+  top-menu open funnel never fires for a nested revisit (the T4
+  stale-check finding).
 
 ### Blockers / open questions
 
