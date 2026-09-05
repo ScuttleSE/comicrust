@@ -807,3 +807,80 @@ change; it lands after the bars so they exist in both modes.
   7. Zoom: Ctrl+= / Ctrl+- / Toggle Zoom (Ctrl+Alt+Z) and the
      100–400 % presets work in the reader; the menu shows the C#
      shortcuts.
+- T3 REWORK — CUSTOM MENUBAR WITH ICONS (2026-09-04), user test
+  pending (the retest below REPLACES the earlier list — same steps
+  plus the icon check). Cause: the user compared against CR and the
+  menu-item icons were missing — 78 of the C# main-menu items carry
+  a 16 px image (`MainForm.Designer.cs` `mi*.Image`), and GTK4
+  removed menu-item icons: `PopoverMenuBar`/`PopoverMenu` IGNORE the
+  model's `icon` attribute (`GtkImageMenuItem` was removed in GTK4;
+  gtk4-rs has no icon path for model menus). The user chose the
+  full rework (option 1) over the deviation record.
+  Implementation: `menubar.rs` now renders the pure table through a
+  CUSTOM widget — a flat row of flat `MenuButton`s (mnemonic
+  labels), each opening a hand-built popover: rows carry
+  [check slot 16 px][icon 16 px][label][right-aligned gray accel |
+  submenu arrow], separators, and nested `MenuButton` submenus
+  (Right-positioned child popovers). The icon per item comes from
+  the bundled set (`icon.rs`) via the mi→resx mapping extracted
+  from the Designer (`CSHARP_ITEM_ICONS`, ~60 entries, unit-gated
+  in BOTH directions: no drift, no invented icons, every named
+  icon resolves; submenu parents checked too). Click → the popover
+  pops down + the detailed action fires (radio values as
+  parameters). Up/Down moves focus through the rows; Left/Right
+  switches top menus while one is open (per-popover key
+  controller — a popover is its own native surface); hover-enter
+  switches top menus while one is open (the WinForms strip
+  behavior; an open-count cell gates it). `sync` pushes action
+  states into the rows (object-select check mark, radio match,
+  disabled graying) — `sync_enabled` calls it after every action
+  dispatch; the shell keeps `menubar_visible` for the visibility
+  (unchanged rule) and `menubar_revealed` for the Alt reveal. The
+  row click closes via the widget's Popover ancestor (an Item is
+  always inside its popover's content Box). About icon: the C#
+  resx ships About.gif; the still frame ships as
+  `assets/icons/About.png` (16 px, 213 PNGs now; the icons test
+  counts updated). DEVIATIONS recorded (vs the C# ToolStrip):
+  no mnemonic-activation chain (labels show the underline; arrow +
+  Enter navigate/activate), hover switching is hand-built
+  (open-count race is theoretically possible), the C# 500 ms
+  re-close debounce stays out, dynamic submenu fills (T4) must
+  rebuild popover content (the widget rebuilds from node lists).
+  BINDING COST: `gtk4` features `v4_6` + `v4_10` (MenuButton
+  set_child/active) — which deprecates the GTK3-era widget family
+  the port uses (TreeView, Dialog, FileChooserNative, ...), so
+  cr-ui now mirrors the workspace lints with `deprecated = allow`
+  (commented; CI is GTK 4.14, compile-time only). Gate: 5 menubar
+  unit tests (the 4 carried + the icon/Designer gate + the accel
+  display format), 294 workspace tests, fmt/clippy clean,
+  `commands_probe` 69/69, `menubar_probe` opens the File popover
+  headlessly (open_top — impossible with the model bar), the
+  Xvfb screenshot shows icons + accels + disabled graying.
+  **RETEST (the T3 acceptance — replaces the earlier list):**
+  1. `cargo run -p cr-app --release --` — the menubar shows under
+     the header; every menu ITEM that ComicRack gives an icon
+     shows the same icon here (spot-check File, Read, Display).
+  2. Open a comic — the menubar hides; Alt alone reveals; Alt
+     again hides. Click a top menu — the popover opens; hovering
+     the next top menu switches to it.
+  3. Arrow keys inside an open menu: Up/Down moves, Enter
+     activates, Left/Right walks the top row; Esc/click-away
+     closes.
+  4. Fire Read ▸ Next Page from the menu — the page turns and the
+     menu closes; the bar re-hides (AutoHideMainMenu).
+  5. Compare the six menus against ComicRack — items present or
+     absent for a recorded reason (the lists above).
+  6. Check/radio state: Display ▸ Page Layout carries the check on
+     the current fit/layout; Ctrl+0 flips Right to Left; Ctrl+Shift+0
+     flips Only fit if oversized; Ctrl+S and Alt+Shift+S flip the
+     Auto Scrolling checks; F10/F11 check AND hide the bar —
+     leaving restores it; Browse ▸ Browser/Sidebar follow their
+     toggles; Edit ▸ Track current Page flips. Reopen the menu —
+     the marks moved.
+  7. Disabled state: no book open greys Read and the bookmarks (and
+     Close/Close All); a selection greys/un-greys My Rating; Zoom
+     In/Out need a book.
+  8. Zoom: Ctrl+= / Ctrl+- / Toggle Zoom (Ctrl+Alt+Z) and the
+     100–400 % presets work in the reader; the menu shows the C#
+     shortcuts.
+  9. Accelerator DISPLAY text reads "Ctrl+Shift+X"-style like CR.

@@ -73,20 +73,29 @@ Update this section at the **end of every work session**. The next agent must kn
   212 resx names, `icons_probe` proves the loads + the visible
   gallery. Release tarballs ship `assets/icons` now.
   T3 (the menubar skeleton) IMPLEMENTED (2026-09-04), user test
-  pending. `cr-ui/src/browser/menubar.rs`: the pure six-menu table
-  (the `OnGuiVisibilities` Fill-mode visibility rule ported and
-  unit-tested; the T4 dynamic parents stay out; omissions
-  asserted), the Gio model builder (accel attributes = the T1
-  table), the Alt-alone reveal for the default-TRUE
-  AutoHideMainMenu. Five toggles are stateful checks now;
-  `sync_enabled` writes all check/radio states from the reader
-  getters and runs after every action dispatch; the chrome-change
-  hook re-syncs on fullscreen/MinimalGui. New: `toggle-zoom`
+  pending. Reworked the same day as a CUSTOM menubar widget with
+  menu-item icons (user request after comparing to CR; GTK4 model
+  menus cannot show icons — the C# gives 78 items a 16 px image).
+  `cr-ui/src/browser/menubar.rs`: the pure six-menu table (the
+  `OnGuiVisibilities` Fill-mode visibility rule ported and
+  unit-tested; the T4 dynamic parents stay out; omissions asserted)
+  + the Designer mi→resx icon mapping (unit-gated both directions);
+  the widget: flat MenuButton row → hand-built popovers (check
+  slot + 16 px icon + label + gray accel | submenu arrow),
+  Up/Down focus, Left/Right + hover top switching, nested
+  submenus; `sync` writes check/radio/disabled from the `win.`
+  action states after every dispatch; Alt-alone reveal unchanged.
+  `gtk4` gains `v4_6`+`v4_10` features; cr-ui mirrors the workspace
+  lints with `deprecated = allow` (the GTK3-era family the port
+  uses deprecates under those features). New: `toggle-zoom`
   (real), `zoom-preset` 100-400 % (real), `generate-thumbnails`
-  (stub). Probe `menubar_probe` green; `commands_probe` still
-  69/69; 293 tests. The T3 user test is written in the kickoff.
-  **Next: T3 user test, then T4 (the dynamic menus).** Phase 6
-  (scripting) starts only after 5.5.
+  (stub); five toggles are stateful checks; the chrome-change
+  hook re-syncs on fullscreen/MinimalGui; About.png (GIF→PNG
+  still). Probe `menubar_probe` (opens the File popover from
+  code — the model bar could not) green; `commands_probe` still
+  69/69; 294 tests. The T3 REtest (replaces the first list) is in
+  the kickoff. **Next: T3 user test, then T4 (the dynamic
+  menus).** Phase 6 (scripting) starts only after 5.5.
   Phases 0-5 are complete (their gates stay green). Open Phase 1
   gaps: WebComicProvider and the PDF/DjVu writers (tracked in
   `docs/phase-1-kickoff.md`).
