@@ -1469,6 +1469,11 @@ impl ShellState {
                 sh.reader.apply_settings_to_open_views();
                 let size = cr_ui_settings().borrow().quick_open_thumbnail_size as f64;
                 sh.quick_view.configure(|c| c.thumb_height = size);
+                // Settings may move menu-visible state (the
+                // update-book-files hide rule reads
+                // AutoUpdateComicsFiles) — re-sync now, not on the
+                // next unrelated dispatch.
+                sh.sync_enabled();
             }
         });
     }

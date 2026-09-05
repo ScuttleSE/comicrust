@@ -90,23 +90,40 @@ fn main() {
             }
         });
 
-        // 2. Click the FIRST open-books row (win.open-tab::<slot0>)
-        //    → the reader switches to slot 0. Direct activation
-        //    first (the row-click isolation).
+        // 2. The SUBMENU-REMAP gate (the round-1 user finding: the
+        //    check stayed stale when revisiting the submenu inside
+        //    an already-open menu). Switch to slot 0, refresh the
+        //    slot the way the child-popover map does, and expect
+        //    the check to move WITHOUT a top-menu reopen.
         glib::timeout_add_local(std::time::Duration::from_millis(1500), {
             let menubar = shell.menubar().clone_handle();
             let shell = shell.clone();
             move || {
-                let before = shell.state_reader_slot();
                 let slot = shell.state_first_open_slot().unwrap_or_default();
                 let bare = shell.state_dispatch_param("win.open-tab", &slot.to_string());
                 let direct = shell.state_reader_slot();
-                println!("SWITCH bare fired={bare:?} {before:?}->{direct:?}");
-                // Click the OTHER tab's row (a real move).
-                let other = 1 - slot.min(1);
-                menubar.click_row(&format!("win.open-tab::{other}"));
+                println!("SWITCH bare fired={bare:?} ->{direct:?} (expect Some(0))");
+                // Pre-refresh: the fill still checks the OLD tab.
+                let stale = menubar
+                    .dyn_rows_snapshot("open-books")
+                    .iter()
+                    .filter(|(_, c, _)| *c)
+                    .map(|(l, _, _)| l.clone())
+                    .collect::<Vec<_>>();
+                // The map-hook rebuild (no top reopen).
+                menubar.refresh_dyn_slot("open-books");
+                let fresh = menubar
+                    .dyn_rows_snapshot("open-books")
+                    .iter()
+                    .filter(|(_, c, _)| *c)
+                    .map(|(l, _, _)| l.clone())
+                    .collect::<Vec<_>>();
+                let moved = fresh != stale && fresh.iter().any(|l| l.contains("a.cbz"));
+                println!("REMAP stale={stale:?} fresh={fresh:?} moved={moved}");
+                // The row click moves to the OTHER tab (a real move).
+                menubar.click_row("win.open-tab::1");
                 let after = shell.state_reader_slot();
-                println!("SWITCH click ->{after:?} (expect {other})");
+                println!("SWITCH click ->{after:?} (expect Some(1))");
                 glib::ControlFlow::Break
             }
         });

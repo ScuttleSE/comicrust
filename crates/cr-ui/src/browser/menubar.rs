@@ -628,30 +628,49 @@ impl MenubarDyn {
         };
         let slots = self.slots.borrow();
         for slot in slots.iter().filter(|s| s.top == top) {
-            while let Some(child) = slot.container.first_child() {
-                slot.container.remove(&child);
-            }
-            let mut rows = slot.rows.borrow_mut();
-            rows.clear();
-            for node in fill(slot.id) {
-                match node {
-                    DynNode::Sep => {
-                        let sep = gtk4::Separator::new(gtk4::Orientation::Horizontal);
-                        sep.set_margin_top(3);
-                        sep.set_margin_bottom(3);
-                        slot.container.append(&sep);
-                    }
-                    DynNode::Item(item) => {
-                        let row = build_dyn_row(&item, &self.window);
-                        slot.container.append(&row.button);
-                        rows.push(ItemRow {
-                            base: "",
-                            value: None,
-                            action: row.action,
-                            button: row.button,
-                            indicator: row.indicator,
-                        });
-                    }
+            self.rebuild_slot(slot, &fill);
+        }
+    }
+
+    /// Rebuilds ONE slot (the submenu-map hook: revisiting the
+    /// submenu inside an already-open menu must re-fill too — the
+    /// C# rebuilds at every `DropDownOpening`, and a nested
+    /// ToolStripDropDownItem opening is one).
+    fn refresh_slot(&self, id: &str) {
+        let fill = self.fill.borrow().clone();
+        let Some(fill) = fill else {
+            return;
+        };
+        let slots = self.slots.borrow();
+        for slot in slots.iter().filter(|s| s.id == id) {
+            self.rebuild_slot(slot, &fill);
+        }
+    }
+
+    fn rebuild_slot(&self, slot: &DynSlot, fill: &DynFillFn) {
+        while let Some(child) = slot.container.first_child() {
+            slot.container.remove(&child);
+        }
+        let mut rows = slot.rows.borrow_mut();
+        rows.clear();
+        for node in fill(slot.id) {
+            match node {
+                DynNode::Sep => {
+                    let sep = gtk4::Separator::new(gtk4::Orientation::Horizontal);
+                    sep.set_margin_top(3);
+                    sep.set_margin_bottom(3);
+                    slot.container.append(&sep);
+                }
+                DynNode::Item(item) => {
+                    let row = build_dyn_row(&item, &self.window);
+                    slot.container.append(&row.button);
+                    rows.push(ItemRow {
+                        base: "",
+                        value: None,
+                        action: row.action,
+                        button: row.button,
+                        indicator: row.indicator,
+                    });
                 }
             }
         }
@@ -894,6 +913,13 @@ impl MenubarWidget {
         *self.dyn_ctx.fill.borrow_mut() = Some(fill);
     }
 
+    /// Re-fills ONE dynamic slot (the probe gate for the
+    /// submenu-map hook; the widget path runs it on the child
+    /// popover's map).
+    pub fn refresh_dyn_slot(&self, id: &str) {
+        self.dyn_ctx.refresh_slot(id);
+    }
+
     /// Enables/disables a submenu PARENT row (the C# enables the
     /// parent with the fill: `miOpenNow.Enabled`, the Page Type/
     /// Rotation `EnumMenuUtility.Enabled`). `label` is the menu
@@ -1059,18 +1085,21 @@ fn install_row_nav(content: &gtk4::Box, buttons: Vec<gtk4::Widget>) {
 }
 
 /// Builds one menu level: rows + separators + submenu buttons.
-/// Returns (content, first focusable row).
+/// Returns (content, first focusable row, the dyn ids registered at
+/// THIS level — the caller hooks them to the popover that hosts
+/// this content).
 fn build_menu_content(
     defs: &[MenuNode],
     window: &gtk4::ApplicationWindow,
     rows: &mut Vec<ItemRow>,
     child_popovers: &mut Vec<gtk4::Popover>,
     subs: &mut Vec<(String, gtk4::MenuButton)>,
-    dyn_slots: &mut Vec<DynSlot>,
+    dyn_ctx: &Rc<MenubarDyn>,
     top: usize,
-) -> (gtk4::Box, Option<gtk4::Widget>) {
+) -> (gtk4::Box, Option<gtk4::Widget>, Vec<&'static str>) {
     let content = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
     let mut nav: Vec<gtk4::Widget> = Vec::new();
+    let mut my_dyn_ids: Vec<&'static str> = Vec::new();
     for node in defs {
         match node {
             MenuNode::Sep => {
@@ -1151,17 +1180,20 @@ fn build_menu_content(
                 let child_popover = gtk4::Popover::new();
                 child_popover.set_position(gtk4::PositionType::Right);
                 child_popover.set_has_arrow(false);
-                let (child_content, _child_first) = build_menu_content(
-                    children,
-                    window,
-                    rows,
-                    child_popovers,
-                    subs,
-                    dyn_slots,
-                    top,
-                );
+                let (child_content, _child_first, child_dyn) =
+                    build_menu_content(children, window, rows, child_popovers, subs, dyn_ctx, top);
                 child_popover.set_child(Some(&child_content));
                 sub.set_popover(Some(&child_popover));
+                // The dynamic slots the CHILD content registered:
+                // re-fill on the child popover's own map (the user
+                // revisits the submenu inside an already-open menu —
+                // the top-menu funnel never fires for it).
+                for id in child_dyn {
+                    let dyn_ctx = Rc::clone(dyn_ctx);
+                    child_popover.connect_map(move |_| {
+                        dyn_ctx.refresh_slot(id);
+                    });
+                }
                 child_popovers.push(child_popover);
                 content.append(&sub);
                 nav.push(sub.clone().upcast());
@@ -1174,18 +1206,19 @@ fn build_menu_content(
                 // every menu open (`DropDownOpening`).
                 let container = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
                 content.append(&container);
-                dyn_slots.push(DynSlot {
+                dyn_ctx.slots.borrow_mut().push(DynSlot {
                     id,
                     top,
                     container,
                     rows: RefCell::new(Vec::new()),
                 });
+                my_dyn_ids.push(id);
             }
         }
     }
     install_row_nav(&content, nav);
     let first = content.first_child();
-    (content, first)
+    (content, first, my_dyn_ids)
 }
 
 fn popover_with(
@@ -1193,17 +1226,17 @@ fn popover_with(
     window: &gtk4::ApplicationWindow,
     top: usize,
     subs: &mut Vec<(String, gtk4::MenuButton)>,
-    dyn_slots: &mut Vec<DynSlot>,
+    dyn_ctx: &Rc<MenubarDyn>,
 ) -> (gtk4::Popover, Vec<ItemRow>) {
     let mut rows = Vec::new();
     let mut child_popovers = Vec::new();
-    let (content, first) = build_menu_content(
+    let (content, first, _top_dyn) = build_menu_content(
         defs,
         window,
         &mut rows,
         &mut child_popovers,
         subs,
-        dyn_slots,
+        dyn_ctx,
         top,
     );
     let popover = gtk4::Popover::new();
@@ -1279,7 +1312,11 @@ pub fn create_menubar(window: &gtk4::ApplicationWindow) -> MenubarWidget {
     let active: ActiveSlot = Rc::new(Cell::new(None));
     let mut rows = Vec::new();
     let mut subs: Vec<(String, gtk4::MenuButton)> = Vec::new();
-    let mut dyn_slots: Vec<DynSlot> = Vec::new();
+    let dyn_ctx = Rc::new(MenubarDyn {
+        window: window.clone(),
+        slots: RefCell::new(Vec::new()),
+        fill: RefCell::new(None),
+    });
     let mut tops: Vec<TopMenu> = Vec::new();
     for (top, (label, defs)) in MENUS.iter().enumerate() {
         let button = gtk4::Button::new();
@@ -1289,7 +1326,7 @@ pub fn create_menubar(window: &gtk4::ApplicationWindow) -> MenubarWidget {
             .build();
         button.set_child(Some(&lbl));
         button.set_css_classes(&["flat"]);
-        let (popover, menu_rows) = popover_with(defs, window, top, &mut subs, &mut dyn_slots);
+        let (popover, menu_rows) = popover_with(defs, window, top, &mut subs, &dyn_ctx);
         // Explicit parenting (the MenuButton toggle semantics are
         // what made parallel presents possible).
         popover.set_parent(&button);
@@ -1305,11 +1342,6 @@ pub fn create_menubar(window: &gtk4::ApplicationWindow) -> MenubarWidget {
         bar.append(&button);
         tops.push(TopMenu { button, popover });
     }
-    let dyn_ctx = Rc::new(MenubarDyn {
-        window: window.clone(),
-        slots: RefCell::new(dyn_slots),
-        fill: RefCell::new(None),
-    });
     // Wire the state machine now that every TopMenu exists.
     let shared_tops: Rc<Vec<TopMenu>> = Rc::new(
         tops.iter()

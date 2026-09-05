@@ -1048,13 +1048,6 @@ change; it lands after the bars so they exist in both modes.
     static + the dynamic builder) now pass the BARE name + the
     value as the parameter. The `dynmenus_probe` gates the row
     click on a parametered target.
-  - Gate: 296 tests (+ `seek_bookmark`, + the dyn-slot table
-    test; the omissions test now asserts the dynamic parents
-    PRESENT), fmt/clippy clean, `dynmenus_probe` (Open Books = 2
-    rows/1 checked, the row click moves slots, the bookmark prompt
-    round-trip → the fill row + the state, the page-type radio +
-    SET round-trip, rating-4 check + the DB rating), `menubar_probe`
-    and `commands_probe` 69/69 unchanged.
   - DEVIATIONS recorded (the tracker section): Recent Books is
     text-only (the C# fetches 16 px cover thumbs at menu-open);
     a bookmark on a Deleted page has no display position and is
@@ -1063,7 +1056,8 @@ change; it lands after the bars so they exist in both modes.
     refreshes at menu-open); the recent-books label uses the raw
     file name (no `GetSafeFileName` ellipsis — it IS the file
     name); slot accels live from the first fill (no per-open
-    teardown). **USER TEST (the T4 acceptance):** 1. Open three
+    teardown).
+  - **USER TEST (the T4 acceptance):** 1. Open three
     comics — File ▸ Open Books lists all three, checks the
     current, Ctrl+Alt+F1..F3 switch tabs; the grey parent turns on
     with the first open. 2. Set Bookmark (Ctrl+Shift+B) — the
@@ -1081,6 +1075,25 @@ change; it lands after the bars so they exist in both modes.
     Books lists the opened books; clicking opens. 7. Preferences →
     turn Auto Update Comics Files ON — "Update all Book Files"
     hides from the File menu (reveal again with it OFF).
+- T4 FIX ROUND 1 (2026-09-05), user test: findings 1 + 7 → fixed,
+  retest pending. (1) The dynamic SUBMENU content only refreshed
+  when the TOP menu opened — the fill funnel sat in the top-menu
+  open path (click/hover/arrow), so revisiting the submenu inside
+  an already-open menu showed the stale check. Fix: the fill
+  rebuild hooks each dynamic slot's host (child) popover MAP —
+  every submenu open re-fills (the C# `DropDownOpening` fires for
+  nested drop-downs too). Probe: the REMAP gate (switch slot →
+  refresh the slot the way the map does → the check moves without
+  a top reopen). (7) The Preferences OK path never re-ran the
+  sync, so the "Update all Book Files" hide rule waited for the
+  next unrelated dispatch (an app restart made it look
+  settings-driven). Fix: `show_preferences`'s callback runs
+  `sync_enabled` after applying. All gates re-run: 296 tests,
+  `dynmenus_probe` (now 6 gates incl. REMAP), `menubar_probe`,
+  `commands_probe` 69/69. **RETEST:** re-run the two failed items
+  (1: switch tabs with the File menu open — revisiting Open Books
+  shows the check on the new current; 7: toggle Auto Update Comics
+  Files in Preferences — the File-menu item flips immediately).
 
 ## Omitted / postponed per task (the tracker)
 
