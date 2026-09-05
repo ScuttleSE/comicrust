@@ -1031,3 +1031,13 @@ New entries append here at the END of the task that owns them.
 - Fixed in-round: the Wayland grab (one active popover), the
   stripped action name (full "win." form), the MenuButton frame,
   the active-panel highlight.
+- T3 POLISH 2 (2026-09-05, user feedback): the menus popped with a
+  pointing arrow centered on the button. Fix: `has_arrow(false)`
+  (top popovers AND the nested submenu popovers) and the
+  `GtkPopoverMenuBar`-style left-edge alignment — a
+  `POP_WIDTH`-wide pointing rect at the button's left edge (GTK
+  centers the popover on the rect, so the popover's left edge
+  lands on the button's left edge; the fixed 274 px width replaces
+  the auto-size the arrow shape used to force). Screenshot-proved
+  on the Edit menu (open state, arrow gone, edges flush). 294
+  tests, clippy clean.
