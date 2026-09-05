@@ -231,9 +231,10 @@ Update this section at the **end of every work session**. The next agent must kn
   grids now carry a DISCRETE scroll controller (Ctrl = ±16 resize
   + Stop, the `ItemViewMouseWheel`/`itemView_MouseWheel` parity;
   Detail mode keeps scrolling), pages Tile scales with the same
-  height. **Next: the T7 retest (Ctrl+wheel), then T8 (the status
-  bar).** Phase 6
-  (scripting) starts only after 5.5.
+  height.
+  T7 COMPLETE — USER-TESTED, ALL PASS (2026-09-05; one fix round).
+  **Next: T8 (the status bar).** Phase 6 (scripting) starts only
+  after 5.5.
   Phases 0-5 are complete (their gates stay green). Open Phase 1
   gaps: WebComicProvider and the PDF/DjVu writers (tracked in
   `docs/phase-1-kickoff.md`).
@@ -780,7 +781,7 @@ The UI crate (Phase 3):
 | `crates/cr-ui/src/dialogs/smart_list.rs` | The smart-list editor: Designer (matcher rows/groups with the type/operator/value/not combos + the structure menu) | Query (the rendered query text round-trip). |
 | `crates/cr-ui/src/dialogs/list_editor.rs` | The list editor for folders (name/notes/combine) and reading lists (name/notes/quick-open). |
 | `crates/cr-ui/src/dialogs/export.rs` | The export dialog: target/folder/format/compression/naming/page-format/quality + the flags, the inline progress, the session-persisted last settings. |
-| `crates/cr-ui/examples/` | The headless probes: `commands_probe` (69 actions + accels), `menubar_probe` (the T3 bar), `dynmenus_probe` (the T4 fills), `toolbar_probe` (the T5 strip + the dropdown OPEN gate), `browserbar_probe` (the T6 browser toolbar: OPEN gates, the read/scope filters, the column chooser open/height/toggle, the duplicate landing), `menubarvis_probe` (the visibility evidence), `icons_probe`, `editor_probe`, `writeback_probe`. |
+| `crates/cr-ui/examples/` | The headless probes: `commands_probe` (69 actions + accels), `menubar_probe` (the T3 bar), `dynmenus_probe` (the T4 fills), `toolbar_probe` (the T5 strip + the dropdown OPEN gate), `browserbar_probe` (the T6 browser toolbar: OPEN gates, the read/scope filters, the column chooser open/height/toggle, the duplicate landing), `navpages_probe` (the T7 navigator/Pages toolbars: the dispatch, the search filter, the expand flip, the Views OPEN + radio), `menubarvis_probe` (the visibility evidence), `icons_probe`, `editor_probe`, `writeback_probe`. |
 | `crates/cr-ui/src/settings/` | The Preferences dialog (`preferences.rs`) + the options builder (`options.rs`, the `FillPanelWithOptions` parity). |
 | `crates/cr-ui/src/pages.rs` | The page-entry merge (`merged_page_entries`): the provider count + the stored overlay — the reader and the editor both use it. |
 | `crates/cr-ui/src/bitmap.rs` | The cairo surface helpers (RGBA→premultiplied ARGB, the thumbnail-blob split). |
@@ -1155,6 +1156,14 @@ Re-bless the `db-large.xml` snapshot after a deliberate model change: `CR_BLESS=
   OWN popover map (the child-popover `connect_map` hook) — the
   top-menu open funnel never fires for a nested revisit (the T4
   stale-check finding).
+- A probe counter that walks only the FIRST top-level subtree
+  silently undercounts (the T7 expand-all gate read 0 for a
+  folder sitting on row 2): every model walk needs the outer
+  sibling loop + recursive children — never a single-root stack.
+- Wheel/input paths have NO probe gate (xdotool produces no GTK
+  scroll events) — wire them, then the user test decides (the T7
+  Ctrl+wheel round: the handler existed but nothing called it;
+  grep the CALLER, not the method).
 
 ### Blockers / open questions
 

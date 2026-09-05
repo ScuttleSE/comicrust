@@ -1410,7 +1410,8 @@ change; it lands after the bars so they exist in both modes.
   the selector panel is unported) and lands in the picked folder;
   the C# None-target (TemporaryFolder) is unreachable (the None
   row is only a disabled placeholder).
-- T7 IMPLEMENTED (2026-09-05), user test pending. The two panel
+- T7 IMPLEMENTED (2026-09-05; COMPLETE — USER-TESTED, see the
+  closure entry at the T7 fix round). The two panel
   toolbars:
   - Navigator (`ComicListLibraryBrowser.toolStrip`, the control's
     own chrome — `browser/navigator.rs` now mounts
@@ -1614,7 +1615,7 @@ owns the Phase 5.5 omissions).
   book staleness after external editor commits predates T4 (the
   clone round-trip shape).
 
-### T7 — Navigator toolbar + Pages toolbar (IMPLEMENTED — user test pending)
+### T7 — Navigator toolbar + Pages toolbar (COMPLETE — USER-TESTED)
 - ABSENT from the navigator toolbar (all recorded):
   - tbOpenWindow "Open in New Window" (ADR-024) — joined by
     tbOpenTab "Open in New Tab": the port has no list-tab surface
@@ -1659,3 +1660,10 @@ owns the Phase 5.5 omissions).
   sign) and STOPS the event, no modifier proceeds (the panel
   scrolls). No probe gate: the wheel path is only user-testable
   (the Phase 3 lesson — xdotool produces no GTK scroll events).
+- T7 COMPLETE — USER-TESTED, ALL PASS (2026-09-05; one fix round:
+  the never-wired Ctrl+wheel). The user verified: the navigator
+  toolbar buttons match the context menu, Expand/Collapse All
+  flips the tree, the search box shows/filters/hides, Ctrl+Alt+F
+  works, the Pages Views drop + radio + main-click cycle work,
+  and Ctrl+wheel resizes both grids. **Next: T8 (the status
+  bar).**
