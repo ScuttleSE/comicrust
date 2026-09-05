@@ -919,3 +919,34 @@ change; it lands after the bars so they exist in both modes.
   `set_has_frame(false)` on the three submenu rows. Probe dwell
   moved to the Display menu (it carries the three submenus, so the
   screenshot proves the row shape). 294 tests, clippy clean.
+- T3 FIX ROUND 2 (2026-09-05), user test FAIL → fix → retest
+  pending. Symptom: EVERY menu-item click was a silent no-op while
+  the accelerators worked (Ctrl+N turned pages; Read ▸ Next Page
+  did nothing; Restart/Exit dead). Root cause: the row click
+  handler STRIPPED the "win." prefix before `activate_action` —
+  GTK resolves actions through action GROUPS, so the bare
+  "next-page" found no group and failed silently. Fix: pass the
+  FULL detailed name ("win.next-page"; radio targets
+  "win.page-fit::original" + the value as the explicit parameter —
+  the detailed form GTK parses). Probe proof: `MenubarWidget::
+  click_row` walks the REAL widget path (`emit_clicked` → handler →
+  popdown + activate); the menubar probe reads the
+  `track_current_page` setting around a direct activation AND a
+  programmatic row click — DIRECT true→false, CLICK false→true
+  (the round-2 bug class is now gated end to end). Probe lesson:
+  `clone_handle` originally DROPPED the sync rows (empty Vec) —
+  the handle could not click or sync; rows moved into
+  `Rc<Vec<ItemRow>>` shared by every clone. User-reported File-menu
+  report disposition: Generate Cover Thumbnails / Tasks / New
+  fileless Book Entry = intentional disabled stubs (owning tasks
+  recorded); Automation, Open Remote Library, Open Books, Recent
+  Books = recorded omissions (ADR-024 + T4 dynamic fills); "New
+  fileless Book Series..." is NOT a built-in menu item — it is the
+  bundled IronPython script `Output/Scripts/NewComics.py`
+  (`#@Hook NewBooks`) that surfaces under the C# Automation
+  submenu, so it is covered by the Automation omission; a
+  BACKLOG item (docs/port-plan.md §6) notes porting selected
+  bundled scripts (NewComics.py first) natively instead of the
+  Phase 6 Python host. C# parity note for T4: "Update all Book
+  Files" hides when AutoUpdateComicsFiles is on
+  (fileMenu_DropDownOpening) — not yet ported.
