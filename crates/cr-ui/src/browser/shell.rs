@@ -203,11 +203,12 @@ impl ShellState {
                 }
             }
             TabId::Comic(slot) => {
-                if visible == "reader" && self.reader.current_slot_id() == Some(*slot) {
-                    self.toggle_browser();
-                } else {
-                    self.activate_slot(*slot);
-                }
+                // The C# wires CaptionClick only on the WORKSPACE
+                // items (`MainView.cs:161-163` — Library/Folders/
+                // Pages); comic file tabs never toggle: a re-click on
+                // the current comic's tab stays on the page (the C#
+                // `ShowView` re-selects the viewer, no toggle).
+                self.activate_slot(*slot);
             }
             TabId::Plus => {
                 // `OpenBooks.AddSlot` + `CurrentSlot = last`: the new
@@ -365,6 +366,12 @@ impl BrowserShell {
             .default_width(1280)
             .default_height(800)
             .build();
+        // F10 = MinimalGui (the C# command). GTK's built-in
+        // `handle-menubar-accel` (a CAPTURE-phase F10 shortcut since
+        // 4.2) consumes the key to focus a model menubar — our
+        // menubar is the custom T3 widget, so the accel never fired
+        // (the user report). The window keeps its own F10 meaning.
+        window.set_handle_menubar_accel(false);
 
         // One pool for the whole app (the C# `Program.ImagePool` is
         // global).
@@ -696,6 +703,13 @@ impl BrowserShell {
                 .set_on_page_change(move |page| {
                     if let Some(sh) = state.upgrade() {
                         sh.pages.set_current_page(page);
+                        // The status-bar page panel follows every
+                        // turn (wheel/click turns dispatch no action,
+                        // so the sync never sees them). The hook runs
+                        // INSIDE the reader-state borrow — no reader
+                        // access here, only the page value.
+                        let track = cr_ui_settings().borrow().track_current_page;
+                        sh.status_bar.set_page(Some(page), track);
                     }
                 });
         }

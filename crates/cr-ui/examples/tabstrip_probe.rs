@@ -1,7 +1,7 @@
 //! Headless probe: the T9 workspace tab strip (`MainView.tabStrip`).
 //! Gates: open comics become comic tabs (Library | Pages | tabs | +),
 //! the strip selection follows the workspace, a comic-tab click
-//! shows the reader slot, a RE-click on the selected item toggles
+//! shows the reader slot, a comic-tab RE-click stays on the page
 //! the browser (the C# `tab_CaptionClick`), the current slot's tab
 //! renders bold, the `+` adds an EMPTY slot (no QuickOpen — the
 //! recorded deviation) and hides the Pages tab (no current book),
@@ -150,8 +150,10 @@ fn main() {
             }
         });
 
-        // E. RE-click the selected comic tab → ToggleBrowser (the C#
-        //    `tab_CaptionClick`): the browser shows again.
+        // E. RE-click the selected comic tab → the C# wires
+        //    CaptionClick only on the WORKSPACE items (MainView.cs:
+        //    161-163); a comic tab re-click stays on the page (the
+        //    T8 fix round: the port wrongly toggled to the browser).
         glib::timeout_add_local(std::time::Duration::from_millis(3600), {
             let shell = shell.clone();
             let strip = strip.clone();
@@ -160,7 +162,7 @@ fn main() {
                 if let Some(first) = first {
                     strip.click(&TabId::Comic(first));
                     println!(
-                        "E page={:?} sel={:?} (expect browser/Library)",
+                        "E page={:?} sel={:?} (expect reader/Comic(0) — no toggle)",
                         shell.state_visible_page(),
                         strip.selected(),
                     );

@@ -19,6 +19,16 @@ fn main() {
     // too (the T9 lesson) or the panel styles never apply.
     cr_ui::theme::init();
     let src = "tests/testfiles/Absolute Flash (2025) Volume 01 Issue 009.cbz";
+    // The probe SEEDS books into whatever DB it opens — refuse a
+    // real home (the accidental-run lesson: run with an isolated
+    // XDG_DATA_HOME or the user's library gets probe entries).
+    if !std::env::var("XDG_DATA_HOME")
+        .map(|v| v.contains("/tmp/opencode"))
+        .unwrap_or(false)
+    {
+        eprintln!("REFUSED: set XDG_DATA_HOME=/tmp/opencode/<dir> (the probe seeds books into the DB it opens)");
+        std::process::exit(1);
+    }
     let work = std::path::Path::new("/tmp/opencode/statusbar");
     let _ = std::fs::remove_dir_all(work);
     std::fs::create_dir_all(work).unwrap();
@@ -226,7 +236,85 @@ let _shell = shell.clone();
             }
         });
 
-        glib::timeout_add_local(std::time::Duration::from_millis(6600), {
+        // H. MinimalGui (F10's action): the menubar hides; the tab
+        //    strip + the status bar ride the C# `flag4` formula —
+        //    on the BROWSER workspace they stay visible even in
+        //    MinimalGui (`!IsComicViewer` term); restore after a
+        //    re-dispatch.
+        glib::timeout_add_local(std::time::Duration::from_millis(6200), {
+            let shell = shell.clone();
+            let bar = bar.clone();
+            move || {
+                let _ = shell.state_dispatch("win.minimal-gui");
+                let minimal_menubar = shell.menubar().widget().is_visible();
+                let minimal_status = bar.widget().is_visible();
+                let minimal_state = shell.state_action_bool("minimal-gui");
+                let _ = shell.state_dispatch("win.minimal-gui");
+                let back_menubar = shell.menubar().widget().is_visible();
+                let back_status = bar.widget().is_visible();
+                println!(
+                    "H minimal: menubar={minimal_menubar} status={minimal_status} state={minimal_state:?} | restored: menubar={back_menubar} status={back_status} (expect false/true/Some(true)/true/true)"
+                );
+                glib::ControlFlow::Break
+            }
+        });
+
+        // I. The F10 ACCEL (the user report: F10 did nothing —
+        //    GTK's capture-phase `handle-menubar-accel` consumed the
+        //    key). XTEST the key into the focused window and check
+        //    the menubar hides (env-gated: needs xdotool + focus).
+        if std::env::var("CR_F10_KEYS").is_ok() {
+            glib::timeout_add_local(std::time::Duration::from_millis(6600), {
+                let shell = shell.clone();
+                let bar = bar.clone();
+                move || {
+                    let _ = std::process::Command::new("xdotool")
+                        .args(["search", "--name", "comicrust"])
+                        .args(["windowfocus", "--sync"])
+                        .args(["key", "F10"])
+                        .status();
+                    glib::timeout_add_local(std::time::Duration::from_millis(600), {
+                        let shell = shell.clone();
+                        let _bar = bar.clone();
+                        move || {
+                            let menubar = shell.menubar().widget().is_visible();
+                            // A known-good accel through the SAME
+                            // injection path (F8 = view-pages):
+                            // if F6 lands, the path works and an
+                            // F10 miss is the code; if F6 also
+                            // misses, the injection is the artifact.
+                            let page_before = shell.state_visible_page();
+                            let _ = std::process::Command::new("xdotool")
+                                .args(["search", "--name", "comicrust"])
+                                .args(["windowfocus", "--sync"])
+                                .args(["key", "F8"])
+                                .status();
+                            glib::timeout_add_local(std::time::Duration::from_millis(600), {
+                                let shell = shell.clone();
+                                move || {
+                                    let page_after = shell.state_visible_page();
+                                    let delivered = page_before != page_after;
+                                    if delivered {
+                                        println!(
+                                            "I F10 accel: menubar={menubar} (F8 control delivered — this run is evidence)"
+                                        );
+                                    } else {
+                                        println!(
+                                            "I F10 accel: menubar={menubar} | F8 control UNDELIVERED — the Xvfb injection path is dead, inconclusive (the user test decides)"
+                                        );
+                                    }
+                                    glib::ControlFlow::Break
+                                }
+                            });
+                            glib::ControlFlow::Break
+                        }
+                    });
+                    glib::ControlFlow::Break
+                }
+            });
+        }
+
+        glib::timeout_add_local(std::time::Duration::from_millis(9500), {
             let app = app.clone();
             move || {
                 println!("PROBE COMPLETE");

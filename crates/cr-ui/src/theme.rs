@@ -63,6 +63,18 @@ pub const CSS: &str = r#"
     font-weight: bold;
 }
 
+/* The buttons inside a tab sit on the tab box's background — the
+   theme button surface would cut the active-tab highlight short
+   before the X (the T9 user report). Transparent lets the box
+   paint; hover keeps a subtle shade. */
+.tabstrip .tab button {
+    background: transparent;
+}
+
+.tabstrip .tab button:hover {
+    background: rgba(128, 128, 128, 0.35);
+}
+
 /* The status bar (the C# statusStrip): a top-ruled row of sunken
    panels (`Border3DStyle.SunkenOuter` → inset borders). */
 .status-bar {
