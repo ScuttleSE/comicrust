@@ -1094,6 +1094,12 @@ change; it lands after the bars so they exist in both modes.
   (1: switch tabs with the File menu open — revisiting Open Books
   shows the check on the new current; 7: toggle Auto Update Comics
   Files in Preferences — the File-menu item flips immediately).
+- T4 COMPLETE — USER-TESTED, ALL PASS (2026-09-05; one fix round).
+  The user verified the retest (stale-check REMAP + the immediate
+  hide rule) and the rest of the acceptance ("Rest is OK"). One
+  extra observation DEFERRED to T9 (see the T4 tracker entry): the
+  menubar hides in the browser view while a book stays open in a
+  reader tab. **Next: T5 (the reader toolbar).**
 
 ## Omitted / postponed per task (the tracker)
 
@@ -1181,7 +1187,16 @@ owns the Phase 5.5 omissions).
   on the Edit menu (open state, arrow gone, edges flush). 294
   tests, clippy clean.
 
-### T4 — Dynamic menus (IMPLEMENTED — user test pending)
+### T4 — Dynamic menus (COMPLETE — see the closure entry in the progress log)
+- DEFERRED to T9: the menubar hides in the browser view while a
+  book stays open in a reader tab (the user report; the headless
+  evidence probe `examples/menubarvis_probe.rs` shows the port
+  matches the C# `OnGuiVisibilities` formula in all four states —
+  browser/reader/browser-with-book/browser-empty. The C# default
+  `ShowMainMenuNoComicOpen` only keeps the menu up with NO book
+  open; `AutoHideMainMenu` (default on) hides it everywhere else,
+  Alt reveals). Revisit with the T9 dock-mode work and a CR
+  side-by-side; the probe stays for the re-check.
 - DEVIATIONS (vs the C# fills):
   - Recent Books is TEXT-ONLY: the C# fetches a 16 px front-cover
     thumb per row at every menu-open (a synchronous thumb render

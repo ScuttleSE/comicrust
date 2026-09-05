@@ -136,7 +136,15 @@ Update this section at the **end of every work session**. The next agent must kn
   Deviations in the kickoff tracker: Recent Books text-only (no
   16 px cover thumbs), a Deleted-page bookmark unreachable, the
   hide rule in the sync (not menu-open), slot accels live from the
-  first fill. **Next: T5 (the reader toolbar).** Phase 6
+  first fill.
+  T4 COMPLETE — USER-TESTED, ALL PASS (2026-09-05; one fix round:
+  the dynamic submenus re-fill on their OWN popover open — the
+  top-menu funnel missed revisits inside an open menu; the
+  Preferences OK path re-runs the sync so the update-book-files
+  hide rule is immediate). The menubar-hides-in-browser-with-a-
+  book-open observation is DEFERRED to T9 (the port matches the
+  C# formula per the menubarvis_probe evidence; side-by-side then).
+  296 tests. **Next: T5 (the reader toolbar).** Phase 6
   (scripting) starts only after 5.5.
   Phases 0-5 are complete (their gates stay green). Open Phase 1
   gaps: WebComicProvider and the PDF/DjVu writers (tracked in
