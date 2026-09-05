@@ -1,10 +1,10 @@
-//! Headless probe: the T3 menubar skeleton. The six menus build
-//! from the table, the menubar mounts above the shell content, and
-//! the `OnGuiVisibilities` rule shows it for the startup state (no
-//! book open — `ShowMainMenuNoComicOpen`). Run: Xvfb +
-//! `cargo run -p cr-ui --example menubar_probe` with an isolated
-//! XDG. The Alt-reveal and the reader-state checks stay for the
-//! user test (Xvfb key injection is unreliable).
+//! Headless probe: the T3 menubar. The six menus build from the
+//! table, the bar mounts and follows the visibility rule, real row
+//! clicks fire actions (the round-2 gate), the active-panel
+//! highlight moves (the C# highlights the Library/Pages row instead
+//! of a check mark), and top-menu switching stays one-grab-safe.
+//! Run: Xvfb + `cargo run -p cr-ui --example menubar_probe` with an
+//! isolated XDG.
 use gtk4::gio;
 use gtk4::glib;
 use gtk4::prelude::*;
@@ -21,41 +21,62 @@ fn main() {
     app.connect_activate(move |app| {
         let (window, shell) = cr_ui::browser::shell::BrowserShell::create(app);
         window.present();
+        // The app keeps its shell in a thread-local (app.rs); the
+        // probe must do the same — every action handler holds a
+        // Weak<ShellState>, and a dropped shell turns each dispatch
+        // into a silent no-op (the probe lesson).
+        std::mem::forget(shell.clone());
 
-        // 1. The table: six menus, every submenu non-empty.
-        let top = cr_ui::browser::menubar::MENUS;
-        println!("MENUS {}", top.len());
-        for (label, defs) in top {
-            let items = defs
-                .iter()
-                .filter(|n| !matches!(n, cr_ui::browser::menubar::MenuNode::Sep))
-                .count();
-            println!("MENU {label}: {items} nodes");
-        }
+        // 1. The table: six menus.
+        println!("MENUS {}", cr_ui::browser::menubar::MENUS.len());
 
-        // 2. The mounted menubar follows the startup rule: browser
-        //    page, no book, auto-hide ON, ShowMainMenuNoComicOpen →
-        //    VISIBLE.
+        // 2. The mounted menubar follows the startup rule.
         let mounted = shell.menubar().widget().is_visible();
-        println!("MENUBAR VISIBLE AT STARTUP: {mounted}");
         let rule =
             cr_ui::browser::menubar::menubar_visible(false, false, false, false, true, true, false);
-        println!("RULE AGREES: {mounted} == {rule} ({})", mounted == rule);
+        println!(
+            "MENUBAR VISIBLE {mounted} RULE {rule} AGREE {}",
+            mounted == rule
+        );
 
-        // 3. A menu action fires through the shell (enable-state +
-        //    menubar refresh run inside the dispatch).
-        let _ = gtk4::prelude::WidgetExt::activate_action(&window, "win.view-pages", None);
-        println!("STATE view-pages activated");
+        // 3. The proofs at 1200 ms: direct activation + a REAL row
+        //    click for the stateful check, then the panel highlight
+        //    via a row click on view-library.
+        glib::timeout_add_local(std::time::Duration::from_millis(1200), {
+            let menubar = shell.menubar().clone_handle();
+            let window = window.clone();
+            move || {
+                let read_state = || cr_ui::library::settings().borrow().track_current_page;
+                // The stateful check action (the round-2 gate).
+                let before = read_state();
+                let fired = gtk4::prelude::WidgetExt::activate_action(
+                    &window,
+                    "win.track-current-page",
+                    None,
+                );
+                let direct = read_state();
+                println!("TRACK direct fired={fired:?} {before:?}->{direct:?}");
+                menubar.click_row("win.track-current-page");
+                let after = read_state();
+                println!(
+                    "TRACK click {direct:?}->{after:?} flipped {}",
+                    direct != after
+                );
 
-        // 4. Open the Display menu for the dwell screenshot: it
-        //    carries the three submenus (Page Layout / Zoom /
-        //    Rotation), so the dwell proves the submenu row shape.
-        shell.menubar().open_top(4);
-        println!("STATE display menu open: {}", shell.menubar().top_count());
+                // The stateless panel actions + the highlight (the
+                // round-3 gate). The panel starts on "library", so
+                // click view-pages and expect ONLY pages highlighted.
+                menubar.click_row("win.view-pages");
+                let lib = menubar.is_row_highlighted("win.view-library");
+                let pages = menubar.is_row_highlighted("win.view-pages");
+                println!("HIGHLIGHT view-library={lib} view-pages={pages}");
+                glib::ControlFlow::Break
+            }
+        });
 
-        // 5. The switching path: switch top menus while one is open,
+        // 4. The switching path: switch top menus while one is open,
         //    then close (the Wayland-grab regression class).
-        glib::timeout_add_local(std::time::Duration::from_millis(400), {
+        glib::timeout_add_local(std::time::Duration::from_millis(1500), {
             let menubar = shell.menubar().clone_handle();
             move || {
                 println!("SWITCH to Edit");
@@ -63,7 +84,7 @@ fn main() {
                 glib::ControlFlow::Break
             }
         });
-        glib::timeout_add_local(std::time::Duration::from_millis(800), {
+        glib::timeout_add_local(std::time::Duration::from_millis(1900), {
             let menubar = shell.menubar().clone_handle();
             move || {
                 println!("SWITCH to Help");
@@ -72,34 +93,7 @@ fn main() {
             }
         });
 
-        // 6. The row-click proof (the round-2 bug class: accels
-        //    fired, clicks did not): emulate a real row click and
-        //    verify the stateful action's state flipped.
-        glib::timeout_add_local(std::time::Duration::from_millis(1200), {
-            let menubar = shell.menubar().clone_handle();
-            let window = window.clone();
-            move || {
-                let read_state = || cr_ui::library::settings().borrow().track_current_page;
-                let before = read_state();
-                let _ = gtk4::prelude::WidgetExt::activate_action(
-                    &window,
-                    "win.track-current-page",
-                    None,
-                );
-                let direct = read_state();
-                let _ = &window; // the widget path goes through the menubar handle
-                menubar.click_row("win.track-current-page");
-                let after = read_state();
-                println!("DIRECT activate: {before:?} -> {direct:?}");
-                println!(
-                    "CLICK row: {direct:?} -> {after:?} (flipped: {})",
-                    direct != after
-                );
-                glib::ControlFlow::Break
-            }
-        });
-
-        glib::timeout_add_local(std::time::Duration::from_millis(2000), {
+        glib::timeout_add_local(std::time::Duration::from_millis(2400), {
             let app = app.clone();
             move || {
                 println!("PROBE COMPLETE");

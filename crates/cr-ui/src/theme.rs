@@ -18,6 +18,12 @@ window.reader-window {
     color: #b0b0b0;
     font-size: 14px;
 }
+
+/* The active menu row (the C# highlights the Library/Pages row of
+   the shown panel — no checkbox on those items). */
+.menu-row-active {
+    background: rgba(128, 128, 128, 0.35);
+}
 "#;
 
 /// Loads the CSS into the default display. Idempotent enough for the

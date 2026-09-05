@@ -900,11 +900,22 @@ impl ShellState {
     /// no model-driven state rendering).
     fn sync_menubar(&self) {
         let actions = self.actions.borrow();
+        // The active-panel emphasis (the C# highlights the
+        // miViewLibrary/miViewPages row of the shown panel — no
+        // checkbox on those items).
+        let panel = self.panel_stack.visible_child_name().unwrap_or_default();
+        let panel = panel.as_str();
         self.menubar.sync(&|base| {
             let action = actions.get(base)?;
+            let highlight = match base {
+                "view-library" => panel == "library",
+                "view-pages" => panel == "pages",
+                _ => false,
+            };
             Some(super::menubar::ActionState {
                 enabled: action.is_enabled(),
                 state: action.state(),
+                highlight,
             })
         });
     }

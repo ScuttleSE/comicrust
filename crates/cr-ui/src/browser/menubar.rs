@@ -562,6 +562,10 @@ pub struct ItemRow {
 pub struct ActionState {
     pub enabled: bool,
     pub state: Option<glib::Variant>,
+    /// The ACTIVE emphasis (the C# `miViewLibrary`/`miViewPages`
+    /// shape: the selected panel highlights the row's icon instead
+    /// of a check mark — the C# has no checkbox on these).
+    pub highlight: bool,
 }
 
 /// One top-level menu (the bar's flat row).
@@ -674,7 +678,23 @@ impl MenubarWidget {
             } else {
                 row.indicator.set_icon_name(None);
             }
+            // The active-panel emphasis (view-library/view-pages):
+            // a row highlight, never a check mark (CR parity).
+            if view.highlight {
+                row.button.add_css_class("menu-row-active");
+            } else {
+                row.button.remove_css_class("menu-row-active");
+            }
         }
+    }
+
+    /// Whether a row currently carries the active emphasis (the
+    /// probe assertion).
+    pub fn is_row_highlighted(&self, action: &str) -> bool {
+        self.rows
+            .iter()
+            .find(|row| row.action == action)
+            .is_some_and(|row| row.button.has_css_class("menu-row-active"))
     }
 }
 
