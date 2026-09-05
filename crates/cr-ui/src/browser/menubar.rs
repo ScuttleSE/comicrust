@@ -852,6 +852,7 @@ fn build_menu_content(
                 sub.set_halign(gtk4::Align::Fill);
                 let child_popover = gtk4::Popover::new();
                 child_popover.set_position(gtk4::PositionType::Right);
+                child_popover.set_has_arrow(false);
                 let (child_content, _child_first) =
                     build_menu_content(children, window, rows, child_popovers);
                 child_popover.set_child(Some(&child_content));
@@ -876,6 +877,12 @@ fn popover_with(
     let (content, first) = build_menu_content(defs, window, &mut rows, &mut child_popovers);
     let popover = gtk4::Popover::new();
     popover.set_child(Some(&content));
+    // No pointing arrow, fixed width (the C# ToolStrip drop-down
+    // shape): the window width is deterministic, which the
+    // left-edge alignment below relies on.
+    popover.set_has_arrow(false);
+    popover.set_position(gtk4::PositionType::Bottom);
+    popover.set_size_request(POP_WIDTH, -1);
     // Closing the parent hides the child popovers (they are native
     // windows — no automatic chain).
     for child in child_popovers.iter() {
@@ -897,6 +904,22 @@ fn popover_with(
     (popover, rows)
 }
 
+/// The menu drop-down width (the C# ToolStrip drop-downs size to
+/// their widest item; 274 = the 250 px row + default 12 px popover
+/// padding each side).
+const POP_WIDTH: i32 = 274;
+
+/// Points the popover at a POP_WIDTH-wide rect starting at the
+/// button's LEFT edge: GTK centers the popover on the rect's
+/// center, so the popover's left edge lands exactly on the
+/// button's left edge (the WinForms drop-down alignment). The
+/// rect's y sits at the button's bottom edge.
+fn align_below_button(button: &gtk4::Button, popover: &gtk4::Popover) {
+    let alloc = button.allocation();
+    let rect = gtk4::gdk::Rectangle::new(0, alloc.height(), POP_WIDTH, 1);
+    popover.set_pointing_to(Some(&rect));
+}
+
 /// The `GtkPopoverMenuBar.set_active_item` state machine: pop every
 /// OTHER open popover down FIRST, then present the target (the only
 /// Wayland-safe order — a grabbing popup may only map when no other
@@ -912,6 +935,7 @@ fn set_active_item(tops: &[TopMenu], active: &ActiveSlot, index: usize) {
     let Some(top) = tops.get(index) else {
         return;
     };
+    align_below_button(&top.button, &top.popover);
     active.set(Some(index));
     top.popover.popup();
 }
