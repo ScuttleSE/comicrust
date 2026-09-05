@@ -913,3 +913,9 @@ change; it lands after the bars so they exist in both modes.
   Help); 294 tests, clippy clean. LESSON: on Wayland NEVER present
   a second popover while one is open — popdown first, every time;
   and the grab-focus-on-map pattern belongs in an idle.
+- T3 POLISH (2026-09-05, user feedback): the submenu rows rendered
+  as outlined buttons — `MenuButton` draws its own frame and the
+  `flat` class does not reach the inner toggle button. Fix:
+  `set_has_frame(false)` on the three submenu rows. Probe dwell
+  moved to the Display menu (it carries the three submenus, so the
+  screenshot proves the row shape). 294 tests, clippy clean.
