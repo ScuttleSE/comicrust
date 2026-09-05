@@ -1721,21 +1721,13 @@ impl ShellState {
         self.item_view.set_filter(matcher);
     }
 
-    /// The Detail header column chooser: a FRESH popover per open —
-    /// the exact shape of the proven book context menu (build,
-    /// parent to the window, point at the click, popup, unparent on
-    /// close). The fill refreshes before the popup (the fill rows
-    /// carry the live check states).
+    /// The Detail header column chooser: a PLAIN popover of check-
+    /// rows built fresh per open — the Wayland-proven shape of the
+    /// book context menu. The T5/T6 `build_dropdown` popover
+    /// (has_arrow off + submenu child popovers) fails to MAP when
+    /// parented to the top-level window on Wayland; a plain popover
+    /// maps fine.
     fn popup_column_chooser(self: &Rc<ShellState>, wx: f64, wy: f64) {
-        if std::env::var_os("CR_DEBUG_CHOOSER").is_some() {
-            eprintln!("CHOOSER popup at ({wx}, {wy})");
-        }
-        // A PLAIN popover with check-rows — the exact Wayland-proven
-        // shape of the book context menu. The T5/T6 `build_dropdown`
-        // popover (has_arrow off, submenu child popovers) fails to
-        // MAP when parented to the top-level window on Wayland (the
-        // trace shows the popup call fires but nothing appears); a
-        // plain popover parented to the window maps fine.
         let popover = gtk4::Popover::new();
         let list = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
         list.set_margin_top(4);

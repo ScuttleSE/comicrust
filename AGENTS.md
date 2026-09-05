@@ -164,42 +164,50 @@ Update this section at the **end of every work session**. The next agent must kn
   Deviations in the kickoff tracker (row-above-reader mount,
   drop-only zoom/rotate, the ADR-024 Tools omissions).
   T6 (the browser toolbar reorg + the Detail column chooser)
-  IMPLEMENTED — user test pending (2026-09-05).
-  `browser/browser_toolbar.rs`: the strip above the browser panes —
-  Sidebar, Browse Previous/Next (the list history), Views (the
-  view radios + the read-state radios + the comic-type checks +
-  Show Duplicates), Group + Arrange (the dynamic Not
-  Grouped/Not-Sorted-first tables, stateful check rows), the
-  right-aligned Quick Search with the C# scope menu (All/Series/
-  Writer/Artists/Descriptive/Catalog/Filename — the AllProperties
-  option) on the entry's secondary chevron, a DISABLED List
-  Layouts button (T14), the Duplicate List drop (the folder walk).
-  The old header folds into the menubar + the strip; the header
-  carries the reader page display only. New stateful actions:
+  COMPLETE — USER-TESTED, ALL PASS (2026-09-05; four fix rounds).
+  `browser/browser_toolbar.rs`: the strip in the RIGHT (item) pane
+  above the grid — Sidebar, Browse Previous/Next (the list
+  history), Views (the view radios + the read-state radios + the
+  comic-type checks + Show Duplicates), Group + Arrange (the
+  dynamic Not Grouped/Not-Sorted-first tables, stateful check
+  rows), the right-aligned Quick Search with the C# scope menu
+  (All/Series/Writer/Artists/Descriptive/Catalog/Filename — the
+  AllProperties option) on the entry's secondary chevron, a
+  DISABLED List Layouts button (T14), the Duplicate List drop (the
+  folder walk). The old header folds into the menubar + the strip;
+  the header carries the reader page display only. The reader
+  toolbar (T5) moved UNDER the menubar (a `toolbar_box` above the
+  view stack) so Tools/Fullscreen show in the library view too
+  (the C# `OnGuiVisibilities`/`OnUpdateGui` parity); it still rides
+  the undock. New stateful actions:
   `view-filter`/`comic-type`/`duplicates-only`/`search-scope`/
   `toggle-column`/`duplicate-list`; sort-column and group-by
   became STATEFUL (check marks; "" = Not Sorted/Not Grouped via
-  `ViewState::clear_sort`). The composed filter
-  (`compose_quick_filter`, the C# `ComicBookAllPropertiesMatcher.
-  Create` parity — read-state ReadPercentageMatcher, comic-type
-  FileMatcher Not, AllProperties op-3 ContainsAll with the enum
-  option name, a MATCH/NOT query parses ONLY for the All scope and
-  then the view filters do not apply; the duplicate matcher rides
-  on top) — unit-tested in `shell.rs::tests`. The Detail column
-  chooser: the ItemView right-click routes a Detail-header hit to
-  the shell chooser popover (`Dropdown` + the `detail-columns`
-  dyn fill; live toggling through `win.toggle-column`; the auto-
-  size extras omitted — recorded). The Duplicate List engine:
+  `ViewState::clear_sort`). EVERY stateful handler calls
+  `sync_enabled` (the check marks re-render only on the sync — the
+  T6 round-1 bug); `view-mode` state derives from
+  `item_view.mode()`. The composed filter (`compose_quick_filter`,
+  the C# `ComicBookAllPropertiesMatcher.Create` parity — read-state
+  ReadPercentageMatcher, comic-type FileMatcher Not, AllProperties
+  op-3 ContainsAll with the enum option name, a MATCH/NOT query
+  parses ONLY for the All scope and then the view filters do not
+  apply; the duplicate matcher rides on top) — unit-tested in
+  `shell.rs::tests`. The Detail column chooser: the ItemView
+  right-click routes a Detail-header hit to a PLAIN popover of
+  CheckButton rows (`popup_column_chooser` — NOT `build_dropdown`;
+  the arrow-less/child-popover dropdown does not MAP window-
+  parented on Wayland; the scroller needs BOTH natural-size
+  propagations). The Duplicate List engine:
   `library::duplicate_smart_list` (the matcher-values name + the
   `NumberedString` numbering ported in `cr-engine/src/text.rs`) +
   `library::list_folders`. Probe `browserbar_probe` gates the
   OPEN paths + the filter narrowing (3/1/1/1/3) + the scoped
-  search + the chooser toggle + the duplicate landing; the T3/T4/
-  T5 probes stay green. Deviations in the kickoff tracker (Stack/
-  Undo/Redo absent, the group-headers items out, the chooser
-  auto-size extras out, Catalog cue on).
-  **Next: T7 (the navigator + Pages toolbars) after the user
-  test.** Phase 6 (scripting) starts only after 5.5.
+  search + the chooser open/height/toggle + the toggle-browser
+  page flip + the view-mode check sync + the duplicate landing;
+  the T3/T4/T5 probes stay green. Deviations + the Wayland lesson
+  in the kickoff tracker.
+  **Next: T7 (the navigator + Pages toolbars).** Phase 6
+  (scripting) starts only after 5.5.
   Phases 0-5 are complete (their gates stay green). Open Phase 1
   gaps: WebComicProvider and the PDF/DjVu writers (tracked in
   `docs/phase-1-kickoff.md`).
@@ -732,9 +740,10 @@ The UI crate (Phase 3):
 | `crates/cr-ui/assets/papers/` | Paper textures copied from the C# `Resources/Textures/Papers`. |
 | `crates/cr-image/src/error_assets.rs` | `CreateErrorPage`/`CreateErrorThumbnail` port with the bundled `ErrorPage.jpg` + `RedCross.png`. Unit-tested. |
 | `crates/cr-ui/src/library.rs` | The app session (`Program` statics): the Library open/save/scan wiring, the Settings + engine-config load/save, `apply_edited` (the editor commit + the dirty mark + the debounced file write), `update_book_file` (the write-back gates), list CRUD (new smart list/folder/id list, update, evaluate), QuickOpen lists, the last-export setting. |
-| `crates/cr-ui/src/browser/shell.rs` | The browser window: navigator + ItemView + reader dock, the header commands, the context menu (open/reveal/edit/update-file/export/remove/properties), the quick search, view/sort/group actions, the dynamic menu fills (`dyn_fill`), the probe accessors (`state_*`/`toolbar_*`). |
+| `crates/cr-ui/src/browser/shell.rs` | The browser window: navigator + ItemView + reader dock, the header commands, the context menu (open/reveal/edit/update-file/export/remove/properties), the quick search + the composed view filter (`compose_quick_filter`), view/sort/group/filter/scope actions, the Detail column chooser (`popup_column_chooser` — a plain popover), the dynamic menu fills (`dyn_fill`), the probe accessors (`state_*`/`toolbar_*`/`browserbar_*`). |
 | `crates/cr-ui/src/browser/menubar.rs` | The T3 custom menubar: the pure six-menu table (MenuNode Item/Sub/Sep/Dyn) + the popover widget (one-active-popover state machine, the Designer icon mapping) + the standalone `Dropdown` (`build_dropdown`) + the dynamic fill machinery (`set_dyn_fill`, `refresh_top`, per-slot map hooks) + the `menubar_visible` rule. |
-| `crates/cr-ui/src/browser/toolbar.rs` | The T5 reader toolbar: the nine-button strip (prev/next splits, layout/fit/zoom/rotate drops with state text, magnifier/fullscreen, Tools) + the `Dropdown` tables (PREV/NEXT/FIT/ZOOM/ROTATE/TOOLS); the bar rides the undock. |
+| `crates/cr-ui/src/browser/toolbar.rs` | The T5 reader toolbar: the nine-button strip (prev/next splits, layout/fit/zoom/rotate drops with state text, magnifier/fullscreen, Tools) + the `Dropdown` tables (PREV/NEXT/FIT/ZOOM/ROTATE/TOOLS); the bar rides the undock (mounted under the menubar since T6, above the view stack). |
+| `crates/cr-ui/src/browser/browser_toolbar.rs` | The T6 browser toolbar: the strip in the item pane (Sidebar, Browse prev/next, Views/Group/Arrange drops, right-aligned Quick Search with the scope menu, List Layouts stub, Duplicate List drop) + the `VIEWS`/`SEARCH_SCOPE`/`DUPLICATE` tables and the dynamic `sort_defs`/`group_defs`; the `sync`/`sync_labels` push the action states + the Group/Arrange labels. |
 | `crates/cr-ui/src/browser/navigator.rs` | The list tree (Library/Smart Lists/folders/reading lists) with the context menu + the command dispatch. |
 | `crates/cr-ui/src/browser/item_view.rs` | The book grid: view modes, sort/group, selection (select_book/reselect), type-ahead, thumbs via the pool queues. |
 | `crates/cr-ui/src/browser/pages_view.rs` | The Pages panel: the open comic's page grid, the current-page marker, double-click navigation. |
@@ -745,7 +754,7 @@ The UI crate (Phase 3):
 | `crates/cr-ui/src/dialogs/smart_list.rs` | The smart-list editor: Designer (matcher rows/groups with the type/operator/value/not combos + the structure menu) | Query (the rendered query text round-trip). |
 | `crates/cr-ui/src/dialogs/list_editor.rs` | The list editor for folders (name/notes/combine) and reading lists (name/notes/quick-open). |
 | `crates/cr-ui/src/dialogs/export.rs` | The export dialog: target/folder/format/compression/naming/page-format/quality + the flags, the inline progress, the session-persisted last settings. |
-| `crates/cr-ui/examples/` | The headless probes: `commands_probe` (69 actions + accels), `menubar_probe` (the T3 bar), `dynmenus_probe` (the T4 fills), `toolbar_probe` (the T5 strip + the dropdown OPEN gate), `menubarvis_probe` (the visibility evidence), `icons_probe`, `editor_probe`, `writeback_probe`. |
+| `crates/cr-ui/examples/` | The headless probes: `commands_probe` (69 actions + accels), `menubar_probe` (the T3 bar), `dynmenus_probe` (the T4 fills), `toolbar_probe` (the T5 strip + the dropdown OPEN gate), `browserbar_probe` (the T6 browser toolbar: OPEN gates, the read/scope filters, the column chooser open/height/toggle, the duplicate landing), `menubarvis_probe` (the visibility evidence), `icons_probe`, `editor_probe`, `writeback_probe`. |
 | `crates/cr-ui/src/settings/` | The Preferences dialog (`preferences.rs`) + the options builder (`options.rs`, the `FillPanelWithOptions` parity). |
 | `crates/cr-ui/src/pages.rs` | The page-entry merge (`merged_page_entries`): the provider count + the stored overlay — the reader and the editor both use it. |
 | `crates/cr-ui/src/bitmap.rs` | The cairo surface helpers (RGBA→premultiplied ARGB, the thumbnail-blob split). |
@@ -1002,6 +1011,32 @@ Re-bless the `db-large.xml` snapshot after a deliberate model change: `CR_BLESS=
   UNRELATED workspaces editor — do not port it for lists.
 
 ### Lessons from Phase 5.5 (do not re-learn these)
+
+- A window-parented CONTEXT popover on Wayland must be a PLAIN
+  `gtk4::Popover` (the book-context-menu shape), NOT a
+  `build_dropdown` one. The `build_dropdown` popover (has_arrow
+  off + submenu child popovers) is ANCHOR-parented by design; it
+  maps only from a widget anchor, and fails to MAP when parented
+  to the top-level window on Wayland (X11 tolerates it, so Xvfb
+  probes cannot catch this — the `CR_DEBUG_CHOOSER` trace on the
+  user's machine showed `header_hit=true` + the popup call firing
+  with nothing appearing; the T6 column chooser). A scroller
+  inside a popover needs BOTH `propagate_natural_width` AND
+  `propagate_natural_height`, else it collapses to ~2 rows.
+- A stateful `SimpleAction` whose handler only `set_state`s does
+  NOT re-render the custom menubar/toolbar rows (they render from
+  the `sync` resolve closure, driven by `sync_enabled`). Every
+  stateful handler must call `sync_enabled` after `set_state`, and
+  radio state should derive from the SOURCE OF TRUTH in the sync
+  (e.g. `view-mode` from `item_view.mode()`), not be trusted from
+  the click parameter (the T6 "the check never moved" bug).
+- The reader toolbar (`mainToolStrip`) is visible in BOTH the
+  browser and reader views (the C# `OnGuiVisibilities` keeps
+  MainToolStripVisible in Fill mode); only MinimalGui hides the
+  whole bar, and `OnUpdateGui` gates only prev/next/layout/fit/
+  zoom/rotate/magnifier on an open book — Fullscreen/Tools always
+  show. Mount it above the view stack (not inside the reader page)
+  so the library view keeps Tools/Fullscreen.
 
 - GTK accelerators match the PRODUCED keyval. Shift rewrites the
   symbol on most layouts (Shift+4 → '¤'/'$'), so accels like

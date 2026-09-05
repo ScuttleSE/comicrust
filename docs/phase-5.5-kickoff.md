@@ -1269,6 +1269,39 @@ change; it lands after the bars so they exist in both modes.
     8. Duplicate List: open the drop (shows your folders), pick
        one — a new smart list appears under it (named from the
        active filter text, or the list name + "(2)").
+- T6 COMPLETE — USER-TESTED, ALL PASS (2026-09-05; four fix
+  rounds). Round-1 report → fixed: (a) Browse ▸ Browser did
+  nothing from the QuickOpen page (`toggle_browser` now shows the
+  browser from `quickopen`, not only from the reader); (b) the
+  Views/filter/scope check marks never moved (the stateful action
+  handlers set state but never ran the sync that re-renders the
+  rows — every handler now calls `sync_enabled`, and `view-mode`
+  state derives from `item_view.mode()` as the source of truth);
+  (c) the browser toolbar covered the navigator (moved into the
+  RIGHT pane above the item view — `item_box` = toolbar +
+  scroller, the paned end child); (d) Tools/Fullscreen were hidden
+  in the library view (the reader toolbar moved OUT of the reader
+  stack page to a `toolbar_box` UNDER the menubar, above the
+  stack — the C# `OnGuiVisibilities`/`OnUpdateGui` keeps
+  MainToolStripVisible in both views, and only prev/next/layout/
+  fit/zoom/rotate/magnifier gate on a book; the undock re-docks
+  into `toolbar_box`). Round-2/3/4 (the column chooser): the
+  right-click hit test + hook fired fine (the `CR_DEBUG_CHOOSER`
+  trace confirmed `header_hit=true` + `CHOOSER popup`), but the
+  popover never MAPPED on the user's Wayland — the T5/T6
+  `build_dropdown` popover (has_arrow off + submenu child
+  popovers) does not map when parented to the top-level window on
+  Wayland. Fix: the chooser is a PLAIN `gtk4::Popover` of
+  `CheckButton` rows (the exact Wayland-proven shape of the book
+  context menu), parented to the window, unparented on close;
+  then the popover was two rows tall (the `ScrolledWindow`
+  propagated natural WIDTH but not HEIGHT) — added
+  `propagate_natural_height(true)` + `max_content_height(480)`.
+  **T6 is COMPLETE. Next: T7 (the navigator + Pages toolbars).**
+  LESSON (recorded in the tracker): a `build_dropdown` popover is
+  anchor-parented by design; a window-parented context popover on
+  Wayland must be a PLAIN popover (the book-menu shape), and a
+  scroller in a popover needs BOTH natural-size propagations.
 
 ### T5 — Reader toolbar (COMPLETE — see the closure entry in the progress log)
 - DEVIATIONS (vs the C# ToolStrip):
@@ -1294,7 +1327,38 @@ change; it lands after the bars so they exist in both modes.
   popup(); a probe that only clicks rows never exercises the
   present path — gate the OPEN, not just the click.
 
-### T6 — Browser toolbar reorg + Detail column chooser (IMPLEMENTED — user test pending)
+### T6 — Browser toolbar reorg + Detail column chooser (COMPLETE — USER-TESTED)
+- FIX ROUNDS (user test, 2026-09-05):
+  - Browse ▸ Browser did nothing from the QuickOpen page —
+    `toggle_browser` now shows the browser from `quickopen`.
+  - The Views/filter/scope CHECK MARKS never moved — the stateful
+    handlers set state but never ran the sync that re-renders the
+    dropdown rows; every stateful handler now calls `sync_enabled`,
+    and `view-mode` state derives from `item_view.mode()`.
+  - The browser toolbar covered the navigator — moved into the
+    RIGHT pane above the item view (`item_box` = toolbar +
+    scroller, the paned end child).
+  - Tools/Fullscreen were hidden in the library view — the reader
+    toolbar moved OUT of the reader stack page into a `toolbar_box`
+    UNDER the menubar (above the view stack); the C#
+    `OnGuiVisibilities` keeps MainToolStripVisible in both views,
+    and `OnUpdateGui` gates only prev/next/layout/fit/zoom/rotate/
+    magnifier on a book (Fullscreen/Tools always show). The undock
+    re-docks into `toolbar_box`.
+  - The column chooser popover fired (`header_hit=true` +
+    `CHOOSER popup`, per the `CR_DEBUG_CHOOSER` trace) but never
+    MAPPED on Wayland: a `build_dropdown` popover (has_arrow off +
+    submenu child popovers) does not map parented to the top-level
+    window. Fix: a PLAIN `gtk4::Popover` of `CheckButton` rows
+    (the book-context-menu shape). Then it was two rows tall — the
+    `ScrolledWindow` propagated natural width only; added
+    `propagate_natural_height(true)` + `max_content_height(480)`.
+- LESSON (Wayland): a window-parented CONTEXT popover must be a
+  PLAIN popover (the book-menu shape), NOT a `build_dropdown` one
+  (those are anchor-parented — arrow-less + child popovers only map
+  from a widget anchor, not the top-level window). A scroller
+  inside a popover needs BOTH `propagate_natural_width` AND
+  `propagate_natural_height`, else it collapses to ~2 rows.
 - DEVIATIONS (vs `ComicBrowserControl.toolStrip`):
   - Stack omitted (no ItemStacker port; `tbbStack` sits between
     Group and Sort in the C# order) — covered by the ADR-024
