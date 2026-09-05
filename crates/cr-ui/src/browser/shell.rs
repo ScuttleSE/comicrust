@@ -100,11 +100,9 @@ struct ShellState {
     /// Duplicate List source (`GetCurrentMatcher`).
     current_filter: RefCell<Option<Matcher>>,
     /// The Detail header column chooser (the C#
-    /// `autoHeaderContextMenuStrip`): a FRESH popover per open; the
-    /// last one is kept for the probe.
-    columns_drop: RefCell<Option<super::menubar::Dropdown>>,
-    /// The shared dynamic fill provider (the chooser rebuilds it).
-    dyn_fill: RefCell<Option<super::menubar::DynFillFn>>,
+    /// `autoHeaderContextMenuStrip`): a FRESH plain popover per open;
+    /// the last one is kept for the probe.
+    columns_drop: RefCell<Option<gtk4::Popover>>,
 }
 
 impl ShellState {
@@ -341,7 +339,6 @@ impl BrowserShell {
             // (the exact shape of the proven book context menu; the
             // last one stays here for the probe).
             columns_drop: RefCell::new(None),
-            dyn_fill: RefCell::new(None),
         });
         let shell = BrowserShell {
             window: window.clone(),
@@ -873,13 +870,7 @@ impl BrowserShell {
             .columns_drop
             .borrow()
             .as_ref()
-            .is_some_and(|d| d.popover().is_mapped())
-    }
-
-    /// The LAST built column chooser dropdown (the probe — a fresh
-    /// popover per open; open first).
-    pub fn state_column_chooser(&self) -> Option<crate::browser::menubar::Dropdown> {
-        self.state.columns_drop.borrow().clone()
+            .is_some_and(|p| p.is_mapped())
     }
 
     /// The browser toolbar's Group/Arrange label texts (the probe).
@@ -1440,10 +1431,8 @@ impl ShellState {
         });
         self.menubar.set_dyn_fill(Rc::clone(&fill));
         self.toolbar.set_dyn_fill(fill.clone());
-        // The browser toolbar's Duplicate List drop shares it; the
-        // column chooser takes a clone per open.
-        self.browser_toolbar.set_dyn_fill(fill.clone());
-        *self.dyn_fill.borrow_mut() = Some(fill);
+        // The browser toolbar's Duplicate List drop shares it.
+        self.browser_toolbar.set_dyn_fill(fill);
         // The toolbar rides into the undocked window (the T5
         // chrome).
         self.reader.set_undock_chrome(
@@ -1683,24 +1672,6 @@ impl ShellState {
                     })
                     .collect()
             }
-            // The Detail header column chooser
-            // (`CreateHeaderMenu`): every registered column with its
-            // visibility check.
-            "detail-columns" => self
-                .item_view
-                .detail_columns_snapshot()
-                .into_iter()
-                .map(|(id, name, visible)| {
-                    DynNode::Item(DynItem {
-                        label: name,
-                        action: format!("win.toggle-column::{id}"),
-                        accel: String::new(),
-                        icon: "",
-                        checked: visible,
-                        enabled: true,
-                    })
-                })
-                .collect(),
             _ => Vec::new(),
         }
     }
@@ -1742,28 +1713,47 @@ impl ShellState {
     /// parent to the window, point at the click, popup, unparent on
     /// close). The fill refreshes before the popup (the fill rows
     /// carry the live check states).
-    fn popup_column_chooser(&self, wx: f64, wy: f64) {
+    fn popup_column_chooser(self: &Rc<ShellState>, wx: f64, wy: f64) {
         if std::env::var_os("CR_DEBUG_CHOOSER").is_some() {
             eprintln!("CHOOSER popup at ({wx}, {wy})");
         }
-        let Some(fill) = self.dyn_fill.borrow().clone() else {
-            return;
-        };
-        let drop = super::menubar::build_dropdown(
-            &[super::menubar::MenuNode::Dyn("detail-columns")],
-            &self.window,
-        );
-        drop.set_dyn_fill(fill);
-        drop.refresh_slot("detail-columns");
-        let popover = drop.popover().clone();
-        popover.set_parent(&self.window);
-        {
-            let unparent = popover.clone();
-            popover.connect_closed(move |_| unparent.unparent());
+        // A PLAIN popover with check-rows — the exact Wayland-proven
+        // shape of the book context menu. The T5/T6 `build_dropdown`
+        // popover (has_arrow off, submenu child popovers) fails to
+        // MAP when parented to the top-level window on Wayland (the
+        // trace shows the popup call fires but nothing appears); a
+        // plain popover parented to the window maps fine.
+        let popover = gtk4::Popover::new();
+        let list = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+        list.set_margin_top(4);
+        list.set_margin_bottom(4);
+        list.set_margin_start(4);
+        list.set_margin_end(4);
+        let scroller = gtk4::ScrolledWindow::builder()
+            .propagate_natural_width(true)
+            .max_content_height(480)
+            .child(&list)
+            .build();
+        for (id, name, visible) in self.item_view.detail_columns_snapshot() {
+            let check = gtk4::CheckButton::with_label(&name);
+            check.set_active(visible);
+            let state = Rc::downgrade(self);
+            let popover_ref = popover.clone();
+            check.connect_toggled(move |_| {
+                if let Some(sh) = state.upgrade() {
+                    sh.item_view.toggle_column_visible(id);
+                    sh.sync_enabled();
+                }
+                let _ = &popover_ref;
+            });
+            list.append(&check);
         }
-        let rect = gtk4::gdk::Rectangle::new(wx as i32, wy as i32, 1, 1);
+        popover.set_child(Some(&scroller));
+        popover.set_parent(&self.window);
+        popover.connect_closed(|p| p.unparent());
+        let rect = gtk4::gdk::Rectangle::new(wx as i32, wy as i32 + 4, 1, 1);
         popover.set_pointing_to(Some(&rect));
-        *self.columns_drop.borrow_mut() = Some(drop);
+        *self.columns_drop.borrow_mut() = Some(popover.clone());
         popover.popup();
     }
 

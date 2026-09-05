@@ -223,7 +223,6 @@ fn main() {
         glib::timeout_add_local(std::time::Duration::from_millis(2500), {
             let shell = shell.clone();
             move || {
-                let drop = shell.state_column_chooser();
                 let id = shell
                     .state_columns_snapshot()
                     .iter()
@@ -233,7 +232,9 @@ fn main() {
                     Some(id) => id,
                     None => return glib::ControlFlow::Break,
                 };
-                let clicked = drop.is_some_and(|d| d.click_row(&format!("win.toggle-column::{id}")));
+                // The chooser rows toggle through `win.toggle-column`
+                // (the CheckButton fires the same action).
+                let clicked = shell.state_dispatch_param("win.toggle-column", &id.to_string());
                 let after = shell
                     .state_columns_snapshot()
                     .iter()
