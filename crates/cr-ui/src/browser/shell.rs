@@ -571,6 +571,13 @@ impl BrowserShell {
         self.state.item_view.item_size()
     }
 
+    /// Dispatches a READER command through the current view (the
+    /// page-click path minus the mouse gesture — the ShowBrowser →
+    /// ToggleBrowserFromReader gate).
+    pub fn state_reader_dispatch(&self, id: &str) {
+        self.state.reader.dispatch_current(id);
+    }
+
     /// Probe: the allocated heights of the workspace stack and the
     /// Pages page (the full-window layout gate — the T9 user test
     /// caught the Pages page at its toolbar's height).
@@ -638,7 +645,23 @@ impl BrowserShell {
                             "NextComic" => sh.open_next_book(1),
                             "PrevComic" => sh.open_next_book(-1),
                             "RandomComic" => sh.open_next_book(0),
-                            "ShowBrowser" => sh.select_last_browser(),
+                            "ShowBrowser" => {
+                                // `ToggleBrowserFromReader`: in Fill
+                                // mode (our only mode) the reader's
+                                // MouseLeft/Escape command flips
+                                // MINIMAL UI, not the browser — the
+                                // browser branch runs only with the
+                                // MouseSwitchesToFullLibrary
+                                // extended setting (MainForm.cs:
+                                // 2133-2144).
+                                if !cr_core::settings::ExtendedSettings::global()
+                                    .mouse_switches_to_full_library
+                                {
+                                    sh.reader.dispatch_current("ToggleMenu");
+                                } else {
+                                    sh.toggle_browser();
+                                }
+                            }
                             _ => {}
                         }
                         sh.sync_enabled();

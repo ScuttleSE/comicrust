@@ -150,6 +150,30 @@ fn main() {
             }
         });
 
+        // J. The reader's left-click command (`ShowBrowser` →
+        //    `ToggleBrowserFromReader`): in Fill mode it flips
+        //    MINIMAL UI — the menubar hides and returns (the T8
+        //    round-2 user report; the old port switched workspaces).
+        glib::timeout_add_local(std::time::Duration::from_millis(3400), {
+            let shell = shell.clone();
+            move || {
+                if shell.state_visible_page().as_deref() != Some("reader") {
+                    println!("J skipped (not on the reader)");
+                    return glib::ControlFlow::Break;
+                }
+                let before = shell.menubar().widget().is_visible();
+                shell.state_reader_dispatch("ShowBrowser");
+                let after = shell.menubar().widget().is_visible();
+                let page = shell.state_visible_page();
+                shell.state_reader_dispatch("ShowBrowser");
+                let back = shell.menubar().widget().is_visible();
+                println!(
+                    "J click: menubar {before}->{after}->{back} page={page:?} (expect true->false->true, page stays reader)"
+                );
+                glib::ControlFlow::Break
+            }
+        });
+
         // E. RE-click the selected comic tab → the C# wires
         //    CaptionClick only on the WORKSPACE items (MainView.cs:
         //    161-163); a comic tab re-click stays on the page (the
