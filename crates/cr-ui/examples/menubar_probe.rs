@@ -52,7 +52,26 @@ fn main() {
         shell.menubar().open_top(0);
         println!("STATE file menu open: {}", shell.menubar().top_count());
 
-        glib::timeout_add_local(std::time::Duration::from_millis(1500), {
+        // 5. The switching path (the user's crash sequence): switch
+        //    to another top menu while one is open, then close.
+        glib::timeout_add_local(std::time::Duration::from_millis(800), {
+            let menubar = shell.menubar().clone_handle();
+            move || {
+                println!("SWITCH to Edit");
+                menubar.open_top(1);
+                glib::ControlFlow::Break
+            }
+        });
+        glib::timeout_add_local(std::time::Duration::from_millis(1600), {
+            let menubar = shell.menubar().clone_handle();
+            move || {
+                println!("SWITCH to Help");
+                menubar.open_top(5);
+                glib::ControlFlow::Break
+            }
+        });
+
+        glib::timeout_add_local(std::time::Duration::from_millis(2800), {
             let app = app.clone();
             move || {
                 println!("PROBE COMPLETE");

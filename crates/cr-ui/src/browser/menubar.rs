@@ -561,19 +561,58 @@ pub struct ActionState {
     pub state: Option<glib::Variant>,
 }
 
+/// One top-level menu (the bar's flat row).
 struct TopMenu {
-    button: gtk4::MenuButton,
+    button: gtk4::Button,
+    popover: gtk4::Popover,
 }
 
+/// The bar's open-menu state — the `GtkPopoverMenuBar.active_item`
+/// equivalent. ONE slot: on Wayland a grabbing popup may only map
+/// when no other grabbing popup is up (`can_map_grabbing_popup`,
+/// `gdkpopup-wayland.c:904`) — a second present while one popover
+/// holds the grab fails to map BUT the seat grab stays, freezing
+/// all input. So the bar NEVER presents a second popover without
+/// popping the open one down first.
+type ActiveSlot = Rc<Cell<Option<usize>>>;
+
 /// The menubar widget: the flat top row + every popover's rows
-/// (kept for the state sync).
+/// (kept for the state sync). Shared through `Rc` by the shell and
+/// the probes.
 pub struct MenubarWidget {
     bar: gtk4::Box,
     tops: Vec<TopMenu>,
     rows: Vec<ItemRow>,
+    active: ActiveSlot,
+}
+
+impl Clone for MenubarWidget {
+    fn clone(&self) -> Self {
+        Self {
+            bar: self.bar.clone(),
+            tops: self
+                .tops
+                .iter()
+                .map(|t| TopMenu {
+                    button: t.button.clone(),
+                    popover: t.popover.clone(),
+                })
+                .collect(),
+            rows: Vec::new(),
+            active: Rc::clone(&self.active),
+        }
+    }
 }
 
 impl MenubarWidget {
+    /// A sync-capable handle (the sync rows live in the original —
+    /// cloned handles skip the state sync).
+    pub fn clone_handle(&self) -> MenubarWidget {
+        let mut cloned = self.clone();
+        cloned.rows = Vec::new();
+        cloned
+    }
+
     pub fn widget(&self) -> &gtk4::Box {
         &self.bar
     }
@@ -586,9 +625,7 @@ impl MenubarWidget {
     /// Opens a top menu programmatically (the probe; GTK4 cannot
     /// open a model menubar from code — the custom shape can).
     pub fn open_top(&self, index: usize) {
-        if let Some(top) = self.tops.get(index) {
-            top.button.set_property("active", true);
-        }
+        set_active_item(&self.tops, &self.active, index);
     }
 
     /// Applies the action states: check marks (checks and radio
@@ -799,13 +836,37 @@ fn popover_with(
         popover.connect_closed(move |_| child.popdown());
     }
     // Reveal focuses the first row (the C# `Items[0].Select()`
-    // reveal step; best effort under a custom widget).
+    // reveal step) — via an idle AFTER the map sequence completes:
+    // an explicit grab_focus inside the map callback would run in
+    // the middle of the Wayland grab setup.
     if let Some(first) = first {
         popover.connect_map(move |_| {
-            let _ = first.grab_focus();
+            let first = first.clone();
+            glib::idle_add_local_once(move || {
+                let _ = first.grab_focus();
+            });
         });
     }
     (popover, rows)
+}
+
+/// The `GtkPopoverMenuBar.set_active_item` state machine: pop every
+/// OTHER open popover down FIRST, then present the target (the only
+/// Wayland-safe order — a grabbing popup may only map when no other
+/// grabbing popup is up; a failed map leaves the seat grab live and
+/// freezes input). Hover/keys/open_top route through here; the
+/// click handler adds the toggle-close.
+fn set_active_item(tops: &[TopMenu], active: &ActiveSlot, index: usize) {
+    for (i, top) in tops.iter().enumerate() {
+        if i != index && top.popover.is_mapped() {
+            top.popover.popdown();
+        }
+    }
+    let Some(top) = tops.get(index) else {
+        return;
+    };
+    active.set(Some(index));
+    top.popover.popup();
 }
 
 /// Builds the menubar (call once per browser window).
@@ -813,18 +874,11 @@ pub fn create_menubar(window: &gtk4::ApplicationWindow) -> MenubarWidget {
     let bar = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
     bar.add_css_class("menubar");
     bar.set_halign(gtk4::Align::Start);
-    // Hover switching: while any top menu is open, entering another
-    // top button switches to it (the WinForms menu-strip behavior).
-    let open_count: Rc<Cell<usize>> = Rc::new(Cell::new(0));
-    let tops: Rc<Vec<gtk4::MenuButton>> = Rc::new(
-        MENUS
-            .iter()
-            .map(|_| gtk4::MenuButton::new())
-            .collect::<Vec<_>>(),
-    );
+    let active: ActiveSlot = Rc::new(Cell::new(None));
     let mut rows = Vec::new();
-    for (index, (label, defs)) in MENUS.iter().enumerate() {
-        let button = tops[index].clone();
+    let mut tops: Vec<TopMenu> = Vec::new();
+    for (label, defs) in MENUS.iter() {
+        let button = gtk4::Button::new();
         let lbl = gtk4::Label::builder()
             .label(*label)
             .use_underline(true)
@@ -832,56 +886,105 @@ pub fn create_menubar(window: &gtk4::ApplicationWindow) -> MenubarWidget {
         button.set_child(Some(&lbl));
         button.set_css_classes(&["flat"]);
         let (popover, menu_rows) = popover_with(defs, window);
-        button.set_popover(Some(&popover));
+        // Explicit parenting (the MenuButton toggle semantics are
+        // what made parallel presents possible).
+        popover.set_parent(&button);
         rows.extend(menu_rows);
+        // Any close clears the slot (guarded — a late close of the
+        // OLD popover must not clear a NEW one's slot).
         {
-            let count = Rc::clone(&open_count);
-            button.connect_notify_local(Some("active"), move |b, _| {
-                if b.property::<bool>("active") {
-                    count.set(count.get() + 1);
+            let active = Rc::clone(&active);
+            popover.connect_closed(move |_| {
+                let _ = active;
+            });
+        }
+        bar.append(&button);
+        tops.push(TopMenu { button, popover });
+    }
+    // Wire the state machine now that every TopMenu exists.
+    let shared_tops: Rc<Vec<TopMenu>> = Rc::new(
+        tops.iter()
+            .map(|t| TopMenu {
+                button: t.button.clone(),
+                popover: t.popover.clone(),
+            })
+            .collect(),
+    );
+    for (index, (label, defs)) in MENUS.iter().enumerate() {
+        let _ = (label, defs);
+        // Click: open or toggle-close (the WinForms MenuStrip).
+        {
+            let tops = Rc::clone(&shared_tops);
+            let active = Rc::clone(&active);
+            shared_tops[index].button.connect_clicked(move |_| {
+                let current = active.get();
+                if current == Some(index) {
+                    if let Some(top) = tops.get(index) {
+                        top.popover.popdown();
+                    }
                 } else {
-                    count.set(count.get().saturating_sub(1));
+                    set_active_item(&tops, &active, index);
                 }
             });
         }
+        // Hover switching: while a menu is open, entering another
+        // top button switches (the WinForms strip behavior). When
+        // NO menu is open, hover does nothing (click opens).
         {
-            let count = Rc::clone(&open_count);
-            let btn = button.clone();
+            let tops = Rc::clone(&shared_tops);
+            let active = Rc::clone(&active);
             let motion = gtk4::EventControllerMotion::new();
             motion.connect_enter(move |_, _, _| {
-                if count.get() > 0 && !btn.is_active() {
-                    btn.set_active(true);
+                let current = active.get();
+                if current.is_some() && current != Some(index) {
+                    set_active_item(&tops, &active, index);
                 }
             });
-            button.add_controller(motion);
+            shared_tops[index].button.add_controller(motion);
         }
         // Left/Right switches top menus while one is open (the key
         // controller lives on each popover — a popover is its own
         // native surface, the bar never sees its keys).
         {
-            let tops = Rc::clone(&tops);
+            let tops = Rc::clone(&shared_tops);
+            let active = Rc::clone(&active);
             let controller = gtk4::EventControllerKey::new();
             controller.connect_key_pressed(move |_c, key, _code, _mods| {
                 if !matches!(key, gtk4::gdk::Key::Left | gtk4::gdk::Key::Right) {
                     return glib::Propagation::Proceed;
                 }
-                let Some(idx) = tops.iter().position(|b| b.is_active()) else {
+                let Some(idx) = active.get() else {
                     return glib::Propagation::Proceed;
                 };
                 let step = if key == gtk4::gdk::Key::Left { -1 } else { 1 };
                 let next = (idx as isize + step).rem_euclid(tops.len() as isize) as usize;
-                tops[idx].set_property("active", false);
-                tops[next].set_property("active", true);
+                set_active_item(&tops, &active, next);
                 glib::Propagation::Stop
             });
-            popover.add_controller(controller);
+            shared_tops[index].popover.add_controller(controller);
         }
-        bar.append(&button);
+    }
+    // Any popover close clears the slot (guarded against a stale
+    // OLD popover's late close clearing a NEW one).
+    for (index, top) in shared_tops.iter().enumerate() {
+        let active = Rc::clone(&active);
+        top.popover.connect_closed(move |_| {
+            if active.get() == Some(index) {
+                active.set(None);
+            }
+        });
     }
     MenubarWidget {
         bar,
-        tops: tops.iter().map(|b| TopMenu { button: b.clone() }).collect(),
+        tops: shared_tops
+            .iter()
+            .map(|t| TopMenu {
+                button: t.button.clone(),
+                popover: t.popover.clone(),
+            })
+            .collect(),
         rows,
+        active,
     }
 }
 
