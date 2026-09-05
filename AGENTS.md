@@ -163,12 +163,47 @@ Update this section at the **end of every work session**. The next agent must kn
   Fill-mode placement into the browser tab strip is T9.
   Deviations in the kickoff tracker (row-above-reader mount,
   drop-only zoom/rotate, the ADR-024 Tools omissions).
-  **Next: T6 (the browser toolbar reorg + the Detail column
-  chooser).** Phase 6 (scripting) starts only after 5.5.
+  T6 (the browser toolbar reorg + the Detail column chooser)
+  IMPLEMENTED — user test pending (2026-09-05).
+  `browser/browser_toolbar.rs`: the strip above the browser panes —
+  Sidebar, Browse Previous/Next (the list history), Views (the
+  view radios + the read-state radios + the comic-type checks +
+  Show Duplicates), Group + Arrange (the dynamic Not
+  Grouped/Not-Sorted-first tables, stateful check rows), the
+  right-aligned Quick Search with the C# scope menu (All/Series/
+  Writer/Artists/Descriptive/Catalog/Filename — the AllProperties
+  option) on the entry's secondary chevron, a DISABLED List
+  Layouts button (T14), the Duplicate List drop (the folder walk).
+  The old header folds into the menubar + the strip; the header
+  carries the reader page display only. New stateful actions:
+  `view-filter`/`comic-type`/`duplicates-only`/`search-scope`/
+  `toggle-column`/`duplicate-list`; sort-column and group-by
+  became STATEFUL (check marks; "" = Not Sorted/Not Grouped via
+  `ViewState::clear_sort`). The composed filter
+  (`compose_quick_filter`, the C# `ComicBookAllPropertiesMatcher.
+  Create` parity — read-state ReadPercentageMatcher, comic-type
+  FileMatcher Not, AllProperties op-3 ContainsAll with the enum
+  option name, a MATCH/NOT query parses ONLY for the All scope and
+  then the view filters do not apply; the duplicate matcher rides
+  on top) — unit-tested in `shell.rs::tests`. The Detail column
+  chooser: the ItemView right-click routes a Detail-header hit to
+  the shell chooser popover (`Dropdown` + the `detail-columns`
+  dyn fill; live toggling through `win.toggle-column`; the auto-
+  size extras omitted — recorded). The Duplicate List engine:
+  `library::duplicate_smart_list` (the matcher-values name + the
+  `NumberedString` numbering ported in `cr-engine/src/text.rs`) +
+  `library::list_folders`. Probe `browserbar_probe` gates the
+  OPEN paths + the filter narrowing (3/1/1/1/3) + the scoped
+  search + the chooser toggle + the duplicate landing; the T3/T4/
+  T5 probes stay green. Deviations in the kickoff tracker (Stack/
+  Undo/Redo absent, the group-headers items out, the chooser
+  auto-size extras out, Catalog cue on).
+  **Next: T7 (the navigator + Pages toolbars) after the user
+  test.** Phase 6 (scripting) starts only after 5.5.
   Phases 0-5 are complete (their gates stay green). Open Phase 1
   gaps: WebComicProvider and the PDF/DjVu writers (tracked in
   `docs/phase-1-kickoff.md`).
-- **State:** `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` are green. 299 tests. CI runs on the `docker-runner-amd64` container runner (ADR-020). The release tracks are `release.yaml` (rolling prerelease per push) and `tagged-release.yaml` (manual dispatch, stable release for an existing tag — ADR-021, 2026-09-03). Until the runner is registered and `comicrust-ci:latest` is built on the runner host, pushed and dispatched workflows sit queued on that label.
+- **State:** `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` are green. 307 tests. CI runs on the `docker-runner-amd64` container runner (ADR-020). The release tracks are `release.yaml` (rolling prerelease per push) and `tagged-release.yaml` (manual dispatch, stable release for an existing tag — ADR-021, 2026-09-03). Until the runner is registered and `comicrust-ci:latest` is built on the runner host, pushed and dispatched workflows sit queued on that label.
 - **Phase 0 gate status:** byte-stable ComicDb.xml round-trip proven on all three synthetic fixtures AND the real-world database `tests/realworld/ComicDb.xml` (255 books, 584 KB, 2026-09-02, user-approved commit).
 - **Phase 2 gate status:** every saved smart list in the real-world DB (a) binds to the matcher registry, (b) renders to a `Match` query string that re-parses and re-renders byte-identically, and (c) evaluates to the SAME book sets the C# cached in `CacheStorage` (Never Read = all 255, Files to update = the 3 dirty books, Reading/Read = empty). Evidence: `crates/cr-engine/tests/realworld_query.rs`.
 - **Phase 3 gate status (COMPLETE):** a real comic (`tests/testfiles/`, git-ignored, user-supplied) opens in a GTK4 window and reads comfortably: single/double/adaptive/continuous layouts, spread composition with cover-right + binding-edge rules, fit modes with anamorphic tolerance, zoom/pan/rotation, RTL, continuous scroll with anchor-stable layout rebuilds, fade/slide transitions, paper texture, Auto/Color/Texture backgrounds, the real `MainForm` input map, session tabs with undock, fullscreen chrome with cursor auto-hide, reading-state tracking, the magnifier, error pages, and pool-queue page loads. User-verified after each task; UI smoke tests on this machine run headless under Xvfb + screenshots (see the probe lessons below — the key-injection tools are unreliable; only user tests decide input behavior).

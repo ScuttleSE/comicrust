@@ -1209,6 +1209,66 @@ change; it lands after the bars so they exist in both modes.
        stops hiding the bar).
     8. Undock (D) — the strip rides into the undocked window and
        works; D returns it.
+- T6 IMPLEMENTED (2026-09-05), user test pending. The browser
+  toolbar (`browser/browser_toolbar.rs`): the strip ABOVE the
+  browser panes — Sidebar toggle, Browse Previous/Next (the list
+  history), Views (drop: the three view radios + the read-state
+  radios + the comic-type checks + Show Duplicates), Group +
+  Arrange (the dynamic CreateGroupMenu/CreateArrangeMenu tables —
+  Not Grouped/Not Sorted first, the columns as stateful rows), the
+  right-aligned Quick Search (with the C# scope menu on the
+  entry's secondary chevron), a disabled List Layouts button, the
+  Duplicate List drop (the folder walk, indent per level). The old
+  header (Open/Add Folder/Preferences/View/Sort/Group) folds into
+  the menubar + this strip; the header carries the reader page
+  display only. New stateful actions: `view-filter` (all/unread/
+  reading/read), `comic-type` (books/fileless, the C# toggle-back
+  shape), `duplicates-only`, `search-scope` (all/series/writer/
+  artists/descriptive/catalog/file — the AllProperties option),
+  `toggle-column`, `duplicate-list` (folder parameter); sort-column
+  and group-by became STATEFUL (check marks on the active row; ""
+  = Not Sorted / Not Grouped — `ViewState::clear_sort` added).
+  The composed filter (`compose_quick_filter`): read-state
+  (ComicBookReadPercentageMatcher), comic-type (ComicBookFileMatcher
+  Not), the AllProperties text (op 3 ContainsAll, the C# enum
+  option name), the duplicate matcher on top — unit-tested in
+  `shell.rs::tests` (5 tests: scopes, read states, types, dups,
+  the MATCH-query-only-for-All gate). The Detail column chooser:
+  the ItemView right-click routes a header hit to the shell's
+  chooser popover (`Dropdown` + the `detail-columns` dynamic
+  fill; every registered column with its visibility check, live
+  toggling through `win.toggle-column`). The Duplicate List engine:
+  `library::duplicate_smart_list` (the matcher-values name + the
+  NumberedString numbering, ported in `cr-engine/src/text.rs`,
+  base_list_id parity) + `list_folders`. Probe `browserbar_probe`:
+  the Views/Duplicate OPEN gates, the filter narrows 3/1/1/1/3, the
+  scoped search hits, the chooser opens + toggles Series, the
+  duplicate lands (+1 tree node). commands_probe/menubar_probe/
+  toolbar_probe/dynmenus_probe all green (regression).
+  **USER TEST (the T6 acceptance):**
+    1. The browser shows its own toolbar row: Sidebar | prev next |
+       Views Group Arrange ......... search field | (grey) list
+       layouts | duplicates icon. The menubar stays on top; the
+       old header buttons are gone.
+    2. Sidebar toggles the left panel away and back; prev/next
+       walk the visited lists (disabled until you switch lists).
+    3. Views ▸ Tiles/Details/Thumbnails switch the grid with the
+       check on the active one.
+    4. Views ▸ Show Read/Reading/not Read narrow the grid; Show
+       Duplicates keeps only books that share series+number.
+    5. The search box: the chevron opens All/Series/Writer/
+       Artists/Descriptive/Catalog/Filename; picking one changes
+       the placeholder and the next search matches only that
+       field; `MATCH [Series] contains "X"` still parses.
+    6. Details view: right-click a column header — the chooser
+       lists every column with checks; toggle Series/Writer live.
+    7. Arrange ▸ Not Sorted clears the sort; a column sorts and
+       shows its check; the button label becomes the column name.
+       Group ▸ Series groups the grid; the Group button label
+       becomes "Series".
+    8. Duplicate List: open the drop (shows your folders), pick
+       one — a new smart list appears under it (named from the
+       active filter text, or the list name + "(2)").
 
 ### T5 — Reader toolbar (COMPLETE — see the closure entry in the progress log)
 - DEVIATIONS (vs the C# ToolStrip):
@@ -1233,6 +1293,59 @@ change; it lands after the bars so they exist in both modes.
 - LESSON (the crash round): every popover needs a parent BEFORE
   popup(); a probe that only clicks rows never exercises the
   present path — gate the OPEN, not just the click.
+
+### T6 — Browser toolbar reorg + Detail column chooser (IMPLEMENTED — user test pending)
+- DEVIATIONS (vs `ComicBrowserControl.toolStrip`):
+  - Stack omitted (no ItemStacker port; `tbbStack` sits between
+    Group and Sort in the C# order) — covered by the ADR-024
+    stack-family cut.
+  - Undo/Redo absent (ADR-024; the C# toolbar carries tbUndo/
+    tbRedo).
+  - List Layouts is a DISABLED icon button (no drop); the C#
+    drop items (Edit List Layout Ctrl+L, Save List Layout, Reset
+    List Background, Edit Layouts Ctrl+Alt+L) land with the T14
+    workspace data.
+  - The Group/Arrange buttons keep static icons + labels; the C#
+    flips the SortUp/SortDown icon and shows the active COLUMN
+    NAME as the button text via OnIdle — the port syncs the label
+    text (sync_labels) but not the direction icon... it does flip
+    the icon (SortUp/SortDown with the first sort key).
+  - The Arrange/Group menus list the DEFAULT-VISIBLE columns (the
+    C# lists every column with a comparer and nests the
+    not-recently-visible ones via ContextMenuBuilder — the port
+    has no nested-column-submenu machinery; the check mark + the
+    MRU chain keep the behavior).
+  - The C# Quick Search cue array OMITS Catalog (an index that
+    would throw); the port gives Catalog a cue ("Search Catalog").
+  - The Views drop omits Collapse/Expand all Groups + Show Group
+    Headers (the C# `itemView.ToggleGroups` +
+    `ShowGroupHeaders` — the group-header side list is unported;
+    the collapsed-group state stays per-group from the header
+    clicks).
+  - No Stack button; no Undo/Redo.
+  - The Quick Search scope menu rides the entry's secondary icon
+    (a chevron in the box) — the C# `TextBox.SearchMenu` shape is
+    the closest GTK4 equivalent; the C# entry also doubles its
+    width while focused (skipped).
+- The column chooser omits the C# header-menu extras (Auto Size
+  Column / Auto Size All Columns / Auto Fit All Columns and the
+  Layout submenu — the port's column widths are static; the
+  chooser carries the check-list only). Column VISIBILITY state
+  persists in T14 (session-only now).
+- The composed filter (search + view-filter + comic-type +
+  duplicates) rebuilds on every part's change; the C#
+  `UpdateQuickFilter` shape is preserved: a MATCH/NOT query parses
+  only for the All scope and then the view filters do NOT apply;
+  the Create path passes operator 3 (ContainsAll) with the RAW
+  text (the pre-T6 port used operator 1 + the trimmed text).
+- `NumberedString` (cYo.Common.Text) ported in `cr-engine/src/
+  text.rs` for the Duplicate List naming (the MaxNumber/Format
+  bracket numbering, first-match GetNumber quirk included).
+- Duplicate List: the smart list carries the COMPOSED filter (the
+  C# GetCurrentMatcher merges quickFilter + the selector panel;
+  the selector panel is unported) and lands in the picked folder;
+  the C# None-target (TemporaryFolder) is unreachable (the None
+  row is only a disabled placeholder).
 
 ## Omitted / postponed per task (the tracker)
 

@@ -12,7 +12,7 @@ use std::sync::Arc;
 
 use gtk4::glib;
 use gtk4::prelude::*;
-use gtk4::{gio, Application, ApplicationWindow, Button, Entry, Label, MenuButton, Paned, Stack};
+use gtk4::{gio, Application, ApplicationWindow, Button, Entry, Label, Paned, Stack};
 
 use cr_core::model::comic_book::ComicBook;
 use cr_core::xml::scalar::CrGuid;
@@ -92,6 +92,16 @@ struct ShellState {
     /// The reader page box (the toolbar's docked parent — the
     /// undock moves the toolbar in and out of it).
     reader_page_box: gtk4::Box,
+    /// The browser toolbar (the T6 `ComicBrowserControl.toolStrip`).
+    browser_toolbar: super::browser_toolbar::BrowserToolbar,
+    /// The live quick-search text (the composed filter reads it).
+    search_text: RefCell<String>,
+    /// The composed filter (quick search + the view filters) — the
+    /// Duplicate List source (`GetCurrentMatcher`).
+    current_filter: RefCell<Option<Matcher>>,
+    /// The Detail header column chooser (the C#
+    /// `autoHeaderContextMenuStrip`).
+    columns_drop: super::menubar::Dropdown,
 }
 
 impl ShellState {
@@ -198,48 +208,22 @@ impl BrowserShell {
         } = super::pages_view::PagesPanel::create(Arc::clone(&pool));
 
         // The header commands (the handlers wire in `wire`, where
-        // the shared state exists).
+        // the shared state exists). The T6 reorg: Open/Add
+        // Folder/Preferences/View/Sort/Group moved into the menubar
+        // and the browser toolbar row — the header carries the
+        // reader's page display only.
         let header = gtk4::HeaderBar::new();
-        let open_button = Button::with_label("Open…");
-        header.pack_start(&open_button);
-        let add_folder_button = Button::with_label("Add Folder to Library…");
-        header.pack_start(&add_folder_button);
-        let search = Entry::builder()
-            .placeholder_text("Quick search (or a Match query)")
-            .hexpand(true)
-            .build();
-        header.pack_start(&search);
-
-        // `BrowserVisible` — reveals the browser while the reader is
-        // open (the reader page returns on the next open or re-dock).
-        let browser_button = Button::with_label("Browser");
-        header.pack_end(&browser_button);
-        let prefs_button = Button::with_label("Preferences");
-        prefs_button.set_css_classes(&["flat"]);
-        header.pack_end(&prefs_button);
-
-        let view_button = MenuButton::builder()
-            .label("View")
-            .css_classes(["flat"])
-            .build();
-        view_button.set_menu_model(Some(&view_menu_model()));
-        header.pack_end(&view_button);
-        let sort_button = MenuButton::builder()
-            .label("Sort")
-            .css_classes(["flat"])
-            .build();
-        sort_button.set_menu_model(Some(&sort_menu_model()));
-        header.pack_end(&sort_button);
-        let group_button = MenuButton::builder()
-            .label("Group")
-            .css_classes(["flat"])
-            .build();
-        group_button.set_menu_model(Some(&group_menu_model()));
-        header.pack_end(&group_button);
         // The reader's "Page X of Y" lives in the main window header
         // (the C# main form shows it in the title area).
         header.pack_end(&reader_widgets.subtitle());
         window.set_titlebar(Some(&header));
+
+        // The browser toolbar row (the C# `ComicBrowserControl.
+        // toolStrip`): Sidebar, Browse prev/next, Views, Group,
+        // Arrange, then the right-aligned Quick Search, List Layouts
+        // (disabled), Duplicate List.
+        let search = Entry::new();
+        let browser_toolbar = super::browser_toolbar::BrowserToolbar::create(&window, &search);
 
         // The browser page: the left panel's tab strip — Library |
         // Pages (`MainView`: tsbLibrary/tsbPages; the Pages tab only
@@ -269,6 +253,7 @@ impl BrowserShell {
             .build();
         status.set_text("0 book(s)");
         let browser_page = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+        browser_page.append(browser_toolbar.widget());
         browser_page.append(&paned);
         browser_page.append(&status);
 
@@ -332,18 +317,19 @@ impl BrowserShell {
             menubar_revealed: Cell::new(false),
             toolbar,
             reader_page_box: reader_page.clone(),
+            browser_toolbar,
+            search_text: RefCell::new(String::new()),
+            current_filter: RefCell::new(None),
+            columns_drop: super::menubar::build_dropdown(
+                &[super::menubar::MenuNode::Dyn("detail-columns")],
+                &window,
+            ),
         });
         let shell = BrowserShell {
             window: window.clone(),
             state: Rc::clone(&state),
         };
-        shell.wire(
-            &open_button,
-            &add_folder_button,
-            &search,
-            &browser_button,
-            &prefs_button,
-        );
+        shell.wire(&search);
         (window, shell)
     }
 
@@ -363,14 +349,7 @@ impl BrowserShell {
         self.window.clone()
     }
 
-    fn wire(
-        &self,
-        open_button: &Button,
-        add_folder_button: &Button,
-        search: &Entry,
-        browser_button: &Button,
-        prefs_button: &Button,
-    ) {
+    fn wire(&self, search: &Entry) {
         let state = &self.state;
 
         // The reader docks: the host window drives the fullscreen
@@ -437,28 +416,6 @@ impl BrowserShell {
                         sh.sync_enabled();
                     }
                 });
-        }
-
-        // The Browser button: reveal the browser grid while comics
-        // stay open in the reader (`BrowserVisible`).
-        {
-            let state = Rc::downgrade(state);
-            browser_button.connect_clicked(move |_| {
-                if let Some(sh) = state.upgrade() {
-                    sh.show_browser();
-                }
-            });
-        }
-
-        // The Preferences dialog (the C# Tools → Preferences): the
-        // shared handler (the action routes to the same method).
-        {
-            let state = Rc::downgrade(state);
-            prefs_button.connect_clicked(move |_| {
-                if let Some(sh) = state.upgrade() {
-                    sh.show_preferences();
-                }
-            });
         }
 
         // The Pages panel: rebinds on every visible-book change (the
@@ -619,8 +576,9 @@ impl BrowserShell {
             });
         }
 
-        // The quick search (`UpdateQuickFilter`): the AllProperties
-        // matcher, or a full query for MATCH/NOT text. Debounced.
+        // The quick search (`UpdateQuickFilter`): the composed filter
+        // (scope + the view filters + the text, or a MATCH/NOT
+        // query). Debounced.
         {
             let state = Rc::downgrade(state);
             search.connect_changed(move |entry| {
@@ -630,8 +588,8 @@ impl BrowserShell {
                     std::time::Duration::from_millis(SEARCH_DEBOUNCE_MS),
                     move || {
                         if let Some(sh) = state.upgrade() {
-                            let matcher = search_matcher(&text);
-                            sh.item_view.set_filter(matcher);
+                            *sh.search_text.borrow_mut() = text.clone();
+                            sh.rebuild_filter();
                         }
                         glib::ControlFlow::Break
                     },
@@ -639,39 +597,19 @@ impl BrowserShell {
             });
         }
 
-        // Open… → the file dialog into the docked reader.
+        // The Detail header right-click → the column chooser (the
+        // C# `autoHeaderContextMenuStrip`).
         {
             let state = Rc::downgrade(state);
-            let window = self.window.clone();
-            open_button.connect_clicked(move |_| {
-                let state = state.clone();
-                open_file_dialog(&window, move |path| {
+            state
+                .upgrade()
+                .expect("state")
+                .item_view
+                .connect_header_context(move |wx, wy| {
                     if let Some(sh) = state.upgrade() {
-                        sh.open_comic(Path::new(&path));
+                        sh.popup_column_chooser(wx, wy);
                     }
                 });
-            });
-        }
-
-        // Add Folder to Library… → the scan; the navigator tree and
-        // the current view refresh.
-        {
-            let state = Rc::downgrade(state);
-            let window = self.window.clone();
-            add_folder_button.connect_clicked(move |_| {
-                crate::app::add_folder_dialog(&window);
-                // The scan is async; the tree refreshes with it
-                // (the scan result dialog confirms).
-                {
-                    let state2 = state.clone();
-                    glib::timeout_add_local(std::time::Duration::from_millis(500), move || {
-                        if let Some(sh) = state2.upgrade() {
-                            sh.navigator.refill(&library::comic_lists_snapshot());
-                        }
-                        glib::ControlFlow::Break
-                    });
-                }
-            });
         }
 
         // The window-activation focus: the browser page grabs the
@@ -852,6 +790,80 @@ impl BrowserShell {
     /// The reader toolbar handle (the probe).
     pub fn toolbar_widget(&self) -> gtk4::Widget {
         self.state.toolbar.widget().clone().upcast()
+    }
+
+    /// The browser toolbar dropdown by name (the probe).
+    pub fn browserbar_dropdown(&self, name: &str) -> Option<crate::browser::menubar::Dropdown> {
+        self.state.browser_toolbar.dropdown(name)
+    }
+
+    /// Opens a browser toolbar dropdown through its real anchor.
+    pub fn browserbar_open_dropdown(&self, name: &str) -> bool {
+        self.state.browser_toolbar.open_dropdown(name)
+    }
+
+    /// Whether a browser toolbar dropdown's popover is mapped.
+    pub fn browserbar_drop_mapped(&self, name: &str) -> bool {
+        self.state.browser_toolbar.drop_mapped(name)
+    }
+
+    /// Closes one browser toolbar dropdown.
+    pub fn browserbar_close_dropdown(&self, name: &str) {
+        self.state.browser_toolbar.close_dropdown(name);
+    }
+
+    /// A stateful action's string state (the probe).
+    pub fn state_action_string(&self, name: &str) -> Option<String> {
+        self.state
+            .action(name)
+            .and_then(|a| a.state())
+            .and_then(|v| v.get::<String>())
+    }
+
+    /// A stateful action's bool state (the probe).
+    pub fn state_action_bool(&self, name: &str) -> Option<bool> {
+        self.state
+            .action(name)
+            .and_then(|a| a.state())
+            .and_then(|v| v.get::<bool>())
+    }
+
+    /// The search box cue text (the scope probe).
+    pub fn state_search_placeholder(&self) -> String {
+        self.state
+            .search
+            .placeholder_text()
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    /// The Detail column snapshot (id, name, visible).
+    pub fn state_columns_snapshot(&self) -> Vec<(i32, String, bool)> {
+        self.state.item_view.detail_columns_snapshot()
+    }
+
+    /// Opens the column chooser through the real hook path (the
+    /// probe's OPEN gate).
+    pub fn state_open_column_chooser(&self, wx: f64, wy: f64) -> bool {
+        self.state.popup_column_chooser(wx, wy);
+        self.state.columns_drop.popover().is_mapped()
+    }
+
+    /// The Detail header column chooser dropdown (the probe).
+    pub fn state_column_chooser(&self) -> crate::browser::menubar::Dropdown {
+        self.state.columns_drop.clone()
+    }
+
+    /// The browser toolbar's Group/Arrange label texts (the probe).
+    pub fn browserbar_labels(&self) -> (String, String) {
+        self.state.browser_toolbar.label_texts()
+    }
+
+    /// Sets the search text through the composed-filter path (the
+    /// probe; the entry typing itself is a user-test matter).
+    pub fn state_set_search_text(&self, text: &str) {
+        *self.state.search_text.borrow_mut() = text.to_string();
+        self.state.rebuild_filter();
     }
 
     /// The toolbar's zoom state text (the probe).
@@ -1139,6 +1151,18 @@ impl ShellState {
         };
         self.menubar.sync(&resolve);
         self.toolbar.sync(&resolve);
+        // The browser toolbar (the T6 strip): the enable states +
+        // the Group/Arrange label texts (`OnIdle` tbbSort/tbbGroup).
+        self.browser_toolbar.sync(&resolve);
+        let (sort_col, sort_desc, grouper) = self.item_view.sort_group_summary();
+        let sort_label = sort_col.and_then(|p| {
+            default_columns()
+                .iter()
+                .find(|c| c.property == p)
+                .map(|c| c.name.to_string())
+        });
+        self.browser_toolbar
+            .sync_labels(sort_label, sort_desc, grouper);
         // The state text/icons (`viewer_PageDisplayModeChanged`).
         self.toolbar.sync_state(
             self.reader.current_zoom(),
@@ -1377,7 +1401,11 @@ impl ShellState {
             None => Vec::new(),
         });
         self.menubar.set_dyn_fill(Rc::clone(&fill));
-        self.toolbar.set_dyn_fill(fill);
+        self.toolbar.set_dyn_fill(fill.clone());
+        // The browser toolbar's Duplicate List drop + the Detail
+        // header column chooser share the provider.
+        self.browser_toolbar.set_dyn_fill(fill.clone());
+        self.columns_drop.set_dyn_fill(fill);
         // The toolbar rides into the undocked window (the T5
         // chrome).
         self.reader.set_undock_chrome(
@@ -1588,6 +1616,53 @@ impl ShellState {
                 })
                 .collect()
             }
+            // The Duplicate List drop (`tbbDuplicateList_
+            // DropDownOpening`): every folder of the tree, an indent
+            // per child level; an empty tree shows a disabled None.
+            "duplicate-list" => {
+                let folders = library::list_folders();
+                if folders.is_empty() {
+                    return vec![DynNode::Item(DynItem {
+                        label: "None".into(),
+                        action: String::new(),
+                        accel: String::new(),
+                        icon: "",
+                        checked: false,
+                        enabled: false,
+                    })];
+                }
+                folders
+                    .into_iter()
+                    .map(|(id, level, name)| {
+                        DynNode::Item(DynItem {
+                            label: format!("{}{}", " ".repeat(level * 4), name),
+                            action: format!("win.duplicate-list::{}", id),
+                            accel: String::new(),
+                            icon: "",
+                            checked: false,
+                            enabled: true,
+                        })
+                    })
+                    .collect()
+            }
+            // The Detail header column chooser
+            // (`CreateHeaderMenu`): every registered column with its
+            // visibility check.
+            "detail-columns" => self
+                .item_view
+                .detail_columns_snapshot()
+                .into_iter()
+                .map(|(id, name, visible)| {
+                    DynNode::Item(DynItem {
+                        label: name,
+                        action: format!("win.toggle-column::{id}"),
+                        accel: String::new(),
+                        icon: "",
+                        checked: visible,
+                        enabled: true,
+                    })
+                })
+                .collect(),
             _ => Vec::new(),
         }
     }
@@ -1597,6 +1672,44 @@ impl ShellState {
     fn refresh_view(&self) {
         self.navigator.refill(&library::comic_lists_snapshot());
         self.refresh_view_from_list();
+    }
+
+    /// `UpdateQuickFilter` + `UpdateSearch`: rebuild the composed
+    /// filter (the quick-search text + the view filters + duplicates)
+    /// and apply it to the grid. The result stays in
+    /// `current_filter` — the Duplicate List source.
+    fn rebuild_filter(&self) {
+        let text = self.search_text.borrow().clone();
+        let state_str = |name: &str, default: &str| -> String {
+            self.action(name)
+                .and_then(|a| a.state())
+                .and_then(|v| v.get::<String>())
+                .unwrap_or_else(|| default.to_string())
+        };
+        let scope = state_str("search-scope", "all");
+        let show = state_str("view-filter", "all");
+        let ctype = state_str("comic-type", "all");
+        let dups = self
+            .action("duplicates-only")
+            .and_then(|a| a.state())
+            .and_then(|v| v.get::<bool>())
+            .unwrap_or(false);
+        let matcher = compose_quick_filter(&text, &scope, &show, &ctype, dups);
+        *self.current_filter.borrow_mut() = matcher.clone();
+        self.item_view.set_filter(matcher);
+    }
+
+    /// The Detail header column chooser (parented to the window,
+    /// pointing at the click — the C# `autoHeaderContextMenuStrip`).
+    fn popup_column_chooser(&self, wx: f64, wy: f64) {
+        let popover = self.columns_drop.popover();
+        if popover.parent().is_none() {
+            popover.set_parent(&self.window);
+        }
+        self.columns_drop.refresh_slot("detail-columns");
+        let rect = gtk4::gdk::Rectangle::new(wx as i32, wy as i32, 1, 1);
+        popover.set_pointing_to(Some(&rect));
+        popover.popup();
     }
 
     /// The Preferences dialog (shared by the header button and the
@@ -1683,19 +1796,32 @@ impl ShellState {
             group.add_action(&action);
         }
 
-        // sort-column (string parameter = the property name).
-        let sort_action = gio::SimpleAction::new("sort-column", Some(glib::VariantTy::STRING));
+        // sort-column (string parameter = the property name; "" =
+        // Not Sorted — the Arrange menu's first row). STATEFUL: the
+        // check state rides the current sort property.
+        let sort_action = gio::SimpleAction::new_stateful(
+            "sort-column",
+            Some(glib::VariantTy::STRING),
+            &"".to_variant(),
+        );
         {
             let state = state.clone();
-            sort_action.connect_activate(move |_, value| {
-                if let (Some(sh), Some(column)) =
-                    (state.upgrade(), value.and_then(|v| v.get::<String>()))
-                {
-                    sh.item_view.set_sort_column(&column);
+            sort_action.connect_activate(move |action, value| {
+                let Some(sh) = state.upgrade() else {
+                    return;
+                };
+                let name = value.and_then(|v| v.get::<String>()).unwrap_or_default();
+                if name.is_empty() {
+                    sh.item_view.clear_sort();
+                } else {
+                    sh.item_view.set_sort_column(&name);
                 }
+                action.set_state(&name.to_variant());
+                sh.sync_enabled();
             });
         }
         group.add_action(&sort_action);
+        self.actions.borrow_mut().insert("sort-column", sort_action);
 
         // sort-direction toggle.
         let dir_action = gio::SimpleAction::new("sort-direction", None);
@@ -1709,26 +1835,195 @@ impl ShellState {
         }
         group.add_action(&dir_action);
 
-        // group-by (string parameter; "" = none).
-        let group_action = gio::SimpleAction::new("group-by", Some(glib::VariantTy::STRING));
+        // group-by (string parameter; "" = none). STATEFUL: the
+        // check mark follows the grouper key.
+        let group_action = gio::SimpleAction::new_stateful(
+            "group-by",
+            Some(glib::VariantTy::STRING),
+            &"".to_variant(),
+        );
         {
             let state = state.clone();
-            group_action.connect_activate(move |_, value| {
-                if let Some(sh) = state.upgrade() {
-                    let name = value.and_then(|v| v.get::<String>()).unwrap_or_default();
-                    let grouper = if name.is_empty() {
-                        None
-                    } else {
-                        cr_engine::group::groupers()
-                            .iter()
-                            .find(|(k, _)| *k == name)
-                            .map(|(k, _)| *k)
-                    };
-                    sh.item_view.set_grouper(grouper);
-                }
+            group_action.connect_activate(move |action, value| {
+                let Some(sh) = state.upgrade() else {
+                    return;
+                };
+                let name = value.and_then(|v| v.get::<String>()).unwrap_or_default();
+                let grouper = if name.is_empty() {
+                    None
+                } else {
+                    cr_engine::group::groupers()
+                        .iter()
+                        .find(|(k, _)| *k == name)
+                        .map(|(k, _)| *k)
+                };
+                sh.item_view.set_grouper(grouper);
+                action.set_state(&name.to_variant());
             });
         }
         group.add_action(&group_action);
+        self.actions.borrow_mut().insert("group-by", group_action);
+
+        // The view filters (`ComicBookAllPropertiesMatcher.Create`):
+        // the read-state radio, the comic-type toggles, duplicates.
+        let view_filter = gio::SimpleAction::new_stateful(
+            "view-filter",
+            Some(glib::VariantTy::STRING),
+            &"all".to_variant(),
+        );
+        {
+            let state = state.clone();
+            view_filter.connect_activate(move |action, value| {
+                let Some(sh) = state.upgrade() else {
+                    return;
+                };
+                let name = value.and_then(|v| v.get::<String>()).unwrap_or_default();
+                if !matches!(name.as_str(), "all" | "unread" | "reading" | "read") {
+                    return;
+                }
+                action.set_state(&name.to_variant());
+                sh.rebuild_filter();
+            });
+        }
+        group.add_action(&view_filter);
+        self.actions.borrow_mut().insert("view-filter", view_filter);
+
+        let comic_type = gio::SimpleAction::new_stateful(
+            "comic-type",
+            Some(glib::VariantTy::STRING),
+            &"all".to_variant(),
+        );
+        {
+            let state = state.clone();
+            comic_type.connect_activate(move |action, value| {
+                let Some(sh) = state.upgrade() else {
+                    return;
+                };
+                let name = value.and_then(|v| v.get::<String>()).unwrap_or_default();
+                if !matches!(name.as_str(), "books" | "fileless") {
+                    return;
+                }
+                // The C# rows toggle: the active row returns to All.
+                let current = action
+                    .state()
+                    .and_then(|v| v.get::<String>())
+                    .unwrap_or_default();
+                let next = if current == name {
+                    "all".to_string()
+                } else {
+                    name
+                };
+                action.set_state(&next.to_variant());
+                sh.rebuild_filter();
+            });
+        }
+        group.add_action(&comic_type);
+        self.actions.borrow_mut().insert("comic-type", comic_type);
+
+        let duplicates =
+            gio::SimpleAction::new_stateful("duplicates-only", None, &false.to_variant());
+        {
+            let state = state.clone();
+            duplicates.connect_activate(move |action, _| {
+                let Some(sh) = state.upgrade() else {
+                    return;
+                };
+                let next = !action
+                    .state()
+                    .and_then(|v| v.get::<bool>())
+                    .unwrap_or(false);
+                action.set_state(&next.to_variant());
+                sh.rebuild_filter();
+            });
+        }
+        group.add_action(&duplicates);
+        self.actions
+            .borrow_mut()
+            .insert("duplicates-only", duplicates);
+
+        // The Quick Search scope radio (the cue text follows).
+        let scope = gio::SimpleAction::new_stateful(
+            "search-scope",
+            Some(glib::VariantTy::STRING),
+            &"all".to_variant(),
+        );
+        {
+            let state = state.clone();
+            scope.connect_activate(move |action, value| {
+                let Some(sh) = state.upgrade() else {
+                    return;
+                };
+                let name = value.and_then(|v| v.get::<String>()).unwrap_or_default();
+                if !super::browser_toolbar::SEARCH_SCOPE_LABELS
+                    .iter()
+                    .any(|(v, _)| *v == name)
+                {
+                    return;
+                }
+                action.set_state(&name.to_variant());
+                sh.search.set_placeholder_text(Some(
+                    super::browser_toolbar::SEARCH_SCOPE_LABELS
+                        .iter()
+                        .find(|(v, _)| *v == name)
+                        .map(|(_, l)| *l)
+                        .unwrap_or("Search All"),
+                ));
+            });
+        }
+        group.add_action(&scope);
+        self.actions.borrow_mut().insert("search-scope", scope);
+
+        // The Detail column chooser rows (toggle one column).
+        let toggle_column = gio::SimpleAction::new("toggle-column", Some(glib::VariantTy::STRING));
+        {
+            let state = state.clone();
+            toggle_column.connect_activate(move |_, value| {
+                let Some(sh) = state.upgrade() else {
+                    return;
+                };
+                let Some(text) = value.and_then(|v| v.get::<String>()) else {
+                    return;
+                };
+                let Ok(id) = text.parse::<i32>() else {
+                    return;
+                };
+                sh.item_view.toggle_column_visible(id);
+            });
+        }
+        group.add_action(&toggle_column);
+
+        // Duplicate List (the folder rows; the parameter = the
+        // folder id).
+        let duplicate = gio::SimpleAction::new("duplicate-list", Some(glib::VariantTy::STRING));
+        {
+            let state = state.clone();
+            duplicate.connect_activate(move |_, value| {
+                let Some(sh) = state.upgrade() else {
+                    return;
+                };
+                let Some(text) = value.and_then(|v| v.get::<String>()) else {
+                    return;
+                };
+                let Ok(folder) = CrGuid::parse(&text) else {
+                    return;
+                };
+                let Some(source) = *sh.current_list.borrow() else {
+                    return;
+                };
+                let filter = sh.current_filter.borrow().clone();
+                let Some(filter) = filter else {
+                    return;
+                };
+                match library::duplicate_smart_list(&source, &folder, &filter) {
+                    Ok(_) => sh.refresh_view(),
+                    Err(err) => eprintln!("duplicate list failed: {err}"),
+                }
+            });
+        }
+        group.add_action(&duplicate);
+
+        // list-layouts — the T14 workspace data lands the menus.
+        self.add_disabled(&group, "list-layouts");
 
         // --- File ---
         self.add_simple(&group, "open-file", |sh| {
@@ -2729,27 +3024,191 @@ fn show_context_menu(state: &std::rc::Weak<ShellState>, target: Option<CrGuid>, 
 /// `ComicBookAllPropertiesMatcher.Create` for the quick search: a
 /// contains over the All field set; MATCH/NOT text parses as a full
 /// query (`UpdateQuickFilter`).
-fn search_matcher(text: &str) -> Option<Matcher> {
-    let text = text.trim();
-    if text.is_empty() {
-        return None;
-    }
-    let upper = text.to_ascii_uppercase();
-    if upper.starts_with("MATCH") || upper.starts_with("NOT") {
-        let mut t = cr_engine::tokenizer::Tokenizer::new(text);
-        let group = cr_engine::matcher::query::parse_group_query(&mut t).ok()?;
-        return Some(Matcher::Group(group));
-    }
-    let raw = cr_core::database::list_items::ComicBookMatcher::Value(
+/// One registered value matcher as raw XML data (the C#
+/// `new ComicBookXMatcher { ... }` object initializers).
+fn raw_value_matcher(
+    type_name: &str,
+    op: i32,
+    value: &str,
+    value2: &str,
+    not: bool,
+    option: Option<&str>,
+) -> cr_core::database::list_items::ComicBookMatcher {
+    cr_core::database::list_items::ComicBookMatcher::Value(
         cr_core::database::list_items::ValueMatcher {
-            type_name: "ComicBookAllPropertiesMatcher".into(),
-            match_operator: 1, // contains (STRING_OPS order)
-            match_value: text.to_string(),
-            option: Some("All".into()),
+            type_name: type_name.into(),
+            not,
+            match_operator: op,
+            match_value: value.into(),
+            match_value_2: value2.into(),
+            option: option.map(Into::into),
             ..Default::default()
         },
-    );
-    Matcher::from_raw(&raw)
+    )
+}
+
+/// `ComicBookAllPropertiesMatcher.Create(text, 3, option, show,
+/// comic)` + the `ShowOnlyDuplicates` extra of `GetCurrentMatcher` —
+/// the composed browser filter (`UpdateQuickFilter` parity):
+///
+/// - a MATCH/NOT text parses as a full query, but ONLY for the All
+///   scope (the C# `UpdateQuickFilter` gate); the view filters do
+///   NOT apply to a parsed query (they live in the Create path).
+/// - otherwise: [read-state filter][comic-type filter][text
+///   matcher] as an And group (each part only when active).
+/// - duplicates-only adds a `ComicBookDuplicateMatcher` on top
+///   (always applied — it is a GetCurrentMatcher member, not a
+///   quickFilter member).
+/// - all inactive + no text → no filter (the C# `Create` returns
+///   null).
+fn compose_quick_filter(
+    text: &str,
+    scope: &str,
+    show: &str,
+    ctype: &str,
+    dups: bool,
+) -> Option<Matcher> {
+    use cr_core::model::enums::MatcherMode;
+    let engine = cr_core::settings::EngineConfiguration::global();
+    let read_at = engine.is_read_completion_percentage.to_string();
+    let not_read_at = engine.is_not_read_completion_percentage.to_string();
+    let reading_from = (engine.is_not_read_completion_percentage + 1).to_string();
+    let reading_to = (engine.is_read_completion_percentage - 1).to_string();
+
+    let mut quick: Option<Matcher> = None;
+    let trimmed = text.trim();
+    let upper = trimmed.to_ascii_uppercase();
+    if scope == "all" && (upper.starts_with("NOT") || upper.starts_with("MATCH")) {
+        let mut t = cr_engine::tokenizer::Tokenizer::new(text);
+        if let Ok(group) = cr_engine::matcher::query::parse_group_query(&mut t) {
+            quick = Some(Matcher::Group(group));
+        }
+    }
+    if quick.is_none() {
+        let mut list: Vec<cr_core::database::list_items::ComicBookMatcher> = Vec::new();
+        match show {
+            "read" => list.push(raw_value_matcher(
+                "ComicBookReadPercentageMatcher",
+                cr_engine::matcher::spec::ops::NUM_GREATER as i32,
+                &read_at,
+                "",
+                false,
+                None,
+            )),
+            "reading" => list.push(raw_value_matcher(
+                "ComicBookReadPercentageMatcher",
+                cr_engine::matcher::spec::ops::NUM_IN_RANGE as i32,
+                &reading_from,
+                &reading_to,
+                false,
+                None,
+            )),
+            "unread" => list.push(raw_value_matcher(
+                "ComicBookReadPercentageMatcher",
+                cr_engine::matcher::spec::ops::NUM_LESSER as i32,
+                &not_read_at,
+                "",
+                false,
+                None,
+            )),
+            _ => {}
+        }
+        match ctype {
+            "books" => list.push(raw_value_matcher(
+                "ComicBookFileMatcher",
+                cr_engine::matcher::spec::ops::STR_EQUALS as i32,
+                "",
+                "",
+                true,
+                None,
+            )),
+            "fileless" => list.push(raw_value_matcher(
+                "ComicBookFileMatcher",
+                cr_engine::matcher::spec::ops::STR_EQUALS as i32,
+                "",
+                "",
+                false,
+                None,
+            )),
+            _ => {}
+        }
+        if !trimmed.is_empty() {
+            // The C# `Create` passes operator 3 (ContainsAll) and the
+            // RAW (untrimmed) search text. The option carries the C#
+            // enum name (the action value is the lowercase id).
+            let option = match scope {
+                "series" => "Series",
+                "writer" => "Writer",
+                "artists" => "Artists",
+                "descriptive" => "Descriptive",
+                "catalog" => "Catalog",
+                "file" => "File",
+                _ => "All",
+            };
+            list.push(raw_value_matcher(
+                "ComicBookAllPropertiesMatcher",
+                cr_engine::matcher::spec::ops::STR_CONTAINS_ALL as i32,
+                text,
+                "",
+                false,
+                Some(option),
+            ));
+        }
+        quick = match list.len() {
+            0 => None,
+            1 => Matcher::from_raw(&list[0]),
+            _ => {
+                let raws = list.iter().filter_map(Matcher::from_raw).collect();
+                Some(Matcher::Group(cr_engine::matcher::tree::GroupMatcher {
+                    matchers: raws,
+                    matcher_mode: MatcherMode::And,
+                    ..Default::default()
+                }))
+            }
+        };
+    }
+    let mut parts: Vec<Matcher> = Vec::new();
+    if let Some(q) = quick {
+        parts.push(q);
+    }
+    if dups {
+        if let Some(d) = Matcher::from_raw(&raw_value_matcher(
+            "ComicBookDuplicateMatcher",
+            0,
+            "",
+            "",
+            false,
+            None,
+        )) {
+            parts.push(d);
+        }
+    }
+    match parts.len() {
+        0 => None,
+        1 => {
+            // The C# wraps quickFilter in the GetCurrentMatcher
+            // group, whose Match applies a child's `Not`
+            // (`ComicBookValueMatcher.Match` ignores it). A bare Not
+            // value matcher as the single part (e.g. Show only Books)
+            // needs that wrapper — the set evaluator skips the root
+            // matcher's own Not.
+            let part = parts.pop().unwrap();
+            if matches!(part, Matcher::Value(ref v) if v.not) {
+                Some(Matcher::Group(cr_engine::matcher::tree::GroupMatcher {
+                    matcher_mode: MatcherMode::And,
+                    matchers: vec![part],
+                    ..Default::default()
+                }))
+            } else {
+                Some(part)
+            }
+        }
+        _ => Some(Matcher::Group(cr_engine::matcher::tree::GroupMatcher {
+            matcher_mode: MatcherMode::And,
+            matchers: parts,
+            ..Default::default()
+        })),
+    }
 }
 
 fn open_file_dialog(window: &ApplicationWindow, on_open: impl Fn(&str) + 'static) {
@@ -2776,43 +3235,6 @@ fn open_file_dialog(window: &ApplicationWindow, on_open: impl Fn(&str) + 'static
     chooser.show();
 }
 
-fn view_menu_model() -> gio::Menu {
-    let menu = gio::Menu::new();
-    let mode = gio::Menu::new();
-    mode.append(Some("Thumbnails"), Some("win.view-mode::thumbnail"));
-    mode.append(Some("Tiles"), Some("win.view-mode::tile"));
-    mode.append(Some("Details"), Some("win.view-mode::detail"));
-    menu.append_section(None, &mode);
-    let size = gio::Menu::new();
-    size.append(Some("Bigger Covers"), Some("win.thumb-bigger"));
-    size.append(Some("Smaller Covers"), Some("win.thumb-smaller"));
-    menu.append_section(None, &size);
-    menu
-}
-
-fn sort_menu_model() -> gio::Menu {
-    let menu = gio::Menu::new();
-    let columns = gio::Menu::new();
-    for column in default_columns().iter().filter(|c| c.visible) {
-        columns.append(
-            Some(column.name),
-            Some(&format!("win.sort-column::{}", column.property)),
-        );
-    }
-    menu.append_section(None, &columns);
-    menu.append(Some("Reverse Direction"), Some("win.sort-direction"));
-    menu
-}
-
-fn group_menu_model() -> gio::Menu {
-    let menu = gio::Menu::new();
-    menu.append(Some("No Grouping"), Some("win.group-by::"));
-    for (key, _) in cr_engine::group::groupers() {
-        menu.append(Some(key), Some(&format!("win.group-by::{key}")));
-    }
-    menu
-}
-
 fn show_error_dialog(parent: &Application, title: &str, message: &str) {
     let dialog = gtk4::MessageDialog::builder()
         .application(parent)
@@ -2824,4 +3246,124 @@ fn show_error_dialog(parent: &Application, title: &str, message: &str) {
         .build();
     dialog.connect_response(|dialog, _| dialog.destroy());
     dialog.present();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cr_core::xml::scalar::CrGuid;
+
+    fn book(series: &str, writer: &str, read_pct: f32, path: &str) -> ComicBook {
+        let mut b = ComicBook {
+            id: CrGuid::new_random(),
+            file_path: path.into(),
+            ..Default::default()
+        };
+        b.info.series = series.into();
+        b.info.writer = writer.into();
+        if read_pct > 0.0 {
+            b.info.page_count = 100;
+            b.last_page_read = ((read_pct / 100.0) * 99.0).round() as i32;
+        }
+        b
+    }
+
+    fn eval(matcher: &Matcher, books: &[ComicBook]) -> Vec<usize> {
+        let items: Vec<&ComicBook> = books.iter().collect();
+        let ctx = cr_engine::matcher::eval::MatchContext::new(&items);
+        let pairs = [(cr_core::model::enums::MatcherMode::And, false, matcher)];
+        cr_engine::matcher::eval::match_set(&items, &pairs, &ctx)
+            .iter()
+            .filter_map(|b| books.iter().position(|x| x.id == b.id))
+            .collect()
+    }
+
+    /// The quick search text contains (all fields) — the Create path
+    /// with operator 3 (ContainsAll).
+    #[test]
+    fn compose_matches_by_text() {
+        let books = [
+            book("Batman", "Frank Miller", 0.0, "/a.cbz"),
+            book("Spider-Man", "Stan Lee", 0.0, "/b.cbz"),
+        ];
+        let m = compose_quick_filter("batman", "all", "all", "all", false).unwrap();
+        let hit = eval(&m, &books);
+        assert_eq!(hit, vec![0]);
+        // The Writer scope narrows to the writer field.
+        let m = compose_quick_filter("stan", "writer", "all", "all", false).unwrap();
+        assert_eq!(eval(&m, &books), vec![1]);
+        // A different scope misses.
+        let m = compose_quick_filter("stan", "series", "all", "all", false).unwrap();
+        assert!(eval(&m, &books).is_empty());
+    }
+
+    /// The read-state filter (the engine defaults: read >= 95,
+    /// unread < 10, reading 11..=94).
+    #[test]
+    fn compose_applies_the_read_filter() {
+        let books = [
+            book("a", "w", 100.0, "/a.cbz"),
+            book("b", "w", 50.0, "/b.cbz"),
+            book("c", "w", 0.0, "/c.cbz"),
+        ];
+        let m = compose_quick_filter("", "all", "read", "all", false).unwrap();
+        assert_eq!(eval(&m, &books), vec![0]);
+        let m = compose_quick_filter("", "all", "reading", "all", false).unwrap();
+        assert_eq!(eval(&m, &books), vec![1]);
+        let m = compose_quick_filter("", "all", "unread", "all", false).unwrap();
+        assert_eq!(eval(&m, &books), vec![2]);
+        // No filters, no text → no matcher at all (the C# null).
+        assert!(compose_quick_filter("", "all", "all", "all", false).is_none());
+    }
+
+    /// The comic-type filter: a file path = Books, empty = fileless.
+    #[test]
+    fn compose_applies_the_comic_type_filter() {
+        let books = [book("a", "w", 0.0, "/a.cbz"), book("b", "w", 0.0, "")];
+        let m = compose_quick_filter("", "all", "all", "books", false).unwrap();
+        assert_eq!(eval(&m, &books), vec![0]);
+        let m = compose_quick_filter("", "all", "all", "fileless", false).unwrap();
+        assert_eq!(eval(&m, &books), vec![1]);
+    }
+
+    /// Duplicates-only rides on top of everything (set-based).
+    #[test]
+    fn compose_applies_duplicates() {
+        let books = [
+            book("a", "w", 0.0, "/a.cbz"),
+            book("a", "w", 0.0, "/b.cbz"),
+            book("c", "w", 0.0, "/c.cbz"),
+        ];
+        let m = compose_quick_filter("", "all", "all", "all", true).unwrap();
+        let hit = eval(&m, &books);
+        assert!(hit.contains(&0) && hit.contains(&1) && !hit.contains(&2));
+    }
+
+    /// A MATCH query parses only for the All scope, and then the
+    /// view filters do NOT apply (the C# UpdateQuickFilter order).
+    #[test]
+    fn compose_match_query_only_for_all_scope() {
+        let books = [
+            book("Batman", "w", 100.0, "/a.cbz"),
+            book("Superman", "w", 0.0, "/b.cbz"),
+        ];
+        let m = compose_quick_filter(
+            "MATCH [Series] contains \"Batman\"",
+            "all",
+            "all",
+            "all",
+            false,
+        );
+        assert_eq!(eval(m.as_ref().unwrap(), &books), vec![0]);
+        // A non-All scope keeps the AllProperties path (the query
+        // text searches the scoped fields — no hit on "MATCH ...").
+        let m = compose_quick_filter(
+            "MATCH [Series] contains \"Batman\"",
+            "series",
+            "all",
+            "all",
+            false,
+        );
+        assert!(eval(m.as_ref().unwrap(), &books).is_empty());
+    }
 }

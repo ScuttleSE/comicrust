@@ -55,6 +55,7 @@ const HEADER_BG: (f64, f64, f64) = (0.2, 0.2, 0.23);
 
 type ActivateFn = Box<dyn Fn(&CrGuid)>;
 type SelectionFn = Box<dyn Fn(usize)>;
+type HeaderContextFn = Rc<dyn Fn(f64, f64)>;
 
 struct ThumbDone {
     book_id: CrGuid,
@@ -114,6 +115,8 @@ pub struct ItemViewState {
     detail_columns: Vec<Column>,
     on_activate: Option<ActivateFn>,
     on_selection_changed: Option<SelectionFn>,
+    /// The Detail header right-click (the T6 column chooser).
+    on_header_context: Option<HeaderContextFn>,
     type_ahead: String,
     type_ahead_source: Option<glib::SourceId>,
     canvas: DrawingArea,
@@ -253,6 +256,7 @@ impl ItemView {
             detail_columns: columns::default_columns(),
             on_activate: None,
             on_selection_changed: None,
+            on_header_context: None,
             type_ahead: String::new(),
             type_ahead_source: None,
             canvas: canvas.clone(),
@@ -424,7 +428,8 @@ impl ItemView {
     /// The right-click context menu (`tvQueries_MouseDown` shape):
     /// (item under the cursor, x, y) — the coordinates are TOPLEVEL
     /// (window) coordinates, ready for a popover parented to the
-    /// window.
+    /// window. A click inside the Detail header strip routes to the
+    /// column-chooser hook (`autoHeaderContextMenuStrip`) instead.
     pub fn connect_context<F: Fn(Option<CrGuid>, f64, f64) + 'static>(&self, f: F) {
         let state = Rc::downgrade(&self.state);
         let canvas = self.canvas.clone();
@@ -435,6 +440,25 @@ impl ItemView {
                 return;
             };
             gesture.set_state(gtk4::EventSequenceState::Claimed);
+            // The header hit test needs the config — read it BEFORE
+            // the branch (the if-condition temporaries lesson).
+            let header_hit = {
+                let s = state.borrow();
+                layout::header_visible(&s.config) && y <= s.config.header_height
+            };
+            if header_hit {
+                let hook = state.borrow().on_header_context.clone();
+                if let Some(f) = hook {
+                    // Translate to the toplevel like the book menu.
+                    let (wx, wy) = canvas
+                        .ancestor(gtk4::Window::static_type())
+                        .and_then(|w| w.downcast::<gtk4::Window>().ok())
+                        .and_then(|win| canvas.translate_coordinates(&win, x, y))
+                        .unwrap_or((x, y));
+                    f(wx, wy);
+                    return;
+                }
+            }
             let s = state.borrow();
             let hit = hit_test(&s.layout, x, y).map(|d| s.view.book_id(d));
             drop(s);
@@ -451,6 +475,12 @@ impl ItemView {
         self.canvas.add_controller(gesture);
     }
 
+    /// The Detail header right-click (the column chooser; the C#
+    /// `autoHeaderContextMenuStrip_Opening`).
+    pub fn connect_header_context<F: Fn(f64, f64) + 'static>(&self, f: F) {
+        self.state.borrow_mut().on_header_context = Some(Rc::new(f));
+    }
+
     /// Takes the keyboard focus onto the grid (the window-activation
     /// re-grab — the reader's dead-first-keypress fix).
     pub fn grab_focus(&self) {
@@ -463,6 +493,17 @@ impl ItemView {
         {
             let mut s = self.state.borrow_mut();
             s.view.set_sort_column(column);
+            s.relayout(width);
+        }
+        self.canvas.queue_draw();
+    }
+
+    /// `ItemSorter = null` (the Arrange menu's Not Sorted row).
+    pub fn clear_sort(&self) {
+        let width = self.state.borrow().config.view_width;
+        {
+            let mut s = self.state.borrow_mut();
+            s.view.clear_sort();
             s.relayout(width);
         }
         self.canvas.queue_draw();
@@ -489,21 +530,43 @@ impl ItemView {
         self.canvas.queue_draw();
     }
 
-    /// Reveals a hidden Detail column (the columns menu; the full
-    /// visibility toggling is T5 polish).
-    pub fn set_column_visible(&self, property: &str, visible: bool) {
+    /// Reveals/hides a Detail column (the header column chooser —
+    /// `HeaderMenuItemClicked`).
+    pub fn toggle_column_visible(&self, id: i32) {
         let width = self.state.borrow().config.view_width;
         {
             let mut s = self.state.borrow_mut();
-            for c in s.detail_columns.iter_mut() {
-                if c.property == property {
-                    c.visible = visible;
-                }
+            if let Some(c) = s.detail_columns.iter_mut().find(|c| c.id == id) {
+                c.visible = !c.visible;
             }
             s.relayout(width);
         }
         self.update_size_request();
         self.canvas.queue_draw();
+    }
+
+    /// The column set snapshot (id, name, visible) — the column
+    /// chooser fill (the C# header menu lists EVERY column with its
+    /// check state).
+    pub fn detail_columns_snapshot(&self) -> Vec<(i32, String, bool)> {
+        self.state
+            .borrow()
+            .detail_columns
+            .iter()
+            .map(|c| (c.id, c.name.to_string(), c.visible))
+            .collect()
+    }
+
+    /// The current sort/group labels (the toolbar button texts —
+    /// the C# `OnIdle` tbbSort/tbbGroup text updates). No book clone.
+    pub fn sort_group_summary(&self) -> (Option<String>, bool, Option<&'static str>) {
+        let s = self.state.borrow();
+        let first = s.view.sort().keys().first();
+        (
+            first.map(|k| k.column.clone()),
+            first.is_some_and(|k| k.descending),
+            s.view.grouper(),
+        )
     }
 
     fn update_size_request(&self) {

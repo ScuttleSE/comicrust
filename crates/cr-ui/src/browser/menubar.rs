@@ -1010,11 +1010,19 @@ impl Dropdown {
     /// Parenting to the BUTTON (not the window) keeps it right when
     /// the toolbar re-parents across windows (the undock).
     pub fn open(&self, button: &gtk4::Button) {
+        self.open_at(button);
+    }
+
+    /// Opens the popover anchored at ANY widget (the T6 browser
+    /// toolbar's search scope icon, the Detail header column
+    /// chooser): parents to the anchor on first open, points below
+    /// it, refreshes the top-level dynamic slots.
+    pub fn open_at(&self, anchor: &impl IsA<gtk4::Widget>) {
         if self.popover.parent().is_none() {
-            self.popover.set_parent(button);
+            self.popover.set_parent(anchor);
         }
         self.dyn_ctx.refresh_top(0);
-        align_below_button(button, &self.popover);
+        align_below_widget(anchor.as_ref(), &self.popover);
         self.popover.popup();
     }
 
@@ -1421,7 +1429,7 @@ const POP_WIDTH: i32 = 274;
 /// center, so the popover's left edge lands exactly on the
 /// button's left edge (the WinForms drop-down alignment). The
 /// rect's y sits at the button's bottom edge.
-fn align_below_button(button: &gtk4::Button, popover: &gtk4::Popover) {
+fn align_below_widget(button: &gtk4::Widget, popover: &gtk4::Popover) {
     let alloc = button.allocation();
     let rect = gtk4::gdk::Rectangle::new(0, alloc.height(), POP_WIDTH, 1);
     popover.set_pointing_to(Some(&rect));
@@ -1442,7 +1450,7 @@ fn set_active_item(tops: &[TopMenu], active: &ActiveSlot, index: usize) {
     let Some(top) = tops.get(index) else {
         return;
     };
-    align_below_button(&top.button, &top.popover);
+    align_below_widget(top.button.upcast_ref(), &top.popover);
     active.set(Some(index));
     top.popover.popup();
 }

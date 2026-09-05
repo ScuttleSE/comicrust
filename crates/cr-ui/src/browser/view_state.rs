@@ -177,6 +177,12 @@ impl ViewState {
         self.rebuild();
     }
 
+    /// `ItemSorter = null` (the Arrange menu's Not Sorted row).
+    pub fn clear_sort(&mut self) {
+        self.sort = SortChain::default();
+        self.rebuild();
+    }
+
     /// Flips the first sort key's direction (the Reverse Direction
     /// command).
     pub fn toggle_direction(&mut self) {

@@ -65,6 +65,76 @@ fn apply_replaces(text: &str, pairs: &[(String, String)]) -> String {
     out
 }
 
+/// `NumberedString.GetNumber`: the number inside the FIRST
+/// `(\d+)` bracket group of the text (0 when none).
+pub fn get_number(s: &str) -> i32 {
+    number_match(s).unwrap_or(0)
+}
+
+/// `NumberedString.StripNumber`: every `\s*\((\d+)\)` match (leading
+/// whitespace included) is removed — `Regex.Replace` replaces ALL
+/// matches, not just the first.
+pub fn strip_number(s: &str) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    let n = chars.len();
+    let mut out: Vec<char> = Vec::with_capacity(n);
+    let mut i = 0;
+    while i < n {
+        if chars[i] == '(' {
+            let mut j = i + 1;
+            while j < n && chars[j].is_ascii_digit() {
+                j += 1;
+            }
+            if j > i + 1 && j < n && chars[j] == ')' {
+                // The match includes the `\s*` before the bracket:
+                // drop the whitespace already copied.
+                while out.last().is_some_and(|c| c.is_whitespace()) {
+                    out.pop();
+                }
+                i = j + 1;
+                continue;
+            }
+        }
+        out.push(chars[i]);
+        i += 1;
+    }
+    out.into_iter().collect()
+}
+
+/// `NumberedString.MaxNumber`: max(GetNumber + 1) over the texts
+/// (0 for an empty sequence — the C# catch-all).
+pub fn max_number<'a, I: Iterator<Item = &'a str>>(texts: I) -> i32 {
+    texts.map(|t| get_number(t) + 1).max().unwrap_or(0)
+}
+
+/// `NumberedString.Format`: `"{name} ({n})"` for n >= 2.
+pub fn format_numbered(name: &str, number: i32) -> String {
+    if number >= 2 {
+        return format!("{name} ({number})");
+    }
+    name.to_string()
+}
+
+/// The first `\s*\(\d+\)` match — the digits (the C# `rxBrackets`
+/// takes the first match anywhere in the text).
+fn number_match(s: &str) -> Option<i32> {
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'(' {
+            let mut j = i + 1;
+            while j < bytes.len() && bytes[j].is_ascii_digit() {
+                j += 1;
+            }
+            if j > i + 1 && j < bytes.len() && bytes[j] == b')' {
+                return s[i + 1..j].parse().ok();
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
 /// `StringUtility.Intent(s, n)`: indent every line by `n` spaces. The
 /// input is split on `\n` after normalizing `\r\n` to `\n`; lines are
 /// rejoined with [`NL`].
@@ -126,5 +196,26 @@ mod tests {
         assert_eq!(intent("a", 4), "    a");
         assert_eq!(intent("a\r\nb", 4), "    a\r\n    b");
         assert_eq!(intent("a\r\nb\r\n\r\nc", 2), "  a\r\n  b\r\n  \r\n  c");
+    }
+
+    /// `NumberedString` (cYo.Common.Text): first-match GetNumber,
+    /// replace-all StripNumber with the `\s*` prefix, and the
+    /// Format numbering.
+    #[test]
+    fn numbered_string() {
+        assert_eq!(get_number("Batman (2016)"), 2016);
+        assert_eq!(get_number("My List (2)"), 2);
+        assert_eq!(get_number("no number"), 0);
+        // First bracket group wins.
+        assert_eq!(get_number("a (1) b (2)"), 1);
+        // StripNumber removes EVERY group plus the leading space.
+        assert_eq!(strip_number("Batman (2016)"), "Batman");
+        assert_eq!(strip_number("a (1) b (2)"), "a b");
+        assert_eq!(strip_number("plain"), "plain");
+        assert_eq!(strip_number("parens (x) stay"), "parens (x) stay");
+        assert_eq!(max_number(["a (2)", "b (5)"].iter().copied()), 6);
+        assert_eq!(max_number(std::iter::empty::<&str>()), 0);
+        assert_eq!(format_numbered("x", 1), "x");
+        assert_eq!(format_numbered("x", 2), "x (2)");
     }
 }

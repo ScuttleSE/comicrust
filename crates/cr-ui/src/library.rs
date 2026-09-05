@@ -393,6 +393,121 @@ pub fn new_folder(after: Option<&CrGuid>, name: &str) -> CrGuid {
     id
 }
 
+/// The `ComicListItemFolder` nodes of the tree in order:
+/// (folder id, child level, display name) — the Duplicate List
+/// dropdown (`tbbDuplicateList_DropDownOpening`).
+pub fn list_folders() -> Vec<(CrGuid, usize, String)> {
+    fn walk(
+        items: &[cr_core::database::list_items::ComicListItem],
+        level: usize,
+        out: &mut Vec<(CrGuid, usize, String)>,
+    ) {
+        for item in items {
+            if let cr_core::database::list_items::ComicListItem::Folder(f) = item {
+                out.push((f.base.id, level, f.base.name.clone().unwrap_or_default()));
+                walk(&f.items, level + 1, out);
+            }
+        }
+    }
+    let mut out = Vec::new();
+    walk(&comic_lists_snapshot(), 0, &mut out);
+    out
+}
+
+/// `DuplicateList(clif)`: a new smart list from the CURRENT filter
+/// (`GetCurrentMatcher` — quick search + the view filters), named
+/// from the matcher values (joined `/`) or the current list name,
+/// numbered against the existing siblings (`NumberedString`), added
+/// to `folder`. `Ok(None)` = the C# early return: no filter or no
+/// source list. The C# None-folder target adds to the special
+/// TemporaryFolder — unreachable from the toolbar menu (the None row
+/// is only a disabled placeholder).
+pub fn duplicate_smart_list(
+    source_id: &CrGuid,
+    folder: &CrGuid,
+    filter: &cr_engine::matcher::tree::Matcher,
+) -> Result<CrGuid, String> {
+    // The matcher values become the name (the C# joins the
+    // `MatchValue` texts of every value matcher in the tree).
+    fn collect_values(m: &cr_engine::matcher::tree::Matcher, out: &mut Vec<String>) {
+        match m {
+            cr_engine::matcher::tree::Matcher::Group(g) => {
+                for inner in &g.matchers {
+                    collect_values(inner, out);
+                }
+            }
+            cr_engine::matcher::tree::Matcher::Value(v) => {
+                let text = v.value.trim();
+                if !text.is_empty() {
+                    out.push(text.to_string());
+                }
+            }
+        }
+    }
+    let mut values = Vec::new();
+    collect_values(filter, &mut values);
+
+    let lib = session();
+    let l = lib.borrow();
+    // The source list's name (the numbering fallback base).
+    let source_name = cr_engine::lists::find_list_item(&l.database().comic_lists, source_id)
+        .and_then(|i| i.base().name.clone())
+        .unwrap_or_default();
+    let mut name = values.join("/");
+    if name.is_empty() {
+        name = cr_engine::text::strip_number(&source_name);
+    }
+    // The numbering: MaxNumber over the lists that strip to the same
+    // name (`NumberedString.Format(name, MaxNumber(...))`).
+    let names: Vec<String> = l
+        .database()
+        .comic_lists
+        .iter()
+        .filter(|i| {
+            cr_engine::text::strip_number(&i.base().name.clone().unwrap_or_default()) == name
+        })
+        .map(|i| i.base().name.clone().unwrap_or_default())
+        .collect();
+    let number = cr_engine::text::max_number(names.iter().map(|s| s.as_str()));
+    let name = cr_engine::text::format_numbered(&name, number);
+    drop(l);
+
+    // The C# clones the CHILD matchers of the current matcher group
+    // into the new item (not the wrapper group).
+    let matchers: Vec<cr_core::database::list_items::ComicBookMatcher> = match filter {
+        cr_engine::matcher::tree::Matcher::Group(g) => {
+            g.matchers.iter().map(|m| m.to_raw()).collect()
+        }
+        m => vec![m.to_raw()],
+    };
+
+    let id = CrGuid::new_random();
+    let item = cr_core::database::list_items::ComicListItem::Smart(
+        cr_core::database::list_items::SmartListItem {
+            base: cr_core::database::list_items::ListItemBase {
+                id,
+                name: Some(name),
+                ..Default::default()
+            },
+            matchers,
+            matcher_mode: cr_core::model::enums::MatcherMode::And,
+            base_list_id: *source_id,
+            ..Default::default()
+        },
+    );
+    // The C# `clif.Items.Add` appends to the chosen folder.
+    {
+        let lib = session();
+        let mut l = lib.borrow_mut();
+        if let Some(folder) = find_folder_mut(&mut l.database_mut().comic_lists, folder) {
+            folder.items.push(item);
+            l.mark_dirty();
+            return Ok(id);
+        }
+        Err("duplicate list target folder not found".into())
+    }
+}
+
 /// Rename (the C# `AfterLabelEdit` → `comicListItem.Name = label`).
 pub fn rename_list(id: &CrGuid, name: &str) {
     let lib = session();
