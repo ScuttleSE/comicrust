@@ -873,6 +873,19 @@ impl BrowserShell {
             .is_some_and(|p| p.is_mapped())
     }
 
+    /// The chooser popover's child natural height (the probe: the
+    /// list must be taller than a couple of rows — the "two lines
+    /// high" report).
+    pub fn state_column_chooser_height(&self) -> i32 {
+        self.state
+            .columns_drop
+            .borrow()
+            .as_ref()
+            .and_then(|p| p.child())
+            .map(|c| c.measure(gtk4::Orientation::Vertical, -1).1)
+            .unwrap_or(0)
+    }
+
     /// The browser toolbar's Group/Arrange label texts (the probe).
     pub fn browserbar_labels(&self) -> (String, String) {
         self.state.browser_toolbar.label_texts()
@@ -1731,7 +1744,12 @@ impl ShellState {
         list.set_margin_end(4);
         let scroller = gtk4::ScrolledWindow::builder()
             .propagate_natural_width(true)
+            // Without natural-height propagation the scroller
+            // collapses to ~2 rows — request the list's full height
+            // up to the cap (the user report).
+            .propagate_natural_height(true)
             .max_content_height(480)
+            .hscrollbar_policy(gtk4::PolicyType::Never)
             .child(&list)
             .build();
         for (id, name, visible) in self.item_view.detail_columns_snapshot() {

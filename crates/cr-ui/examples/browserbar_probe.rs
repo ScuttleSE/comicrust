@@ -211,12 +211,15 @@ fn main() {
             move || {
                 shell.state_dispatch_param("win.view-mode", "detail");
                 let mapped = shell.state_open_column_chooser(40.0, 10.0);
+                let h = shell.state_column_chooser_height();
                 let series = shell
                     .state_columns_snapshot()
                     .iter()
                     .find(|(_, n, _)| n == "Series")
                     .map(|c| c.2);
-                println!("D chooser-open={mapped} series-before={series:?} (expect true)");
+                println!(
+                    "D chooser-open={mapped} height={h} series-before={series:?} (expect true, height>100)"
+                );
                 glib::ControlFlow::Break
             }
         });
