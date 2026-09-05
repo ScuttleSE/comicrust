@@ -1992,4 +1992,44 @@ the C# Auto mode gives on white comics.
        metadata — the write lamp blinks for the debounced write.
     7. F10 (MinimalGui) hides the whole bar; leaving restores it
        (the bar rides the Fill `flag4` rule with the tab strip).
+- T8 FIX ROUND 1 (2026-09-05), user test: three findings + one
+  cleanup. Fixed:
+  1. A re-click on the current comic's tab toggled to the Library —
+     the T9 port generalized the `tab_CaptionClick` toggle to ALL
+     strip items. C# evidence: `MainView.cs:161-163` wires
+     CaptionClick ONLY on tsbLibrary/tsbFolders/tsbPages (+ remote
+     tabs) — comic file tabs never toggle. Fix: a comic-tab click
+     (re-click included) always activates the slot (the page
+     shows); the Library/Pages workspace items keep the toggle.
+     The tabstrip probe's E step flipped to gate it.
+  2. The active tab's highlight stopped before the X — the tab's
+     inner buttons painted the theme button surface over the
+     `.tab` box. Fix: `.tabstrip .tab button { background:
+     transparent }` (+ a subtle hover shade).
+  3. F10 did nothing — GTK's built-in `GtkWindow:handle-menubar-accel`
+     (since 4.2, default on) installs a CAPTURE-phase F10 shortcut
+     that consumes the key to focus a model menubar (our T3 bar is
+     a custom widget, so the fallback moved focus to the titlebar —
+     invisible, and the app accel never fired). Fix:
+     `window.set_handle_menubar_accel(false)` (the C# F10 is
+     MinimalGui; nothing else loses). The H probe gate proves the
+     ACTION path; the accel itself has no headless evidence (the
+     F8-control injection also missed — the Xvfb key path is dead,
+     the Phase 3 lesson), so the retest decides.
+  4. The status-bar page number did not follow wheel/click page
+     turns — those dispatch no action, so the sync never saw them.
+     Fix: the `page_change` hook also writes the page panel
+     (set_page with the passed page value — the hook runs INSIDE
+     the reader-state borrow, so no reader access there).
+  Cleanup: a probe run without the XDG isolation had pushed probe
+  books into the real library; a one-off cr-core cleanup removed 4
+  `/tmp/opencode` entries (3 from today, 1 older), and the
+  statusbar probe now REFUSES to run without
+  `XDG_DATA_HOME=/tmp/opencode/...` (it seeds books into the DB it
+  opens).
+  **RETEST:** items 1 (click an open comic's tab — the page shows,
+  no Library flip), 3 (F10/K toggles the MinimalGui chrome), 4
+  (turn pages with the wheel — the page panel follows) and the tab
+  highlight (the X sits inside the highlight now); re-confirm the
+  rest of the acceptance quickly.
 

@@ -366,6 +366,30 @@ Update this section at the **end of every work session**. The next agent must kn
   book/page/count panels on open, the page-panel click lock, the
   slider resize + re-range per mode, the scan/write lamps, the
   MinimalGui hide.
+  T8 FIX ROUND 1 (2026-09-05), user test: comic-tab re-click, tab
+  highlight, F10, page panel. (1) A re-click on the current comic's
+  tab toggled to the Library — the C# wires CaptionClick ONLY on
+  the workspace items (MainView.cs:161-163); comic file tabs never
+  toggle. Fix: comic-tab clicks (re-click included) always activate
+  the slot; Library/Pages keep the toggle (the tabstrip probe's E
+  step flipped). (2) The tab highlight stopped before the X — the
+  inner buttons painted the theme surface; `.tabstrip .tab button`
+  is transparent now (+ a hover shade). (3) F10 was consumed by
+  GTK's built-in `GtkWindow:handle-menubar-accel` (a CAPTURE-phase
+  F10 shortcut since 4.2, default on — it focuses a MODEL menubar;
+  the custom T3 bar is invisible to it, the app accel never fired).
+  Fix: `set_handle_menubar_accel(false)` (the C# F10 is MinimalGui).
+  The probe proves the action path; the accel itself is
+  user-test-only (the F8-control injection also missed — the Xvfb
+  key path is dead). (4) The page panel missed wheel/click turns
+  (no action dispatch) — the `page_change` hook writes the panel
+  now (inside the reader borrow: only the passed page value, no
+  reader access). CLEANUP: a non-isolated probe run had pushed
+  probe books into the real library — 4 `/tmp/opencode` entries
+  removed through the cr-core byte-stable writer, and the probe now
+  REFUSES without `XDG_DATA_HOME=/tmp/opencode/...` (it seeds
+  books into the DB it opens). Retest: the tab click, F10/K, the
+  page panel on turns, the tab highlight.
   **Next: T9 tail is done; after the T8 PASS, the phase continues
   with T10 (dock modes) or the remaining small tasks (T11 preview,
   T12 display settings, T13 dialogs, T14 persistence).** Phase 6
