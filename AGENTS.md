@@ -206,12 +206,33 @@ Update this section at the **end of every work session**. The next agent must kn
   page flip + the view-mode check sync + the duplicate landing;
   the T3/T4/T5 probes stay green. Deviations + the Wayland lesson
   in the kickoff tracker.
-  **Next: T7 (the navigator + Pages toolbars).** Phase 6
+  T7 IMPLEMENTED (2026-09-05), user test pending. The two panel
+  toolbars: `browser/navigator.rs` mounts [toolbar][search box
+  (hidden)][tree] — New Folder/New List/New Smart List (the SAME
+  ListCommand path as the context menu, target = the selection),
+  Expand/Collapse All (any-expanded → collapse else expand; the
+  signals keep the id set), Refresh (`connect_refresh` → refill +
+  re-evaluate; the C# RefreshLists wire is dead for the local
+  library), the right-aligned Quick Search toggle (the T1 stub is
+  now the real stateful `toggle-navigator-search`, check = box
+  visibility) with the name-contains filter (Library always shows,
+  folders match via ANY child — the `ComicListItemFolder.Filter`
+  override). `browser/pages_view.rs` mounts [toolbar][scroller] —
+  the Views split button (main click cycles, chevron opens) over
+  `win.pages-view-mode` radios Thumbnail/Tile; Tile = fixed cells,
+  thumb left + the `ComicTextBuilder` `DefaultPage` text lines
+  right ("Page #N"/type/Size/Resolution/Rotation/Bookmark, the
+  tab-stop shape). Deviations in the kickoff tracker (Open
+  Window/Tab, Favorites, Pages Details/groups/filter/sort).
+  `navpages_probe` gates the dispatch, the 9→1→9 filter, the
+  expand flip, the Views OPEN gate + the radio click + the
+  main-click cycle; 314 tests.
+  **Next: the T7 user test, then T8 (the status bar).** Phase 6
   (scripting) starts only after 5.5.
   Phases 0-5 are complete (their gates stay green). Open Phase 1
   gaps: WebComicProvider and the PDF/DjVu writers (tracked in
   `docs/phase-1-kickoff.md`).
-- **State:** `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` are green. 307 tests. CI runs on the `docker-runner-amd64` container runner (ADR-020). The release tracks are `release.yaml` (rolling prerelease per push) and `tagged-release.yaml` (manual dispatch, stable release for an existing tag — ADR-021, 2026-09-03). Until the runner is registered and `comicrust-ci:latest` is built on the runner host, pushed and dispatched workflows sit queued on that label.
+- **State:** `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` are green. 314 tests. CI runs on the `docker-runner-amd64` container runner (ADR-020). The release tracks are `release.yaml` (rolling prerelease per push) and `tagged-release.yaml` (manual dispatch, stable release for an existing tag — ADR-021, 2026-09-03). Until the runner is registered and `comicrust-ci:latest` is built on the runner host, pushed and dispatched workflows sit queued on that label.
 - **Phase 0 gate status:** byte-stable ComicDb.xml round-trip proven on all three synthetic fixtures AND the real-world database `tests/realworld/ComicDb.xml` (255 books, 584 KB, 2026-09-02, user-approved commit).
 - **Phase 2 gate status:** every saved smart list in the real-world DB (a) binds to the matcher registry, (b) renders to a `Match` query string that re-parses and re-renders byte-identically, and (c) evaluates to the SAME book sets the C# cached in `CacheStorage` (Never Read = all 255, Files to update = the 3 dirty books, Reading/Read = empty). Evidence: `crates/cr-engine/tests/realworld_query.rs`.
 - **Phase 3 gate status (COMPLETE):** a real comic (`tests/testfiles/`, git-ignored, user-supplied) opens in a GTK4 window and reads comfortably: single/double/adaptive/continuous layouts, spread composition with cover-right + binding-edge rules, fit modes with anamorphic tolerance, zoom/pan/rotation, RTL, continuous scroll with anchor-stable layout rebuilds, fade/slide transitions, paper texture, Auto/Color/Texture backgrounds, the real `MainForm` input map, session tabs with undock, fullscreen chrome with cursor auto-hide, reading-state tracking, the magnifier, error pages, and pool-queue page loads. User-verified after each task; UI smoke tests on this machine run headless under Xvfb + screenshots (see the probe lessons below — the key-injection tools are unreliable; only user tests decide input behavior).

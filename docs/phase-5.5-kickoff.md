@@ -1410,6 +1410,88 @@ change; it lands after the bars so they exist in both modes.
   the selector panel is unported) and lands in the picked folder;
   the C# None-target (TemporaryFolder) is unreachable (the None
   row is only a disabled placeholder).
+- T7 IMPLEMENTED (2026-09-05), user test pending. The two panel
+  toolbars:
+  - Navigator (`ComicListLibraryBrowser.toolStrip`, the control's
+    own chrome — `browser/navigator.rs` now mounts
+    [toolbar][search box (hidden)][tree] instead of the bare
+    scroller): New Folder / New List / New Smart List (the SAME
+    ListCommand path as the context menu, target = the current
+    selection — the C# commands.Add(miX, tbX) pairing), a
+    separator, Expand/Collapse All (`ExpandCollapseAllNodes`: any
+    row expanded → collapse_all else expand_all; the row-expanded/
+    collapsed signals keep the id set in step), Refresh (a new
+    `connect_refresh` — the shell refills the tree + re-evaluates
+    the current list; the C# RefreshLists event has NO subscriber
+    for the local library — a decompiled dead wire, the port makes
+    it the FillListTree refresh), and the right-aligned Quick
+    Search toggle (`tsQuickSearch` → `ToggleQuickSearch`: show +
+    focus, or clear + hide). The T1 `toggle-navigator-search` stub
+    became a REAL stateful check action (check = the box
+    visibility, `() => quickSearchPanel.Visible`); the Ctrl+Alt+F
+    accel was already registered. The search box (cue text = the
+    toggle's tooltip, the C# `SetCueText(tsQuickSearch.Text)`
+    parity) filters the tree on every keystroke
+    (`quickSearch_TextChanged` → FillListTree): Library rows always
+    show, folders pass when ANY child passes (the
+    `ComicListItemFolder.Filter` override — the folder's own name
+    is NOT searched), every other item by a case-insensitive name
+    contains (`ComicListItem.Filter`); the filter runs inside
+    `refill`, so shell-driven refills keep it.
+  - Pages (`ComicPagesView.toolStrip` — `browser/pages_view.rs`
+    now mounts [toolbar][scroller]): the Views split button (main
+    click cycles the mode — `tbbView_ButtonClick`; chevron opens
+    the drop) over the `win.pages-view-mode` radio action with the
+    Thumbnail/Tile rows. The mode: Thumbnail (unchanged) + Tile —
+    fixed cells (192×96 at the default thumb height, scaled with
+    the size slider), thumb left / text right
+    (`ThumbTileRenderer`), the text lines = the
+    `ComicTextBuilder.GetTextBlocks` `DefaultPage` port ("Page #N"
+    bold, the page type, "Size: …"/"Unknown Size", "Resolution:
+    W x H", optional "Rotation: N°"/"Bookmark: name") with the
+    shared tab-stop shape. PageCell now carries the tile fields
+    (type name, file size, dims, rotation, bookmark name).
+    The panel exposes `sync(&resolve)` — the shell pushes the same
+    action states the menubar and the other toolbars get.
+  - Gate: 314 tests (+7: the filter unit tests ×2, the tile-lines
+    tests ×2, the actions-exist gate, the icon gate, the mode-name
+    round trip); `navpages_probe` gates the command dispatch (the
+    recorder), the search toggle + the 9→1→9 filter, the expand/
+    collapse flip (1→0), the Views OPEN through the real anchor
+    (the T5 lesson), the Tile radio row click + the main-click
+    cycle, and the action state following the PANEL (the T6
+    source-of-truth rule); all other probes unchanged (the
+    GLib-GIO-CRITICAL line in commands_probe/toolbar_probe output
+    is pre-existing HEAD noise — verified against a clean
+    worktree).
+  - **USER TEST (the T7 acceptance):**
+    1. `cargo run -p cr-app --release --` — the Library panel
+       shows its own toolbar: [New Folder][New List][New Smart
+       List] | [Expand/Collapse All][Refresh] ... [search icon] —
+       the C# icons.
+    2. The three New buttons create/edit the same things as the
+       context menu (a click with the Smart Lists folder selected
+       inserts under it, the editor opens).
+    3. Expand/Collapse All: one click expands every folder, a
+       second collapses all.
+    4. Refresh: nothing visibly changes on a quiet library (the
+       tree refills — same shape as the context-menu mutations
+       leave behind).
+    5. The search icon shows the search box under the toolbar
+       (focused); typing "bat" narrows the tree to the matches
+       (folder names do NOT match — only list names and their
+       children); clearing + the icon again hides the box;
+       Ctrl+Alt+F toggles it too (and the menubar-less state still
+       works — the action carries the accel).
+    6. Open a comic → the Pages panel; its toolbar shows the
+       Views split button. The chevron opens the drop (Thumbnail/
+       Tile with the radio mark); Tiles switches the grid to the
+       tile cells (thumb left, "Page #N"/type/size/resolution
+       text right); the main part cycles back to Thumbnails.
+    7. Ctrl+wheel (or the later T8 slider) resizes both modes.
+    8. Book Display: the tile text shows the stored rotation and
+       bookmark lines only when present (set a bookmark, rotate a
+       page — reopen the Pages panel).
 
 ## Omitted / postponed per task (the tracker)
 
@@ -1433,7 +1515,8 @@ owns the Phase 5.5 omissions).
   Rating (T13), Copy/Export Page (T13), Small Preview (T11), New
   Book Entry (unported fileless books), navigator search (T7).
   RESOLVED in T4: Set/Remove Bookmark (the commands + the fills
-  landed).
+  landed). RESOLVED in T7: toggle-navigator-search (the real
+  stateful action + the navigator search box).
 - Automation submenu omitted (Phase 6 scripting hooks it).
 - RESOLVED in T4: "Update all Book Files" hides when
   AutoUpdateComicsFiles is on (`ActionState.visible` + the sync).
@@ -1530,3 +1613,38 @@ owns the Phase 5.5 omissions).
   input — the Phase 3 record); the Properties editor's session
   book staleness after external editor commits predates T4 (the
   clone round-trip shape).
+
+### T7 — Navigator toolbar + Pages toolbar (IMPLEMENTED — user test pending)
+- ABSENT from the navigator toolbar (all recorded):
+  - tbOpenWindow "Open in New Window" (ADR-024) — joined by
+    tbOpenTab "Open in New Tab": the port has no list-tab surface
+    (the reader tab strip holds BOOK tabs only).
+  - tbFavorites (the Favorites pane toggle — the C# inventory note
+    omits the pane).
+- The C# `RefreshLists` event behind tbRefresh has NO subscriber
+  for the local library (only RemoteConnectionView wires it — a
+  decompiled dead wire). The port gives Refresh real behavior:
+  refill the tree + re-evaluate the current list.
+- The navigator search box has no autocomplete list (the C#
+  persists `LibraryQuickSearchList` to settings — the box is the
+  scope: a filter, not a history).
+- ABSENT from the Pages toolbar:
+  - miViewDetails (Details mode) + miExpandAllGroups
+    (Collapse/Expand all Groups) — the panel has no detail list
+    and no groups.
+  - tbbGroup/tbbSort (Group/Arrange) — cut per the scope line (the
+    pages grid has no sort/group).
+  - tbFilter "Page Filter" — omitted entirely (the kickoff allowed
+    "a stub or hidden"; the panel consumes no page-type filter).
+- The Tile mode is a reduced `ThumbTileRenderer`: the thumb left /
+  the text right, no 3D backdrop, no state images; the rotation
+  line shows "90°" (the C# shows the localized enum text
+  "Rotate90").
+- The mode radios ride `win.pages-view-mode` (a shell-only
+  action — no C# command equivalent; the C# wires the view modes
+  directly in `ComicPagesView.OnLoad`).
+- PROBE LESSON (the self-caught gate): a probe counter that walks
+  only the FIRST top-level subtree silently undercounts (the
+  expand-all gate read 0 for the folder on row 2 — a stack walk
+  missing the sibling advance); the fixed walk mirrors the
+  count_rows shape (outer sibling loop + recursive children).
