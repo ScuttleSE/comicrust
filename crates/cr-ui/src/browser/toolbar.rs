@@ -195,7 +195,9 @@ pub struct ReaderToolbar {
     layout_icon: gtk4::Image,
     magnify_icon: gtk4::Image,
     rotate_btn_icon: gtk4::Image,
-    dropdowns: Vec<(&'static str, Dropdown)>,
+    /// (name, dropdown, anchor button) — the anchor is what the
+    /// popover points at and what parents it on first open.
+    dropdowns: Vec<(&'static str, Dropdown, gtk4::Button)>,
 }
 
 impl Clone for ReaderToolbar {
@@ -250,7 +252,7 @@ fn split_button(
     click_action: &str,
     tooltip: &str,
     drop: Dropdown,
-) -> (gtk4::Box, gtk4::Image) {
+) -> (gtk4::Box, gtk4::Image, gtk4::Button) {
     let box_ = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
     box_.add_css_class("linked");
     let (main, image) = icon_button(icon, click_action, window, tooltip);
@@ -264,7 +266,7 @@ fn split_button(
     }
     box_.append(&main);
     box_.append(&chevron);
-    (box_, image)
+    (box_, image, main)
 }
 
 /// A plain dropdown button: the click opens the drop (the C#
@@ -295,33 +297,33 @@ impl ReaderToolbar {
         bar.set_margin_bottom(2);
         bar.set_margin_end(6);
         let mut reader_only: Vec<gtk4::Widget> = Vec::new();
-        let mut dropdowns: Vec<(&'static str, Dropdown)> = Vec::new();
+        let mut dropdowns: Vec<(&'static str, Dropdown, gtk4::Button)> = Vec::new();
         let mk = |defs: &'static [MenuNode]| menubar::build_dropdown(defs, window);
 
         // tbPrevPage: main = Previous Page; drop = the bookmarks
         // before the current page + Previous Book from List.
         let prev_drop = mk(PREV);
-        let (prev_box, _prev_img) = split_button(
+        let (prev_box, _prev_img, prev_main_btn) = split_button(
             window,
             "GoPrevious",
             "win.prev-page",
             "Previous Page",
             prev_drop.clone(),
         );
-        dropdowns.push(("prev", prev_drop));
+        dropdowns.push(("prev", prev_drop, prev_main_btn.clone()));
         bar.append(&prev_box);
         reader_only.push(prev_box.clone().upcast());
 
         // tbNextPage.
         let next_drop = mk(NEXT);
-        let (next_box, _next_img) = split_button(
+        let (next_box, _next_img, next_main_btn) = split_button(
             window,
             "GoNext",
             "win.next-page",
             "Next Page",
             next_drop.clone(),
         );
-        dropdowns.push(("next", next_drop));
+        dropdowns.push(("next", next_drop, next_main_btn.clone()));
         bar.append(&next_box);
         reader_only.push(next_box.clone().upcast());
 
@@ -343,7 +345,7 @@ impl ReaderToolbar {
         layout_child.append(&layout_icon);
         let layout_btn = drop_button(&layout_child, "Page Layout", layout_drop.clone());
         layout_btn.set_child(Some(&layout_child));
-        dropdowns.push(("layout", layout_drop));
+        dropdowns.push(("layout", layout_drop, layout_btn.clone()));
         bar.append(&layout_btn);
         reader_only.push(layout_btn.clone().upcast());
 
@@ -355,7 +357,7 @@ impl ReaderToolbar {
             fit_icon.set_paintable(Some(&texture));
         }
         let fit_btn = drop_button(&fit_icon, "Toggle Fit Mode", fit_drop.clone());
-        dropdowns.push(("fit", fit_drop));
+        dropdowns.push(("fit", fit_drop, fit_btn.clone()));
         bar.append(&fit_btn);
         reader_only.push(fit_btn.clone().upcast());
 
@@ -371,7 +373,7 @@ impl ReaderToolbar {
         zoom_child.append(&zoom_icon);
         zoom_child.append(&zoom_label);
         let zoom_btn = drop_button(&zoom_child, "Change the page zoom", zoom_drop.clone());
-        dropdowns.push(("zoom", zoom_drop));
+        dropdowns.push(("zoom", zoom_drop, zoom_btn.clone()));
         bar.append(&zoom_btn);
         reader_only.push(zoom_btn.clone().upcast());
 
@@ -391,7 +393,7 @@ impl ReaderToolbar {
             "Change the page rotation",
             rotate_drop.clone(),
         );
-        dropdowns.push(("rotate", rotate_drop));
+        dropdowns.push(("rotate", rotate_drop, rotate_btn.clone()));
         bar.append(&rotate_btn);
         reader_only.push(rotate_btn.clone().upcast());
 
@@ -425,7 +427,7 @@ impl ReaderToolbar {
             tools_icon.set_paintable(Some(&texture));
         }
         let tools_btn = drop_button(&tools_icon, "Tools", tools_drop.clone());
-        dropdowns.push(("tools", tools_drop));
+        dropdowns.push(("tools", tools_drop, tools_btn.clone()));
         bar.append(&tools_btn);
 
         ReaderToolbar {
@@ -448,7 +450,7 @@ impl ReaderToolbar {
     /// Installs the shared dynamic fill provider (the bookmark
     /// fills of the prev/next/tools drops).
     pub fn set_dyn_fill(&self, fill: menubar::DynFillFn) {
-        for (_, drop) in &self.dropdowns {
+        for (_, drop, _) in &self.dropdowns {
             drop.set_dyn_fill(fill.clone());
         }
     }
@@ -517,7 +519,7 @@ impl ReaderToolbar {
     /// Applies the action states to every dropdown (the shell
     /// resolves the same states the menubar gets).
     pub fn sync(&self, resolve: &dyn Fn(&str) -> Option<menubar::ActionState>) {
-        for (_, drop) in &self.dropdowns {
+        for (_, drop, _) in &self.dropdowns {
             drop.sync(resolve);
         }
     }
@@ -526,8 +528,8 @@ impl ReaderToolbar {
     pub fn dropdown(&self, name: &str) -> Option<Dropdown> {
         self.dropdowns
             .iter()
-            .find(|(n, _)| *n == name)
-            .map(|(_, d)| d.clone())
+            .find(|(n, _, _)| *n == name)
+            .map(|(_, d, _)| d.clone())
     }
 
     /// The zoom state text (the probe).
@@ -538,6 +540,30 @@ impl ReaderToolbar {
     /// The rotation state text (the probe).
     pub fn rotate_text(&self) -> String {
         self.rotate_label.text().to_string()
+    }
+
+    /// Opens one dropdown through its stored anchor (the probe's
+    /// real open path — the same call the chevron handler makes).
+    pub fn open_dropdown(&self, name: &str) -> bool {
+        let hit = self
+            .dropdowns
+            .iter()
+            .find(|(n, _, _)| *n == name)
+            .map(|(_, d, b)| (d.clone(), b.clone()));
+        match hit {
+            Some((drop, anchor)) => {
+                drop.open(&anchor);
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Closes one dropdown (the probe cleanup).
+    pub fn close_dropdown(&self, name: &str) {
+        if let Some((_, d, _)) = self.dropdowns.iter().find(|(n, _, _)| *n == name) {
+            d.popover().popdown();
+        }
     }
 }
 

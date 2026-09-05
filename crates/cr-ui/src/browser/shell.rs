@@ -869,6 +869,24 @@ impl BrowserShell {
         self.state.toolbar.dropdown(name)
     }
 
+    /// Opens a toolbar dropdown through its real anchor (the probe).
+    pub fn toolbar_open_dropdown(&self, name: &str) -> bool {
+        self.state.toolbar.open_dropdown(name)
+    }
+
+    /// Closes one toolbar dropdown (the probe).
+    pub fn toolbar_close_dropdown(&self, name: &str) {
+        self.state.toolbar.close_dropdown(name);
+    }
+
+    /// Whether a toolbar dropdown's popover is mapped (the probe).
+    pub fn toolbar_drop_mapped(&self, name: &str) -> bool {
+        self.state
+            .toolbar
+            .dropdown(name)
+            .is_some_and(|d| d.popover().is_mapped())
+    }
+
     /// The current fit mode as the action name (the probe).
     pub fn reader_current_fit_name(&self) -> Option<&'static str> {
         self.state.reader.current_fit_mode().map(fit_action_name)

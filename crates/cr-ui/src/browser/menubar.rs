@@ -1003,8 +1003,16 @@ impl Dropdown {
     }
 
     /// Opens the popover below `button` (the fill refresh runs
-    /// first — the top-level slots of a standalone dropdown).
+    /// first — the top-level slots of a standalone dropdown). The
+    /// popover parents to the anchor button on first open: a
+    /// popover without a toplevel parent realizes nothing and the
+    /// popup segfaults (`gdk_surface_new_popup: no parent surface`).
+    /// Parenting to the BUTTON (not the window) keeps it right when
+    /// the toolbar re-parents across windows (the undock).
     pub fn open(&self, button: &gtk4::Button) {
+        if self.popover.parent().is_none() {
+            self.popover.set_parent(button);
+        }
         self.dyn_ctx.refresh_top(0);
         align_below_button(button, &self.popover);
         self.popover.popup();

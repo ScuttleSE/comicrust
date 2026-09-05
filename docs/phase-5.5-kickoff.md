@@ -1147,7 +1147,26 @@ change; it lands after the bars so they exist in both modes.
     `toolbar_probe` (the bar mounts, the zoom text 200%, the
     rotate text 90°, the fit dropdown row click fires, the
     next-page drop lists the bookmark), the other probes
-    unchanged. **USER TEST (the T5 acceptance):**
+    unchanged.
+- T5 FIX ROUND 1 (2026-09-05), user crash report → fixed, retest
+  pending. SYMPTOM: clicking toolbar buttons after opening a
+  comic segfaulted — `gtk_widget_realize() on a widget that isn't
+  inside a toplevel`, then `gdk_surface_new_popup: no parent
+  surface` → SIGSEGV. ROOT CAUSE (evidence-first): the standalone
+  `Dropdown` popovers were NEVER parented — the menubar popovers
+  get `set_parent(&button)` in `create_menubar`, but
+  `build_dropdown` skipped that step, and the probe never called
+  `open()` (it only clicked rows — `click_row` pops down, never
+  presents), so headless gates could not see it. FIX: `Dropdown::
+  open` parents the popover to its ANCHOR BUTTON on first open
+  (parenting to the window would break the undock — the popover
+  must follow the toolbar across toplevels); every dropdown now
+  stores its anchor button (the split-button helper returns the
+  main part). The probe grew the OPEN gate: `open_dropdown("next")`
+  through the real anchor → `is_mapped() == true`, alive, clean
+  exit. LESSON: every popover needs a parent BEFORE popup(); a
+  probe that only clicks rows never exercises the present path —
+  gate the OPEN, not just the click. 299 tests, all probes green. **USER TEST (the T5 acceptance):**
     1. Open a comic — the strip sits at the top right of the
        reader: [prev][next] | layout fit zoom% rotate° | magnifier
        fullscreen | tools, with the C# icons.

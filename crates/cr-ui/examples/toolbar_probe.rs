@@ -103,23 +103,34 @@ fn main() {
             }
         });
 
-        // 3b. The bookmark drop fill: set a bookmark on the current
-        //     page, open the next-page drop, expect the row.
+        // 4. The OPEN path (the crash gate: an unparented popover
+        //     segfaults on realize — `gdk_surface_new_popup: no
+        //     parent surface`). Open through the real anchor path.
         glib::timeout_add_local(std::time::Duration::from_millis(3000), {
             let shell = shell.clone();
             move || {
                 shell.state_set_bookmark_silent(2, "probe bm");
-                let drop = shell.toolbar_dropdown("next");
-                if let Some(d) = drop {
+                if let Some(d) = shell.toolbar_dropdown("next") {
                     d.refresh_slot("bookmarks-next");
                     let rows = d.dyn_rows_snapshot("bookmarks-next");
                     println!("NEXT-DROP bookmarks={rows:?}");
                 }
+                let opened = shell.toolbar_open_dropdown("next");
+                println!("OPEN-DROP called={opened:?}");
+                glib::timeout_add_local(std::time::Duration::from_millis(300), {
+                    let shell = shell.clone();
+                    move || {
+                        let mapped = shell.toolbar_drop_mapped("next");
+                        println!("OPEN-DROP mapped={mapped} (expect true, no segv)");
+                        shell.toolbar_close_dropdown("next");
+                        glib::ControlFlow::Break
+                    }
+                });
                 glib::ControlFlow::Break
             }
         });
 
-        glib::timeout_add_local(std::time::Duration::from_millis(3300), {
+        glib::timeout_add_local(std::time::Duration::from_millis(3800), {
             let app = app.clone();
             move || {
                 println!("PROBE COMPLETE");
