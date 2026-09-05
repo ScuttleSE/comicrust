@@ -34,6 +34,14 @@ use super::item_view::ItemView;
 use super::layout::ItemViewMode;
 use super::navigator::Navigator;
 use super::pages_view::PagesPanel;
+use super::tabstrip::TabId;
+
+/// The browser workspace tabs (the C# `tsbLibrary`/`tsbPages`).
+#[derive(Clone, Copy, PartialEq)]
+enum Workspace {
+    Library,
+    Pages,
+}
 
 /// The search debounce (`UpdateSearch` on text change; large sets
 /// re-filter).
@@ -60,10 +68,16 @@ struct ShellState {
     item_view: ItemView,
     quick_view: ItemView,
     pages: PagesPanel,
-    /// The browser-panel tab strip: Library | Pages (`MainView`).
-    panel_stack: Stack,
-    /// The left panel host (switcher + stack) — the Sidebar toggle.
-    panel_box: gtk4::Box,
+    /// The navigator pane host — the Sidebar toggle target (the C#
+    /// `tbSidebar` collapses the left pane).
+    nav_box: gtk4::Box,
+    /// The workspace tab strip (`MainView.tabStrip`): Library |
+    /// Pages | the comic tabs | `+`, with the reader toolbar docked
+    /// at the right end.
+    tab_strip: super::tabstrip::TabStrip,
+    /// The last browser workspace (the C# `lastBrowser` —
+    /// `ShowLast`/ToggleBrowser return to it).
+    last_browser: Cell<u8>,
     /// The quick-search entry (the FocusQuickSearch command target).
     search: Entry,
     reader: ReaderShell,
@@ -107,16 +121,10 @@ struct ShellState {
 
 impl ShellState {
     /// Opens a comic into the docked reader and shows it (the C#
-    /// `OpenComic`; the browser hides while the reader shows).
+    /// `OpenComic`; the reader tab selects and the workspace swaps).
     fn open_comic(&self, path: &Path) {
         match self.reader.open_comic(path) {
             Ok(()) => {
-                // The Pages panel binds the open comic (the C#
-                // `Viewer_BookChanged` → `pagesView.Book`).
-                if let Some(book) = self.reader.current_comic_book() {
-                    self.pages.set_book(book);
-                    self.panel_stack.set_visible_child_name("pages");
-                }
                 self.stack.set_visible_child_name("reader");
                 self.window.present();
             }
@@ -128,6 +136,107 @@ impl ShellState {
 
     fn show_browser(&self) {
         self.stack.set_visible_child_name("browser");
+    }
+
+    /// Selects a browser workspace tab (`ShowView(tsbLibrary)`/
+    /// `ShowView(tsbPages)`); the reader hides behind it.
+    fn select_workspace(&self, ws: Workspace) {
+        match ws {
+            Workspace::Library => {
+                self.last_browser.set(0);
+                self.stack.set_visible_child_name("browser");
+            }
+            Workspace::Pages => {
+                self.last_browser.set(1);
+                self.stack.set_visible_child_name("pages");
+            }
+        }
+    }
+
+    /// `ShowLast` — the last browser workspace tab.
+    fn select_last_browser(&self) {
+        let ws = if self.last_browser.get() == 1 {
+            Workspace::Pages
+        } else {
+            Workspace::Library
+        };
+        self.select_workspace(ws);
+    }
+
+    /// `OpenBooks_Clicked` / a comic tab click: the slot selects and
+    /// the reader workspace shows (`ShowView(i)` → the comic viewer
+    /// covers the browser).
+    fn activate_slot(&self, slot: usize) {
+        self.reader.switch_to_slot(slot);
+        self.stack.set_visible_child_name("reader");
+    }
+
+    /// The workspace tab strip click (`Selected`/`CaptionClick`):
+    /// selecting another item swaps the workspace; re-clicking the
+    /// SELECTED item toggles the browser (the C# `tab_CaptionClick`
+    /// → `ToggleBrowser`).
+    fn on_tab_select(&self, id: &TabId) {
+        let visible = self
+            .stack
+            .visible_child_name()
+            .map(|s| s.to_string())
+            .unwrap_or_default();
+        match id {
+            TabId::Library => {
+                if visible == "browser" {
+                    self.toggle_browser();
+                } else {
+                    self.select_workspace(Workspace::Library);
+                }
+            }
+            TabId::Pages => {
+                if visible == "pages" {
+                    self.toggle_browser();
+                } else {
+                    self.select_workspace(Workspace::Pages);
+                }
+            }
+            TabId::Comic(slot) => {
+                if visible == "reader" && self.reader.current_slot_id() == Some(*slot) {
+                    self.toggle_browser();
+                } else {
+                    self.activate_slot(*slot);
+                }
+            }
+            TabId::Plus => {
+                // `OpenBooks.AddSlot` + `CurrentSlot = last`: the new
+                // empty slot selects and shows (blank reader view).
+                self.reader.add_empty_slot();
+                self.stack.set_visible_child_name("reader");
+            }
+        }
+        // The strip state renders from the workspace (the T6
+        // lesson) — re-sync after every click.
+        self.sync_enabled();
+    }
+
+    /// Pushes the open slots into the strip and derives its
+    /// selection from the visible workspace (the T6 lesson: state
+    /// renders from the source of truth, never from the click).
+    fn sync_tabs(&self) {
+        let infos = self.reader.tab_infos();
+        self.tab_strip.set_tabs(&infos);
+        // `tsbPages.Visible = OpenBooks.CurrentBook != null`.
+        self.tab_strip
+            .set_pages_visible(self.reader.has_current_book());
+        // `fileTab.Visible = BrowserDock == Fill && !ReaderUndocked`.
+        self.tab_strip
+            .set_comic_tabs_visible(!self.reader.is_undocked());
+        let selected = match self.stack.visible_child_name().as_deref() {
+            Some("browser") => TabId::Library,
+            Some("pages") => TabId::Pages,
+            _ => self
+                .reader
+                .current_slot_id()
+                .map(TabId::Comic)
+                .unwrap_or(TabId::Library),
+        };
+        self.tab_strip.set_selected(&selected);
     }
 
     /// The QuickOpen empty state (`UpdateQuickList`: visible when no
@@ -226,26 +335,19 @@ impl BrowserShell {
         let search = Entry::new();
         let browser_toolbar = super::browser_toolbar::BrowserToolbar::create(&window, &search);
 
-        // The browser page: the left panel's tab strip — Library |
-        // Pages (`MainView`: tsbLibrary/tsbPages; the Pages tab only
-        // exists while a comic is open) — and the ItemView, with the
-        // status bar below.
-        let panel_stack = Stack::new();
-        panel_stack.set_vhomogeneous(false);
-        panel_stack.add_titled(navigator.widget(), Some("library"), "Library");
-        panel_stack.add_titled(&pages_widget, Some("pages"), "Pages");
-
-        let switcher = gtk4::StackSwitcher::builder().stack(&panel_stack).build();
-        let panel_box = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
-        panel_box.append(&switcher);
-        panel_box.append(&panel_stack);
+        // The browser page: the navigator pane left, the toolbar +
+        // ItemView pane right. The status label moved below the
+        // workspace stack (the C# status strip is form-wide).
+        let nav_box = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+        nav_box.append(navigator.widget());
 
         let paned = Paned::new(gtk4::Orientation::Horizontal);
-        paned.set_start_child(Some(&panel_box));
+        paned.set_start_child(Some(&nav_box));
         paned.set_shrink_start_child(false);
         paned.set_position(280);
         let status = Label::builder()
             .halign(gtk4::Align::Start)
+            .valign(gtk4::Align::Center)
             .margin_top(4)
             .margin_bottom(4)
             .margin_start(8)
@@ -262,7 +364,6 @@ impl BrowserShell {
         paned.set_shrink_end_child(false);
         let browser_page = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
         browser_page.append(&paned);
-        browser_page.append(&status);
 
         // The quick-open page (the C# reader-area overlay shown when
         // no book is open and `ShowQuickOpen`): the recent lists as
@@ -277,34 +378,41 @@ impl BrowserShell {
         quick_page.append(&quick_label);
         quick_page.append(&quick_scroller);
 
-        // The stack: quick open ⇄ browser ⇄ reader (`BrowserVisible`
-        // + the QuickOpen empty state).
+        // The workspace stack — the full-window tab contents (the C#
+        // `MainView.ShowView`): quick open ⇄ browser ⇄ Pages ⇄
+        // reader. The Pages workspace is a full-window tab now (the
+        // `ComicPagesView` shape), not a left-panel mini tab.
         let stack = Stack::new();
         stack.set_vhomogeneous(false);
         stack.set_hhomogeneous(false);
         stack.add_named(&quick_page, Some("quickopen"));
         stack.add_named(&browser_page, Some("browser"));
+        let pages_page = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+        pages_page.append(&pages_widget);
+        stack.add_named(&pages_page, Some("pages"));
 
         // The menubar (the C# `mainMenuStrip`) rides above the
         // content — the T3 custom bar (GTK4 model menus cannot show
         // the C# menu-item icons).
         let menubar = super::menubar::create_menubar(&window);
-        // The reader toolbar (the T5 `mainToolStrip`): mounts UNDER
-        // the menubar, above the view stack (the C# strip lives in
-        // the tab-strip row, visible in BOTH the browser and reader
-        // views — OnGuiVisibilities keeps MainToolStripVisible on in
-        // Fill mode; only MinimalGui hides it). Tools/Fullscreen are
-        // reachable from the library view (the user report).
+        // The workspace tab strip (the T9 `MainView.tabStrip`): the
+        // row under the menubar with Library | Pages | the comic tabs
+        // | `+`. The reader toolbar (the T5 `mainToolStrip`) docks
+        // into its right end (the C# Fill rule:
+        // `MainToolStripVisible = false` → the strip lives inside the
+        // tab row; Tools/Fullscreen stay reachable from the library
+        // view).
         let toolbar = super::toolbar::ReaderToolbar::create(&window);
-        let toolbar_box = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
-        toolbar_box.append(toolbar.widget());
+        let tab_strip = super::tabstrip::TabStrip::create(Arc::clone(&pool));
+        tab_strip.host().append(toolbar.widget());
         let reader_page = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
         reader_page.append(&reader_widgets.notebook());
         stack.add_named(&reader_page, Some("reader"));
         let content = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
         content.append(menubar.widget());
-        content.append(&toolbar_box);
+        content.append(tab_strip.widget());
         content.append(&stack);
+        content.append(&status);
         window.set_child(Some(&content));
 
         let state = Rc::new(ShellState {
@@ -315,8 +423,10 @@ impl BrowserShell {
             item_view,
             quick_view,
             pages,
-            panel_stack,
-            panel_box: panel_box.clone(),
+            nav_box,
+            reader_page_box: tab_strip.host().clone(),
+            tab_strip,
+            last_browser: Cell::new(0),
             search: search.clone(),
             reader,
             app: app.clone(),
@@ -329,9 +439,6 @@ impl BrowserShell {
             menubar,
             menubar_revealed: Cell::new(false),
             toolbar,
-            // The undock re-dock parent: the strip's DOCKED home is
-            // the box under the menubar (above the stack).
-            reader_page_box: toolbar_box.clone(),
             browser_toolbar,
             search_text: RefCell::new(String::new()),
             current_filter: RefCell::new(None),
@@ -359,6 +466,12 @@ impl BrowserShell {
         &self.state.menubar
     }
 
+    /// The workspace tab strip (the T9 bar; the probes reach it
+    /// here).
+    pub fn tabstrip(&self) -> super::tabstrip::TabStrip {
+        self.state.tab_strip.clone()
+    }
+
     /// The main window handle.
     pub fn window(&self) -> ApplicationWindow {
         self.window.clone()
@@ -371,8 +484,9 @@ impl BrowserShell {
         // chrome and the Q exit.
         state.reader.set_host(&self.window);
 
-        // The last reader tab closes → the browser view shows again
-        // (the C# `Close` reveals the browser).
+        // The last reader tab closes → the Library workspace shows
+        // again (the C# `Close` → `ShowLibrary`; the strip loses the
+        // comic tabs and the Pages tab).
         {
             let state = Rc::downgrade(state);
             state
@@ -382,7 +496,22 @@ impl BrowserShell {
                 .set_on_last_tab_closed(move || {
                     if let Some(sh) = state.upgrade() {
                         sh.pages.clear_book();
-                        sh.show_quick_open();
+                        sh.select_workspace(Workspace::Library);
+                        sh.sync_enabled();
+                    }
+                });
+        }
+
+        // The tab set changed (open/close/undock/re-dock/AddSlot) —
+        // the strip rebuilds with the sync.
+        {
+            let state = Rc::downgrade(state);
+            state
+                .upgrade()
+                .expect("state")
+                .reader
+                .set_on_tabs_changed(move || {
+                    if let Some(sh) = state.upgrade() {
                         sh.sync_enabled();
                     }
                 });
@@ -403,7 +532,7 @@ impl BrowserShell {
                             "NextComic" => sh.open_next_book(1),
                             "PrevComic" => sh.open_next_book(-1),
                             "RandomComic" => sh.open_next_book(0),
-                            "ShowBrowser" => sh.show_browser(),
+                            "ShowBrowser" => sh.select_last_browser(),
                             _ => {}
                         }
                         sh.sync_enabled();
@@ -425,17 +554,20 @@ impl BrowserShell {
                         if reader_visible {
                             sh.stack.set_visible_child_name("reader");
                         } else {
-                            sh.stack.set_visible_child_name("browser");
+                            sh.select_last_browser();
                         }
-                        // Undock/re-dock changes the menubar rule.
+                        // Undock/re-dock changes the menubar rule and
+                        // hides the comic tabs (the C#
+                        // `fileTab.Visible = Fill && !ReaderUndocked`).
                         sh.sync_enabled();
                     }
                 });
         }
 
         // The Pages panel: rebinds on every visible-book change (the
-        // C# `Viewer_BookChanged` → `pagesView.Book`), follows the
-        // bound book's page turns, and navigates on double-click.
+        // C# `Viewer_BookChanged` → `pagesView.Book`; an empty slot
+        // clears it), follows the bound book's page turns, and
+        // navigates on double-click.
         {
             let state = Rc::downgrade(state);
             state
@@ -444,10 +576,13 @@ impl BrowserShell {
                 .reader
                 .set_on_book_changed(move || {
                     if let Some(sh) = state.upgrade() {
-                        if let Some(book) = sh.reader.current_comic_book() {
-                            let page = book.current_page.max(0) as usize;
-                            sh.pages.set_book(book);
-                            sh.pages.set_current_page(page);
+                        match sh.reader.current_comic_book() {
+                            Some(book) => {
+                                let page = book.current_page.max(0) as usize;
+                                sh.pages.set_book(book);
+                                sh.pages.set_current_page(page);
+                            }
+                            None => sh.pages.clear_book(),
                         }
                         sh.sync_enabled();
                     }
@@ -478,6 +613,36 @@ impl BrowserShell {
                         // comic (the reader page wins over the
                         // browser).
                         sh.stack.set_visible_child_name("reader");
+                        sh.sync_enabled();
+                    }
+                });
+        }
+
+        // The workspace tab strip: item clicks select the workspace
+        // (a re-click on the selected item toggles the browser — the
+        // C# `tab_CaptionClick`); the close buttons close the slot.
+        {
+            let state = Rc::downgrade(state);
+            state
+                .upgrade()
+                .expect("state")
+                .tab_strip
+                .connect_select(move |id| {
+                    if let Some(sh) = state.upgrade() {
+                        sh.on_tab_select(id);
+                    }
+                });
+        }
+        {
+            let state = Rc::downgrade(state);
+            state
+                .upgrade()
+                .expect("state")
+                .tab_strip
+                .connect_close(move |slot| {
+                    if let Some(sh) = state.upgrade() {
+                        sh.reader.close_slot(slot);
+                        sh.sync_enabled();
                     }
                 });
         }
@@ -489,10 +654,12 @@ impl BrowserShell {
             state
                 .upgrade()
                 .expect("state")
-                .panel_stack
+                .stack
                 .connect_visible_child_notify(move |_stack| {
                     if let Some(sh) = state.upgrade() {
-                        sh.pages.reflow();
+                        if sh.stack.visible_child_name().as_deref() == Some("pages") {
+                            sh.pages.reflow();
+                        }
                     }
                 });
         }
@@ -698,18 +865,9 @@ impl BrowserShell {
             state.quick_view.configure(|c| c.thumb_height = size);
             let _ = &size;
         }
-        {
-            let lists = library::quick_open_lists();
-            let total: usize = lists.iter().map(|(_, b)| b.len()).sum();
-            if total > 0 {
-                let mut books: Vec<ComicBook> = Vec::new();
-                for (_, group) in lists {
-                    books.extend(group);
-                }
-                state.quick_view.set_books(books);
-                state.stack.set_visible_child_name("quickopen");
-            }
-        }
+        state.show_quick_open();
+        // The strip renders its startup state with the sync.
+        state.sync_enabled();
     }
 
     fn install_actions(&self) {
@@ -1062,7 +1220,10 @@ impl ShellState {
     /// selection, Previous/Next List a walkable history. The
     /// radio/check actions take their state from the reader.
     fn sync_enabled(&self) {
-        let has_book = !self.reader.is_empty();
+        // The reader commands gate on the CURRENT slot's book (the
+        // C# `ComicDisplay.Book != null` — an AddSlot slot stays
+        // empty).
+        let has_book = self.reader.has_current_book();
         let slots = self.reader.tab_count();
         let selected = self.item_view.selection_len();
         let (can_prev, can_next) = {
@@ -1165,9 +1326,14 @@ impl ShellState {
         }
         // `() => BrowserVisible`, `() => Program.Settings.AutoScrolling`
         // (the view mirrors it), `() => ComicDisplay.TwoPageNavigation`,
-        // MinimalGui / FullScreen / Autorotate.
+        // MinimalGui / FullScreen / Autorotate. `BrowserVisible` is
+        // true on BOTH browser workspaces (the C# browser container
+        // holds the Library and Pages views).
         if let Some(a) = self.action("toggle-browser") {
-            let visible = self.stack.visible_child_name().as_deref() == Some("browser");
+            let visible = matches!(
+                self.stack.visible_child_name().as_deref(),
+                Some("browser") | Some("pages")
+            );
             a.set_state(&visible.to_variant());
         }
         if let Some(v) = self.reader.current_auto_scrolling() {
@@ -1207,6 +1373,8 @@ impl ShellState {
         if let Some(a) = self.action("pages-view-mode") {
             a.set_state(&self.pages.mode().action_name().to_variant());
         }
+        // The workspace tab strip (tabs, selection, Pages visibility).
+        self.sync_tabs();
         self.update_menubar();
         self.sync_menubar();
     }
@@ -1219,7 +1387,7 @@ impl ShellState {
         let minimal = self.reader.is_minimal_gui();
         let undocked = self.reader.is_undocked();
         let is_comic_viewer = self.stack.visible_child_name().as_deref() == Some("reader");
-        let has_book = !self.reader.is_empty();
+        let open_books = self.reader.open_book_count();
         let (auto_hide, show_no_comic) = {
             let s = cr_ui_settings();
             let b = s.borrow();
@@ -1230,15 +1398,29 @@ impl ShellState {
             minimal,
             undocked,
             is_comic_viewer,
-            has_book,
+            open_books > 0,
             auto_hide,
             show_no_comic,
             revealed,
         );
         self.menubar.widget().set_visible(visible);
+        // The tab strip + the status strip ride the Fill-mode `flag4`
+        // (`OnGuiVisibilities`: `mainView.TabBarVisible` and
+        // `statusStripVisibility.Visible` share it).
+        let strip_visible = super::tabstrip::tabstrip_visible(
+            minimal,
+            undocked,
+            is_comic_viewer,
+            open_books,
+            show_no_comic,
+        );
+        self.tab_strip.widget().set_visible(strip_visible);
+        self.status.set_visible(strip_visible);
         // The toolbar: visible while the reader view shows and
-        // MinimalGui is off (the C# `MainToolStripVisible`).
-        self.toolbar.sync_visibility(has_book, !minimal);
+        // MinimalGui is off (the C# `MainToolStripVisible`); the
+        // reader-only buttons gate on the current book (`OnUpdateGui`).
+        self.toolbar
+            .sync_visibility(self.reader.has_current_book(), !minimal);
     }
 
     /// Pushes the current action states into the menubar rows and
@@ -1248,10 +1430,13 @@ impl ShellState {
     fn sync_menubar(&self) {
         let actions = self.actions.borrow();
         // The active-panel emphasis (the C# highlights the
-        // miViewLibrary/miViewPages row of the shown panel — no
+        // miViewLibrary/miViewPages row of the shown workspace — no
         // checkbox on those items).
-        let panel = self.panel_stack.visible_child_name().unwrap_or_default();
-        let panel = panel.as_str();
+        let panel = match self.stack.visible_child_name().as_deref() {
+            Some("browser") => "library",
+            Some("pages") => "pages",
+            _ => "",
+        };
         // `fileMenu_DropDownOpening`: "Update all Book Files" hides
         // while `AutoUpdateComicsFiles` is on.
         let update_files_visible = !cr_ui_settings().borrow().auto_update_comics_files;
@@ -1309,7 +1494,7 @@ impl ShellState {
             .count();
         self.menubar
             .set_sub_enabled("Recent Books", recent_count > 0);
-        let has_book = !self.reader.is_empty();
+        let has_book = self.reader.has_current_book();
         self.menubar.set_sub_enabled("Page Type", has_book);
         self.menubar.set_sub_enabled("Page Rotation", has_book);
     }
@@ -1871,10 +2056,10 @@ impl ShellState {
         });
     }
 
-    /// `ToggleBrowser`: the browser and reader pages flip. From the
-    /// QuickOpen page the browser shows (the user report: Browse ▸
-    /// Browser did nothing there); without an open book the reader
-    /// side stays on the browser/QuickOpen.
+    /// `ToggleBrowser`: the reader and the last browser workspace
+    /// flip. From the QuickOpen page the browser shows (the user
+    /// report: Browse ▸ Browser did nothing there); without an open
+    /// book the reader side stays on the browser/QuickOpen.
     fn toggle_browser(&self) {
         let visible = self
             .stack
@@ -1882,9 +2067,8 @@ impl ShellState {
             .map(|s| s.to_string())
             .unwrap_or_default();
         match visible.as_str() {
-            "reader" => self.show_browser(),
-            "quickopen" => self.show_browser(),
-            "browser" if !self.reader.is_empty() => {
+            "reader" | "quickopen" => self.select_last_browser(),
+            "browser" | "pages" if self.reader.has_current_book() => {
                 self.stack.set_visible_child_name("reader");
             }
             _ => {}
@@ -2189,8 +2373,13 @@ impl ShellState {
         });
         self.add_simple(&group, "close", |sh| sh.reader.close_current_tab());
         self.add_simple(&group, "close-all", |sh| sh.reader.close_all_tabs());
-        // `OpenBooks.AddSlot`: the empty slot shows QuickOpen.
-        self.add_simple(&group, "new-tab", |sh| sh.show_quick_open());
+        // `OpenBooks.AddSlot` + `CurrentSlot = last`: the new EMPTY
+        // slot selects and shows (the ported shape — no QuickOpen
+        // overlay in the empty slot; recorded deviation).
+        self.add_simple(&group, "new-tab", |sh| {
+            sh.reader.add_empty_slot();
+            sh.stack.set_visible_child_name("reader");
+        });
         // The Open Books rows (`OpenBooks_Clicked`: CurrentSlot = i).
         {
             let open_tab = gio::SimpleAction::new("open-tab", Some(glib::VariantTy::STRING));
@@ -2205,7 +2394,9 @@ impl ShellState {
                 let Ok(slot) = text.parse::<usize>() else {
                     return;
                 };
-                sh.reader.switch_to_slot(slot);
+                // `OpenBooks_Clicked`: `CurrentSlot = i` — the reader
+                // workspace shows.
+                sh.activate_slot(slot);
                 sh.sync_enabled();
             });
             group.add_action(&open_tab);
@@ -2396,12 +2587,10 @@ impl ShellState {
         // `ToggleBrowser` with the `() => BrowserVisible` check.
         self.add_check(&group, "toggle-browser", true, |sh| sh.toggle_browser());
         self.add_simple(&group, "view-library", |sh| {
-            sh.show_browser();
-            sh.panel_stack.set_visible_child_name("library");
+            sh.select_workspace(Workspace::Library);
         });
         self.add_simple(&group, "view-pages", |sh| {
-            sh.show_browser();
-            sh.panel_stack.set_visible_child_name("pages");
+            sh.select_workspace(Workspace::Pages);
         });
         {
             let sidebar = gio::SimpleAction::new_stateful("sidebar", None, &true.to_variant());
@@ -2410,8 +2599,8 @@ impl ShellState {
                 let Some(sh) = state.upgrade() else {
                     return;
                 };
-                let visible = !sh.panel_box.is_visible();
-                sh.panel_box.set_visible(visible);
+                let visible = !sh.nav_box.is_visible();
+                sh.nav_box.set_visible(visible);
                 action.set_state(&visible.to_variant());
             });
             group.add_action(&sidebar);
@@ -2446,10 +2635,16 @@ impl ShellState {
             }
         });
         self.add_simple(&group, "prev-tab", |sh| {
-            sh.reader.dispatch_current("PrevTab")
+            // `OpenBooks.PreviousSlot`: the switch reveals the reader
+            // (`ShowView(i)` shows the comic viewer).
+            if sh.reader.cycle_slot(-1) {
+                sh.stack.set_visible_child_name("reader");
+            }
         });
         self.add_simple(&group, "next-tab", |sh| {
-            sh.reader.dispatch_current("NextTab")
+            if sh.reader.cycle_slot(1) {
+                sh.stack.set_visible_child_name("reader");
+            }
         });
         // `() => Program.Settings.AutoScrolling` — the view field
         // mirrors the C# setting (session-only here; the C# writes

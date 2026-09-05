@@ -24,6 +24,27 @@ window.reader-window {
 .menu-row-active {
     background: rgba(128, 128, 128, 0.35);
 }
+
+/* The workspace tab strip (the C# TabBar row under the menubar). */
+.tabstrip .tab-btn {
+    padding: 2px 8px;
+    min-height: 20px;
+}
+
+.tabstrip .tab-active {
+    background: rgba(128, 128, 128, 0.35);
+}
+
+.tabstrip .tab-bold {
+    font-weight: bold;
+}
+
+.tabstrip .tab-close {
+    padding: 0;
+    min-width: 16px;
+    min-height: 16px;
+    margin-left: 2px;
+}
 "#;
 
 /// Loads the CSS into the default display. Idempotent enough for the

@@ -30,7 +30,7 @@ use std::sync::Arc;
 
 use anyhow::Context;
 use gtk4::prelude::*;
-use gtk4::{glib, Application, ApplicationWindow, HeaderBar, Label, Notebook, Orientation};
+use gtk4::{glib, Application, ApplicationWindow, HeaderBar, Label, Notebook};
 
 use cr_core::model::comic_book::ComicBook;
 use cr_engine::image_pool::ImagePool;
@@ -59,7 +59,6 @@ struct ReaderTab {
     path: PathBuf,
     page_count: usize,
     view: PageView,
-    tab_widget: gtk4::Box,
 }
 
 /// The undocked reader (`ReaderForm`): one at a time, plain window.
@@ -74,6 +73,15 @@ struct UndockedTab {
 /// The Library-group command forwarder (`Rc`: the dispatch clones it
 /// out before firing — the handler re-enters this shell).
 type LibraryCommandFn = Rc<dyn Fn(&str)>;
+
+/// One open slot as the workspace tab strip renders it.
+pub struct TabInfo {
+    pub slot: usize,
+    pub caption: String,
+    pub source: Option<String>,
+    pub has_book: bool,
+    pub current: bool,
+}
 
 struct ShellState {
     /// The host window (the browser shell sets it; fullscreen chrome
@@ -115,6 +123,13 @@ struct ShellState {
     /// (fullscreen enter/leave, MinimalGui) — the T3 menubar rides
     /// the same visibility.
     on_chrome_change: Option<Rc<dyn Fn(bool)>>,
+    /// The host runs this whenever the TAB SET changed (open/close/
+    /// undock/re-dock/`AddSlot`) — the workspace tab strip rebuilds.
+    on_tabs_changed: Option<Box<dyn Fn()>>,
+    /// The tab captions (`Comic.Caption`), cached per slot — the
+    /// proposed-name fallback parses file names with regexes and the
+    /// strip sync runs on every shell action.
+    captions: RefCell<HashMap<usize, String>>,
 }
 
 impl ShellState {
@@ -169,6 +184,12 @@ impl ReaderShell {
         let subtitle = Label::builder().css_classes(["placeholder-label"]).build();
 
         let notebook = Notebook::new();
+        // The docked reader carries NO tabs of its own: the one
+        // workspace tab strip under the menubar is the only tab UI
+        // (the C# Fill shape — `MainView.tabStrip` holds the file
+        // tabs; `MainToolStripVisible=false` docks the toolbar there
+        // too).
+        notebook.set_show_tabs(false);
         notebook.set_vexpand(true);
         notebook.set_hexpand(true);
 
@@ -194,6 +215,8 @@ impl ReaderShell {
                 on_chrome_change: None,
                 undock_chrome: None,
                 undock_chrome_docked_parent: None,
+                on_tabs_changed: None,
+                captions: RefCell::new(HashMap::new()),
             })),
         };
 
@@ -306,6 +329,61 @@ impl ReaderShell {
         self.state.borrow().tabs.len()
     }
 
+    /// Whether the CURRENT slot holds a book (`ComicDisplay.Book !=
+    /// null` — an `AddSlot` slot stays empty and gates the reader
+    /// commands off).
+    pub fn has_current_book(&self) -> bool {
+        let s = self.state.borrow();
+        match s.current_slot() {
+            Some(slot) => s.books.contains_key(&slot),
+            None => false,
+        }
+    }
+
+    /// The number of slots that hold a book (`OpenBooks.OpenCount` —
+    /// the `flag2` of the C# `OnGuiVisibilities` rules).
+    pub fn open_book_count(&self) -> usize {
+        let s = self.state.borrow();
+        s.tabs
+            .iter()
+            .filter(|t| s.books.contains_key(&t.slot))
+            .count()
+    }
+
+    /// One strip row per open slot (the workspace tab strip's comic
+    /// tabs): caption, cover source, bold rule.
+    pub fn tab_infos(&self) -> Vec<TabInfo> {
+        let s = self.state.borrow();
+        let current = s.current_slot();
+        s.tabs
+            .iter()
+            .map(|t| {
+                let book = s.books.get(&t.slot);
+                let has_book = book.is_some();
+                let mut captions = s.captions.borrow_mut();
+                let caption = match (has_book, captions.get(&t.slot)) {
+                    (true, Some(text)) => text.clone(),
+                    (true, None) => {
+                        let text = book
+                            .map(cr_engine::display_text::caption)
+                            .unwrap_or_default();
+                        captions.insert(t.slot, text.clone());
+                        text
+                    }
+                    (false, _) => String::new(),
+                };
+                TabInfo {
+                    slot: t.slot,
+                    caption,
+                    source: (!t.path.as_os_str().is_empty())
+                        .then(|| t.path.to_string_lossy().into_owned()),
+                    has_book,
+                    current: current == Some(t.slot),
+                }
+            })
+            .collect()
+    }
+
     /// Forwards a shell command into the CURRENT reader view
     /// (`ComicDisplay` command parity — the shell actions route
     /// here). The view handle clones out first: the dispatch can
@@ -336,6 +414,74 @@ impl ReaderShell {
             }
         };
         ReaderShell::close_tab(&self.state, slot);
+    }
+
+    /// Closes ONE slot (the workspace tab strip's close button —
+    /// `btn_CloseClick`).
+    pub fn close_slot(&self, slot: usize) {
+        ReaderShell::close_tab(&self.state, slot);
+    }
+
+    /// `OpenBooks.NextSlot`/`PreviousSlot` (the Tab commands).
+    /// Returns whether the slot switched (the shell reveals the
+    /// reader then — the C# `ShowView(i)` shows the comic viewer).
+    pub fn cycle_slot(&self, dir: i32) -> bool {
+        let next = {
+            let st = self.state.borrow();
+            if st.undocked.is_some() || st.tabs.len() < 2 {
+                return false;
+            }
+            let current = st.notebook.current_page().map(|p| p as i32).unwrap_or(0);
+            ((current + dir).rem_euclid(st.tabs.len() as i32)) as u32
+        };
+        if self.state.borrow().notebook.current_page() == Some(next) {
+            return false;
+        }
+        // Outside the borrow: the switch-page handler borrows the
+        // shell.
+        let notebook = self.state.borrow().notebook.clone();
+        notebook.set_current_page(Some(next));
+        true
+    }
+
+    /// `OpenBooks.AddSlot` + `CurrentSlot = last` (the `+` tab): a
+    /// new EMPTY slot selects and shows a blank reader view. No
+    /// dialog, no overlay (the ported behavior — recorded deviation
+    /// from the C#, whose empty slot hosts QuickOpen).
+    pub fn add_empty_slot(&self) {
+        let (slot, view);
+        {
+            let mut st = self.state.borrow_mut();
+            view = PageView::new(Arc::clone(&st.pool));
+            {
+                let s = cr_ui_settings();
+                let (wheel, browse, wall) = {
+                    let b = s.borrow();
+                    (
+                        b.mouse_wheel_speed,
+                        b.scrolling_does_browse,
+                        b.page_change_delay,
+                    )
+                };
+                drop(s);
+                view.apply_display_settings(wheel, browse, wall);
+            }
+            slot = st.next_slot;
+            st.next_slot += 1;
+            st.tabs.push(ReaderTab {
+                slot,
+                path: PathBuf::new(),
+                page_count: 0,
+                view: view.clone(),
+            });
+        }
+        // Notebook mutations run outside the state borrow (the
+        // switch-page handler borrows the shell).
+        let notebook = self.state.borrow().notebook.clone();
+        let last = (self.state.borrow().tabs.len() as u32).saturating_sub(1);
+        notebook.append_page(view.widget(), None::<&gtk4::Widget>);
+        notebook.set_current_page(Some(last));
+        Self::fire_tabs_changed(&self.state);
     }
 
     /// Closes every tab (`OpenBooks.CloseAll`); the last close hands
@@ -438,6 +584,18 @@ impl ReaderShell {
         self.state.borrow_mut().on_chrome_change = Some(Rc::new(f));
     }
 
+    /// The host runs this whenever the tab set changed (open/close/
+    /// undock/re-dock/`AddSlot`) — the workspace tab strip rebuilds.
+    pub fn set_on_tabs_changed<F: Fn() + 'static>(&self, f: F) {
+        self.state.borrow_mut().on_tabs_changed = Some(Box::new(f));
+    }
+
+    fn fire_tabs_changed(state: &Rc<RefCell<ShellState>>) {
+        if let Some(f) = state.borrow().on_tabs_changed.as_ref() {
+            f();
+        }
+    }
+
     /// The chrome widget that rides the reader into the undocked
     /// window (the T5 toolbar — the C# ReaderForm keeps the strip):
     /// `docked_parent` is where it lives while docked; the undock
@@ -465,17 +623,17 @@ impl ReaderShell {
 
     /// The open reader slots (`OpenBooks.Slots`) with the C# slot
     /// captions (`GetSlotCaption` → `Comic.Caption`) — the File ▸
-    /// Open Books fill.
+    /// Open Books fill. An `AddSlot` slot has no book and no caption.
     pub fn open_tabs(&self) -> Vec<(usize, String)> {
         let s = self.state.borrow();
         s.tabs
             .iter()
             .map(|t| {
-                let caption = s
-                    .books
-                    .get(&t.slot)
-                    .map(cr_engine::display_text::caption)
-                    .unwrap_or_else(|| Self::window_title(&t.path));
+                let caption = match s.books.get(&t.slot) {
+                    Some(book) => cr_engine::display_text::caption(book),
+                    None if t.path.as_os_str().is_empty() => String::new(),
+                    None => Self::window_title(&t.path),
+                };
                 (t.slot, caption)
             })
             .collect()
@@ -532,6 +690,11 @@ impl ReaderShell {
         let mut s = self.state.borrow_mut();
         let current = s.notebook.current_page()?;
         let slot = s.tabs.get(current as usize)?.slot;
+        // The editor can rename the comic — the cached tab caption
+        // re-computes on the next strip sync. (Before the books
+        // borrow: the RefMut guard deref blocks field-precise
+        // borrows.)
+        s.captions.borrow_mut().remove(&slot);
         let book = s.books.get_mut(&slot)?;
         f(book);
         Some(book.clone())
@@ -806,7 +969,7 @@ impl ReaderShell {
             })
             .collect();
 
-        let (slot, view, tab_widget);
+        let (slot, view);
         {
             let mut st = self.state.borrow_mut();
             view = PageView::new(Arc::clone(&st.pool));
@@ -933,13 +1096,11 @@ impl ReaderShell {
                 view.widget().add_controller(controller);
             }
 
-            tab_widget = Self::build_tab_widget(&self.state, slot, &Self::window_title(path));
             let tab = ReaderTab {
                 slot,
                 path: path.to_path_buf(),
                 page_count,
                 view: view.clone(),
-                tab_widget: tab_widget.clone(),
             };
             st.books.insert(slot, book);
             st.tabs.push(tab);
@@ -949,7 +1110,9 @@ impl ReaderShell {
         // switch-page handler borrows the shell.
         let notebook = self.state.borrow().notebook.clone();
         let widget = view.widget().clone();
-        notebook.append_page(&widget, Some(&tab_widget));
+        // The tab label is the strip's job now — the notebook tabs
+        // stay hidden.
+        notebook.append_page(&widget, None::<&gtk4::Widget>);
         view.open_with_sequence(provider, path, sequence, resume, last_read)
             .map_err(|e| anyhow::anyhow!(e))?;
         // Apply the stored rotations (after the open — the map keys
@@ -959,24 +1122,9 @@ impl ReaderShell {
         // switch-page handler borrows the shell itself.
         let last = (self.state.borrow().tabs.len() as u32).saturating_sub(1);
         notebook.set_current_page(Some(last));
+        Self::fire_tabs_changed(&self.state);
         Self::fire_book_changed(&self.state);
         Ok(())
-    }
-
-    /// Closable tab caption (the C# `CanClose` file tabs): caption +
-    /// close button.
-    fn build_tab_widget(state: &Rc<RefCell<ShellState>>, slot: usize, caption: &str) -> gtk4::Box {
-        let box_ = gtk4::Box::new(Orientation::Horizontal, 6);
-        box_.append(&Label::new(Some(caption)));
-        let close = gtk4::Button::from_icon_name("window-close-symbolic");
-        let clicked = Rc::downgrade(state);
-        close.connect_clicked(move |_| {
-            if let Some(sh) = clicked.upgrade() {
-                ReaderShell::close_tab(&sh, slot);
-            }
-        });
-        box_.append(&close);
-        box_
     }
 
     fn switch_slot(state: &Rc<RefCell<ShellState>>, dir: i32) {
@@ -995,21 +1143,26 @@ impl ReaderShell {
     }
 
     fn refresh_chrome(state: &Rc<RefCell<ShellState>>, page_num: usize) {
-        let (subtitle_text, title, view, _book_page, has_book) = {
+        let (subtitle_text, title, view) = {
             let st = state.borrow();
             match st.tabs.get(page_num) {
-                Some(tab) => {
-                    let book = st.books.get(&tab.slot);
-                    let page = book.map(|b| b.current_page).unwrap_or(0).max(0) as usize;
-                    (
-                        Some(page_subtitle(page, tab.page_count)),
-                        Some(Self::window_title(&tab.path)),
+                Some(tab) => match st.books.get(&tab.slot) {
+                    Some(book) => {
+                        let page = book.current_page.max(0) as usize;
+                        (
+                            Some(page_subtitle(page, tab.page_count)),
+                            Some(Self::window_title(&tab.path)),
+                            Some(tab.view.clone()),
+                        )
+                    }
+                    // The `AddSlot` empty slot: no book, no subtitle.
+                    None => (
+                        Some(String::new()),
+                        Some("comicrust".to_string()),
                         Some(tab.view.clone()),
-                        page,
-                        true,
-                    )
-                }
-                None => (None, None, None, 0, false),
+                    ),
+                },
+                None => (None, None, None),
             }
         };
         if let Some(text) = subtitle_text {
@@ -1023,11 +1176,9 @@ impl ReaderShell {
         if let Some(view) = view {
             view.widget().grab_focus();
         }
-        // The visible book changed — the host rebinds the Pages
-        // panel (`ComicDisplay.BookChanged`).
-        if has_book {
-            Self::fire_book_changed(state);
-        }
+        // The visible book changed (possibly to none) — the host
+        // rebinds the Pages panel (`ComicDisplay.BookChanged`).
+        Self::fire_book_changed(state);
     }
 
     /// Closes one tab (`OpenBooks.Close`); the last close hands the
@@ -1040,12 +1191,14 @@ impl ReaderShell {
             };
             let _tab = st.tabs.remove(pos);
             st.books.remove(&slot);
+            st.captions.borrow_mut().remove(&slot);
             (pos, st.tabs.is_empty(), st.notebook.clone())
         };
         // Outside the borrow: removing the current page selects a
         // neighbor synchronously and the switch-page handler borrows
         // the shell.
         notebook.remove_page(Some(pos as u32));
+        Self::fire_tabs_changed(state);
         if last_tab {
             if let Some(f) = state.borrow().on_last_tab_closed.as_ref() {
                 f();
@@ -1068,13 +1221,8 @@ impl ReaderShell {
                 // position.
                 let position = undocked.position.min(st.tabs.len());
                 let view = undocked.tab.view.clone();
-                let tab_widget = undocked.tab.tab_widget.clone();
                 st.tabs.insert(position, undocked.tab);
-                (
-                    notebook,
-                    Some((position, view, tab_widget, undocked.window)),
-                    None,
-                )
+                (notebook, Some((position, view, undocked.window)), None)
             } else {
                 let position = st.notebook.current_page().unwrap_or(0) as usize;
                 if position >= st.tabs.len() {
@@ -1083,16 +1231,11 @@ impl ReaderShell {
                 let tab = st.tabs.remove(position);
                 let caption = Self::window_title(&tab.path);
                 let view = tab.view.clone();
-                let tab_widget = tab.tab_widget.clone();
                 let app = st.app.clone();
-                (
-                    notebook,
-                    None,
-                    Some((position, tab, view, tab_widget, caption, app)),
-                )
+                (notebook, None, Some((position, tab, view, caption, app)))
             }
         };
-        if let Some((position, view, tab_widget, window)) = redock {
+        if let Some((position, view, window)) = redock {
             // Unparent the chrome (the T5 toolbar) from the undocked
             // box back into the docked parent first, then unparent
             // the view (`gtk_notebook.insert_page` asserts on a
@@ -1112,16 +1255,17 @@ impl ReaderShell {
             }
             window.set_child(None::<&gtk4::Widget>);
             window.close();
-            notebook.insert_page(view.widget(), Some(&tab_widget), Some(position as u32));
+            notebook.insert_page(view.widget(), None::<&gtk4::Widget>, Some(position as u32));
             notebook.set_current_page(Some(position as u32));
             let current = notebook.current_page().unwrap_or(0) as usize;
             ReaderShell::refresh_chrome(state, current);
+            Self::fire_tabs_changed(state);
             if let Some(f) = state.borrow().on_view_change.as_ref() {
                 f(true);
             }
             return;
         }
-        let Some((position, tab, view, _tab_widget, caption, app)) = undock else {
+        let Some((position, tab, view, caption, app)) = undock else {
             return;
         };
         // Unparent from the notebook first (`gtk_window.set_child`
@@ -1170,6 +1314,7 @@ impl ReaderShell {
                 tab,
             });
         }
+        Self::fire_tabs_changed(state);
         if let Some(f) = state.borrow().on_view_change.as_ref() {
             f(false);
         }

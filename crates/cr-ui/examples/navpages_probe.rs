@@ -139,6 +139,23 @@ fn main() {
                 glib::ControlFlow::Break
             }
         });
+        glib::timeout_add_local(std::time::Duration::from_millis(2200), {
+            let shell = shell.clone();
+            move || {
+                // The Pages panel is a full-window workspace now —
+                // select its tab so the Views anchor maps (the T5
+                // lesson: the popover needs a mapped anchor).
+                let pages_tab = shell
+                    .tabstrip()
+                    .tab_visible(&cr_ui::browser::tabstrip::TabId::Pages);
+                shell.state_dispatch("win.view-pages");
+                println!(
+                    "D pages-tab visible={pages_tab} page={:?} (expect true/pages)",
+                    shell.state_visible_page()
+                );
+                glib::ControlFlow::Break
+            }
+        });
         glib::timeout_add_local(std::time::Duration::from_millis(2400), {
             let shell = shell.clone();
             move || {

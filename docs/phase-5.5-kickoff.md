@@ -1667,3 +1667,126 @@ owns the Phase 5.5 omissions).
   works, the Pages Views drop + radio + main-click cycle work,
   and Ctrl+wheel resizes both grids. **Next: T8 (the status
   bar).**
+
+### T9 — Workspace tab strip (IMPLEMENTED — user test pending)
+
+The user report that drove the re-layout: the C# tab bar sits
+DIRECTLY under the menubar and holds Library, Folders, Pages (if a
+comic is open) and every open comic as separate FULL-WINDOW tabs —
+the port's docked-reader Notebook tabs (visible only while the
+reader page shows) and the left-panel Library|Pages mini-switcher
+did not follow that model.
+
+- C# spec (read before implementing): `Views/MainView.cs` (the
+  `tabStrip` TabBar: tsbLibrary/tsbFolders/tsbPages + the file tabs
+  + the `+` item Tag=-1 → `OpenBooks.AddSlot`; `ShowView` swaps the
+  whole workspace; `OnGuiVisibility`: tsbPages.Visible =
+  CurrentBook != null with the auto-switch to items[0] when the
+  Pages tab is selected and the last book closes; fileTab.FontBold
+  = slot == CurrentSlot; fileTab.Visible = Fill && !ReaderUndocked;
+  the `tab_CaptionClick` ToggleBrowser on a re-click of the
+  SELECTED item), `Views/MainView.Designer.cs` (the tab row hosts
+  the docking-mode ToolStrip at the right), `MainForm.cs:593-621`
+  (`MainToolStripVisible`: in Fill mode the READER TOOLBAR lives
+  INSIDE the tab row — `mainView.TabBar.Controls.Add`),
+  `MainForm.cs:3658-3716` (`OnGuiVisibilities` Fill branch: the
+  TabBar AND the status strip ride `flag4 = !MinimalGui ||
+  !IsComicViewer || (ShowMainMenuNoComicOpen && OpenCount == 0)`),
+  `MainForm.cs:3098-3132` (the `+` tab → AddSlot + CurrentSlot =
+  last; the 16 px cover thumbs land async — `Create tab
+  thumbnails`).
+- Implementation: `browser/tabstrip.rs` — the strip widget
+  (`TabId` Library/Pages/Comic(slot)/Plus; reconciling `set_tabs`
+  with per-slot 16 px cover thumbs through the pool thumb queue +
+  a MemoryTexture conversion of the ThumbnailImage blob; the
+  close buttons; the bold current-slot marker; the right-aligned
+  HOST box that parents the T5 reader toolbar — the undock chrome
+  keeps riding it, docked home = the strip host). `shell.rs`:
+  the left panel_stack/StackSwitcher is GONE (the navigator pane
+  is a plain Paned child; the Sidebar toggle hides it); the Pages
+  panel is a full-window stack page ("pages"); the status label
+  moved BELOW the workspace stack (the C# status strip is
+  form-wide) and rides `flag4` with the strip
+  (`tabstrip::tabstrip_visible`, unit-tested); the reader
+  Notebook carries NO tabs (`set_show_tabs(false)` — the strip is
+  the only tab UI). `reader_shell.rs`: `TabInfo`/`tab_infos()`
+  (captions cached per slot — the proposed-name regex lesson),
+  `has_current_book()`/`open_book_count()` (the AddSlot slot has
+  no book: the reader commands and the Pages tab gate on the
+  CURRENT slot's book, the menubar flag2 counts the book slots),
+  `add_empty_slot()` (the `+`), `close_slot(slot)`,
+  `cycle_slot(dir)` (prev/next-tab reveal the reader — the C#
+  `ShowView(i)`), `on_tabs_changed` host hook, and refresh_chrome
+  now fires book_changed ALWAYS (an empty slot clears the Pages
+  panel). Behavior: selecting a strip item swaps the workspace;
+  RE-clicking the selected item toggles browser/reader (the C#
+  caption-click); Browse ▸ Library/Pages select tabs
+  (`view-library`/`view-pages`); Open Books rows + prev/next-tab
+  reveal the reader; `toggle-browser`'s check covers BOTH browser
+  workspaces (the C# BrowserVisible holds the Library and Pages
+  views); the sync derives the strip selection from the visible
+  workspace (the T6 source-of-truth lesson — the first probe run
+  caught the selection never moving without it).
+- Probe: `tabstrip_probe` — the startup state (Library | + only,
+  QuickOpen page), two opens → two tabs + Pages + bold last tab,
+  the Library click, the comic-tab click to slot 0, the RE-click
+  toggle, the Pages workspace, the `+` empty slot (reader shows
+  blank, Pages hides, empty caption), the close button, and
+  close-all → Library with Pages hidden. `navpages_probe` gained
+  the pages-workspace step (the Views drop needs a MAPPED anchor —
+  the full-window Pages tab must be selected first; the T5
+  lesson). commands/browserbar/menubar/dynmenus/toolbar/menubarvis
+  probes stay green; 315 tests.
+- PROBE LESSON: a strip callback that runs INSIDE the strip's
+  `on_select` borrow may not re-enter `connect_select` — the
+  shell's select handler re-syncs the strip (set_selected)
+  through a DIFFERENT RefCell, which is safe; the first draft
+  cloned the callback out of the borrow, which does not compile
+  (Box<dyn Fn> is not Clone) — call through the borrow.
+- PROBE LESSON: `gtk_box_append` asserts on an ALREADY-parented
+  child even into the SAME parent — the reconciling `set_tabs`
+  reorder loop must skip in-place items (compare
+  observe_children()[i] by pointer) and remove+append out-of-order
+  ones; blanket re-append spams Gtk-CRITICALs and silently keeps
+  the old order (a widget packed twice keeps its first parent).
+
+### T9 — Workspace tab strip (IMPLEMENTED — user test pending)
+- The FOLDERS tab is ABSENT (recorded decision, user-approved
+  2026-09-05): the C# `tsbFolders` opens the `ComicListFolderFilesBrowser`
+  (a file-system navigator over `Settings.FavoriteFolders` + the
+  comics found in the browsed folder). The port has no folder
+  browser engine; hiding the tab matches the C# `DisableFoldersView`
+  extended setting. The Folders view is its own follow-up task (the
+  strip renders it as a fixed item once the engine lands).
+- The DOCK-MODE button (the tab row's right-end split: Dock
+  Bottom/Left/Right/Fill + Info Panel Right, Ctrl+Shift+1..5) is
+  ABSENT — the port stays Fill-only (the C# default). The second
+  `fileTabs` TabBar (the comic-tab home when the browser docks
+  beside the reader) does not exist. Tracked with T10.
+- The `+` empty slot shows NO QuickOpen overlay (user decision,
+  2026-09-05): the C# `ComicDisplayControl` hosts QuickOpen in an
+  empty slot; the port shows a blank reader view. The QuickOpen
+  covers remain the STARTUP page only (Phase 4 behavior).
+- The tab context menu (Close / Close All But This / Close All to
+  the Right / Show in Browser / Reveal in Explorer / Copy Full
+  Path — `MainForm.Designer.cs:3374-3417`) is ABSENT; the close
+  button and Ctrl+X/Ctrl+Shift+X cover closing. Middle-click close
+  not ported (GTK Button has no middle-click default; a controller
+  could add it with the context menu).
+- Drag-reorder of comic tabs not ported (the C# TabBar
+  DragDropReorder; the strip rebuilds from slot order — the
+  C# order IS the slot order, so a drag needs a slot reorder
+  command, not just a widget move).
+- The tab tooltip shows the caption only (the C# appends the
+  Ctrl+Alt+Fn shortcut hint); the Open Books menu rows carry no
+  shortcuts either (the T4 note). The Ctrl+Alt+F1..F12 slot
+  accels themselves register through the Open Books fill
+  (unchanged).
+- Remote-library tabs and list tabs (`AddListTab` — "Open in New
+  Tab" on a list) are out (ADR-024: remote dropped; the list-tab
+  surface is the T7 note's re-homed item).
+- The undocked shape: the C# keeps the main window's strip fully
+  visible while the ReaderForm floats (MainForm.cs:3664-3676); the
+  port HIDES the comic tabs while undocked (`fileTab.Visible`
+  parity) and shows the last browser workspace — a deliberate
+  simplification carried from Phase 4 (one undocked reader).

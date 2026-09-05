@@ -233,12 +233,52 @@ Update this section at the **end of every work session**. The next agent must kn
   Detail mode keeps scrolling), pages Tile scales with the same
   height.
   T7 COMPLETE — USER-TESTED, ALL PASS (2026-09-05; one fix round).
-  **Next: T8 (the status bar).** Phase 6 (scripting) starts only
-  after 5.5.
+  T9 (the workspace tab strip) IMPLEMENTED (2026-09-05), user test
+  pending — the user report: the old CR tab bar sits DIRECTLY under
+  the menubar with Library, Folders, Pages (if a comic is open) and
+  every open comic as separate FULL-WINDOW tabs; the port's
+  docked-reader Notebook tabs + the left Library|Pages mini-switcher
+  did not follow that model. `browser/tabstrip.rs` — the strip row
+  under the menubar: fixed Library/Pages items (resx `Library`/
+  `ComicPage`), one comic tab per open slot (async 16 px cover
+  through the thumb pool + `gdk::MemoryTexture` from the
+  ThumbnailImage blob, display-name caption, close button, bold =
+  current slot), the `+` (AddSlot → an EMPTY slot, silent per user
+  decision), and the right-aligned HOST box that parents the T5
+  reader toolbar (the C# Fill `MainToolStripVisible=false` shape;
+  the undock chrome keeps riding it — docked home = the strip
+  host). The reader Notebook carries NO tabs (`set_show_tabs`
+  false). The stack pages: quickopen (startup) ⇄ browser ⇄ pages
+  (FULL-WINDOW now, was the left mini-tab) ⇄ reader; the left
+  StackSwitcher is gone (Sidebar hides the plain navigator pane);
+  the status label moved BELOW the stack and rides the C# `flag4`
+  with the strip (`tabstrip::tabstrip_visible`, unit-tested:
+  visible unless MinimalGui+reader, always on the browser, the
+  ShowMainMenuNoComicOpen escape, undocked always). Reader shell:
+  `tab_infos()` (cached captions), `has_current_book()/
+  open_book_count()` (the empty slot gates the reader commands +
+  the Pages tab on the CURRENT book; flag2 counts book slots),
+  `add_empty_slot`/`close_slot`/`cycle_slot`, the
+  `on_tabs_changed` hook, refresh_chrome fires book_changed ALWAYS
+  (an empty slot clears the Pages panel). Behavior: strip clicks
+  swap the workspace, a RE-click on the selected item toggles
+  browser/reader (the C# `tab_CaptionClick`), Browse ▸
+  Library/Pages select tabs, prev/next-tab + Open Books rows reveal
+  the reader (the C# `ShowView(i)`), the sync derives the strip
+  selection from the visible workspace (the first probe run caught
+  the selection never moving). Folders tab HIDDEN (no engine;
+  `DisableFoldersView` parity — its own follow-up task), dock
+  modes deferred (T10). Probe `tabstrip_probe` gates the whole
+  flow; `navpages_probe` gained the pages-workspace step (the
+  Views drop needs a MAPPED anchor); all other probes stay green;
+  315 tests. Deviations in the kickoff tracker (no tab context
+  menu, no drag-reorder, silent empty slot, one undocked reader).
+  **Next: T8 (the status bar) — user test of T9 first.** Phase 6
+  (scripting) starts only after 5.5.
   Phases 0-5 are complete (their gates stay green). Open Phase 1
   gaps: WebComicProvider and the PDF/DjVu writers (tracked in
   `docs/phase-1-kickoff.md`).
-- **State:** `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` are green. 314 tests. CI runs on the `docker-runner-amd64` container runner (ADR-020). The release tracks are `release.yaml` (rolling prerelease per push) and `tagged-release.yaml` (manual dispatch, stable release for an existing tag — ADR-021, 2026-09-03). Until the runner is registered and `comicrust-ci:latest` is built on the runner host, pushed and dispatched workflows sit queued on that label.
+- **State:** `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` are green. 315 tests. CI runs on the `docker-runner-amd64` container runner (ADR-020). The release tracks are `release.yaml` (rolling prerelease per push) and `tagged-release.yaml` (manual dispatch, stable release for an existing tag — ADR-021, 2026-09-03). Until the runner is registered and `comicrust-ci:latest` is built on the runner host, pushed and dispatched workflows sit queued on that label.
 - **Phase 0 gate status:** byte-stable ComicDb.xml round-trip proven on all three synthetic fixtures AND the real-world database `tests/realworld/ComicDb.xml` (255 books, 584 KB, 2026-09-02, user-approved commit).
 - **Phase 2 gate status:** every saved smart list in the real-world DB (a) binds to the matcher registry, (b) renders to a `Match` query string that re-parses and re-renders byte-identically, and (c) evaluates to the SAME book sets the C# cached in `CacheStorage` (Never Read = all 255, Files to update = the 3 dirty books, Reading/Read = empty). Evidence: `crates/cr-engine/tests/realworld_query.rs`.
 - **Phase 3 gate status (COMPLETE):** a real comic (`tests/testfiles/`, git-ignored, user-supplied) opens in a GTK4 window and reads comfortably: single/double/adaptive/continuous layouts, spread composition with cover-right + binding-edge rules, fit modes with anamorphic tolerance, zoom/pan/rotation, RTL, continuous scroll with anchor-stable layout rebuilds, fade/slide transitions, paper texture, Auto/Color/Texture backgrounds, the real `MainForm` input map, session tabs with undock, fullscreen chrome with cursor auto-hide, reading-state tracking, the magnifier, error pages, and pool-queue page loads. User-verified after each task; UI smoke tests on this machine run headless under Xvfb + screenshots (see the probe lessons below — the key-injection tools are unreliable; only user tests decide input behavior).
@@ -769,7 +809,8 @@ The UI crate (Phase 3):
 | `crates/cr-ui/src/library.rs` | The app session (`Program` statics): the Library open/save/scan wiring, the Settings + engine-config load/save, `apply_edited` (the editor commit + the dirty mark + the debounced file write), `update_book_file` (the write-back gates), list CRUD (new smart list/folder/id list, update, evaluate), QuickOpen lists, the last-export setting. |
 | `crates/cr-ui/src/browser/shell.rs` | The browser window: navigator + ItemView + reader dock, the header commands, the context menu (open/reveal/edit/update-file/export/remove/properties), the quick search + the composed view filter (`compose_quick_filter`), view/sort/group/filter/scope actions, the Detail column chooser (`popup_column_chooser` — a plain popover), the dynamic menu fills (`dyn_fill`), the probe accessors (`state_*`/`toolbar_*`/`browserbar_*`). |
 | `crates/cr-ui/src/browser/menubar.rs` | The T3 custom menubar: the pure six-menu table (MenuNode Item/Sub/Sep/Dyn) + the popover widget (one-active-popover state machine, the Designer icon mapping) + the standalone `Dropdown` (`build_dropdown`) + the dynamic fill machinery (`set_dyn_fill`, `refresh_top`, per-slot map hooks) + the `menubar_visible` rule. |
-| `crates/cr-ui/src/browser/toolbar.rs` | The T5 reader toolbar: the nine-button strip (prev/next splits, layout/fit/zoom/rotate drops with state text, magnifier/fullscreen, Tools) + the `Dropdown` tables (PREV/NEXT/FIT/ZOOM/ROTATE/TOOLS); the bar rides the undock (mounted under the menubar since T6, above the view stack). |
+| `crates/cr-ui/src/browser/toolbar.rs` | The T5 reader toolbar: the nine-button strip (prev/next splits, layout/fit/zoom/rotate drops with state text, magnifier/fullscreen, Tools) + the `Dropdown` tables (PREV/NEXT/FIT/ZOOM/ROTATE/TOOLS); the bar rides the undock (docked home since T9: the tab strip's right host). |
+| `crates/cr-ui/src/browser/tabstrip.rs` | The T9 workspace tab strip (`MainView.tabStrip`): Library/Pages/comic-tabs/`+` under the menubar, the comic tabs with async 16 px covers + close + the bold current-slot marker, the right HOST box for the reader toolbar, `tabstrip_visible` (the Fill `flag4` rule, unit-tested). |
 | `crates/cr-ui/src/browser/browser_toolbar.rs` | The T6 browser toolbar: the strip in the item pane (Sidebar, Browse prev/next, Views/Group/Arrange drops, right-aligned Quick Search with the scope menu, List Layouts stub, Duplicate List drop) + the `VIEWS`/`SEARCH_SCOPE`/`DUPLICATE` tables and the dynamic `sort_defs`/`group_defs`; the `sync`/`sync_labels` push the action states + the Group/Arrange labels. |
 | `crates/cr-ui/src/browser/navigator.rs` | The list tree (Library/Smart Lists/folders/reading lists) with the context menu + the command dispatch. |
 | `crates/cr-ui/src/browser/item_view.rs` | The book grid: view modes, sort/group, selection (select_book/reselect), type-ahead, thumbs via the pool queues. |
@@ -781,7 +822,7 @@ The UI crate (Phase 3):
 | `crates/cr-ui/src/dialogs/smart_list.rs` | The smart-list editor: Designer (matcher rows/groups with the type/operator/value/not combos + the structure menu) | Query (the rendered query text round-trip). |
 | `crates/cr-ui/src/dialogs/list_editor.rs` | The list editor for folders (name/notes/combine) and reading lists (name/notes/quick-open). |
 | `crates/cr-ui/src/dialogs/export.rs` | The export dialog: target/folder/format/compression/naming/page-format/quality + the flags, the inline progress, the session-persisted last settings. |
-| `crates/cr-ui/examples/` | The headless probes: `commands_probe` (69 actions + accels), `menubar_probe` (the T3 bar), `dynmenus_probe` (the T4 fills), `toolbar_probe` (the T5 strip + the dropdown OPEN gate), `browserbar_probe` (the T6 browser toolbar: OPEN gates, the read/scope filters, the column chooser open/height/toggle, the duplicate landing), `navpages_probe` (the T7 navigator/Pages toolbars: the dispatch, the search filter, the expand flip, the Views OPEN + radio), `menubarvis_probe` (the visibility evidence), `icons_probe`, `editor_probe`, `writeback_probe`. |
+| `crates/cr-ui/examples/` | The headless probes: `commands_probe` (69 actions + accels), `menubar_probe` (the T3 bar), `dynmenus_probe` (the T4 fills), `toolbar_probe` (the T5 strip + the dropdown OPEN gate), `browserbar_probe` (the T6 browser toolbar: OPEN gates, the read/scope filters, the column chooser open/height/toggle, the duplicate landing), `navpages_probe` (the T7 navigator/Pages toolbars: the dispatch, the search filter, the expand flip, the Views OPEN + radio), `tabstrip_probe` (the T9 workspace strip: open/close/+/select flows, the Pages visibility, the bold slot, the re-click toggle), `menubarvis_probe` (the visibility evidence), `icons_probe`, `editor_probe`, `writeback_probe`. |
 | `crates/cr-ui/src/settings/` | The Preferences dialog (`preferences.rs`) + the options builder (`options.rs`, the `FillPanelWithOptions` parity). |
 | `crates/cr-ui/src/pages.rs` | The page-entry merge (`merged_page_entries`): the provider count + the stored overlay — the reader and the editor both use it. |
 | `crates/cr-ui/src/bitmap.rs` | The cairo surface helpers (RGBA→premultiplied ARGB, the thumbnail-blob split). |
