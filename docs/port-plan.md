@@ -77,6 +77,24 @@ in that phase's kickoff tracker instead (`phase-<N>-kickoff.md`,
 `docs/decisions.md`. An agent picking work from here should move
 the entry into the kickoff that will own it.
 
+- **Browser dock modes (Fill + Bottom)** (Phase 5.5 T10, moved out
+  2026-09-05, user decision — ADR-026): the reader area fills the
+  window and the browser docks to the Bottom inside a resizable,
+  collapsible container (F3 toggles; the docking-mode button on the
+  tab strip; PanelSize persistence). C# spec: `MainForm.cs:679-701`
+  (BrowserDock), `MainForm.cs:3629-3716` (dock changed + grip),
+  `Views/MainView.cs:199-221` (the alignment button),
+  `Config/DisplayWorkspace.cs` (PanelSize). Left/Right stay dropped
+  (ADR-024). Pick up when the tab-strip layout work resumes; T14
+  persistence carries the mode + panel size once it lands.
+- **Sidebar preview pane (SmallComicPreview)** (Phase 5.5 T11, moved
+  out 2026-09-05, user decision — ADR-026): a collapsible pane below
+  the navigator showing the first selected book's cover + caption
+  with the mini toolbar (Open / First/Prev/Next/Last / Two Pages /
+  Refresh / Close); Browse ▸ Small Preview (Shift+F7) toggles it;
+  500 ms selection debounce. C# spec: `Views/SmallComicPreview.cs` +
+  Designer, `ComicExplorerView.cs:294-307`. The Browse ▸ Small
+  Preview menu item stays a disabled stub until picked up.
 - **Build selected bundled scripts into the app natively** (Phase 5.5
   T3 finding, 2026-09-05): some of the C#'s menu items are actually
   IronPython scripts under `ComicRack/Output/Scripts/` — e.g. File ▸

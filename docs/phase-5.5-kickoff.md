@@ -2,10 +2,11 @@
 
 Goal: the app gets the chrome the original ComicRack has — the
 menubar, the toolbars, the multi-panel status bar, the book tabs
-with their context menu, the docked-browser mode, and the small
-chrome dialogs. The target is *close* parity, not pixel equality:
-some things stay out (see "Omissions"), a few things are our own
-additions.
+with their context menu, and the small chrome dialogs. The target
+is *close* parity, not pixel equality: some things stay out (see
+"Omissions"), a few things are our own additions. The browser dock
+modes (T10) and the sidebar preview (T11) moved to the BACKLOG
+(2026-09-05, ADR-026).
 
 This phase sits between Phase 5 (dialogs, complete) and Phase 6
 (scripting). Phase 6 keeps its scope from `docs/port-plan.md` and
@@ -43,13 +44,19 @@ The reference checkout root for every C# path below is
 - **Browser dock modes: Fill + Bottom only.** CR also docks
   Left/Right. Nobody uses those in practice. The Bottom mode
   (reader above, collapsible browser strip below) is the real
-  second mode.
+  second mode. MOVED TO BACKLOG 2026-09-05 (user decision, ADR-026)
+  — T10 is no longer a phase task; the port stays Fill-only until
+  the backlog item is picked up.
 - **Detail column chooser: IN** (right-click a column header in
   Details view → check-list of columns; C#
   `ItemView.cs:3760` auto-header menu).
 - **Info panel: OUT.** CR's optional selected-book panel
   (Browse ▸ Info Panel, Shift+F9). The Properties editor and the
   sidebar preview cover it. Revisit later if missed.
+- **Sidebar preview pane (Small Preview): MOVED TO BACKLOG**
+  2026-09-05 (user decision, ADR-026) — T11 is no longer a phase
+  task; the Browse ▸ Small Preview menu item stays a disabled stub
+  until the backlog item lands.
 - **Icons: bundled.** Copy the C# PNG icon set into
   `crates/cr-ui/assets/icons/` (same precedent as the paper
   textures, ADR-004 era). Source: `ComicRack/Resources/*.png`
@@ -355,8 +362,9 @@ accelerators, layout persistence.
 
 Order: T1 unblocks everything (actions + accelerators). T2 (icons)
 lands early — every later bar needs them. The bars follow: menus,
-toolbars, status, tabs. T10 (dock mode) is the deepest layout
-change; it lands after the bars so they exist in both modes.
+toolbars, status, tabs. T10 (dock mode) moved to the BACKLOG
+(2026-09-05, ADR-026); the remaining order is T12 (display
+settings), T13 (small dialogs), T14 (persistence).
 
 ### T1. Command/action layer + accelerators
 
@@ -519,55 +527,84 @@ change; it lands after the bars so they exist in both modes.
   menu items work; Show in Browser flips to the browser page with
   the right book selected.
 
-### T10. Browser dock modes (Fill + Bottom)
+### T10. Browser dock modes (Fill + Bottom) — MOVED TO BACKLOG
 
-- C# spec: `MainForm.cs:679-701` (BrowserDock), `3629-3716`
-  (dock changed + grip), `MainView.cs:199-221` (the alignment
-  button), `DisplayWorkspace.cs` (PanelSize).
-- Scope: the browser window gains the second layout mode: the
-  reader area (tab strip + reader) fills the window and the
-  browser (tab strip label + navigator + grid) docks to the
-  Bottom inside a resizable, collapsible Paned/SizableContainer
-  equivalent. A grip/collapsed state shows a thin bar
-  (`BrowserVisible`, F3 toggles). Switching via the Browse menu +
-  the docking-mode button (T6). Persisted in T14. Fill stays the
-  default. GTK mapping: an GtkOverlay or a vertical Paned with the
-  reader on top; the "Fill" mode keeps today's stack. Do NOT
-  attempt Left/Right.
-- Acceptance: switch to Bottom with a book open — the reader sits
-  above, the browser below; F3 collapses to a grip; drag the
-  divider; the reader keeps working in both modes; restart keeps
-  the mode (after T14) — for this task, in-session only.
+MOVED TO BACKLOG (2026-09-05, user decision — ADR-026; entry in
+`docs/port-plan.md` §6 with the C# refs). Not a phase task. The
+port stays Fill-only (the C# default); F3 keeps toggling the
+browser over the reader within the Fill stack. The T14 persistence
+scope drops the dock-mode keys until this lands.
 
-### T11. Sidebar preview pane
+### T11. Sidebar preview pane — MOVED TO BACKLOG
 
-- C# spec: `SmallComicPreview.cs` + Designer, `ComicExplorerView.cs:
-  294-307`.
-- Scope: below the navigator tree, a collapsible pane showing the
-  first selected book's cover (page 0 render through the thumb
-  pool) + caption, with the mini toolbar (Open / First/Prev/Next/
-  Last / Two Pages toggle / Refresh / Close). "Nothing Selected"
-  placeholder. Toggle: Browse ▸ Small Preview (Shift+F7), the pane
-  Close button, persisted in T14. 500 ms selection debounce.
-- Acceptance: select books — the preview follows after a moment;
-  toolbar buttons flip pages in the preview; Two Pages shows a
-  spread; Close hides the pane; Shift+F7 reopens.
+MOVED TO BACKLOG (2026-09-05, user decision — ADR-026; entry in
+`docs/port-plan.md` §6 with the C# refs). Not a phase task. The
+Browse ▸ Small Preview item stays a disabled stub (the T1/T3
+tracker entries re-homed to the backlog). The C# spec stays here
+for the pickup: `SmallComicPreview.cs` + Designer (the mini
+toolbar: Open | First, Prev, Next, Last | Two Pages toggle |
+Refresh, Close), `ComicExplorerView.cs:294-307` (the 500 ms
+selection debounce, "Nothing Selected" placeholder).
 
 ### T12. Book Display Settings dialog (F9)
 
 - C# spec: `ComicRack/Dialogs/ComicDisplaySettingsDialog.cs` (405
-  LOC) + Designer + `ComicRack/Config/BookPageLayout.cs`.
-  STUDY THE SOURCE FIRST — this dialog was never ported; it edits
-  the per-comic display settings (the ComicBook display fields:
-  page layout, fit mode, rotation, background, paper, and the
-  "realistic pages" family).
-- Scope: the dialog bound to the current book's display settings
-  with OK/Cancel commit semantics (match the C# commit point).
-  Reuse the options builder from Phase 5 T1 where the layout is
-  plain.
-- Acceptance: change the page layout/fit for one book — the
-  reader shows it; OK persists across restart (the DB book is
-  dirty + saved); Cancel discards; another book is unaffected.
+  LOC) + Designer + `ComicRack/Config/DisplayWorkspace.cs`.
+  STUDY-THE-SOURCE CORRECTION (2026-09-05): the earlier note here
+  claimed the dialog edits the per-comic display fields — it does
+  NOT. The C# command is `EditWorkspaceDisplaySettings`
+  (`MainForm.cs:2519-2527`): it snapshots the LIVE
+  `ComicDisplay`'s display options into a fresh `DisplayWorkspace`
+  (`StoreWorkspace(ws)`), the dialog edits THAT copy, and OK/Apply
+  push the values back onto the live display
+  (`SetWorkspaceDisplayOptions`, `MainForm.cs:2689-2732`) through
+  the `apply` callback. Workspace-scoped, not per-comic. The
+  dialog edits only the DISPLAY half (the Effects/Background
+  families); the LAYOUT fields (page layout, fit, rotation, zoom)
+  ride the same workspace but have no widgets here.
+- Scope: the dialog (three groups + OK/Apply/Cancel):
+  - General: "Realistic Book Display" (DrawRealisticPages — the
+    page ornaments: 1 px frame, the edge bows, the outside
+    shadow), "Leave margins around the pages" (PageMargin) + the
+    margin trackbar 0-50 % (`PageMarginPercentWidth`, default
+    5 % — applied as `ImageZoom * (1 - percent)` in the display
+    config, `ComicDisplayControl.cs:1368`).
+  - Effects (the C# shows the group only with the hardware
+    renderer, `grpEffects.Visible = enableHardware`; the port's
+    cairo renderer supports the effects, so the group always
+    shows — recorded deviation): Page Transition combo (None /
+    Fade / scroll horizontal / scroll vertical / Page Turn — the
+    index IS the enum value; the port renders Page Turn as Fade,
+    the recorded Phase 3 gap), Paper combo ("Default" + the
+    bundled papers + browse, `LoadDefaultPaperTextures` shape),
+    Strength trackbar 0-100 (`PaperTextureStrength`, the white
+    composite at strength, `CreateWorkingPaperTexture`; under
+    0.05 disables), paper layout combo (None/Tile/Center/Stretch/
+    Zoom — visible for CUSTOM paper only; a bundled paper's
+    layout parses from its file-name `[C]`/`[S]`/`[Z]` code,
+    `TextureFileItem.ParseFileName`).
+  - Background: Type combo ("Adjust Color to current Page" /
+    "Solid Color" / "Texture" — the `ImageBackgroundMode` order),
+    Color picker (visible on Solid Color; stores an explicit
+    color), Texture combo ("None" + the bundled backgrounds +
+    browse, `LoadDefaultBackgroundTextures` shape) with the same
+    layout-code parsing, background layout combo (visible on
+    Texture + custom).
+  - Semantics: the widgets edit a SNAPSHOT; Apply pushes it to the
+    live reader and keeps the dialog open; OK pushes and closes;
+    Cancel discards. The port snapshot source: the current reader
+    view's options (no view open: the session copy — the C#
+    always has the one `ComicDisplay`; the port seeds every new
+    view from the same session copy so the options survive tab
+    switches).
+- Acceptance: change the transition/paper/background for one book —
+  the reader shows it immediately; Apply keeps the dialog up with
+  the values live; Cancel discards (the reader keeps the previous
+  options); the options carry to ANOTHER book's tab (workspace
+  shape); Realistic Pages draws the page frame + shadow; margins
+  shrink the display; persistence across restart lands with T14
+  (recorded deviation: the C# persists through the workspace save
+  on exit).
 
 ### T13. Small chrome dialogs
 
@@ -590,15 +627,18 @@ change; it lands after the bars so they exist in both modes.
   workspace fields) — we persist ONE implicit workspace, no named
   presets, no workspace UI.
 - Scope: on exit, save to the settings (Config.xml, the existing
-  `cr-core` settings layer): browser dock mode, browser panel
-  size, sidebar width + visibility, preview pane visibility +
-  height, status-bar visibility, menubar auto-hide state, last
-  view mode/sort/group per list, Detail column set + widths (from
-  T6), thumb size (from T8), window bounds. Restore at startup.
+  `cr-core` settings layer): browser panel size, sidebar width +
+  visibility, status-bar visibility, last view mode/sort/group per
+  list, Detail column set + widths (from T6), thumb size (from
+  T8), window bounds, and the T12 display options (the C#
+  `DisplayWorkspace` display family — the dialog writes the live
+  display; the workspace save persists it). Restore at startup.
   The C# keys are the `DisplayWorkspace` fields; keep the names in
-  comments for traceability.
-- Acceptance: set a custom layout (Bottom dock, small sidebar,
-  Details view, hidden menubar) — restart restores all of it.
+  comments for traceability. The dock-mode keys wait on the
+  BACKLOG T10 item (ADR-026); the preview-pane keys on the BACKLOG
+  T11 item.
+- Acceptance: set a custom layout (small sidebar,
+  Details view) — restart restores all of it.
 
 ## Risks / known traps
 
@@ -609,11 +649,11 @@ change; it lands after the bars so they exist in both modes.
   reader-docked state (the C# moves the toolbar between the tab
   row and the browser; we mirror with visibility flips, not
   re-parenting).
-- The T9 dock-mode reshape touches the shell stack created in
-  `BrowserShell::create` — the Pages panel, QuickOpen, and the
-  reader hooks all hang off it. Do it in one task, user-test
-  immediately, and keep the Fill path bit-identical first
-  (screenshots before/after).
+- The dock-mode reshape (now the BACKLOG T10 item) touches the
+  shell stack created in `BrowserShell::create` — the Pages panel,
+  QuickOpen, and the reader hooks all hang off it. If picked up:
+  do it in one task, user-test immediately, and keep the Fill path
+  bit-identical first (screenshots before/after).
 - GTK4 has no click-to-focus and menu-bar accelerators need real
   Gio actions — T1 must land before any menu task.
 - The status-bar slider and column widths feed the browser layout
@@ -1513,8 +1553,9 @@ owns the Phase 5.5 omissions).
   unported).
 - Stub actions stay DISABLED until their owning task: Tasks (T13),
   Zoom Custom (T13), Display Settings (T12), About (T13), Quick
-  Rating (T13), Copy/Export Page (T13), Small Preview (T11), New
-  Book Entry (unported fileless books), navigator search (T7).
+  Rating (T13), Copy/Export Page (T13), Small Preview (the BACKLOG
+  — T11 moved there 2026-09-05, ADR-026), New Book Entry (unported
+  fileless books), navigator search (T7).
   RESOLVED in T4: Set/Remove Bookmark (the commands + the fills
   landed). RESOLVED in T7: toggle-navigator-search (the real
   stateful action + the navigator search box).
@@ -1538,7 +1579,8 @@ owns the Phase 5.5 omissions).
 - Present-but-disabled stubs (grey): Generate Cover Thumbnails
   (thumbnail-queue work), Tasks (T13), New fileless Book Entry
   (fileless books unported), Quick Rating (T13), Copy Page /
-  Export Page (T13), Small Preview (T11), Zoom Custom (T13), Book
+  Export Page (T13), Small Preview (the BACKLOG — T11 moved there
+  2026-09-05, ADR-026), Zoom Custom (T13), Book
   Display Settings (T12), About (T13). RESOLVED in T4: Set/Remove
   Bookmark.
 - Absent per ADR-024: Update Web Comics (WebComicProvider gap),
@@ -1787,7 +1829,8 @@ did not follow that model.
   Bottom/Left/Right/Fill + Info Panel Right, Ctrl+Shift+1..5) is
   ABSENT — the port stays Fill-only (the C# default). The second
   `fileTabs` TabBar (the comic-tab home when the browser docks
-  beside the reader) does not exist. Tracked with T10.
+  beside the reader) does not exist. Re-homed to the BACKLOG with
+  T10 (2026-09-05, ADR-026).
 - The `+` empty slot shows NO QuickOpen overlay (user decision,
   2026-09-05): the C# `ComicDisplayControl` hosts QuickOpen in an
   empty slot; the port shows a blank reader view. The QuickOpen
@@ -2105,3 +2148,14 @@ the C# Auto mode gives on white comics.
   highlight (the X sits inside the highlight now); re-confirm the
   rest of the acceptance quickly.
 
+
+### Scope change — T10 + T11 to the backlog (2026-09-05, user decision)
+
+The user moved T10 (the browser dock modes) and T11 (the sidebar
+preview pane) out of the phase — BACKLOG entries in
+`docs/port-plan.md` §6, locked in ADR-026. Consequences applied:
+the port stays Fill-only; the Browse ▸ Small Preview stub stays
+disabled (the T1/T3 tracker entries re-homed); the T9 dock-mode
+button note re-homed; the T14 persistence scope drops the
+dock-mode and preview keys until the backlog items land. **Next:
+T12 (the Book Display Settings dialog, F9).**

@@ -377,9 +377,13 @@ Update this section at the **end of every work session**. The next agent must kn
   Win7 overlay icon not portable. Gate: 321 tests, `statusbar_probe`
   (defaults, the info line, the slider resize/sync, the page click,
   the lamp flags, the MinimalGui action), all other probes green.
-  **Next: T10 (dock modes) or the remaining small tasks (T11
-  preview, T12 display settings, T13 dialogs, T14 persistence).**
-  Phase 6 (scripting) starts only after 5.5.
+  **Next: T12 (the Book Display Settings dialog, F9).** T10 (dock
+  modes) and T11 (the sidebar preview) moved to the BACKLOG
+  (2026-09-05, user decision, ADR-026 — `docs/port-plan.md` §6);
+  the port stays Fill-only and the Small Preview stub stays
+  disabled. After T12: T13 (small dialogs), T14 (persistence,
+  now carrying the display-options persistence). Phase 6
+  (scripting) starts only after 5.5.
   Phases 0-5 are complete (their gates stay green). Open Phase 1
   gaps: WebComicProvider and the PDF/DjVu writers (tracked in
   `docs/phase-1-kickoff.md`).
