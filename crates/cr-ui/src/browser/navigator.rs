@@ -10,6 +10,15 @@
 //! (`tvQueries_MouseDown`), Library renames but never removes
 //! (`RemoveListOrFolder` guard).
 //!
+//! The T7 toolbar (the control's own `toolStrip`, Designer:320-331):
+//! New Folder / New List / New Smart List (the SAME commands as the
+//! context menu, acting on the selection), Expand/Collapse All
+//! (any-expanded → collapse, else expand — `ExpandCollapseAllNodes`),
+//! Refresh, and the right-aligned Quick Search toggle that shows the
+//! navigator's own search box (`tsQuickSearch` + `ToggleQuickSearch`,
+//! Ctrl+Alt+F). Absent per scope: Open in New Window (ADR-024),
+//! Open in New Tab (no list-tab surface), the Favorites pane.
+//!
 //! Custom per-item thumbnails (`LibraryTreeSkin`) are Phase 5 polish;
 //! the kind icons come from the bundled ComicRack set (`icon.rs`) —
 //! the C# `treeImages` table (`ComicListLibraryBrowser.cs:313-317`)
@@ -23,8 +32,8 @@ use gtk4::gdk;
 use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::{
-    Align, Button, GestureClick, Popover, ScrolledWindow, TreeIter, TreeSelection, TreeStore,
-    TreeView, TreeViewColumn,
+    Align, Button, Entry, GestureClick, Popover, ScrolledWindow, TreeIter, TreeSelection,
+    TreeStore, TreeView, TreeViewColumn,
 };
 
 use cr_core::database::list_items::ComicListItem;
@@ -56,15 +65,25 @@ pub enum ListCommand {
 
 type SelectedFn = Box<dyn Fn(&CrGuid, &str)>;
 type CommandFn = Box<dyn Fn(ListCommand, Option<CrGuid>)>;
+type RefreshFn = Box<dyn Fn()>;
 
 pub struct Navigator {
-    widget: ScrolledWindow,
+    /// The mounted widget: [toolbar][search box (hidden)][tree].
+    widget: gtk4::Box,
     store: TreeStore,
     view: TreeView,
     selection: TreeSelection,
     expanded: RefCell<HashSet<CrGuid>>,
     on_selected: RefCell<Option<SelectedFn>>,
     on_command: RefCell<Option<CommandFn>>,
+    on_refresh: RefCell<Option<RefreshFn>>,
+    /// The navigator's own search box (`quickSearchPanel`; hidden
+    /// until `tsQuickSearch` toggles it).
+    search_box: gtk4::Box,
+    search_entry: Entry,
+    search_visible: std::cell::Cell<bool>,
+    /// (name, button) — the probe's real-click path.
+    buttons: Vec<(&'static str, Button)>,
 }
 
 impl Navigator {
@@ -81,11 +100,90 @@ impl Navigator {
         let selection = view.selection();
         selection.set_mode(gtk4::SelectionMode::Single);
 
-        let widget = ScrolledWindow::builder()
+        let scroller = ScrolledWindow::builder()
             .child(&view)
             .hscrollbar_policy(gtk4::PolicyType::Never)
             .vexpand(true)
             .build();
+
+        // The control's own toolbar (`ComicListLibraryBrowser.
+        // toolStrip`): the three New buttons, Expand/Collapse All,
+        // Refresh; the Quick Search toggle right-aligned. Click
+        // handlers wire in `wire()` (the Weak needs the built Rc).
+        let toolbar = gtk4::Box::new(gtk4::Orientation::Horizontal, 2);
+        toolbar.add_css_class("toolbar");
+        let mut buttons: Vec<(&'static str, Button)> = Vec::new();
+        let mk = |bar: &gtk4::Box,
+                  buttons: &mut Vec<(&'static str, Button)>,
+                  name: &'static str,
+                  icon: &'static str,
+                  tooltip: &str| {
+            let (button, _) = Self::tool_button(icon, tooltip);
+            bar.append(&button);
+            buttons.push((name, button));
+        };
+        mk(
+            &toolbar,
+            &mut buttons,
+            "new-folder",
+            "NewSearchFolder",
+            "Create a new folder to organize your lists",
+        );
+        mk(
+            &toolbar,
+            &mut buttons,
+            "new-list",
+            "NewList",
+            "Create a new custom List",
+        );
+        mk(
+            &toolbar,
+            &mut buttons,
+            "new-smart-list",
+            "NewSearchDocument",
+            "Create a new Smart List",
+        );
+        let sep1 = gtk4::Separator::new(gtk4::Orientation::Horizontal);
+        sep1.set_margin_top(4);
+        sep1.set_margin_bottom(4);
+        toolbar.append(&sep1);
+        mk(
+            &toolbar,
+            &mut buttons,
+            "expand-collapse-all",
+            "ExpandCollapseAll",
+            "Expand/Collapse all",
+        );
+        mk(&toolbar, &mut buttons, "refresh", "Refresh", "Refresh");
+        let spacer = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+        spacer.set_hexpand(true);
+        toolbar.append(&spacer);
+        mk(
+            &toolbar,
+            &mut buttons,
+            "quick-search",
+            "Search",
+            "Quick Search (Ctrl+Alt+F)",
+        );
+
+        // The search box (`quickSearchPanel`): hidden until the
+        // Quick Search button toggles it.
+        let search_box = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+        let search_entry = Entry::new();
+        // The C# cue text IS the toggle button's text
+        // (`quickSearch.SetCueText(tsQuickSearch.Text)`).
+        search_entry.set_placeholder_text(Some("Quick Search (Ctrl+Alt+F)"));
+        search_entry.set_margin_start(4);
+        search_entry.set_margin_end(4);
+        search_entry.set_margin_top(2);
+        search_entry.set_margin_bottom(2);
+        search_box.append(&search_entry);
+        search_box.set_visible(false);
+
+        let widget = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+        widget.append(&toolbar);
+        widget.append(&search_box);
+        widget.append(&scroller);
 
         let nav = Rc::new(Navigator {
             widget,
@@ -95,12 +193,17 @@ impl Navigator {
             expanded: RefCell::new(HashSet::new()),
             on_selected: RefCell::new(None),
             on_command: RefCell::new(None),
+            on_refresh: RefCell::new(None),
+            search_box,
+            search_entry,
+            search_visible: std::cell::Cell::new(false),
+            buttons,
         });
         wire_signals(&nav);
         nav
     }
 
-    pub fn widget(&self) -> &ScrolledWindow {
+    pub fn widget(&self) -> &gtk4::Box {
         &self.widget
     }
 
@@ -114,7 +217,63 @@ impl Navigator {
         *self.on_command.borrow_mut() = Some(Box::new(f));
     }
 
+    /// The Refresh button callback (the shell refills the tree and
+    /// re-evaluates the current list).
+    pub fn connect_refresh<F: Fn() + 'static>(&self, f: F) {
+        *self.on_refresh.borrow_mut() = Some(Box::new(f));
+    }
+
+    /// Fires one context-menu command with the current selection as
+    /// the target (the toolbar buttons and the context menu share
+    /// the host callback).
+    fn fire_command(&self, command: ListCommand) {
+        if let Some(f) = self.on_command.borrow().as_ref() {
+            let target = self.current_selection().map(|(id, _)| id);
+            f(command, target);
+        }
+    }
+
     fn wire(self: &Rc<Self>) {
+        // The toolbar clicks (the buttons built in `new`; the
+        // commands resolve here where the Weak works).
+        {
+            let nav = Rc::downgrade(self);
+            for (name, button) in &self.buttons {
+                let name = *name;
+                let nav = nav.clone();
+                button.connect_clicked(move |_| {
+                    let Some(n) = nav.upgrade() else {
+                        return;
+                    };
+                    match name {
+                        "new-folder" => n.fire_command(ListCommand::NewFolder),
+                        "new-list" => n.fire_command(ListCommand::NewList),
+                        "new-smart-list" => n.fire_command(ListCommand::NewSmartList),
+                        "expand-collapse-all" => n.expand_collapse_all(),
+                        "refresh" => {
+                            if let Some(f) = n.on_refresh.borrow().as_ref() {
+                                f();
+                            }
+                        }
+                        "quick-search" => n.toggle_search(),
+                        _ => {}
+                    }
+                });
+            }
+        }
+        // The search text filters the tree (`quickSearch_TextChanged`
+        // → `FillListTree`).
+        {
+            let nav = Rc::downgrade(self);
+            self.search_entry.connect_changed(move |_| {
+                let Some(n) = nav.upgrade() else {
+                    return;
+                };
+                if n.search_visible.get() {
+                    n.refill(&crate::library::comic_lists_snapshot());
+                }
+            });
+        }
         // Expansion tracking (kept across refills by item id).
         {
             let nav = Rc::downgrade(self);
@@ -213,18 +372,132 @@ impl Navigator {
     }
 
     /// `FillListTree`: rebuilds the tree from the ComicLists model,
-    /// preserving expansion and selection by item id.
+    /// preserving expansion and selection by item id. The active
+    /// quick-search text filters the items (`FillListTree(filter)`).
     pub fn refill(&self, items: &[ComicListItem]) {
         let previous = self.current_selection().map(|(id, _)| id);
         let expanded = self.expanded.borrow().clone();
+        let filter = self.search_entry.text().to_string();
+        let items = filter_items(items, filter.trim());
         self.store.clear();
-        self.fill_items(None, items);
+        self.fill_items(None, &items);
         self.apply_expansion(None, &expanded);
         let target = previous.or_else(|| items.first().map(|i| i.base().id));
         if let Some(id) = target {
             self.select_by_id(&id);
         }
         let _ = &previous;
+    }
+
+    /// `ExpandCollapseAllNodes`: any row expanded → collapse all,
+    /// else expand all. The row-expanded/collapsed signals keep the
+    /// id set in step.
+    fn expand_collapse_all(&self) {
+        if !self.expanded.borrow().is_empty() {
+            self.view.collapse_all();
+            self.expanded.borrow_mut().clear();
+        } else {
+            self.view.expand_all();
+        }
+    }
+
+    /// `ToggleQuickSearch`: show + focus the box, or clear + hide.
+    pub fn toggle_search(&self) {
+        if !self.search_visible.get() {
+            self.search_visible.set(true);
+            self.search_box.set_visible(true);
+            self.search_entry.grab_focus();
+        } else {
+            self.search_entry.set_text("");
+            self.search_visible.set(false);
+            self.search_box.set_visible(false);
+        }
+    }
+
+    /// Whether the search box shows (the `tsQuickSearch` check
+    /// state — the shell sync reads it).
+    pub fn search_visible(&self) -> bool {
+        self.search_visible.get()
+    }
+
+    /// The probe's real button click (walks the same handler the
+    /// user's click fires).
+    pub fn click_button(&self, name: &str) -> bool {
+        let hit = self
+            .buttons
+            .iter()
+            .find(|(n, _)| *n == name)
+            .map(|(_, b)| b.clone());
+        match hit {
+            Some(b) => {
+                b.emit_clicked();
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// The probe's search-text path (`set_text` fires the same
+    /// changed signal typing does).
+    pub fn set_search_text(&self, text: &str) {
+        self.search_entry.set_text(text);
+    }
+
+    /// The tree row count (the probe's filter evidence).
+    pub fn row_count(&self) -> usize {
+        let mut count = 0;
+        if let Some(first) = self.store.iter_first() {
+            count += Self::count_rows(self, Some(&first));
+        }
+        count
+    }
+
+    fn count_rows(&self, iter: Option<&TreeIter>) -> usize {
+        let mut iter = match iter {
+            Some(i) => *i,
+            None => return 0,
+        };
+        let mut count = 0;
+        loop {
+            count += 1;
+            if let Some(child) = self.store.iter_children(Some(&iter)) {
+                count += self.count_rows(Some(&child));
+            }
+            if !self.store.iter_next(&mut iter) {
+                break;
+            }
+        }
+        count
+    }
+
+    /// The expanded row count (the probe's expand/collapse evidence).
+    pub fn expanded_count(&self) -> usize {
+        let mut count = 0;
+        if let Some(first) = self.store.iter_first() {
+            count += self.count_expanded(Some(&first));
+        }
+        count
+    }
+
+    fn count_expanded(&self, iter: Option<&TreeIter>) -> usize {
+        let mut iter = match iter {
+            Some(i) => *i,
+            None => return 0,
+        };
+        let mut count = 0;
+        loop {
+            let path = self.store.path(&iter);
+            if self.view.row_expanded(&path) {
+                count += 1;
+            }
+            if let Some(child) = self.store.iter_children(Some(&iter)) {
+                count += self.count_expanded(Some(&child));
+            }
+            if !self.store.iter_next(&mut iter) {
+                break;
+            }
+        }
+        count
     }
 
     fn fill_items(&self, parent: Option<&TreeIter>, items: &[ComicListItem]) {
@@ -422,8 +695,103 @@ impl Navigator {
             ComicListItem::IdList(_) => "List",
         }
     }
+
+    /// A 16 px flat icon button with the Designer tooltip.
+    fn tool_button(icon: &'static str, tooltip: &str) -> (Button, gtk4::Image) {
+        let button = Button::new();
+        let image = gtk4::Image::new();
+        image.set_pixel_size(16);
+        if let Some(texture) = icon::icon(icon) {
+            image.set_paintable(Some(&texture));
+        }
+        button.set_child(Some(&image));
+        button.set_tooltip_text(Some(tooltip));
+        button.add_css_class("flat");
+        (button, image)
+    }
 }
 
 fn wire_signals(nav: &Rc<Navigator>) {
     nav.wire();
+}
+
+/// The quick-search filter (`FillListTree` + `ComicListItem.Filter`):
+/// Library rows always show; folders pass when ANY child passes (the
+/// `ComicListItemFolder.Filter` override — the folder's own name is
+/// NOT searched); every other item passes when its name contains the
+/// filter (case-insensitive).
+fn filter_items(items: &[ComicListItem], filter: &str) -> Vec<ComicListItem> {
+    if filter.is_empty() {
+        return items.to_vec();
+    }
+    let needle = filter.to_lowercase();
+    items
+        .iter()
+        .filter(|item| item_matches(item, &needle))
+        .cloned()
+        .collect()
+}
+
+fn item_matches(item: &ComicListItem, needle: &str) -> bool {
+    match item {
+        ComicListItem::Library(_) => true,
+        ComicListItem::Folder(folder) => {
+            folder.items.iter().any(|child| item_matches(child, needle))
+        }
+        _ => item
+            .base()
+            .name
+            .as_deref()
+            .unwrap_or("")
+            .to_lowercase()
+            .contains(needle),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cr_core::database::list_items::{FolderItem, ListItemBase, SmartListItem};
+
+    fn smart(name: &str) -> ComicListItem {
+        ComicListItem::Smart(SmartListItem {
+            base: ListItemBase {
+                name: Some(name.to_string()),
+                ..Default::default()
+            },
+            ..Default::default()
+        })
+    }
+
+    fn folder(name: &str, items: Vec<ComicListItem>) -> ComicListItem {
+        ComicListItem::Folder(FolderItem {
+            base: ListItemBase {
+                name: Some(name.to_string()),
+                ..Default::default()
+            },
+            items,
+            ..Default::default()
+        })
+    }
+
+    #[test]
+    fn filter_keeps_library_hides_non_matching() {
+        let items = vec![smart("Batman"), smart("Superman")];
+        let out = filter_items(&items, "bat");
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].base().name.as_deref(), Some("Batman"));
+        // Empty filter = everything.
+        assert_eq!(filter_items(&items, "").len(), 2);
+    }
+
+    #[test]
+    fn filter_is_case_insensitive_and_folder_recursive() {
+        let items = vec![folder("My Folder", vec![smart("Watchmen")])];
+        // The folder name does NOT match, but a child does (the C#
+        // folder override).
+        let out = filter_items(&items, "watch");
+        assert_eq!(out.len(), 1);
+        // A non-matching folder vanishes entirely.
+        assert!(filter_items(&items, "zzz").is_empty());
+    }
 }

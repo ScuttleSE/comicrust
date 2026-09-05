@@ -8,16 +8,24 @@
 //! aspect (the 2:3 estimate when the info lacks dimensions), the
 //! 1-based page-number badge (`DrawPageNumber`: top-right, black 75%
 //! rounded, white text), the red bookmark pennant on bookmarked
-//! pages (`DrawBookmarkH`, display-only — the bookmark editor is
-//! Phase 5), the current reader page highlighted and scrolled into
-//! view (`Navigation` → `EnsureVisible`), and double-click →
-//! `Navigate(page, Absolute)`.
+//! pages (`DrawBookmarkH`), the current reader page highlighted and
+//! scrolled into view (`Navigation` → `EnsureVisible`), and
+//! double-click → `Navigate(page, Absolute)`.
 //!
-//! Deviations: the page-type filter rides on page metadata the
-//! reader does not surface yet (the default `All` filter excludes
-//! Deleted — honored once page types reach the panel), the 3D-book
-//! backdrop and drag-out copy are later polish, and the panel has no
-//! edit commands (Phase 5).
+//! The T7 toolbar (the control's own `toolStrip`,
+//! ComicPagesView.Designer.cs:66-141): the Views drop with the
+//! Thumbnail/Tile mode radios (`tbbView`; Details and the
+//! Collapse/Expand-Groups row are cut — the panel has no detail list
+//! or groups) with the main click cycling the mode; the Page Filter
+//! button is omitted (the panel consumes no page-type filter).
+//!
+//! Tile mode (`ThumbTileRenderer`): the thumb left, the text lines
+//! right (`ComicTextBuilder.GetTextBlocks`, `ComicTextElements.
+//! DefaultPage`): "Page #N" bold, the page type, "Size: …",
+//! "Resolution: W x H", optional rotation/bookmark lines.
+//!
+//! Deviations: the 3D-book backdrop and drag-out copy are later
+//! polish, and the panel has no edit commands (Phase 5).
 
 use std::cell::RefCell;
 use std::collections::HashMap;
@@ -29,8 +37,49 @@ use gtk4::prelude::*;
 use gtk4::{cairo, DrawingArea, GestureClick, ScrolledWindow};
 
 use cr_core::model::comic_book::ComicBook;
+use cr_core::model::enums::ImageRotation;
 use cr_engine::image_pool::ImagePool;
 use cr_image::keys::{ImageKey, ThumbnailKey};
+
+use super::menubar::{self, Dropdown, MenuNode};
+use MenuNode::Item;
+
+/// The Views drop (`tbbView.DropDownItems`): the page-grid mode
+/// radios (Details + the groups row are cut — no detail list or
+/// groups in the port's panel).
+pub const PAGES_VIEWS: &[MenuNode] = &[
+    Item(
+        "T&humbnails",
+        "win.pages-view-mode::thumbnail",
+        "",
+        "ThumbView",
+    ),
+    Item("&Tiles", "win.pages-view-mode::tile", "", "TileView"),
+];
+
+/// The panel's display mode (`ItemViewMode` reduced to the two
+/// supported grids).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum PagesMode {
+    Thumbnail,
+    Tile,
+}
+
+impl PagesMode {
+    pub fn action_name(self) -> &'static str {
+        match self {
+            PagesMode::Thumbnail => "thumbnail",
+            PagesMode::Tile => "tile",
+        }
+    }
+
+    pub fn from_action_name(name: &str) -> PagesMode {
+        match name {
+            "tile" => PagesMode::Tile,
+            _ => PagesMode::Thumbnail,
+        }
+    }
+}
 
 /// The thumb-size range (`ItemSizeInfo`: [96, 512]).
 const MIN_THUMB: f64 = 96.0;
@@ -49,6 +98,14 @@ struct PageCell {
     /// The page aspect (w/h) — the stored dims or the 2:3 estimate.
     aspect: f64,
     bookmarked: bool,
+    /// The tile-text fields (`ComicPageInfo`): the type name, the
+    /// byte size, the pixel dims, the stored rotation, the bookmark.
+    type_name: String,
+    file_size: i32,
+    width: i32,
+    height: i32,
+    rotation: ImageRotation,
+    bookmark: Option<String>,
 }
 
 struct PageDone {
@@ -75,6 +132,8 @@ struct PagesState {
     pump_active: bool,
     thumb_height: f64,
     current_page: usize,
+    /// The grid mode (the Views drop radios).
+    mode: PagesMode,
     /// The content height the canvas was last sized for (the draw
     /// path self-corrects: the binding can land while the panel is
     /// hidden, where the canvas width is 0 and the layout collapses).
@@ -88,13 +147,17 @@ struct PagesState {
 type ActivateCell = Rc<RefCell<Option<Box<dyn Fn(usize)>>>>;
 
 impl PagesState {
-    /// The greedy thumbnail flow (the ItemView Top layout: 1 px
-    /// padding → 2 px gaps; the cells size to the page aspect plus
-    /// border 4). Returns the placed cells for the draw.
+    /// The greedy flow (the ItemView Top layout: 1 px padding → 2 px
+    /// gaps). Thumbnail cells size to the page aspect plus border 4;
+    /// Tile cells are fixed (192×96 at the default thumb height,
+    /// scaled with the size slider). Returns the placed cells for
+    /// the draw.
     fn relayout(&mut self, width: f64) -> Vec<(f64, f64, f64, f64, usize)> {
         let Some((_, cells)) = &self.bound else {
             return Vec::new();
         };
+        let tile = self.mode == PagesMode::Tile;
+        let scale = self.thumb_height / 128.0;
         let mut placed = Vec::with_capacity(cells.len());
         let border = 4.0;
         let pad = 1.0;
@@ -103,8 +166,14 @@ impl PagesState {
         let mut row_h = 0.0f64;
         let mut col = 0usize;
         for cell in cells {
-            let w = self.thumb_height * cell.aspect + 2.0 * border;
-            let h = self.thumb_height + 2.0 * border;
+            let (w, h) = if tile {
+                (192.0 * scale + 2.0 * border, 96.0 * scale + 2.0 * border)
+            } else {
+                (
+                    self.thumb_height * cell.aspect + 2.0 * border,
+                    self.thumb_height + 2.0 * border,
+                )
+            };
             let stride_w = w + 2.0 * pad;
             if col > 0 && x + 2.0 * pad + w >= width {
                 y += 2.0 * pad + row_h;
@@ -136,15 +205,20 @@ pub struct PagesPanel {
     activation: ActivateCell,
     canvas: DrawingArea,
     scroller: ScrolledWindow,
+    /// The Views drop (the mode radios) + its anchor (the split
+    /// button's main part).
+    views_drop: Dropdown,
+    views_btn: gtk4::Button,
 }
 
 pub struct PagesPanelWidgets {
-    pub scroller: ScrolledWindow,
+    /// The mounted widget: [toolbar][scroller].
+    pub widget: gtk4::Box,
     pub panel: PagesPanel,
 }
 
 impl PagesPanel {
-    pub fn create(pool: Arc<ImagePool>) -> PagesPanelWidgets {
+    pub fn create(pool: Arc<ImagePool>, window: &gtk4::ApplicationWindow) -> PagesPanelWidgets {
         let canvas = DrawingArea::new();
         canvas.set_focusable(true);
         let scroller = ScrolledWindow::builder()
@@ -152,6 +226,30 @@ impl PagesPanel {
             .hscrollbar_policy(gtk4::PolicyType::Never)
             .vscrollbar_policy(gtk4::PolicyType::Automatic)
             .build();
+
+        // The control's own toolbar (`ComicPagesView.toolStrip`):
+        // the Views split button (main click cycles the mode — the
+        // C# `tbbView_ButtonClick`; the chevron opens the drop).
+        // Click handlers wire after the state exists (the cycle
+        // reads the current mode).
+        let views_drop = menubar::build_dropdown(PAGES_VIEWS, window);
+        let views_box = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+        views_box.add_css_class("linked");
+        let (views_btn, _views_icon) = icon_button("View", "Change how Books are displayed");
+        let chevron = gtk4::Button::from_icon_name("pan-down-symbolic");
+        chevron.set_tooltip_text(Some("Change how Books are displayed"));
+        chevron.add_css_class("flat");
+        views_box.append(&views_btn);
+        views_box.append(&chevron);
+        let _ = _views_icon;
+
+        let toolbar = gtk4::Box::new(gtk4::Orientation::Horizontal, 2);
+        toolbar.add_css_class("toolbar");
+        toolbar.append(&views_box);
+
+        let widget = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+        widget.append(&toolbar);
+        widget.append(&scroller);
 
         let (tx, rx) = std::sync::mpsc::channel::<PageDone>();
         let activation: ActivateCell = Rc::new(RefCell::new(None));
@@ -167,15 +265,46 @@ impl PagesPanel {
             pump_active: false,
             thumb_height: 128.0,
             current_page: 0,
+            mode: PagesMode::Thumbnail,
             last_content_height: 0.0,
             canvas: canvas.clone(),
         }));
+
+        // The main click: cycle the modes through the shell action
+        // (Thumbnail → Tile → Thumbnail; the C# cycles three).
+        {
+            let state = state.clone();
+            let window = window.clone();
+            views_btn.connect_clicked(move |_| {
+                let next = {
+                    let s = state.borrow();
+                    match s.mode {
+                        PagesMode::Thumbnail => PagesMode::Tile,
+                        PagesMode::Tile => PagesMode::Thumbnail,
+                    }
+                };
+                let _ = gtk4::prelude::WidgetExt::activate_action(
+                    &window,
+                    "win.pages-view-mode",
+                    Some(&next.action_name().to_variant()),
+                );
+            });
+        }
+        // The chevron: open the drop (parented to the anchor first —
+        // the T5 lesson).
+        {
+            let drop = views_drop.clone();
+            let main = views_btn.clone();
+            chevron.connect_clicked(move |_| drop.open(&main));
+        }
 
         let panel = PagesPanel {
             state: Rc::clone(&state),
             activation: Rc::clone(&activation),
             canvas: canvas.clone(),
             scroller: scroller.clone(),
+            views_drop,
+            views_btn,
         };
 
         // The draw function (content coordinates; the canvas is
@@ -310,7 +439,7 @@ impl PagesPanel {
             canvas.add_controller(gesture);
         }
 
-        PagesPanelWidgets { scroller, panel }
+        PagesPanelWidgets { widget, panel }
     }
 
     /// Binds the open comic (the C# `PagesView.Book` setter — a
@@ -338,6 +467,12 @@ impl PagesPanel {
                     image_index,
                     aspect,
                     bookmarked: info.bookmark.is_some(),
+                    type_name: page_type_text(info.page_type),
+                    file_size: info.image_file_size,
+                    width: i32::from(info.image_width),
+                    height: i32::from(info.image_height),
+                    rotation: info.rotation,
+                    bookmark: info.bookmark.clone(),
                 }
             })
             .collect();
@@ -429,6 +564,47 @@ impl PagesPanel {
         *self.activation.borrow_mut() = Some(Box::new(f));
     }
 
+    /// Sets the grid mode (the `win.pages-view-mode` handler).
+    pub fn set_mode(&self, mode: PagesMode) {
+        self.state.borrow_mut().mode = mode;
+        self.reflow();
+        self.canvas.queue_draw();
+    }
+
+    /// The current grid mode (the sync's source of truth).
+    pub fn mode(&self) -> PagesMode {
+        self.state.borrow().mode
+    }
+
+    /// Applies the action states to the Views drop (the shell's
+    /// shared resolve closure).
+    pub fn sync(&self, resolve: &dyn Fn(&str) -> Option<menubar::ActionState>) {
+        self.views_drop.sync(resolve);
+    }
+
+    /// Opens the Views drop through its anchor (the probe's real
+    /// open path — the T5 OPEN gate).
+    pub fn open_views(&self) -> bool {
+        self.views_drop.open(&self.views_btn);
+        self.views_drop.popover().is_mapped()
+    }
+
+    /// Closes the Views drop (the probe cleanup).
+    pub fn close_views(&self) {
+        self.views_drop.popover().popdown();
+    }
+
+    /// Clicks a Views radio row through the real handler (the probe).
+    pub fn click_view(&self, action: &str) -> bool {
+        self.views_drop.click_row(action)
+    }
+
+    /// Clicks the Views MAIN part (the mode cycle — the probe walks
+    /// the real handler).
+    pub fn click_main(&self) {
+        self.views_btn.emit_clicked();
+    }
+
     fn update_size_request(&self) {
         let width = self.state.borrow().canvas.width() as f64;
         let content = self.state.borrow_mut().content_height(width);
@@ -505,32 +681,57 @@ fn draw_frame(
     }
 
     // Draw the visible cells.
+    let tile = s.mode == PagesMode::Tile;
     for (x, y, w, h, page) in &placed {
         if !(*y + *h >= scroll_y && *y <= scroll_y + view_h) {
             continue;
         }
         let selected = s.current_page == *page;
         let thumb = s.thumbs.get(page).cloned();
-        if thumb.is_none() {
-            ctx.set_source_rgb(0.08, 0.08, 0.09);
-            ctx.rectangle(x + 8.0, y + 8.0, w - 16.0, h - 16.0);
-            ctx.fill().ok();
-        }
-        super::item::draw_cover(ctx, thumb.as_ref(), (*x, *y, *w, *h), selected);
-        // The page-number badge (`DrawPageNumber`: 1-based, top
-        // right, black 75% rounded, white text).
-        super::item::draw_page_number(ctx, (*x, *y, *w, *h), page + 1);
-        // The bookmark pennant (display-only; the editor is Phase 5).
-        if let Some(cell) = cells.iter().find(|c| c.page == *page) {
-            if cell.bookmarked {
-                super::item::draw_bookmark_h(ctx, (*x, *y, *w, *h));
+        if tile {
+            // The tile cell (`ThumbTileRenderer.DrawTile`): the thumb
+            // left, the text lines right, one border around the cell.
+            let image_w = w * 0.45;
+            if thumb.is_none() {
+                ctx.set_source_rgb(0.08, 0.08, 0.09);
+                ctx.rectangle(x + 8.0, y + 8.0, image_w - 16.0, h - 16.0);
+                ctx.fill().ok();
             }
-        }
-        if selected {
-            ctx.set_source_rgb(FOCUS_UNFOCUSED.0, FOCUS_UNFOCUSED.1, FOCUS_UNFOCUSED.2);
+            super::item::draw_cover(ctx, thumb.as_ref(), (*x, *y, image_w, *h), selected);
+            let cell = cells.iter().find(|c| c.page == *page);
+            draw_tile_text(ctx, (*x + image_w, *y, w - image_w, *h), cell);
+            // The cell border (the selection/hot frame).
+            ctx.set_source_rgb(
+                if selected { FOCUS_UNFOCUSED.0 } else { 0.25 },
+                if selected { FOCUS_UNFOCUSED.1 } else { 0.25 },
+                if selected { FOCUS_UNFOCUSED.2 } else { 0.25 },
+            );
             ctx.set_line_width(1.0);
             ctx.rectangle(*x - 1.0, *y - 1.0, w + 2.0, h + 2.0);
             ctx.stroke().ok();
+        } else {
+            if thumb.is_none() {
+                ctx.set_source_rgb(0.08, 0.08, 0.09);
+                ctx.rectangle(x + 8.0, y + 8.0, w - 16.0, h - 16.0);
+                ctx.fill().ok();
+            }
+            super::item::draw_cover(ctx, thumb.as_ref(), (*x, *y, *w, *h), selected);
+            // The page-number badge (`DrawPageNumber`: 1-based, top
+            // right, black 75% rounded, white text).
+            super::item::draw_page_number(ctx, (*x, *y, *w, *h), page + 1);
+            // The bookmark pennant (display-only; the editor is
+            // Phase 5).
+            if let Some(cell) = cells.iter().find(|c| c.page == *page) {
+                if cell.bookmarked {
+                    super::item::draw_bookmark_h(ctx, (*x, *y, *w, *h));
+                }
+            }
+            if selected {
+                ctx.set_source_rgb(FOCUS_UNFOCUSED.0, FOCUS_UNFOCUSED.1, FOCUS_UNFOCUSED.2);
+                ctx.set_line_width(1.0);
+                ctx.rectangle(*x - 1.0, *y - 1.0, w + 2.0, h + 2.0);
+                ctx.stroke().ok();
+            }
         }
     }
 
@@ -596,6 +797,135 @@ fn start_thumb_pump(state: &Rc<RefCell<PagesState>>, canvas: &DrawingArea) {
     let _ = canvas;
 }
 
+/// A 16 px flat icon button with a tooltip (the split button's main
+/// part).
+fn icon_button(icon: &'static str, tooltip: &str) -> (gtk4::Button, gtk4::Image) {
+    let button = gtk4::Button::new();
+    let image = gtk4::Image::new();
+    image.set_pixel_size(16);
+    if let Some(texture) = crate::icon::icon(icon) {
+        image.set_paintable(Some(&texture));
+    }
+    button.set_child(Some(&image));
+    button.set_tooltip_text(Some(tooltip));
+    button.add_css_class("flat");
+    (button, image)
+}
+
+/// The `PageTypeAsText` text: the enum member name (the English
+/// default of `LocalizeUtility.LocalizeEnum`); 0 maps to Story (the
+/// C# effective-type getter).
+fn page_type_text(t: cr_core::model::enums::ComicPageType) -> String {
+    if t.0 == 0 {
+        "Story".to_string()
+    } else {
+        t.to_xml()
+    }
+}
+
+/// The page tile text lines (`ComicTextBuilder.GetTextBlocks`,
+/// `ComicTextElements.DefaultPage`): (text, font scale, bold). The
+/// tab-stop lines carry a `"\t"` the renderer splits into the
+/// two-column block.
+fn tile_lines(cell: &PageCell) -> Vec<(String, f64, bool)> {
+    let mut lines: Vec<(String, f64, bool)> = vec![
+        (format!("Page #{}", cell.page + 1), 1.0, true),
+        (cell.type_name.clone(), 0.95, false),
+        (String::new(), 0.95, false), // the 10 px spacer
+    ];
+    if cell.file_size > 0 {
+        lines.push((
+            format!(
+                "Size:\t{}",
+                cr_engine::display_text::file_size_as_text(i64::from(cell.file_size))
+            ),
+            0.95,
+            false,
+        ));
+    } else {
+        lines.push(("Unknown Size".to_string(), 0.95, false));
+    }
+    lines.push((
+        format!("Resolution:\t{} x {}", cell.width, cell.height),
+        0.95,
+        false,
+    ));
+    if cell.rotation != ImageRotation::None {
+        let deg = match cell.rotation {
+            ImageRotation::Rotate90 => 90,
+            ImageRotation::Rotate180 => 180,
+            ImageRotation::Rotate270 => 270,
+            ImageRotation::None => 0,
+        };
+        lines.push((format!("Rotation:\t{deg}°"), 0.95, false));
+    }
+    lines.push((String::new(), 0.95, false)); // the 6 px spacer
+    if let Some(name) = &cell.bookmark {
+        lines.push((format!("Bookmark:\t{name}"), 0.95, false));
+    }
+    lines
+}
+
+/// Draws the text block of one tile cell (the two-column tab-stop
+/// shape the ItemView tiles use).
+fn draw_tile_text(
+    ctx: &cairo::Context,
+    (x, y, w, h): (f64, f64, f64, f64),
+    cell: Option<&PageCell>,
+) {
+    let Some(cell) = cell else {
+        return;
+    };
+    ctx.save().ok();
+    ctx.rectangle(x, y, w, h);
+    ctx.clip();
+    ctx.select_font_face("Sans", cairo::FontSlant::Normal, cairo::FontWeight::Normal);
+    ctx.set_font_size(9.0);
+    // The shared tab stop: the widest first-segment width + 4 px.
+    let lines = tile_lines(cell);
+    let mut tab = 0.0f64;
+    for (text, _, _) in &lines {
+        if let Some(pos) = text.find('\t') {
+            if let Ok(ext) = ctx.text_extents(&text[..pos]) {
+                tab = tab.max(ext.width());
+            }
+        }
+    }
+    let tab = tab + 4.0;
+    let mut ty = y + 4.0;
+    for (text, scale, bold) in &lines {
+        ctx.select_font_face(
+            "Sans",
+            cairo::FontSlant::Normal,
+            if *bold {
+                cairo::FontWeight::Bold
+            } else {
+                cairo::FontWeight::Normal
+            },
+        );
+        ctx.set_font_size(9.0 * scale);
+        let line_h = super::item::line_height(ctx).max(2.0);
+        if ty + line_h > y + h {
+            break;
+        }
+        if text.is_empty() {
+            ty += line_h * 0.5;
+            continue;
+        }
+        ctx.set_source_rgb(0.9, 0.9, 0.92);
+        ctx.move_to(x + 4.0, ty + line_h * 0.85);
+        if let Some(pos) = text.find('\t') {
+            ctx.show_text(&text[..pos]).ok();
+            ctx.move_to(x + 4.0 + tab, ty + line_h * 0.85);
+            ctx.show_text(&text[pos + 1..]).ok();
+        } else {
+            ctx.show_text(text).ok();
+        }
+        ty += line_h;
+    }
+    ctx.restore().ok();
+}
+
 fn decode_surface(bytes: &[u8]) -> Option<cairo::ImageSurface> {
     // The pool caches the C# `ThumbnailImage` serialization (size
     // header + JPEG data) — parse, then decode the JPEG.
@@ -625,4 +955,92 @@ fn decode_surface(bytes: &[u8]) -> Option<cairo::ImageSurface> {
 
 fn rgba_chunks(rgba: &[u8]) -> impl Iterator<Item = &[u8; 4]> {
     rgba.as_chunks::<4>().0.iter()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn cell(page: usize) -> PageCell {
+        PageCell {
+            page,
+            image_index: page,
+            aspect: 2.0 / 3.0,
+            bookmarked: false,
+            type_name: "Story".to_string(),
+            file_size: 0,
+            width: 800,
+            height: 1200,
+            rotation: ImageRotation::None,
+            bookmark: None,
+        }
+    }
+
+    /// The tile text lines (`ComicTextBuilder.GetTextBlocks`,
+    /// `ComicTextElements.DefaultPage`).
+    #[test]
+    fn tile_lines_match_the_csharp_blocks() {
+        let lines = tile_lines(&cell(4));
+        assert_eq!(lines[0], ("Page #5".to_string(), 1.0, true));
+        assert_eq!(lines[1].0, "Story");
+        // An unknown size renders the literal (the C# UnknownSizeText).
+        assert_eq!(lines[3].0, "Unknown Size");
+        assert_eq!(lines[4].0, "Resolution:\t800 x 1200");
+        // No rotation, no bookmark → no further lines but the spacer.
+        assert_eq!(lines.len(), 6);
+    }
+
+    #[test]
+    fn tile_lines_carry_size_rotation_bookmark() {
+        let mut c = cell(0);
+        c.file_size = 250_000;
+        c.rotation = ImageRotation::Rotate90;
+        c.bookmark = Some("fight".to_string());
+        let lines = tile_lines(&c);
+        assert!(lines
+            .iter()
+            .any(|(t, _, _)| t.starts_with("Size:\t") && t.contains("kB")));
+        assert!(lines.iter().any(|(t, _, _)| t == "Rotation:\t90°"));
+        assert!(lines.iter().any(|(t, _, _)| t == "Bookmark:\tfight"));
+    }
+
+    /// Every Pages-toolbar action exists in the registry (the
+    /// COMMANDS table or the shell-only actions).
+    #[test]
+    fn pages_toolbar_actions_exist() {
+        let known: std::collections::HashSet<&str> = crate::commands::COMMANDS
+            .iter()
+            .map(|c| c.action)
+            .chain(["pages-view-mode"])
+            .collect();
+        for node in PAGES_VIEWS {
+            if let Item(_, action, _, _) = node {
+                let base = action
+                    .split("::")
+                    .next()
+                    .unwrap()
+                    .strip_prefix("win.")
+                    .unwrap();
+                assert!(
+                    known.contains(base),
+                    "pages toolbar action {action} has no command"
+                );
+            }
+        }
+    }
+
+    /// The toolbar icon names resolve in the bundled set.
+    #[test]
+    fn pages_toolbar_icons_resolve() {
+        for name in ["View", "ThumbView", "TileView"] {
+            assert!(crate::icon::path_for_name(name).is_some(), "{name} missing");
+        }
+    }
+
+    #[test]
+    fn pages_mode_names_round_trip() {
+        for mode in [PagesMode::Thumbnail, PagesMode::Tile] {
+            assert_eq!(PagesMode::from_action_name(mode.action_name()), mode);
+        }
+    }
 }

@@ -204,9 +204,9 @@ impl BrowserShell {
         } = ItemView::create(Arc::clone(&pool));
         quick_view.configure(|c| c.hide_captions = true);
         let super::pages_view::PagesPanelWidgets {
-            scroller: pages_scroller,
+            widget: pages_widget,
             panel: pages,
-        } = super::pages_view::PagesPanel::create(Arc::clone(&pool));
+        } = super::pages_view::PagesPanel::create(Arc::clone(&pool), &window);
 
         // The header commands (the handlers wire in `wire`, where
         // the shared state exists). The T6 reorg: Open/Add
@@ -233,7 +233,7 @@ impl BrowserShell {
         let panel_stack = Stack::new();
         panel_stack.set_vhomogeneous(false);
         panel_stack.add_titled(navigator.widget(), Some("library"), "Library");
-        panel_stack.add_titled(&pages_scroller, Some("pages"), "Pages");
+        panel_stack.add_titled(&pages_widget, Some("pages"), "Pages");
 
         let switcher = gtk4::StackSwitcher::builder().stack(&panel_stack).build();
         let panel_box = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
@@ -544,6 +544,23 @@ impl BrowserShell {
                             sh.update_status(count, 0);
                         }
                         sh.sync_enabled();
+                    }
+                });
+        }
+
+        // The navigator Refresh button: refill the tree from the
+        // library snapshot and re-evaluate the current list (the
+        // C# `FillListTree` + `UpdateBookList` refresh shape).
+        {
+            let state = Rc::downgrade(state);
+            state
+                .upgrade()
+                .expect("state")
+                .navigator
+                .connect_refresh(move || {
+                    if let Some(sh) = state.upgrade() {
+                        sh.navigator.refill(&library::comic_lists_snapshot());
+                        sh.refresh_view_from_list();
                     }
                 });
         }
@@ -891,6 +908,61 @@ impl BrowserShell {
         self.state.browser_toolbar.label_texts()
     }
 
+    // --- T7 probe accessors (the navigator + Pages toolbars) ---
+
+    /// Clicks a navigator toolbar button through the real handler.
+    pub fn nav_click_button(&self, name: &str) -> bool {
+        self.state.navigator.click_button(name)
+    }
+
+    /// Whether the navigator search box shows.
+    pub fn nav_search_visible(&self) -> bool {
+        self.state.navigator.search_visible()
+    }
+
+    /// Sets the navigator search text (the typing path — `set_text`
+    /// fires the same changed signal).
+    pub fn nav_set_search_text(&self, text: &str) {
+        self.state.navigator.set_search_text(text);
+    }
+
+    /// The navigator tree row count (the filter evidence).
+    pub fn nav_row_count(&self) -> usize {
+        self.state.navigator.row_count()
+    }
+
+    /// The expanded navigator rows (the expand/collapse-all evidence).
+    pub fn nav_expanded_count(&self) -> usize {
+        self.state.navigator.expanded_count()
+    }
+
+    /// The Pages grid mode.
+    pub fn pages_mode(&self) -> super::pages_view::PagesMode {
+        self.state.pages.mode()
+    }
+
+    /// Opens the Pages Views drop through its real anchor (the OPEN
+    /// gate).
+    pub fn pages_open_views(&self) -> bool {
+        self.state.pages.open_views()
+    }
+
+    /// Closes the Pages Views drop (the probe cleanup).
+    pub fn pages_close_views(&self) {
+        self.state.pages.close_views();
+    }
+
+    /// Clicks a Pages Views radio row through the real handler.
+    pub fn pages_click_view(&self, action: &str) -> bool {
+        self.state.pages.click_view(action)
+    }
+
+    /// Clicks the Pages Views MAIN part (the mode cycle — the C#
+    /// `tbbView_ButtonClick`).
+    pub fn pages_click_main(&self) {
+        self.state.pages.click_main();
+    }
+
     /// Sets the search text through the composed-filter path (the
     /// probe; the entry typing itself is a user-test matter).
     pub fn state_set_search_text(&self, text: &str) {
@@ -1125,6 +1197,16 @@ impl ShellState {
             let checked = !cr_ui_settings().borrow().auto_hide_main_menu;
             a.set_state(&checked.to_variant());
         }
+        // The navigator search toggle: the check = the box visibility
+        // (`() => quickSearchPanel.Visible`).
+        if let Some(a) = self.action("toggle-navigator-search") {
+            a.set_state(&self.navigator.search_visible().to_variant());
+        }
+        // The Pages grid mode radio (the source of truth is the
+        // panel — the main click cycles through the action).
+        if let Some(a) = self.action("pages-view-mode") {
+            a.set_state(&self.pages.mode().action_name().to_variant());
+        }
         self.update_menubar();
         self.sync_menubar();
     }
@@ -1193,6 +1275,8 @@ impl ShellState {
         };
         self.menubar.sync(&resolve);
         self.toolbar.sync(&resolve);
+        // The Pages panel's Views drop (the T7 mode radios).
+        self.pages.sync(&resolve);
         // The browser toolbar (the T6 strip): the enable states +
         // the Group/Arrange label texts (`OnIdle` tbbSort/tbbGroup).
         self.browser_toolbar.sync(&resolve);
@@ -2641,8 +2725,51 @@ impl ShellState {
         self.add_simple(&group, "focus-search", |sh| {
             sh.search.grab_focus();
         });
-        // toggle-navigator-search — T7 lands the navigator search box.
-        self.add_disabled(&group, "toggle-navigator-search");
+        // `tsQuickSearch` (the navigator's own search toggle; the
+        // check state = the box visibility — `commands.Add(
+        // ToggleQuickSearch, true, () => quickSearchPanel.Visible)`).
+        {
+            let state = state.clone();
+            let action = gio::SimpleAction::new_stateful(
+                "toggle-navigator-search",
+                None,
+                &false.to_variant(),
+            );
+            action.connect_activate(move |_, _| {
+                if let Some(sh) = state.upgrade() {
+                    sh.navigator.toggle_search();
+                    sh.sync_enabled();
+                }
+            });
+            group.add_action(&action);
+            self.actions
+                .borrow_mut()
+                .insert("toggle-navigator-search", action);
+        }
+
+        // --- The Pages panel (the T7 `ComicPagesView.toolStrip`) ---
+        // The page-grid mode radios (the Views drop rows).
+        let pages_mode = gio::SimpleAction::new_stateful(
+            "pages-view-mode",
+            Some(glib::VariantTy::STRING),
+            &"thumbnail".to_variant(),
+        );
+        {
+            let state = state.clone();
+            pages_mode.connect_activate(move |_, value| {
+                let Some(sh) = state.upgrade() else {
+                    return;
+                };
+                let name = value.and_then(|v| v.get::<String>()).unwrap_or_default();
+                sh.pages
+                    .set_mode(super::pages_view::PagesMode::from_action_name(&name));
+                sh.sync_enabled();
+            });
+        }
+        group.add_action(&pages_mode);
+        self.actions
+            .borrow_mut()
+            .insert("pages-view-mode", pages_mode);
 
         self.window.insert_action_group("win", Some(&group));
         ShellState::register_accels(&self.app);
