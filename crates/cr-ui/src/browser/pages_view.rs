@@ -86,7 +86,8 @@ impl PagesMode {
 const MIN_THUMB: f64 = 96.0;
 const MAX_THUMB: f64 = 512.0;
 
-const BG: (f64, f64, f64) = (0.13, 0.13, 0.15);
+/// The focus/selection ring (a neutral gray that reads on both
+/// themes — the palette colors cover the rest).
 const FOCUS_UNFOCUSED: (f64, f64, f64) = (0.5, 0.5, 0.55);
 
 #[derive(Clone)]
@@ -222,6 +223,10 @@ impl PagesPanel {
     pub fn create(pool: Arc<ImagePool>, window: &gtk4::ApplicationWindow) -> PagesPanelWidgets {
         let canvas = DrawingArea::new();
         canvas.set_focusable(true);
+        // The palette is resolved per frame from the theme colors —
+        // a dark/light flip must re-draw (GTK does not invalidate a
+        // custom cairo draw on a theme change).
+        crate::theme::redraw_on_theme_change(&canvas);
         let scroller = ScrolledWindow::builder()
             .child(&canvas)
             .hscrollbar_policy(gtk4::PolicyType::Never)
@@ -669,8 +674,11 @@ fn draw_frame(
     };
     let mut s = state.borrow_mut();
     let mut queued_thumbs = false;
-    let (bg_r, bg_g, bg_b) = BG;
-    ctx.set_source_rgb(bg_r, bg_g, bg_b);
+    // The theme palette (the C# `SystemColors` parity) — resolved
+    // fresh every frame, so a dark/light flip re-styles on the next
+    // draw.
+    let pal = crate::theme::palette(&s.canvas);
+    ctx.set_source_rgb(pal.base.0, pal.base.1, pal.base.2);
     ctx.paint().ok();
 
     let width = s.canvas.width() as f64;
@@ -732,13 +740,13 @@ fn draw_frame(
             // left, the text lines right, one border around the cell.
             let image_w = w * 0.45;
             if thumb.is_none() {
-                ctx.set_source_rgb(0.08, 0.08, 0.09);
+                ctx.set_source_rgb(pal.window_bg.0, pal.window_bg.1, pal.window_bg.2);
                 ctx.rectangle(x + 8.0, y + 8.0, image_w - 16.0, h - 16.0);
                 ctx.fill().ok();
             }
             super::item::draw_cover(ctx, thumb.as_ref(), (*x, *y, image_w, *h), selected);
             let cell = cells.iter().find(|c| c.page == *page);
-            draw_tile_text(ctx, (*x + image_w, *y, w - image_w, *h), cell);
+            draw_tile_text(ctx, (*x + image_w, *y, w - image_w, *h), cell, &pal);
             // The cell border (the selection/hot frame).
             ctx.set_source_rgb(
                 if selected { FOCUS_UNFOCUSED.0 } else { 0.25 },
@@ -750,7 +758,7 @@ fn draw_frame(
             ctx.stroke().ok();
         } else {
             if thumb.is_none() {
-                ctx.set_source_rgb(0.08, 0.08, 0.09);
+                ctx.set_source_rgb(pal.window_bg.0, pal.window_bg.1, pal.window_bg.2);
                 ctx.rectangle(x + 8.0, y + 8.0, w - 16.0, h - 16.0);
                 ctx.fill().ok();
             }
@@ -911,6 +919,7 @@ fn draw_tile_text(
     ctx: &cairo::Context,
     (x, y, w, h): (f64, f64, f64, f64),
     cell: Option<&PageCell>,
+    pal: &crate::theme::Palette,
 ) {
     let Some(cell) = cell else {
         return;
@@ -951,7 +960,7 @@ fn draw_tile_text(
             ty += line_h * 0.5;
             continue;
         }
-        ctx.set_source_rgb(0.9, 0.9, 0.92);
+        ctx.set_source_rgb(pal.fg.0, pal.fg.1, pal.fg.2);
         ctx.move_to(x + 4.0, ty + line_h * 0.85);
         if let Some(pos) = text.find('\t') {
             ctx.show_text(&text[..pos]).ok();

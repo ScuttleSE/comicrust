@@ -1866,3 +1866,22 @@ recorded ADDITION so the mode is switchable at runtime:
   moved to a mid-gray that reads on both. Gate: `menubar_probe`
   (the row click flips the global AND the GTK flag),
   `commands_probe` 70/70, 317 tests.
+
+FIX ROUND 1 (2026-09-05, user report: the ItemView grid and the
+Pages panel stayed dark in light mode): the two cairo views drew
+hardcoded dark palettes. `theme::Palette` resolves the GTK named
+colors (`theme_base_color`, `theme_bg_color`, `theme_fg_color`,
+`theme_selected_bg_color`, `theme_selected_fg_color`) per DRAW
+CALL through the widget style context — the C# `SystemColors`
+parity (`ThemeColors.ItemView.DefaultBack` = `SystemColors.Window`;
+the DarkThemeHandler swaps the system color table, GTK named colors
+flip with prefer-dark) — so no cache invalidates on a flip.
+`theme::redraw_on_theme_change` queue-draws the two canvases on the
+prefer-dark notify: GTK does NOT invalidate a custom cairo draw on
+a theme change (the lesson for every future drawn view). The
+reader PAGE SURFACE stays dark in both themes BY PARITY — the C#
+`ImageDisplayControl.InitializeComponent` sets
+`BackColor = Color.Black` unconditionally; the reader background
+is the Auto/Color/Texture display setting, not the theme. The dead
+`window.reader-window`/`.reader-page-area` CSS rules (no widget
+carried the classes) are removed.

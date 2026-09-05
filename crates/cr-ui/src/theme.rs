@@ -6,14 +6,6 @@ use gtk4::gdk;
 use gtk4::CssProvider;
 use gtk4::STYLE_PROVIDER_PRIORITY_APPLICATION;
 pub const CSS: &str = r#"
-window.reader-window {
-    background: #202020;
-}
-
-.reader-page-area {
-    background: #202020;
-}
-
 .placeholder-label {
     color: #808080;
     font-size: 14px;
@@ -97,5 +89,65 @@ pub fn init() {
 pub fn set_dark(dark: bool) {
     if let Some(settings) = gtk4::Settings::default() {
         settings.set_gtk_application_prefer_dark_theme(dark);
+    }
+}
+
+/// The theme colors the cairo-drawn views consume — the C#
+/// `SystemColors` parity (`ThemeColors.ItemView.DefaultBack` resolves
+/// to `SystemColors.Window`, and the DarkThemeHandler swaps the system
+/// color table): they flip with prefer-dark. Resolved per draw call
+/// through the widget's style context, so a theme flip re-resolves
+/// with no cache to invalidate.
+#[derive(Clone, Copy)]
+pub struct Palette {
+    /// `theme_base_color` — the list surface (`SystemColors.Window`).
+    pub base: (f64, f64, f64),
+    /// `theme_bg_color` — the window backdrop (group/detail headers,
+    /// the cover placeholders).
+    pub window_bg: (f64, f64, f64),
+    /// `theme_fg_color` — `SystemColors.WindowText`.
+    pub fg: (f64, f64, f64),
+    /// `theme_selected_bg_color`.
+    pub selected_bg: (f64, f64, f64),
+    /// `theme_selected_fg_color`.
+    pub selected_fg: (f64, f64, f64),
+}
+
+/// The fallbacks are the former hardcoded dark values (the pre-toggle
+/// look); a theme that omits a named color keeps them.
+pub fn palette(widget: &impl gtk4::prelude::IsA<gtk4::Widget>) -> Palette {
+    use gtk4::prelude::*;
+    let lookup = |name: &str, fb: (f64, f64, f64)| {
+        widget
+            .style_context()
+            .lookup_color(name)
+            .map(|c| {
+                (
+                    f64::from(c.red()),
+                    f64::from(c.green()),
+                    f64::from(c.blue()),
+                )
+            })
+            .unwrap_or(fb)
+    };
+    Palette {
+        base: lookup("theme_base_color", (0.13, 0.13, 0.15)),
+        window_bg: lookup("theme_bg_color", (0.18, 0.18, 0.21)),
+        fg: lookup("theme_fg_color", (0.88, 0.88, 0.9)),
+        selected_bg: lookup("theme_selected_bg_color", (0.2, 0.38, 0.62)),
+        selected_fg: lookup("theme_selected_fg_color", (1.0, 1.0, 1.0)),
+    }
+}
+
+/// Queues a redraw when the dark preference flips — a DrawingArea's
+/// cairo output is not style-driven, so GTK does not invalidate it on
+/// a theme change; the view palettes must re-resolve by redrawing.
+pub fn redraw_on_theme_change(widget: &impl gtk4::prelude::IsA<gtk4::Widget>) {
+    use gtk4::prelude::*;
+    if let Some(settings) = gtk4::Settings::default() {
+        let widget = widget.clone();
+        settings.connect_notify_local(Some("gtk-application-prefer-dark-theme"), move |_, _| {
+            widget.queue_draw()
+        });
     }
 }

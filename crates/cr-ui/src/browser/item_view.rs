@@ -44,20 +44,14 @@ use super::view_state::ViewState;
 /// The type-ahead buffer reset (`KeySearch`).
 const TYPE_AHEAD_RESET_MS: u64 = 2500;
 
-/// The theme colors (dark, matching `theme.rs`; the C# uses the
-/// system colors).
-const BG: (f64, f64, f64) = (0.13, 0.13, 0.15);
-const TEXT: (f64, f64, f64) = (0.88, 0.88, 0.9);
-const SELECT_BG: (f64, f64, f64) = (0.2, 0.38, 0.62);
-const SELECT_TEXT: (f64, f64, f64) = (1.0, 1.0, 1.0);
+/// The focus ring when the view does not hold focus (a neutral gray
+/// that reads on both themes — the palette colors cover the rest).
 const FOCUS_UNFOCUSED: (f64, f64, f64) = (0.5, 0.5, 0.55);
 /// The Ctrl+wheel size limits + step (`Program.Min/MaxThumbHeight`,
 /// the wheel steps 16 — `itemView_MouseWheel`).
 const MIN_THUMB_SIZE: f64 = 96.0;
 const MAX_THUMB_SIZE: f64 = 512.0;
 const THUMB_WHEEL_STEP: f64 = 16.0;
-const GROUP_BG: (f64, f64, f64) = (0.18, 0.18, 0.21);
-const HEADER_BG: (f64, f64, f64) = (0.2, 0.2, 0.23);
 
 type ActivateFn = Box<dyn Fn(&CrGuid)>;
 type SelectionFn = Box<dyn Fn(usize)>;
@@ -229,6 +223,10 @@ impl ItemView {
     pub fn create(pool: Arc<ImagePool>) -> ItemViewWidgets {
         let canvas = DrawingArea::new();
         canvas.set_focusable(true);
+        // The palette is resolved per frame from the theme colors —
+        // a dark/light flip must re-draw (GTK does not invalidate a
+        // custom cairo draw on a theme change).
+        crate::theme::redraw_on_theme_change(&canvas);
         let scroller = ScrolledWindow::builder()
             .child(&canvas)
             .hscrollbar_policy(gtk4::PolicyType::Automatic)
@@ -1025,8 +1023,11 @@ fn draw_frame(ctx: &cairo::Context, state: &Rc<RefCell<ItemViewState>>, window: 
     if (window.w - s.config.view_width).abs() > 0.5 {
         s.relayout(window.w);
     }
-    let (bg_r, bg_g, bg_b) = BG;
-    ctx.set_source_rgb(bg_r, bg_g, bg_b);
+    // The theme palette (the C# `SystemColors` parity) — resolved
+    // fresh every frame, so a dark/light flip re-styles on the next
+    // draw.
+    let pal = crate::theme::palette(&s.canvas);
+    ctx.set_source_rgb(pal.base.0, pal.base.1, pal.base.2);
     ctx.paint().ok();
 
     // Queue thumb loads for the visible set.
@@ -1039,10 +1040,10 @@ fn draw_frame(ctx: &cairo::Context, state: &Rc<RefCell<ItemViewState>>, window: 
             continue;
         }
         let group = &s.view.groups()[gh.group];
-        ctx.set_source_rgb(GROUP_BG.0, GROUP_BG.1, GROUP_BG.2);
+        ctx.set_source_rgb(pal.window_bg.0, pal.window_bg.1, pal.window_bg.2);
         ctx.rectangle(gh.rect.x, gh.rect.y, gh.rect.w, gh.rect.h);
         ctx.fill().ok();
-        ctx.set_source_rgb(TEXT.0, TEXT.1, TEXT.2);
+        ctx.set_source_rgb(pal.fg.0, pal.fg.1, pal.fg.2);
         ctx.select_font_face("Sans", cairo::FontSlant::Normal, cairo::FontWeight::Normal);
         ctx.set_font_size(13.0 * 1.15);
         let collapsed_mark = if group.collapsed { "▸ " } else { "▾ " };
@@ -1054,10 +1055,10 @@ fn draw_frame(ctx: &cairo::Context, state: &Rc<RefCell<ItemViewState>>, window: 
     // Detail column header strip.
     if layout::header_visible(&s.config) {
         let header = Rect::new(0.0, 0.0, s.config.view_width, s.config.header_height);
-        ctx.set_source_rgb(HEADER_BG.0, HEADER_BG.1, HEADER_BG.2);
+        ctx.set_source_rgb(pal.window_bg.0, pal.window_bg.1, pal.window_bg.2);
         ctx.rectangle(header.x, header.y, header.w, header.h);
         ctx.fill().ok();
-        ctx.set_source_rgb(TEXT.0, TEXT.1, TEXT.2);
+        ctx.set_source_rgb(pal.fg.0, pal.fg.1, pal.fg.2);
         ctx.select_font_face("Sans", cairo::FontSlant::Normal, cairo::FontWeight::Normal);
         ctx.set_font_size(12.0);
         // All visible columns — the same list the cells draw (the
@@ -1081,26 +1082,26 @@ fn draw_frame(ctx: &cairo::Context, state: &Rc<RefCell<ItemViewState>>, window: 
         let rect = item.rect;
 
         if selected {
-            ctx.set_source_rgb(SELECT_BG.0, SELECT_BG.1, SELECT_BG.2);
+            ctx.set_source_rgb(pal.selected_bg.0, pal.selected_bg.1, pal.selected_bg.2);
             ctx.rectangle(rect.x - 2.0, rect.y - 2.0, rect.w + 4.0, rect.h + 4.0);
             ctx.fill().ok();
         }
 
         match s.config.mode {
             ItemViewMode::Thumbnail => {
-                draw_thumbnail_item(ctx, &mut s, item.display, rect, selected);
+                draw_thumbnail_item(ctx, &mut s, item.display, rect, selected, &pal);
             }
             ItemViewMode::Tile => {
-                draw_tile_item(ctx, &mut s, item.display, rect, selected);
+                draw_tile_item(ctx, &mut s, item.display, rect, selected, &pal);
             }
             ItemViewMode::Detail => {
-                draw_detail_item(ctx, &mut s, item.display, rect, selected);
+                draw_detail_item(ctx, &mut s, item.display, rect, selected, &pal);
             }
         }
 
         if focused {
             let (r, g, b) = if s.canvas.has_focus() {
-                SELECT_BG
+                pal.selected_bg
             } else {
                 FOCUS_UNFOCUSED
             };
@@ -1119,7 +1120,7 @@ fn draw_frame(ctx: &cairo::Context, state: &Rc<RefCell<ItemViewState>>, window: 
 
     // The rubber band (translucent highlight, inflated −2).
     if let Some(band) = s.band {
-        ctx.set_source_rgba(SELECT_BG.0, SELECT_BG.1, SELECT_BG.2, 0.3);
+        ctx.set_source_rgba(pal.selected_bg.0, pal.selected_bg.1, pal.selected_bg.2, 0.3);
         ctx.rectangle(band.x - 2.0, band.y - 2.0, band.w + 4.0, band.h + 4.0);
         ctx.fill().ok();
     }
@@ -1133,8 +1134,9 @@ fn draw_thumbnail_item(
     display: usize,
     rect: Rect,
     selected: bool,
+    pal: &crate::theme::Palette,
 ) {
-    let (tr, tg, tb) = if selected { SELECT_TEXT } else { TEXT };
+    let (tr, tg, tb) = if selected { pal.selected_fg } else { pal.fg };
     let image_area_h = rect.h - label_height(&s.config);
     let image_area = Rect::new(rect.x, rect.y, rect.w, image_area_h);
     let book = s.view.book(display);
@@ -1144,9 +1146,9 @@ fn draw_thumbnail_item(
         Some(ThumbState::Failed) => error_surface(),
         None => None,
     };
-    // The dark placeholder until the load lands.
+    // The placeholder until the load lands.
     if thumb.is_none() {
-        ctx.set_source_rgb(0.08, 0.08, 0.09);
+        ctx.set_source_rgb(pal.window_bg.0, pal.window_bg.1, pal.window_bg.2);
         ctx.rectangle(
             image_area.x + 8.0,
             image_area.y + 8.0,
@@ -1225,8 +1227,9 @@ fn draw_tile_item(
     display: usize,
     rect: Rect,
     selected: bool,
+    pal: &crate::theme::Palette,
 ) {
-    let (tr, tg, tb) = if selected { SELECT_TEXT } else { TEXT };
+    let (tr, tg, tb) = if selected { pal.selected_fg } else { pal.fg };
     // Cover: the left half; text: the right side (`DrawTile`).
     let image_area = Rect::new(rect.x, rect.y, rect.w / 2.0, rect.h);
     let book = s.view.book(display);
@@ -1237,7 +1240,7 @@ fn draw_tile_item(
         None => None,
     };
     if thumb.is_none() {
-        ctx.set_source_rgb(0.08, 0.08, 0.09);
+        ctx.set_source_rgb(pal.window_bg.0, pal.window_bg.1, pal.window_bg.2);
         ctx.rectangle(
             image_area.x + 4.0,
             image_area.y + 4.0,
@@ -1429,8 +1432,9 @@ fn draw_detail_item(
     display: usize,
     rect: Rect,
     selected: bool,
+    pal: &crate::theme::Palette,
 ) {
-    let (tr, tg, tb) = if selected { SELECT_TEXT } else { TEXT };
+    let (tr, tg, tb) = if selected { pal.selected_fg } else { pal.fg };
     ctx.set_source_rgb(tr, tg, tb);
     ctx.select_font_face("Sans", cairo::FontSlant::Normal, cairo::FontWeight::Normal);
     ctx.set_font_size(12.0);

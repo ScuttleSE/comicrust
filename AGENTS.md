@@ -298,11 +298,26 @@ Update this section at the **end of every work session**. The next agent must kn
   merge-writer into the LAST chain file). `Themes::Default` =
   LIGHT (C# parity) — the app STARTS LIGHT on an existing config;
   `-dark`/`-theme Dark` still work. `.placeholder-label` mid-gray
-  (both-theme readable); the reader CSS stays dark in both (the C#
+  (both-theme readable); the   reader CSS stays dark in both (the C#
   reader paints its own background). `menubar_probe` gained the
   dark-click gate; `commands_probe` 70/70; 317 tests. Deviation
   recorded in the kickoff tracker ("Addition — Dark/Light mode
   toggle").
+  FIX ROUND 1 (user report: the ItemView grid + the Pages panel
+  stayed dark in light mode): the two views drew hardcoded dark
+  palettes. `theme::Palette` resolves the GTK named colors
+  (`theme_base_color`/`theme_bg_color`/`theme_fg_color`/
+  `theme_selected_*`) per DRAW CALL through the widget style
+  context (the C# `SystemColors` parity — `ThemeColors.ItemView.
+  DefaultBack` = `SystemColors.Window`; no cache to invalidate);
+  `theme::redraw_on_theme_change` queue-draws the two canvases on
+  the prefer-dark notify (GTK does not invalidate custom cairo
+  draws on a theme flip). The reader PAGE SURFACE stays dark in
+  both themes BY PARITY (the C# `ImageDisplayControl.Initialize
+  Component` sets `BackColor = Color.Black` unconditionally; the
+  reader background is the Auto/Color/Texture setting, not the
+  theme) — the dead `window.reader-window`/`.reader-page-area`
+  CSS rules (no widget carried the classes) are removed.
   **Next: T8 (the status bar).** Phase 6 (scripting) starts only
   after 5.5.
   Phases 0-5 are complete (their gates stay green). Open Phase 1
