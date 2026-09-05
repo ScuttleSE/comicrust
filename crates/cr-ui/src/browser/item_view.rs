@@ -22,6 +22,7 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 
+use gtk4::gdk;
 use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::{
@@ -50,6 +51,11 @@ const TEXT: (f64, f64, f64) = (0.88, 0.88, 0.9);
 const SELECT_BG: (f64, f64, f64) = (0.2, 0.38, 0.62);
 const SELECT_TEXT: (f64, f64, f64) = (1.0, 1.0, 1.0);
 const FOCUS_UNFOCUSED: (f64, f64, f64) = (0.5, 0.5, 0.55);
+/// The Ctrl+wheel size limits + step (`Program.Min/MaxThumbHeight`,
+/// the wheel steps 16 — `itemView_MouseWheel`).
+const MIN_THUMB_SIZE: f64 = 96.0;
+const MAX_THUMB_SIZE: f64 = 512.0;
+const THUMB_WHEEL_STEP: f64 = 16.0;
 const GROUP_BG: (f64, f64, f64) = (0.18, 0.18, 0.21);
 const HEADER_BG: (f64, f64, f64) = (0.2, 0.2, 0.23);
 
@@ -298,6 +304,52 @@ impl ItemView {
         // Mouse: select / band / activate / group toggle.
         iv.install_click_controller();
         iv.install_key_controller();
+
+        // Ctrl+wheel resize (`ComicBrowserControl.
+        // itemView_MouseWheel`: steps 16 within [96, 512]; Detail
+        // mode keeps scrolling — the C# `ItemViewMode != Detail`
+        // gate).
+        {
+            let state = Rc::downgrade(&state);
+            let canvas_for_ctrl = canvas.clone();
+            let controller = gtk4::EventControllerScroll::new(
+                gtk4::EventControllerScrollFlags::VERTICAL
+                    | gtk4::EventControllerScrollFlags::DISCRETE,
+            );
+            controller.connect_scroll(move |controller, _dx, dy| {
+                let Some(state) = state.upgrade() else {
+                    return glib::Propagation::Proceed;
+                };
+                let ctrl = controller
+                    .current_event_state()
+                    .contains(gdk::ModifierType::CONTROL_MASK);
+                if !ctrl {
+                    return glib::Propagation::Proceed;
+                }
+                let detail = state.borrow().config.mode == ItemViewMode::Detail;
+                if detail {
+                    return glib::Propagation::Proceed;
+                }
+                let step = if dy < 0.0 {
+                    THUMB_WHEEL_STEP
+                } else {
+                    -THUMB_WHEEL_STEP
+                };
+                {
+                    let mut s = state.borrow_mut();
+                    s.config.thumb_height =
+                        (s.config.thumb_height + step).clamp(MIN_THUMB_SIZE, MAX_THUMB_SIZE);
+                    let width = s.config.view_width;
+                    s.relayout(width);
+                    // The tile segments carry per-cell font sizes.
+                    s.tile_render.clear();
+                }
+                update_size_request(&state, &canvas_for_ctrl);
+                canvas_for_ctrl.queue_draw();
+                glib::Propagation::Stop
+            });
+            canvas.add_controller(controller);
+        }
 
         ItemViewWidgets { scroller, view: iv }
     }

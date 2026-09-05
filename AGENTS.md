@@ -226,8 +226,13 @@ Update this section at the **end of every work session**. The next agent must kn
   Window/Tab, Favorites, Pages Details/groups/filter/sort).
   `navpages_probe` gates the dispatch, the 9→1→9 filter, the
   expand flip, the Views OPEN gate + the radio click + the
-  main-click cycle; 314 tests.
-  **Next: the T7 user test, then T8 (the status bar).** Phase 6
+  main-click cycle; 314 tests. T7 fix round 1 (user report:
+  Ctrl+wheel dead): the resize handlers were never wired — both
+  grids now carry a DISCRETE scroll controller (Ctrl = ±16 resize
+  + Stop, the `ItemViewMouseWheel`/`itemView_MouseWheel` parity;
+  Detail mode keeps scrolling), pages Tile scales with the same
+  height. **Next: the T7 retest (Ctrl+wheel), then T8 (the status
+  bar).** Phase 6
   (scripting) starts only after 5.5.
   Phases 0-5 are complete (their gates stay green). Open Phase 1
   gaps: WebComicProvider and the PDF/DjVu writers (tracked in

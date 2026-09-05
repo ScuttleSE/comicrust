@@ -32,9 +32,10 @@ use std::collections::HashMap;
 use std::rc::Rc;
 use std::sync::Arc;
 
+use gtk4::gdk;
 use gtk4::glib;
 use gtk4::prelude::*;
-use gtk4::{cairo, DrawingArea, GestureClick, ScrolledWindow};
+use gtk4::{cairo, DrawingArea, EventControllerScroll, GestureClick, ScrolledWindow};
 
 use cr_core::model::comic_book::ComicBook;
 use cr_core::model::enums::ImageRotation;
@@ -437,6 +438,40 @@ impl PagesPanel {
                 canvas_for_grab.queue_draw();
             });
             canvas.add_controller(gesture);
+        }
+
+        // Ctrl+wheel resize (`PagesView.ItemViewMouseWheel`: steps
+        // 16 within [96, 512]; both grid modes scale — the tile cell
+        // reads the thumb height). Without Ctrl the event proceeds
+        // (the panel scrolls).
+        {
+            let state = Rc::downgrade(&state);
+            let controller = EventControllerScroll::new(
+                gtk4::EventControllerScrollFlags::VERTICAL
+                    | gtk4::EventControllerScrollFlags::DISCRETE,
+            );
+            controller.connect_scroll(move |controller, _dx, dy| {
+                let Some(state) = state.upgrade() else {
+                    return glib::Propagation::Proceed;
+                };
+                let ctrl = controller
+                    .current_event_state()
+                    .contains(gdk::ModifierType::CONTROL_MASK);
+                if !ctrl {
+                    return glib::Propagation::Proceed;
+                }
+                let step = if dy < 0.0 { 16.0 } else { -16.0 };
+                {
+                    let mut s = state.borrow_mut();
+                    s.thumb_height = (s.thumb_height + step).clamp(MIN_THUMB, MAX_THUMB);
+                    let width = s.canvas.width() as f64;
+                    let content = s.content_height(width);
+                    s.canvas.set_content_height(content as i32);
+                }
+                state.borrow().canvas.queue_draw();
+                glib::Propagation::Stop
+            });
+            canvas.add_controller(controller);
         }
 
         PagesPanelWidgets { widget, panel }

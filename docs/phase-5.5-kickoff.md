@@ -1648,3 +1648,14 @@ owns the Phase 5.5 omissions).
   expand-all gate read 0 for the folder on row 2 — a stack walk
   missing the sibling advance); the fixed walk mirrors the
   count_rows shape (outer sibling loop + recursive children).
+- T7 FIX ROUND 1 (2026-09-05), user report: Ctrl+wheel did
+  nothing. Root cause: the resize handlers were NEVER wired —
+  `PagesPanel::resize` existed but nothing called it, and the
+  browser grid had no handler at all (the C# has BOTH:
+  `PagesView.ItemViewMouseWheel` and `ComicBrowserControl.
+  itemView_MouseWheel`, steps 16 within [96, 512], skipped only
+  in Detail mode). Fix: a DISCRETE vertical scroll controller on
+  each canvas — Ctrl resizes (+16 up / −16 down, the C# Delta
+  sign) and STOPS the event, no modifier proceeds (the panel
+  scrolls). No probe gate: the wheel path is only user-testable
+  (the Phase 3 lesson — xdotool produces no GTK scroll events).
