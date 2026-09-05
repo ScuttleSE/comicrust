@@ -942,9 +942,21 @@ Re-bless the `db-large.xml` snapshot after a deliberate model change: `CR_BLESS=
   `GtkPopoverMenuBar.set_active_item` shape: one active slot,
   popdown-ALL-others-then-popup, close clears the slot. X11
   tolerates parallel popovers, so Xvfb probes CANNOT catch this —
-  the user test is the only evidence. Grab-focus-on-map belongs
+  the user test is the only evidence.   Grab-focus-on-map belongs
   in an idle, not the map callback (it runs inside the grab
   setup).
+- `gtk_widget_activate_action` (and gtk4-rs's `activate_action`)
+  resolves actions through action GROUPS — pass the FULL detailed
+  name (`"win.next-page"`, radio `"win.page-fit::original"` +
+  the value as the explicit parameter); a stripped bare name
+  matches no group and fails SILENTLY. Accels keep working while
+  every widget-path click dies (the T3 round-2 bug: Ctrl+N turned
+  pages, the menu item did nothing) — gate the row-click path in
+  a probe (`MenubarWidget::click_row` walks the real handler).
+- Probe handles that clone a widget struct must SHARE the
+  widget-holding fields (`Rc<Vec<ItemRow>>`), never copy-with-
+  empty — a `clone_handle` that drops the rows silently loses
+  click AND sync (the menubar probe needed it).
 
 ### Blockers / open questions
 
