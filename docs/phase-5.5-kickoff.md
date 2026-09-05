@@ -2027,6 +2027,26 @@ the C# Auto mode gives on white comics.
   statusbar probe now REFUSES to run without
   `XDG_DATA_HOME=/tmp/opencode/...` (it seeds books into the DB it
   opens).
+- T8 FIX ROUND 2 (2026-09-05), user clarification of finding 1:
+  "clicking a PAGE in the open comic" — not the tab strip. The
+  reader's left-click carries the `ShowBrowser` command
+  (`MainForm.cs:1585` — MouseLeft + Escape); the port forwarded it
+  to `toggle_browser` → the workspace switched (Pages after my
+  round-1 change, Library before). C# evidence:
+  `ToggleBrowserFromReader` (MainForm.cs:2133-2144) runs the
+  BROWSER toggle only with the `MouseSwitchesToFullLibrary`
+  extended setting; the default Fill-mode branch flips
+  **MinimalGui**. Fix: the shell's ShowBrowser forward now flips
+  MinimalGui (`dispatch_current("ToggleMenu")`) unless
+  `mouse_switches_to_full_library` is set (already ported, default
+  false). The reader double-click → Full Screen mapping matches the
+  C# (MainForm.cs:1664) — no change. Gate: the tabstrip probe's J
+  step dispatches the reader command through the real forward —
+  the menubar flips true→false→true and the workspace STAYS on the
+  reader.
+  **RETEST:** open a comic, click the page — the chrome collapses
+  to the page (MinimalGui); click again — it returns. The
+  workspace must never switch on a page click.
   **RETEST:** items 1 (click an open comic's tab — the page shows,
   no Library flip), 3 (F10/K toggles the MinimalGui chrome), 4
   (turn pages with the wheel — the page panel follows) and the tab

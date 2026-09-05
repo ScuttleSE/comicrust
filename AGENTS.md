@@ -390,6 +390,15 @@ Update this section at the **end of every work session**. The next agent must kn
   REFUSES without `XDG_DATA_HOME=/tmp/opencode/...` (it seeds
   books into the DB it opens). Retest: the tab click, F10/K, the
   page panel on turns, the tab highlight.
+  T8 FIX ROUND 2 (2026-09-05), user clarification: the reader page
+  CLICK is the `ShowBrowser` command (MainForm.cs:1585 — MouseLeft
+  + Escape) → `ToggleBrowserFromReader` (2133-2144): Fill mode
+  flips MINIMAL GUI, the browser toggle only with the
+  `MouseSwitchesToFullLibrary` setting. The port's forward now
+  dispatches ToggleMenu (MinimalGui) — the workspace never
+  switches on a page click. Double-click → Full Screen matches the
+  C# (1664). Gate: the tabstrip probe's J step (menubar
+  true→false→true, page stays reader).
   **Next: T9 tail is done; after the T8 PASS, the phase continues
   with T10 (dock modes) or the remaining small tasks (T11 preview,
   T12 display settings, T13 dialogs, T14 persistence).** Phase 6
