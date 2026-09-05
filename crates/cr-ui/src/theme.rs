@@ -25,25 +25,50 @@ window.reader-window {
     background: rgba(128, 128, 128, 0.35);
 }
 
-/* The workspace tab strip (the C# TabBar row under the menubar). */
-.tabstrip .tab-btn {
-    padding: 2px 8px;
-    min-height: 20px;
+/* The workspace tab strip (the C# TabBar row under the menubar):
+   every item is one distinct bordered box; the selected one raises.
+   Boxes hug their content (valign Center + min-height 0 — the T9
+   user test: the row stretched the tabs around the text). The
+   embedded reader toolbar compacts to the row (the theme's default
+   button min-height + separator margins made the row 48 px). */
+.tabstrip .tab {
+    background: rgba(128, 128, 128, 0.22);
+    border: 1px solid rgba(128, 128, 128, 0.45);
+    border-radius: 4px;
+    padding: 1px 6px;
+    min-height: 0;
 }
 
 .tabstrip .tab-active {
-    background: rgba(128, 128, 128, 0.35);
+    background: rgba(128, 128, 128, 0.55);
 }
 
-.tabstrip .tab-bold {
-    font-weight: bold;
+.tabstrip button {
+    min-height: 0;
+    padding-top: 2px;
+    padding-bottom: 2px;
+}
+
+.tabstrip separator {
+    margin-top: 0;
+    margin-bottom: 0;
+}
+
+/* The caption zone inside a comic-tab box. */
+.tabstrip .tab-inner {
+    padding: 1px 2px;
+    min-height: 0;
 }
 
 .tabstrip .tab-close {
     padding: 0;
-    min-width: 16px;
-    min-height: 16px;
+    min-width: 14px;
+    min-height: 14px;
     margin-left: 2px;
+}
+
+.tabstrip .tab-bold {
+    font-weight: bold;
 }
 "#;
 

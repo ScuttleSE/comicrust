@@ -104,6 +104,7 @@ impl TabStrip {
         widget.add_css_class("tabstrip");
         let items_box = gtk4::Box::new(Orientation::Horizontal, 2);
         items_box.set_hexpand(true);
+        items_box.set_valign(gtk4::Align::Center);
         // The right host: the reader toolbar docks here (the C#
         // `MainToolStripVisible = false` Fill rule).
         let host = gtk4::Box::new(Orientation::Horizontal, 0);
@@ -122,7 +123,8 @@ impl TabStrip {
         // The `+` tab (`Resources.AddTab`, Tag = -1 → `AddSlot`).
         let plus_btn = Button::new();
         plus_btn.add_css_class("flat");
-        plus_btn.add_css_class("tab-btn");
+        plus_btn.add_css_class("tab");
+        plus_btn.set_valign(gtk4::Align::Center);
         plus_btn.set_tooltip_text(Some("New Tab"));
         if let Some(texture) = crate::icon::icon("AddTab") {
             let img = Image::from_paintable(Some(&texture));
@@ -207,8 +209,16 @@ impl TabStrip {
     pub fn set_tabs(&self, infos: &[TabInfo]) {
         {
             let mut tabs = self.inner.comic_tabs.borrow_mut();
-            // Drop the closed slots.
-            tabs.retain(|t| infos.iter().any(|i| i.slot == t.slot));
+            // Drop the closed slots — the Rust handle is refcounted,
+            // so the widget must leave its parent EXPLICITLY (the
+            // T9 user test: the tab outlived its slot otherwise).
+            tabs.retain(|t| {
+                let keep = infos.iter().any(|i| i.slot == t.slot);
+                if !keep {
+                    self.inner.comic_box.remove(&t.root);
+                }
+                keep
+            });
             for info in infos {
                 match tabs.iter_mut().find(|t| t.slot == info.slot) {
                     Some(item) => {
@@ -263,7 +273,13 @@ impl TabStrip {
     }
 
     fn build_comic_tab(&self, info: &TabInfo) -> ComicTabItem {
+        // The tab BOX carries the look (one bordered box); the
+        // caption click and the close button live INSIDE it (the C#
+        // TabBar shape — the T9 user test: a sibling X looked
+        // disconnected).
         let root = gtk4::Box::new(Orientation::Horizontal, 0);
+        root.add_css_class("tab");
+        root.set_valign(gtk4::Align::Center);
         let child = gtk4::Box::new(Orientation::Horizontal, 6);
         let image = Image::new();
         image.set_pixel_size(TAB_THUMB_PX);
@@ -278,7 +294,7 @@ impl TabStrip {
         child.append(&label);
         let button = Button::new();
         button.add_css_class("flat");
-        button.add_css_class("tab-btn");
+        button.add_css_class("tab-inner");
         button.set_child(Some(&child));
         button.set_tooltip_text(Some(&info.caption));
         let close = Button::from_icon_name("window-close-symbolic");
@@ -412,6 +428,13 @@ impl TabStrip {
             .collect()
     }
 
+    /// The comic-tab WIDGETS in the row (the model/widget agreement
+    /// gate — dropping the Rust handle does not unparent a GTK
+    /// widget, which the first probe missed).
+    pub fn comic_tab_widgets(&self) -> usize {
+        self.inner.comic_box.observe_children().n_items() as usize
+    }
+
     pub fn selected(&self) -> TabId {
         self.inner.selected.borrow().clone()
     }
@@ -501,7 +524,8 @@ fn fire_select(weak: &Weak<Inner>, id: &TabId) {
 fn tab_button(label: &str, texture: Option<gdk::Texture>) -> Button {
     let button = Button::new();
     button.add_css_class("flat");
-    button.add_css_class("tab-btn");
+    button.add_css_class("tab");
+    button.set_valign(gtk4::Align::Center);
     let child = gtk4::Box::new(Orientation::Horizontal, 6);
     if let Some(texture) = texture {
         let img = Image::from_paintable(Some(&texture));

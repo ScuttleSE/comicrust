@@ -68,6 +68,9 @@ struct ShellState {
     item_view: ItemView,
     quick_view: ItemView,
     pages: PagesPanel,
+    /// The full-window Pages workspace page (the probe measures its
+    /// allocation — the full-window layout gate).
+    pages_page: gtk4::Box,
     /// The navigator pane host — the Sidebar toggle target (the C#
     /// `tbSidebar` collapses the left pane).
     nav_box: gtk4::Box,
@@ -96,11 +99,9 @@ struct ShellState {
     /// repeats until the list changed or the cycle wrapped).
     random_list: RefCell<Vec<CrGuid>>,
     random_picked: RefCell<Vec<CrGuid>>,
-    /// The main-window menubar (Phase 5.5 T3; visibility is the
-    /// `OnGuiVisibilities` rule).
+    /// The main-window menubar (Phase 5.5 T3; the T14
+    /// layout persistence and the probes reach it here).
     menubar: super::menubar::MenubarWidget,
-    /// The Alt-reveal override (the `AutoHideMainMenu` toggle).
-    menubar_revealed: Cell<bool>,
     /// The reader toolbar (the T5 `mainToolStrip`).
     toolbar: super::toolbar::ReaderToolbar,
     /// The reader page box (the toolbar's docked parent — the
@@ -345,6 +346,7 @@ impl BrowserShell {
         paned.set_start_child(Some(&nav_box));
         paned.set_shrink_start_child(false);
         paned.set_position(280);
+        paned.set_vexpand(true);
         let status = Label::builder()
             .halign(gtk4::Align::Start)
             .valign(gtk4::Align::Center)
@@ -377,14 +379,20 @@ impl BrowserShell {
             .build();
         quick_page.append(&quick_label);
         quick_page.append(&quick_scroller);
+        quick_scroller.set_vexpand(true);
 
         // The workspace stack — the full-window tab contents (the C#
         // `MainView.ShowView`): quick open ⇄ browser ⇄ Pages ⇄
         // reader. The Pages workspace is a full-window tab now (the
-        // `ComicPagesView` shape), not a left-panel mini tab.
+        // `ComicPagesView` shape), not a left-panel mini tab. The
+        // stack EXPANDS: it owns the window below the bars (the T9
+        // user test: the Pages page collapsed to its toolbar
+        // without this).
         let stack = Stack::new();
         stack.set_vhomogeneous(false);
         stack.set_hhomogeneous(false);
+        stack.set_vexpand(true);
+        stack.set_hexpand(true);
         stack.add_named(&quick_page, Some("quickopen"));
         stack.add_named(&browser_page, Some("browser"));
         let pages_page = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
@@ -423,6 +431,7 @@ impl BrowserShell {
             item_view,
             quick_view,
             pages,
+            pages_page: pages_page.clone(),
             nav_box,
             reader_page_box: tab_strip.host().clone(),
             tab_strip,
@@ -437,7 +446,6 @@ impl BrowserShell {
             random_list: RefCell::new(Vec::new()),
             random_picked: RefCell::new(Vec::new()),
             menubar,
-            menubar_revealed: Cell::new(false),
             toolbar,
             browser_toolbar,
             search_text: RefCell::new(String::new()),
@@ -470,6 +478,13 @@ impl BrowserShell {
     /// here).
     pub fn tabstrip(&self) -> super::tabstrip::TabStrip {
         self.state.tab_strip.clone()
+    }
+
+    /// Probe: the allocated heights of the workspace stack and the
+    /// Pages page (the full-window layout gate — the T9 user test
+    /// caught the Pages page at its toolbar's height).
+    pub fn state_workspace_heights(&self) -> (i32, i32) {
+        (self.state.stack.height(), self.state.pages_page.height())
     }
 
     /// The main window handle.
@@ -1379,31 +1394,19 @@ impl ShellState {
         self.sync_menubar();
     }
 
-    /// Applies the menubar visibility rule (`OnGuiVisibilities`
-    /// Fill-mode parity — `menubar::menubar_visible`) plus the T5
-    /// toolbar visibility (MinimalGui hides the strip; the
-    /// reader-only buttons need a book).
+    /// Applies the chrome visibility rules plus the T5 toolbar
+    /// visibility. The MENUBAR shows ALWAYS in the normal windowed
+    /// state (user decision 2026-09-05: the C# `AutoHideMainMenu`
+    /// auto-hide and the Alt-alone reveal are not ported — the C#
+    /// rule lives on in `menubar::menubar_visible` + its tests for
+    /// the record); MinimalGui/fullscreen chrome still hide it.
     fn update_menubar(&self) {
         let minimal = self.reader.is_minimal_gui();
         let undocked = self.reader.is_undocked();
         let is_comic_viewer = self.stack.visible_child_name().as_deref() == Some("reader");
         let open_books = self.reader.open_book_count();
-        let (auto_hide, show_no_comic) = {
-            let s = cr_ui_settings();
-            let b = s.borrow();
-            (b.auto_hide_main_menu, b.show_main_menu_no_comic_open)
-        };
-        let revealed = self.menubar_revealed.get();
-        let visible = super::menubar::menubar_visible(
-            minimal,
-            undocked,
-            is_comic_viewer,
-            open_books > 0,
-            auto_hide,
-            show_no_comic,
-            revealed,
-        );
-        self.menubar.widget().set_visible(visible);
+        let show_no_comic = cr_ui_settings().borrow().show_main_menu_no_comic_open;
+        self.menubar.widget().set_visible(!minimal);
         // The tab strip + the status strip ride the Fill-mode `flag4`
         // (`OnGuiVisibilities`: `mainView.TabBarVisible` and
         // `statusStripVisibility.Visible` share it).
@@ -3026,11 +3029,9 @@ impl ShellState {
     }
 
     /// The menubar wiring (Phase 5.5 T3): the chrome-visibility hook
-    /// (fullscreen enter/leave, MinimalGui) and the `AutoHideMainMenu`
-    /// Alt reveal — Alt pressed and released ALONE toggles the
-    /// reveal (`MainForm.OnKeyUp`; the 500 ms re-close debounce is
-    /// not ported). GTK4 has no way to OPEN a PopoverMenuBar from
-    /// code, so the C#'s "select the first item" step is not ported.
+    /// (fullscreen enter/leave, MinimalGui). The `AutoHideMainMenu`
+    /// Alt-alone reveal was REMOVED (the T9 user decision: the
+    /// menubar shows always — no reveal shortcut).
     fn install_menubar_keys(self: &Rc<ShellState>) {
         // Chrome changes (fullscreen notify, MinimalGui toggles) →
         // the menubar rule re-evaluates with the sync.
@@ -3042,40 +3043,6 @@ impl ShellState {
                 }
             });
         }
-        // Alt alone reveals/hides the auto-hidden menubar.
-        let alt_alone = Rc::new(Cell::new(false));
-        let controller = gtk4::EventControllerKey::new();
-        {
-            let alt_alone = Rc::clone(&alt_alone);
-            controller.connect_key_pressed(move |_c, key, _code, _mods| {
-                alt_alone.set(matches!(key, gtk4::gdk::Key::Alt_L | gtk4::gdk::Key::Alt_R));
-                glib::Propagation::Proceed
-            });
-        }
-        {
-            let state = Rc::downgrade(self);
-            controller.connect_key_released(move |_c, key, _code, _mods| {
-                if !matches!(key, gtk4::gdk::Key::Alt_L | gtk4::gdk::Key::Alt_R) {
-                    return;
-                }
-                if !alt_alone.replace(false) {
-                    return; // Another key sat between press and release.
-                }
-                let Some(sh) = state.upgrade() else {
-                    return;
-                };
-                // `enableAutoHideMenu` parity: only while auto-hidden
-                // and not minimal.
-                let minimal = sh.reader.is_minimal_gui();
-                let auto_hide = cr_ui_settings().borrow().auto_hide_main_menu;
-                if !auto_hide || minimal {
-                    return;
-                }
-                sh.menubar_revealed.set(!sh.menubar_revealed.get());
-                sh.update_menubar();
-            });
-        }
-        self.window.add_controller(controller);
     }
 
     /// Registers one STATEFUL check action (`CommandMapper.Add(...

@@ -271,10 +271,27 @@ Update this section at the **end of every work session**. The next agent must kn
   modes deferred (T10). Probe `tabstrip_probe` gates the whole
   flow; `navpages_probe` gained the pages-workspace step (the
   Views drop needs a MAPPED anchor); all other probes stay green;
-  315 tests. Deviations in the kickoff tracker (no tab context
-  menu, no drag-reorder, silent empty slot, one undocked reader).
-  **Next: T8 (the status bar) — user test of T9 first.** Phase 6
-  (scripting) starts only after 5.5.
+  315 tests. T9 FIX ROUND 1 (user report, six items): tabs too
+  tall (valign Center + `min-height: 0` + a scoped `.tabstrip
+  button` compaction — the row went 48→36 px, the probe gates
+  < 40), tabs now DISTINCT boxes (`.tab` border/background, the
+  caption click + the close button INSIDE one box), the menubar
+  ALWAYS visible (AutoHideMainMenu + the Alt-alone reveal REMOVED —
+  this also resolves the deferred T3 hide-rule observation; the
+  setting stays in the schema but no longer drives visibility),
+  the X-close bug (retain dropped only the Rust handle — a GTK
+  widget leaves its parent only via an explicit remove; the probe
+  now gates slots == WIDGETS), and the Pages workspace collapse
+  (the stack/paned/scrollers need vexpand; the probe gates stack-h
+  == pages-h). Probe lessons: the probes never loaded the theme
+  CSS (`theme::init` lives in `app::run`) — CSS-dependent gates
+  measured unstyled defaults until the probe loads it; and an
+  allocation read in the SAME tick as the widget switch reads
+  stale — measure one frame later. Deviations in the kickoff
+  tracker (no tab context menu, no drag-reorder, silent empty
+  slot, one undocked reader).
+  **Next: T8 (the status bar) — user test of the T9 fix round
+  first.** Phase 6 (scripting) starts only after 5.5.
   Phases 0-5 are complete (their gates stay green). Open Phase 1
   gaps: WebComicProvider and the PDF/DjVu writers (tracked in
   `docs/phase-1-kickoff.md`).

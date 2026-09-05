@@ -227,6 +227,10 @@ impl PagesPanel {
             .hscrollbar_policy(gtk4::PolicyType::Never)
             .vscrollbar_policy(gtk4::PolicyType::Automatic)
             .build();
+        // The scroller owns the page below the toolbar (the T9
+        // full-window placement: without expand the workspace page
+        // collapses to its toolbar's height).
+        scroller.set_vexpand(true);
 
         // The control's own toolbar (`ComicPagesView.toolStrip`):
         // the Views split button (main click cycles the mode — the

@@ -1790,3 +1790,43 @@ did not follow that model.
   port HIDES the comic tabs while undocked (`fileTab.Visible`
   parity) and shows the last browser workspace — a deliberate
   simplification carried from Phase 4 (one undocked reader).
+- T9 FIX ROUND 1 (2026-09-05), user report, six items:
+  1. Tabs too tall (dead space around the text) — the strip row
+     stretched its children (valign fill) and the embedded reader
+     toolbar's theme-default button min-heights made the row 48 px.
+     Fix: valign Center + `min-height: 0` on the tab boxes and a
+     scoped `.tabstrip button/separator` compaction; the row
+     measures 36 px (the probe gates strip < 40).
+  2. Tabs blended together — the comic tabs were a BARE button
+     pair; now every tab is one bordered box (`.tab`: background +
+     border + radius; `.tab-active` raises).
+  3. The menubar must ALWAYS be visible — the `AutoHideMainMenu`
+     auto-hide AND the Alt-alone reveal are REMOVED (the
+     `menubar::menubar_visible` C# formula + its tests stay for the
+     record; the shell shows the menubar unless MinimalGui). This
+     also RESOLVES the deferred T3 observation (the menubar hiding
+     in the browser with a book open — no longer ported behavior).
+     The `AutoHideMainMenu`/Show-Main-Menu settings remain in the
+     schema + Preferences but no longer drive visibility
+     (re-homed here from T3's omissions).
+  4. The X closed the comic but the TAB stayed — `set_tabs`' retain
+     dropped only the Rust handle; a GTK widget stays in its parent
+     until removed EXPLICITLY. Fix: retain removes the root from
+     the row. The probe now gates the WIDGET count too (slots ==
+     widgets) — the first probe missed it because it read only the
+     slot vec.
+  5. The X sat OUTSIDE the tab box — the comic tab is now one box
+     (`.tab`) with the caption click AND the close button inside it
+     (the C# TabBar shape).
+  6. The Pages workspace collapsed to one toolbar's height — the
+     workspace stack had no vexpand (and the Pages scroller
+     neither). Fix: the stack + paned + the Pages/QuickOpen
+     scrollers expand; the probe gates stack-h == pages-h > 300.
+  - PROBE LESSON: the probes never loaded the theme CSS
+    (`theme::init` runs in `app::run` only) — every CSS-dependent
+    gate measured UNSTYLED defaults until the probe calls
+    `cr_ui::theme::init()` itself (the height gates "worked" against
+    the wrong widget tree). `tabstrip_probe` now loads it.
+  - PROBE LESSON: an allocation read in the SAME timeout tick as
+    the widget switch reads 0/STALE — measure one frame later (the
+    F step split into F + F2 at +300 ms).

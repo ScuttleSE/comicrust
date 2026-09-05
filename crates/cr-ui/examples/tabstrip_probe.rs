@@ -18,6 +18,10 @@ use cr_ui::browser::tabstrip::TabId;
 
 fn main() {
     gtk4::init().expect("gtk init");
+    // The app loads the CSS in `app::run` — the probe must load it
+    // too or the strip styles (tab boxes, compact toolbar buttons)
+    // never apply (the height gates measured unstyled defaults).
+    cr_ui::theme::init();
     let src = "tests/testfiles/Absolute Flash (2025) Volume 01 Issue 009.cbz";
     let work = std::path::Path::new("/tmp/opencode/tabstrip");
     let _ = std::fs::remove_dir_all(work);
@@ -60,8 +64,10 @@ fn main() {
             let shell = shell.clone();
             let strip = strip.clone();
             move || {
+                let strip_h = strip.widget().height();
+                let host_h = strip.host().height();
                 println!(
-                    "A page={:?} slots={:?} lib={} pages={} plus={} sel={:?} (expect quickopen/[]/true/false/true/Library)",
+                    "A page={:?} slots={:?} lib={} pages={} plus={} sel={:?} strip-h={strip_h} host-h={host_h} (expect quickopen/[]/true/false/true/Library, strip < 40)",
                     shell.state_visible_page(),
                     strip.comic_slots(),
                     strip.tab_visible(&TabId::Library),
@@ -165,12 +171,23 @@ fn main() {
 
         // F. The Pages workspace through the strip.
         glib::timeout_add_local(std::time::Duration::from_millis(4000), {
-            let shell = shell.clone();
             let strip = strip.clone();
             move || {
                 strip.click(&TabId::Pages);
+                glib::ControlFlow::Break
+            }
+        });
+        // F2. The page must FILL the window below the bars (the T9
+        //     user report: it collapsed to one toolbar's height).
+        //     Measured one frame AFTER the switch — allocation lands
+        //     on the next cycle.
+        glib::timeout_add_local(std::time::Duration::from_millis(4300), {
+            let shell = shell.clone();
+            let strip = strip.clone();
+            move || {
+                let (stack_h, pages_h) = shell.state_workspace_heights();
                 println!(
-                    "F page={:?} sel={:?} (expect pages/Pages)",
+                    "F page={:?} sel={:?} stack-h={stack_h} pages-h={pages_h} (expect pages/Pages, both > 300, pages ≈ stack)",
                     shell.state_visible_page(),
                     strip.selected(),
                 );
@@ -202,7 +219,9 @@ fn main() {
             }
         });
 
-        // H. Close the empty slot through its close button.
+        // H. Close the empty slot through its close button — the
+        //     WIDGET must leave the row (the Rust handle alone does
+        //     not unparent a GTK widget — the T9 user report).
         glib::timeout_add_local(std::time::Duration::from_millis(4800), {
             let shell = shell.clone();
             let strip = strip.clone();
@@ -212,8 +231,9 @@ fn main() {
                     strip.click_close(last);
                 }
                 println!(
-                    "H slots={:?} page={:?} pages-tab={} (expect 2 slots/reader/Pages true — the neighbor comic slot shows)",
+                    "H slots={:?} widgets={} page={:?} pages-tab={} (expect 2 slots/2 widgets/reader/Pages true — the neighbor comic slot shows)",
                     strip.comic_slots(),
+                    strip.comic_tab_widgets(),
                     shell.state_visible_page(),
                     strip.tab_visible(&TabId::Pages),
                 );
@@ -222,17 +242,19 @@ fn main() {
         });
 
         // I. Close ALL → the Library workspace (the C# `Close` →
-        //    `ShowLibrary`), no comic tabs, Pages hidden.
+        //    `ShowLibrary`), no comic tabs (slots AND widgets),
+        //    Pages hidden.
         glib::timeout_add_local(std::time::Duration::from_millis(5200), {
             let shell = shell.clone();
             let strip = strip.clone();
             move || {
                 shell.state_dispatch("win.close-all");
                 println!(
-                    "I page={:?} sel={:?} slots={:?} pages-tab={} (expect browser/Library/[]/false)",
+                    "I page={:?} sel={:?} slots={:?} widgets={} pages-tab={} (expect browser/Library/[]/0/false)",
                     shell.state_visible_page(),
                     strip.selected(),
                     strip.comic_slots(),
+                    strip.comic_tab_widgets(),
                     strip.tab_visible(&TabId::Pages),
                 );
                 glib::ControlFlow::Break
