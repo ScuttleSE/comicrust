@@ -94,7 +94,11 @@ Update this section at the **end of every work session**. The next agent must kn
   still). Probe `menubar_probe` (opens the File popover from
   code — the model bar could not) green; `commands_probe` still
   69/69; 294 tests. The T3 REtest (replaces the first list) is in
-  the kickoff. **Next: T3 user test, then T4 (the dynamic
+  the kickoff. Round 3 (2026-09-05): Browse ▸ Library/Pages carry
+  the ACTIVE row highlight (no checkbox — C# parity), the omissions
+  tracker now lives in the kickoff (per-task omitted/postponed),
+  and the probe bug class (dropped shell = silent no-op Weak
+  handlers) is recorded. **Next: T3 user test, then T4 (the dynamic
   menus).** Phase 6 (scripting) starts only after 5.5.
   Phases 0-5 are complete (their gates stay green). Open Phase 1
   gaps: WebComicProvider and the PDF/DjVu writers (tracked in
@@ -957,6 +961,16 @@ Re-bless the `db-large.xml` snapshot after a deliberate model change: `CR_BLESS=
   widget-holding fields (`Rc<Vec<ItemRow>>`), never copy-with-
   empty — a `clone_handle` that drops the rows silently loses
   click AND sync (the menubar probe needed it).
+- A probe that builds a shell MUST keep the shell object alive
+  for the whole run (`std::mem::forget(shell.clone())` or the
+  app's thread-local pattern): every shell action handler holds
+  `Weak<ShellState>`, and a dropped shell turns each dispatch
+  into a SILENT NO-OP — no panic, no log, actions "registered"
+  but dead (the T3 round-3 probe spent hours on fake evidence
+  because the probe dropped its BrowserShell after activate).
+- stdout/stderr interleave UNRELIABLY when piped (stdout is
+  block-buffered, stderr is not) — debug prints that must be
+  order-compared go through println! on ONE stream.
 
 ### Blockers / open questions
 

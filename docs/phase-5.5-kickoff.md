@@ -950,3 +950,84 @@ change; it lands after the bars so they exist in both modes.
   Phase 6 Python host. C# parity note for T4: "Update all Book
   Files" hides when AutoUpdateComicsFiles is on
   (fileMenu_DropDownOpening) — not yet ported.
+- T3 ROUND 3 (2026-09-05), user-reported Browse-menu findings →
+  fix + tracker. FIXED: Browse ▸ Library/Pages now carry the
+  ACTIVE emphasis — the C# has no checkbox on those items; the
+  shown panel highlights the row (`ActionState.highlight`, the
+  `menu-row-active` CSS class, sync_menubar reads panel_stack).
+  The probe proves the move (start on Library → click Pages →
+  only Pages highlighted). PROBE LESSON (big one): the probe
+  DROPPED the BrowserShell after `connect_activate` — the app
+  keeps it in the BROWSER thread-local, the probe didn't — and
+  every shell action handler holds `Weak<ShellState>`, so each
+  dispatch became a SILENT NO-OP (no panic, no log). All earlier
+  "view-library does not activate" evidence was the probe killing
+  its own shell; the track-current-page "success" was its inline
+  handler that never touches shell state, and the "highlight" was
+  the install-time default. `std::mem::forget(shell.clone())` in
+  the probe fixes it; the real-app clicks were already fixed in
+  round 2. DEBUG-LESSON: stdout/stderr interleave UNRELIABLY when
+  piped (stdout is block-buffered) — debug prints that must be
+  order-compared go through println! on one stream.
+
+## Omitted / postponed per task (the tracker)
+
+Live tracking of everything cut, deferred, or stubbed, per task.
+New entries append here at the END of the task that owns them.
+
+### T1 — Command/action layer + accelerators (COMPLETE)
+- Accelerator collisions resolved by menu order (recorded): Rotate
+  270 loses Ctrl+Shift+D0 to Only fit if oversized; Next Bookmark
+  loses Ctrl+Shift+N to New fileless Book Entry.
+- Undocked reader window gets NO shell accels (ReaderForm parity).
+- Update all Book Files covers library books only (temporary books
+  unported).
+- Stub actions stay DISABLED until their owning task: Tasks (T13),
+  Zoom Custom (T13), Display Settings (T12), About (T13), Set/
+  Remove Bookmark (T4), Quick Rating (T13), Copy/Export Page (T13),
+  Small Preview (T11), New Book Entry (unported fileless books),
+  navigator search (T7).
+- Automation submenu omitted (Phase 6 scripting hooks it).
+- POSTPONED to T4: "Update all Book Files" should HIDE when
+  AutoUpdateComicsFiles is on (fileMenu_DropDownOpening parity).
+
+### T2 — Bundled icon set (COMPLETE)
+- The 17 resx GIFs (task animations: scan/export/device-sync/
+  read-info/update-info/big-small-ball) and ComicRackAppSmall.ico
+  are NOT bundled — no ported consumer; T8's lamps use static
+  PNGs.
+- About resx is a GIF; the still frame ships as About.png.
+- The `Special*.zip`/`Publishers*.zip`/`AgeRatings*.zip`/
+  `Formats*.zip` icon packs (Program.cs:839-843) are not ported —
+  they feed the custom-thumbnail/publisher display (deferred with
+  the `type://` loader work).
+- Dark* variants bundle only what the resx references (29 names).
+
+### T3 — Menubar (IMPLEMENTED, user test in progress)
+- Present-but-disabled stubs (grey): Generate Cover Thumbnails
+  (thumbnail-queue work), Tasks (T13), New fileless Book Entry
+  (fileless books unported), Quick Rating (T13), Set/Remove
+  Bookmark (bookmark work), Copy Page / Export Page (T13), Small
+  Preview (T11), Zoom Custom (T13), Book Display Settings (T12),
+  About (T13).
+- Absent per ADR-024: Update Web Comics (WebComicProvider gap),
+  Synchronize Devices, Automation (Phase 6), Open Remote Library
+  (Phase 7), Undo/Redo, Devices..., Folders (F7, Phase 7), Search
+  Browser, Info Panel, Workspaces, List Layout (T6/T14 data), the
+  Help docs/homepage/forum/news/update links.
+- Deferred to T4 (dynamic parents): Open Books, Recent Books, Page
+  Type, Page Rotation, the bookmark list.
+- NOT A MENU ITEM: "New fileless Book Series..." is the bundled
+  script `Output/Scripts/NewComics.py` under the C# Automation
+  submenu — covered by the Automation omission; native-port
+  candidates live in the BACKLOG (docs/port-plan.md §6).
+- Deviations of the custom widget (recorded): no mnemonic-
+  activation chain; hover switching hand-built; the C# 500 ms
+  re-close debounce out; the bar re-hides on action activation +
+  Alt (Esc/click-away leaves it until the next action); the C#
+  in-menu star-slider under My Rating not ported (T13 dialog
+  covers it); Auto Scrolling persists session-only (the C# writes
+  Config.xml).
+- Fixed in-round: the Wayland grab (one active popover), the
+  stripped action name (full "win." form), the MenuButton frame,
+  the active-panel highlight.
