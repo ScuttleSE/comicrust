@@ -47,10 +47,11 @@ fn main() {
         let _ = gtk4::prelude::WidgetExt::activate_action(&window, "win.view-pages", None);
         println!("STATE view-pages activated");
 
-        // 4. Open the File menu for the dwell screenshot (the custom
-        //    bar CAN be opened from code — the model bar could not).
-        shell.menubar().open_top(0);
-        println!("STATE file menu open: {}", shell.menubar().top_count());
+        // 4. Open the Display menu for the dwell screenshot: it
+        //    carries the three submenus (Page Layout / Zoom /
+        //    Rotation), so the dwell proves the submenu row shape.
+        shell.menubar().open_top(4);
+        println!("STATE display menu open: {}", shell.menubar().top_count());
 
         // 5. The switching path (the user's crash sequence): switch
         //    to another top menu while one is open, then close.

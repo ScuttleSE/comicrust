@@ -796,11 +796,14 @@ fn build_menu_content(
             MenuNode::Sub(label, children) => {
                 // A nested MenuButton row: GTK places the child
                 // popover and holds the grab; the arrow marks the
-                // submenu (the C# submenu arrow).
+                // submenu (the C# submenu arrow). `has_frame(false)`
+                // removes the MenuButton outline (the flat class
+                // does not reach the inner toggle button).
                 let (hbox, _indicator) = row_content(label, "", "", true);
                 let sub = gtk4::MenuButton::builder()
                     .css_classes(["flat", "menu-row"])
                     .build();
+                sub.set_has_frame(false);
                 sub.set_child(Some(&hbox));
                 sub.set_halign(gtk4::Align::Fill);
                 let child_popover = gtk4::Popover::new();
