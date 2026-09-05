@@ -318,6 +318,15 @@ Update this section at the **end of every work session**. The next agent must kn
   reader background is the Auto/Color/Texture setting, not the
   theme) — the dead `window.reader-window`/`.reader-page-area`
   CSS rules (no widget carried the classes) are removed.
+  FIX ROUND 2 (user report: the reader surround stayed dark in
+  light mode): `page_view::background_color` resolves the
+  surround per frame — Auto keeps the page-corner sampling, every
+  other mode uses `theme::palette(area).base` — a RECORDED
+  DEVIATION (the C# paints `BackColor = Color.Black`
+  unconditionally, the reader never follows the Windows theme;
+  the user chose theme-following so the whole app flips). The
+  magnifier lens threads the same color; the reader canvas rides
+  `redraw_on_theme_change`.
   **Next: T8 (the status bar).** Phase 6 (scripting) starts only
   after 5.5.
   Phases 0-5 are complete (their gates stay green). Open Phase 1

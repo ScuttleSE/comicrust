@@ -1885,3 +1885,20 @@ reader PAGE SURFACE stays dark in both themes BY PARITY — the C#
 is the Auto/Color/Texture display setting, not the theme. The dead
 `window.reader-window`/`.reader-page-area` CSS rules (no widget
 carried the classes) are removed.
+
+FIX ROUND 2 (2026-09-05, user report: the reader surround stayed
+dark in light mode): the reader page-surface color now follows the
+theme. `page_view::background_color` resolves the surround per
+frame — Auto keeps the C# page-corner sampling
+(`GetAutoBackgroundColor`), every other mode uses
+`theme::palette(area).base` (dark ≈ the old #202020, light = the
+theme base). RECORDED DEVIATION: the C#
+`ImageDisplayControl.InitializeComponent` paints
+`BackColor = Color.Black` unconditionally and no DarkControl
+definition overrides it — the C# reader never follows the Windows
+theme; the user chose theme-following so the dark/light toggle
+covers the whole app. The magnifier lens threads the same color
+(`draw_magnifier` dropped its unused width/height params); the
+reader canvas rides `redraw_on_theme_change`. NOTE: with a light
+surround, white pages blend into it edge-to-edge — the same look
+the C# Auto mode gives on white comics.

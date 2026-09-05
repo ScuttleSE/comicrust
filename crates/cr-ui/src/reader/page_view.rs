@@ -47,8 +47,23 @@ pub const MAXIMUM_ZOOM: f32 = 8.0;
 /// `ImageDisplayControl.AnamorphicTolerance` default.
 const ANAMORPHIC_TOLERANCE: f32 = 0.25;
 
-/// Fallback background (shell CSS `#202020`) for `Color` mode.
-const DEFAULT_BACKGROUND: (f64, f64, f64) = (0.1255, 0.1255, 0.1255);
+/// The surround color for one frame: Auto samples the page corners
+/// (the C# `GetAutoBackgroundColor`), every other mode uses
+/// `fallback`. The fallback is the THEME base color — recorded
+/// deviation: the C# paints `BackColor = Color.Black` unconditionally
+/// (the reader never follows the Windows theme), the port follows the
+/// dark/light toggle so the whole app flips together.
+fn background_color(st: &ViewState, fallback: (f64, f64, f64)) -> (f64, f64, f64) {
+    match st.background_mode {
+        ImageBackgroundMode::Auto => st
+            .loaded
+            .get(&st.page)
+            .map(|p| p.auto_background)
+            .map(|(r, g, b)| (f64::from(r), f64::from(g), f64::from(b)))
+            .unwrap_or(fallback),
+        _ => fallback,
+    }
+}
 
 /// `EngineConfiguration.KeyboardZoomStepping` default (the Z /
 /// Shift+Z step zoom commands).
@@ -834,6 +849,9 @@ impl PageView {
                 draw_frame(ctx, &draw_area_for_fn, width, height, &draw_state);
             });
         }
+        // The surround follows the theme palette — a dark/light flip
+        // must re-draw (GTK does not invalidate custom cairo draws).
+        crate::theme::redraw_on_theme_change(&area);
 
         view.install_key_controller();
         view.install_scroll_controller();
@@ -2546,18 +2564,15 @@ fn draw_frame(
     {
         let mut st = state.borrow_mut();
         let display = st.display((width, height));
+        // The theme surround (the C# `BackColor` slot — the palette
+        // re-resolves per frame, so a dark/light flip restyles on the
+        // next draw; the flip also queue-draws through
+        // `redraw_on_theme_change`).
+        let theme_bg = crate::theme::palette(area).base;
 
         // Background first, always in identity space
         // (`RenderImageBackground`).
-        let background = match st.background_mode {
-            ImageBackgroundMode::Auto => st
-                .loaded
-                .get(&st.page)
-                .map(|p| p.auto_background)
-                .map(|(r, g, b)| (f64::from(r), f64::from(g), f64::from(b)))
-                .unwrap_or(DEFAULT_BACKGROUND),
-            _ => DEFAULT_BACKGROUND,
-        };
+        let background = background_color(&st, theme_bg);
         ctx.identity_matrix();
         ctx.set_source_rgb(background.0, background.1, background.2);
         ctx.rectangle(0.0, 0.0, f64::from(width), f64::from(height));
@@ -2577,15 +2592,7 @@ fn draw_frame(
             let old = (anim.old.clone(), anim.old_surfaces.clone());
             let old_display = anim.old_display.clone();
             let new_comp = st.composition.clone();
-            let background = match st.background_mode {
-                ImageBackgroundMode::Auto => st
-                    .loaded
-                    .get(&st.page)
-                    .map(|pg| pg.auto_background)
-                    .map(|(r, g, b)| (f64::from(r), f64::from(g), f64::from(b)))
-                    .unwrap_or(DEFAULT_BACKGROUND),
-                _ => DEFAULT_BACKGROUND,
-            };
+            let background = background_color(&st, theme_bg);
             let paper = st.paper.clone();
             drop(st);
 
@@ -2627,15 +2634,7 @@ fn draw_frame(
             };
             let paper = st.paper.clone();
             let paper_mode = st.background_mode == ImageBackgroundMode::Texture;
-            let background = match st.background_mode {
-                ImageBackgroundMode::Auto => st
-                    .loaded
-                    .get(&st.page)
-                    .map(|pg| pg.auto_background)
-                    .map(|(r, g, b)| (f64::from(r), f64::from(g), f64::from(b)))
-                    .unwrap_or(DEFAULT_BACKGROUND),
-                _ => DEFAULT_BACKGROUND,
-            };
+            let background = background_color(&st, theme_bg);
             draw_composition(
                 ctx,
                 &display,
@@ -2654,7 +2653,7 @@ fn draw_frame(
             if let Some((mx, my)) = st.magnifier_at {
                 let (w, h) = (f64::from(width), f64::from(height));
                 if mx >= 0.0 && my >= 0.0 && mx <= w && my <= h && !display.is_empty() {
-                    draw_magnifier(ctx, &display, &mut st, width, height, mx, my);
+                    draw_magnifier(ctx, &display, &mut st, mx, my, theme_bg);
                 }
             }
         }
@@ -2699,10 +2698,9 @@ fn draw_magnifier(
     ctx: &cairo::Context,
     display: &DisplayOutput,
     st: &mut ViewState,
-    width: i32,
-    height: i32,
     mx: f64,
     my: f64,
+    theme_bg: (f64, f64, f64),
 ) {
     let radius = f64::from(MAGNIFIER_SIZE) / 2.0;
     let zoomed = {
@@ -2717,15 +2715,7 @@ fn draw_magnifier(
     ctx.new_path();
     ctx.arc(mx, my, radius - 2.0, 0.0, std::f64::consts::TAU);
     ctx.clip();
-    let background = match st.background_mode {
-        ImageBackgroundMode::Auto => st
-            .loaded
-            .get(&st.page)
-            .map(|p| p.auto_background)
-            .map(|(r, g, b)| (f64::from(r), f64::from(g), f64::from(b)))
-            .unwrap_or(DEFAULT_BACKGROUND),
-        _ => DEFAULT_BACKGROUND,
-    };
+    let background = background_color(st, theme_bg);
     ctx.set_source_rgb(background.0, background.1, background.2);
     ctx.rectangle(mx - radius, my - radius, radius * 2.0, radius * 2.0);
     let _ = ctx.fill();
@@ -2754,7 +2744,6 @@ fn draw_magnifier(
     ctx.set_line_width(3.0);
     let _ = ctx.stroke();
     ctx.restore().ok();
-    let _ = (width, height);
 }
 
 /// Draws one composed frame through the part transform
