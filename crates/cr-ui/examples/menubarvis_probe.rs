@@ -2,7 +2,6 @@
 //! states the T4 user test walks (browser ⇄ reader ⇄ browser, books
 //! open and closed). Logs VISIBLE plus the rule inputs per stage.
 use cr_core::model::comic_book::ComicBook;
-use cr_core::xml::scalar::{CrDateTime, CrGuid};
 use gtk4::glib;
 use gtk4::prelude::*;
 
