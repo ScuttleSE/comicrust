@@ -70,6 +70,22 @@ fn main() {
                 let lib = menubar.is_row_highlighted("win.view-library");
                 let pages = menubar.is_row_highlighted("win.view-pages");
                 println!("HIGHLIGHT view-library={lib} view-pages={pages}");
+
+                // The dark-mode toggle: a REAL row click flips the
+                // global AND the GTK dark preference (the check
+                // derives from the global, the whole shell re-styles).
+                let prefer = || {
+                    gtk4::Settings::default()
+                        .map(|s| s.is_gtk_application_prefer_dark_theme())
+                        .unwrap_or(false)
+                };
+                let dark_before = prefer();
+                menubar.click_row("win.dark-mode");
+                let dark_after = prefer();
+                println!(
+                    "DARK {dark_before}->{dark_after} flipped {}",
+                    dark_before != dark_after
+                );
                 glib::ControlFlow::Break
             }
         });

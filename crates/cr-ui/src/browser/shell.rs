@@ -1454,9 +1454,21 @@ impl ShellState {
                 "update-book-files" => update_files_visible,
                 _ => true,
             };
+            // The dark-mode check derives from the ExtendedSettings
+            // global (the source of truth — the T6 lesson: never
+            // trust the click side to have updated the state).
+            let state = if base == "dark-mode" {
+                Some(
+                    (cr_core::settings::ExtendedSettings::global().effective_theme()
+                        == cr_core::settings::enums::Themes::Dark)
+                        .to_variant(),
+                )
+            } else {
+                action.state()
+            };
             Some(super::menubar::ActionState {
                 enabled: action.is_enabled(),
-                state: action.state(),
+                state,
                 highlight,
                 visible,
             })
@@ -2611,6 +2623,48 @@ impl ShellState {
         }
         // small-preview — T11 lands the pane.
         self.add_disabled(&group, "small-preview");
+        // Dark mode — NO C# command (recorded deviation): the C#
+        // theme (`ExtendedSettings.Theme` + the `-dark` switch) is
+        // boot-time only. The global is the source of truth; the
+        // sync derives the check from it, the ini keys persist it.
+        {
+            let initial = cr_core::settings::ExtendedSettings::global().effective_theme()
+                == cr_core::settings::enums::Themes::Dark;
+            let dark = gio::SimpleAction::new_stateful("dark-mode", None, &initial.to_variant());
+            {
+                let state = state.clone();
+                dark.connect_activate(move |action, _| {
+                    let Some(sh) = state.upgrade() else {
+                        return;
+                    };
+                    let next = {
+                        let extended = cr_core::settings::ExtendedSettings::global();
+                        extended.effective_theme() != cr_core::settings::enums::Themes::Dark
+                    };
+                    {
+                        let mut extended = cr_core::settings::ExtendedSettings::global_mut();
+                        extended.theme = if next {
+                            cr_core::settings::enums::Themes::Dark
+                        } else {
+                            cr_core::settings::enums::Themes::Default
+                        };
+                        // The toggle is the explicit intent: the
+                        // `-dark` force must not re-darken the next
+                        // boot over the stored Theme.
+                        extended.use_dark_mode = false;
+                    }
+                    crate::theme::set_dark(next);
+                    action.set_state(&next.to_variant());
+                    library::save_ini_keys(&[
+                        ("UseDarkMode", "False"),
+                        ("Theme", if next { "Dark" } else { "Default" }),
+                    ]);
+                    sh.sync_enabled();
+                });
+            }
+            group.add_action(&dark);
+            self.actions.borrow_mut().insert("dark-mode", dark);
+        }
         self.add_simple(&group, "prev-list", |sh| sh.browse_history(-1));
         self.add_simple(&group, "next-list", |sh| sh.browse_history(1));
 

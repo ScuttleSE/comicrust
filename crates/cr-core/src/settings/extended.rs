@@ -333,18 +333,41 @@ impl ExtendedSettings {
     }
 }
 
-/// The `Program.ExtendedSettings` singleton (a `OnceLock` reader;
-/// the C# static). `init_global` installs the parsed configuration;
-/// before that the defaults apply.
-static EXTENDED_GLOBAL: std::sync::OnceLock<ExtendedSettings> = std::sync::OnceLock::new();
+/// The `Program.ExtendedSettings` singleton (the C# static). The C#
+/// static is mutable at runtime, so the port holds it in an
+/// `RwLock` — `global` for the read views, `global_mut` for the
+/// runtime setters (the theme toggle). `init_global` installs the
+/// parsed configuration; before that the defaults apply.
+static EXTENDED_GLOBAL: std::sync::OnceLock<std::sync::RwLock<ExtendedSettings>> =
+    std::sync::OnceLock::new();
 
 impl ExtendedSettings {
     pub fn init_global(config: ExtendedSettings) {
-        let _ = EXTENDED_GLOBAL.set(config);
+        let _ = EXTENDED_GLOBAL.set(std::sync::RwLock::new(config));
     }
 
-    pub fn global() -> &'static ExtendedSettings {
-        EXTENDED_GLOBAL.get_or_init(ExtendedSettings::default)
+    pub fn global() -> std::sync::RwLockReadGuard<'static, ExtendedSettings> {
+        EXTENDED_GLOBAL
+            .get_or_init(|| std::sync::RwLock::new(ExtendedSettings::default()))
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    pub fn global_mut() -> std::sync::RwLockWriteGuard<'static, ExtendedSettings> {
+        EXTENDED_GLOBAL
+            .get_or_init(|| std::sync::RwLock::new(ExtendedSettings::default()))
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
+
+    /// The C# `Theme` getter (`ExtendedSettings.cs`): `UseDarkMode`
+    /// forces the Dark theme over the stored `Theme` value.
+    pub fn effective_theme(&self) -> Themes {
+        if self.use_dark_mode {
+            Themes::Dark
+        } else {
+            self.theme
+        }
     }
 }
 
@@ -441,5 +464,17 @@ mod tests {
         let ini = IniValues::read_text("comiccountalpha=999", None);
         s.load(&ini, &[]);
         assert_eq!(s.comic_count_alpha, 255);
+    }
+
+    #[test]
+    fn effective_theme_resolves_like_the_csharp_getter() {
+        let mut s = ExtendedSettings::default();
+        assert_eq!(s.effective_theme(), Themes::Default);
+        s.theme = Themes::Dark;
+        assert_eq!(s.effective_theme(), Themes::Dark);
+        // The C# getter: UseDarkMode wins over the stored Theme.
+        s.theme = Themes::Default;
+        s.use_dark_mode = true;
+        assert_eq!(s.effective_theme(), Themes::Dark);
     }
 }

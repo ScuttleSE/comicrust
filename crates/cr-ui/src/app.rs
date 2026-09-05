@@ -51,6 +51,14 @@ pub fn run(args: Vec<String>) {
         ))),
     }
 
+    // The theme from the extended settings (`ThemeManager.Initialize(
+    // ExtendedSettings.Theme)` parity — the C# `Theme` getter resolves
+    // `UseDarkMode` → Dark, `Default` renders light).
+    theme::set_dark(
+        cr_core::settings::ExtendedSettings::global().effective_theme()
+            == cr_core::settings::enums::Themes::Dark,
+    );
+
     // `DatabaseBackgroundSaving` (default 600 s): the periodic save
     // while the library is dirty.
     glib::timeout_add_local(

@@ -96,6 +96,21 @@ pub fn save_settings() {
         .inspect_err(|e| eprintln!("saving Config.xml failed: {e}"));
 }
 
+/// Persists ini keys into the LAST file of the ini chain (the user
+/// location — the chain's override at load). The C# never writes the
+/// ini, but it reads `ExtendedSettings` from it at every boot; this
+/// is the recorded deviation that lets the runtime theme toggle
+/// survive a restart.
+pub fn save_ini_keys(keys: &[(&str, &str)]) {
+    let paths = cr_core::paths::Paths::new_default();
+    let Some(file) = cr_core::paths::ini_default_locations(&paths).pop() else {
+        return;
+    };
+    if let Err(err) = cr_core::settings::ini::merge_write(&file, keys) {
+        eprintln!("saving {} failed: {err}", file.display());
+    }
+}
+
 fn open_message(status: OpenStatus) -> Option<String> {
     status.message().map(str::to_string)
 }

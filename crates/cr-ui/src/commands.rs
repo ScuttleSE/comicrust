@@ -84,6 +84,11 @@ pub const COMMANDS: &[CommandSpec] = &[
     cmd("view-pages", &["F8"]),
     cmd("sidebar", &["<Shift>F6"]),
     cmd("small-preview", &["<Shift>F7"]),
+    // NO C# item: the C# theme is a boot switch (`-dark` / the
+    // `Theme` ini key, `ExtendedSettings.cs` browsable:false) with no
+    // menu command. The port adds the Browse-menu toggle so the mode
+    // switches at runtime — recorded deviation.
+    cmd("dark-mode", &[]),
     cmd("prev-list", &["<Control>j"]),
     cmd("next-list", &["<Control>k"]),
     // Read

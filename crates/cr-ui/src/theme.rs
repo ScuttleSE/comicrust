@@ -15,7 +15,7 @@ window.reader-window {
 }
 
 .placeholder-label {
-    color: #b0b0b0;
+    color: #808080;
     font-size: 14px;
 }
 
@@ -84,9 +84,18 @@ pub fn init() {
             STYLE_PROVIDER_PRIORITY_APPLICATION,
         );
     }
-    // Follow the desktop dark preference; we ship no light/dark
-    // switch yet (Phase 7 owns full theming).
+    // Dark until the settings boot resolves the theme (`set_dark`
+    // runs right after `library::initialize` — the probes keep the
+    // dark default).
+    set_dark(true);
+}
+
+/// Applies the dark/light mode at runtime (`ThemeManager.Initialize`
+/// parity point): GTK re-styles every widget immediately. The value
+/// comes from `ExtendedSettings::effective_theme` — the C# `Theme`
+/// getter (`UseDarkMode` forces Dark; `Default` renders light).
+pub fn set_dark(dark: bool) {
     if let Some(settings) = gtk4::Settings::default() {
-        settings.set_gtk_application_prefer_dark_theme(true);
+        settings.set_gtk_application_prefer_dark_theme(dark);
     }
 }

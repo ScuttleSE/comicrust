@@ -1836,3 +1836,33 @@ did not follow that model.
   The user verified: the strip look (boxes, height), the
   always-visible menubar, the tab close, and the full-window
   Pages view. **Next: T8 (the status bar).**
+
+### Addition — Dark/Light mode toggle (2026-09-05, no C# item)
+
+The C# theme is boot-only: `ExtendedSettings.UseDarkMode` (the
+`-dark` switch) forces `Themes.Dark` over the stored `Theme` value
+(the `Theme` getter), both read from the ini chain; the C# exposes
+NO menu command and never writes the ini back. The port adds a
+recorded ADDITION so the mode is switchable at runtime:
+
+- `win.dark-mode` (Browse ▸ _Dark Mode, iconless, no accelerator —
+  the C# table has none to port). A stateful bool action; the
+  handler flips `ExtendedSettings::global_mut().theme`
+  (Dark/Default) and clears `use_dark_mode` (the explicit toggle
+  must not let a stale `-dark` re-darken the next boot), applies
+  `theme::set_dark` (the GTK `prefer-dark` flag re-styles
+  instantly), and persists `Theme` + `UseDarkMode=False` into the
+  LAST ini-chain file (`library::save_ini_keys` — the C#-shaped
+  storage; the C# itself never writes the ini, that write is the
+  second half of the deviation).
+- `ExtendedSettings::effective_theme` ports the C# `Theme` getter;
+  the global moved from `OnceLock` to `RwLock` (the C# static is
+  mutable). `Themes::Default` renders LIGHT — C# parity (WinForms
+  Default does not follow the Windows dark setting). The app
+  therefore starts LIGHT on a fresh/old config; `-dark` and
+  `-theme Dark` keep working.
+- Reader-window CSS stays dark in both themes (the C# reader paints
+  its own background regardless of theme); `.placeholder-label`
+  moved to a mid-gray that reads on both. Gate: `menubar_probe`
+  (the row click flips the global AND the GTK flag),
+  `commands_probe` 70/70, 317 tests.

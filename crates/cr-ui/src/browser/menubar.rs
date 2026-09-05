@@ -210,6 +210,11 @@ pub const BROWSE: &[MenuNode] = &[
         "SmallPreview",
     ),
     Sep,
+    // The dark-mode toggle — no C# item (recorded deviation; the C#
+    // theme is the `-dark` boot switch). Iconless by the Designer
+    // rule: the C# gives no image, so the icon gate asserts none.
+    Item("_Dark Mode", "win.dark-mode", "", ""),
+    Sep,
     Item(
         "Previous List",
         "win.prev-list",

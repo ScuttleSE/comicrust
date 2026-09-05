@@ -161,6 +161,48 @@ impl IniValues {
     }
 }
 
+/// Merges `entries` into the ini file at `path` (a comicrust
+/// extension: the C# never writes the ini). Existing lines are kept
+/// verbatim (comments, sections, unknown keys); a `key=value` line
+/// whose key matches an entry case-insensitively is rewritten with
+/// the entry's canonical spelling and value; the remaining entries
+/// append at the end. A missing file is created.
+pub fn merge_write(path: &Path, entries: &[(&str, &str)]) -> std::io::Result<()> {
+    let existing = std::fs::read_to_string(path).unwrap_or_default();
+    let mut out = String::with_capacity(existing.len() + 64);
+    let mut written = vec![false; entries.len()];
+    for line in existing.lines() {
+        let trimmed = line.trim();
+        let mut replaced = false;
+        if !trimmed.starts_with(';') && !trimmed.starts_with('#') {
+            if let Some(eq) = trimmed.find('=') {
+                let key = trimmed[..eq].trim();
+                if !key.is_empty() {
+                    if let Some((i, _)) = entries
+                        .iter()
+                        .enumerate()
+                        .find(|(_, (k, _))| key.eq_ignore_ascii_case(k))
+                    {
+                        out.push_str(&format!("{}={}\n", entries[i].0, entries[i].1));
+                        written[i] = true;
+                        replaced = true;
+                    }
+                }
+            }
+        }
+        if !replaced {
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    for (i, (key, value)) in entries.iter().enumerate() {
+        if !written[i] {
+            out.push_str(&format!("{key}={value}\n"));
+        }
+    }
+    std::fs::write(path, out)
+}
+
 /// `IniFile.rxCommand` without the regex:
 /// `[/-](?<switch>[a-z]+)[:=](?<value>.+)`, case-insensitive and
 /// UNANCHORED — the C# `Match` scans for the first position where a
@@ -270,5 +312,46 @@ mod tests {
         // `--long=x` is unanchored: the C# regex matches at the
         // second dash (switch `long`).
         assert_eq!(v.get("long"), Some("x"));
+    }
+
+    #[test]
+    fn merge_write_replaces_appends_and_preserves() {
+        let dir = std::env::temp_dir().join(format!(
+            "comicrust-merge-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("m.ini");
+        std::fs::write(&path, "; keep me\nTheme=Default\n[Section]\nOther=1\n").unwrap();
+
+        merge_write(&path, &[("UseDarkMode", "True"), ("Theme", "Dark")]).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        // The comment and the section survive; the match is
+        // case-insensitive ("Theme" rewrote the stored "Theme" line —
+        // try a stored "theme" spelling too below); the new key
+        // appends.
+        assert!(text.contains("; keep me"));
+        assert!(text.contains("Theme=Dark"));
+        assert!(text.contains("UseDarkMode=True"));
+        assert!(text.contains("[Section]"));
+        assert!(text.contains("Other=1"));
+        assert_eq!(
+            text.matches("theme=").count() + text.matches("Theme=").count(),
+            1
+        );
+
+        // Idempotent second run (and the case-insensitive replace of
+        // a lower-case stored key).
+        merge_write(&path, &[("Theme", "Default")]).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("Theme=Default"));
+        assert_eq!(text.matches("Theme=").count(), 1);
+        // A fresh file is created.
+        let fresh = dir.join("fresh.ini");
+        merge_write(&fresh, &[("A", "1")]).unwrap();
+        assert_eq!(std::fs::read_to_string(&fresh).unwrap(), "A=1\n");
     }
 }
