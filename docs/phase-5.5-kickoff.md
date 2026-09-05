@@ -1839,6 +1839,9 @@ did not follow that model.
 
 ### Addition — Dark/Light mode toggle (2026-09-05, no C# item)
 
+USER-TESTED, ALL PASS (2026-09-05; two fix rounds — see the
+entries below; locked in ADR-025).
+
 The C# theme is boot-only: `ExtendedSettings.UseDarkMode` (the
 `-dark` switch) forces `Themes.Dark` over the stored `Theme` value
 (the `Theme` getter), both read from the ini chain; the C# exposes
@@ -1887,7 +1890,8 @@ is the Auto/Color/Texture display setting, not the theme. The dead
 carried the classes) are removed.
 
 FIX ROUND 2 (2026-09-05, user report: the reader surround stayed
-dark in light mode): the reader page-surface color now follows the
+dark in light mode; the user test of 2026-09-05 confirmed the
+whole feature): the reader page-surface color now follows the
 theme. `page_view::background_color` resolves the surround per
 frame — Auto keeps the C# page-corner sampling
 (`GetAutoBackgroundColor`), every other mode uses

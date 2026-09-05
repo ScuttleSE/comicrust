@@ -286,7 +286,8 @@ Update this section at the **end of every work session**. The next agent must kn
   other probes stay green; 315 tests. Deviations in the kickoff
   tracker (no tab context menu, no drag-reorder, silent empty
   slot, one undocked reader).
-  Dark/Light toggle IMPLEMENTED (2026-09-05), user test pending.
+  Dark/Light toggle COMPLETE — USER-TESTED, ALL PASS (2026-09-05;
+  two fix rounds, ADR-025).
   Browse ▸ _Dark Mode (`win.dark-mode`, iconless, no accel): a
   recorded ADDITION — the C# theme is the boot-only `-dark`/
   `Theme` ini switch with no menu command and no ini write-back.
@@ -298,11 +299,7 @@ Update this section at the **end of every work session**. The next agent must kn
   merge-writer into the LAST chain file). `Themes::Default` =
   LIGHT (C# parity) — the app STARTS LIGHT on an existing config;
   `-dark`/`-theme Dark` still work. `.placeholder-label` mid-gray
-  (both-theme readable); the   reader CSS stays dark in both (the C#
-  reader paints its own background). `menubar_probe` gained the
-  dark-click gate; `commands_probe` 70/70; 317 tests. Deviation
-  recorded in the kickoff tracker ("Addition — Dark/Light mode
-  toggle").
+  (both-theme readable).
   FIX ROUND 1 (user report: the ItemView grid + the Pages panel
   stayed dark in light mode): the two views drew hardcoded dark
   palettes. `theme::Palette` resolves the GTK named colors
@@ -326,7 +323,12 @@ Update this section at the **end of every work session**. The next agent must kn
   unconditionally, the reader never follows the Windows theme;
   the user chose theme-following so the whole app flips). The
   magnifier lens threads the same color; the reader canvas rides
-  `redraw_on_theme_change`.
+  `redraw_on_theme_change`. The user verified: instant flips
+  both directions, persistence across restart, light reader
+  surround with page turns/transitions/magnifier/continuous.
+  `menubar_probe` gained the
+  dark-click gate; `commands_probe` 70/70; 317 tests. Deviations
+  recorded in the kickoff tracker + ADR-025.
   **Next: T8 (the status bar).** Phase 6 (scripting) starts only
   after 5.5.
   Phases 0-5 are complete (their gates stay green). Open Phase 1
@@ -852,7 +854,7 @@ The UI crate (Phase 3):
 | Path | Contents |
 |---|---|
 | `crates/cr-ui/src/app.rs` | GtkApplication shell: `open` signal file handling, launcher window, error dialog. |
-| `crates/cr-ui/src/theme.rs` | CSS provider skeleton + dark preference (no libadwaita, ADR-004). |
+| `crates/cr-ui/src/theme.rs` | CSS provider + the dark/light toggle (`set_dark`), the cairo-view `Palette` (the GTK named colors per draw call), the theme-flip redraw hook (no libadwaita, ADR-004; ADR-025). |
 | `crates/cr-ui/src/reader/display.rs` | Pure `ImageDisplayControl` geometry: fit modes (anamorphic tolerance), part grid, binding edges, RTL, rotation, clamped offsets, interpolate, matrix inverse, magnifier zoom premultiply. Unit-tested. |
 | `crates/cr-ui/src/reader/continuous.rs` | `ContinuousPageLayout` port: strip geometry, visible-window binary search, anchors. Unit-tested. |
 | `crates/cr-ui/src/reader/keys.rs` | The `MainForm.InitializeKeyboard` command table (41 commands, exact key+modifier match, registration order = priority) + dispatch resolution. Unit-tested. |
@@ -860,7 +862,7 @@ The UI crate (Phase 3):
 | `crates/cr-ui/src/reader_window.rs` | Reader shell: session tabs (closable, Tab cycling), undock/re-dock, fullscreen chrome hide + reveal strip, MinimalGui, cursor auto-hide, reading-state write-back. |
 | `crates/cr-ui/assets/papers/` | Paper textures copied from the C# `Resources/Textures/Papers`. |
 | `crates/cr-image/src/error_assets.rs` | `CreateErrorPage`/`CreateErrorThumbnail` port with the bundled `ErrorPage.jpg` + `RedCross.png`. Unit-tested. |
-| `crates/cr-ui/src/library.rs` | The app session (`Program` statics): the Library open/save/scan wiring, the Settings + engine-config load/save, `apply_edited` (the editor commit + the dirty mark + the debounced file write), `update_book_file` (the write-back gates), list CRUD (new smart list/folder/id list, update, evaluate), QuickOpen lists, the last-export setting. |
+| `crates/cr-ui/src/library.rs` | The app session (`Program` statics): the Library open/save/scan wiring, the Settings + engine-config load/save, `apply_edited` (the editor commit + the dirty mark + the debounced file write), `update_book_file` (the write-back gates), list CRUD (new smart list/folder/id list, update, evaluate), QuickOpen lists, the last-export setting, `save_ini_keys` (the ini merge-writer — the theme persistence). |
 | `crates/cr-ui/src/browser/shell.rs` | The browser window: navigator + ItemView + reader dock, the header commands, the context menu (open/reveal/edit/update-file/export/remove/properties), the quick search + the composed view filter (`compose_quick_filter`), view/sort/group/filter/scope actions, the Detail column chooser (`popup_column_chooser` — a plain popover), the dynamic menu fills (`dyn_fill`), the probe accessors (`state_*`/`toolbar_*`/`browserbar_*`). |
 | `crates/cr-ui/src/browser/menubar.rs` | The T3 custom menubar: the pure six-menu table (MenuNode Item/Sub/Sep/Dyn) + the popover widget (one-active-popover state machine, the Designer icon mapping) + the standalone `Dropdown` (`build_dropdown`) + the dynamic fill machinery (`set_dyn_fill`, `refresh_top`, per-slot map hooks) + the `menubar_visible` rule. |
 | `crates/cr-ui/src/browser/toolbar.rs` | The T5 reader toolbar: the nine-button strip (prev/next splits, layout/fit/zoom/rotate drops with state text, magnifier/fullscreen, Tools) + the `Dropdown` tables (PREV/NEXT/FIT/ZOOM/ROTATE/TOOLS); the bar rides the undock (docked home since T9: the tab strip's right host). |
@@ -1274,6 +1276,15 @@ Re-bless the `db-large.xml` snapshot after a deliberate model change: `CR_BLESS=
   CSS-dependent gate (tab boxes, compact buttons, heights)
   measured theme defaults until the probe loads it (the T9 height
   round: 48 px was the unstyled number, 36 px the real one).
+- A cairo-drawn view does NOT restyle on a theme flip: GTK never
+  invalidates a custom draw, and hardcoded palettes ignore the
+  mode entirely (the dark/light toggle needed two rounds). The
+  shape: resolve `theme::palette(widget)` PER DRAW CALL through
+  the widget style context (the GTK named colors — the
+  `SystemColors` parity; no cache to invalidate) and hook
+  `theme::redraw_on_theme_change` on every drawn canvas. Any new
+  DrawingArea that paints colors needs both, or it keeps the old
+  theme's look until the next unrelated redraw.
 
 ### Blockers / open questions
 
