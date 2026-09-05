@@ -4,7 +4,7 @@
 //! the reader/book integration (the C# `ComicBookFactory`), and the
 //! scan worker (the C# "Book Scanner" low-priority thread).
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::path::Path;
 use std::rc::Rc;
 
@@ -309,6 +309,38 @@ pub fn save_if_dirty() -> Result<bool, cr_core::database::DbError> {
 
 fn scan_in_flight() -> bool {
     SCAN_IN_FLIGHT.with(|cell| *cell.borrow())
+}
+
+/// The status-bar scan lamp (`Program.Scanner.IsScanning` — the
+/// worker holds the book storage until the pump merges it back).
+pub fn is_scanning() -> bool {
+    scan_in_flight()
+}
+
+thread_local! {
+    /// The export lamp (`QueueManager.IsInComicConversion` parity
+    /// point): the C# export funnels through a background queue; the
+    /// port runs synchronously in the export dialog, so the flag is
+    /// only readable between page-progress callbacks (recorded
+    /// deviation — the dialog drives the lamp through the same
+    /// accessor).
+    static EXPORT_IN_FLIGHT: Cell<bool> = const { Cell::new(false) };
+}
+
+/// The status-bar export lamp.
+pub fn export_in_flight() -> bool {
+    EXPORT_IN_FLIGHT.with(|cell| cell.get())
+}
+
+/// The export dialog sets this around its run.
+pub fn set_export_active(active: bool) {
+    EXPORT_IN_FLIGHT.with(|cell| cell.set(active));
+}
+
+/// The status-bar file-write lamp (`QueueManager.IsInComicFileUpdate`
+/// parity point): the pending debounced write timers.
+pub fn writes_pending() -> usize {
+    WRITE_TIMERS.with(|cell| cell.borrow().len())
 }
 
 // ---------- The list navigator (Phase 4 T2) ----------

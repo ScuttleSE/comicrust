@@ -348,6 +348,11 @@ pub fn show_export_dialog(
                     let s = setting_rc.borrow().clone();
                     let total = books.len();
                     let mut errors: Vec<String> = Vec::new();
+                    // The export lamp flag (the C# lamp reads
+                    // `QueueManager.IsInComicConversion`; the port's
+                    // export is synchronous — the flag drives the
+                    // lamp between runs, recorded deviation).
+                    crate::library::set_export_active(true);
                     if s.combine {
                         progress_label.set_text("Exporting combined file…");
                         if let Err(err) =
@@ -374,6 +379,7 @@ pub fn show_export_dialog(
                             }
                         }
                     }
+                    crate::library::set_export_active(false);
                     if errors.is_empty() {
                         dlg.close();
                         on_done(Some(ExportDialogResult { setting: s }));

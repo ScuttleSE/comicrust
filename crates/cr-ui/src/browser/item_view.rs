@@ -49,8 +49,6 @@ const TYPE_AHEAD_RESET_MS: u64 = 2500;
 const FOCUS_UNFOCUSED: (f64, f64, f64) = (0.5, 0.5, 0.55);
 /// The Ctrl+wheel size limits + step (`Program.Min/MaxThumbHeight`,
 /// the wheel steps 16 — `itemView_MouseWheel`).
-const MIN_THUMB_SIZE: f64 = 96.0;
-const MAX_THUMB_SIZE: f64 = 512.0;
 const THUMB_WHEEL_STEP: f64 = 16.0;
 
 type ActivateFn = Box<dyn Fn(&CrGuid)>;
@@ -309,7 +307,7 @@ impl ItemView {
         // gate).
         {
             let state = Rc::downgrade(&state);
-            let canvas_for_ctrl = canvas.clone();
+            let iv_for_wheel = iv.clone();
             let controller = gtk4::EventControllerScroll::new(
                 gtk4::EventControllerScrollFlags::VERTICAL
                     | gtk4::EventControllerScrollFlags::DISCRETE,
@@ -333,17 +331,15 @@ impl ItemView {
                 } else {
                     -THUMB_WHEEL_STEP
                 };
-                {
-                    let mut s = state.borrow_mut();
-                    s.config.thumb_height =
-                        (s.config.thumb_height + step).clamp(MIN_THUMB_SIZE, MAX_THUMB_SIZE);
-                    let width = s.config.view_width;
-                    s.relayout(width);
-                    // The tile segments carry per-cell font sizes.
-                    s.tile_render.clear();
+                // `SetItemSize(itemSize.Value + delta * 16)` — the
+                // current mode's value + the step (Tile scales too).
+                let next = {
+                    let s = state.borrow();
+                    super::layout::item_size_range(&s.config).map(|(_, _, v)| v + step)
+                };
+                if let Some(v) = next {
+                    iv_for_wheel.apply_item_size(v);
                 }
-                update_size_request(&state, &canvas_for_ctrl);
-                canvas_for_ctrl.queue_draw();
                 glib::Propagation::Stop
             });
             canvas.add_controller(controller);
@@ -408,6 +404,70 @@ impl ItemView {
 
     pub fn thumb_height(&self) -> f64 {
         self.state.borrow().config.thumb_height
+    }
+
+    /// `ComicBrowserControl.GetItemSize` — the status-bar slider's
+    /// (min, max, value) triple for the current mode.
+    pub fn item_size(&self) -> Option<(f64, f64, f64)> {
+        let s = self.state.borrow();
+        super::layout::item_size_range(&s.config)
+    }
+
+    /// `ComicBrowserControl.SetItemSize`: the clamped height per
+    /// mode (Thumbnail thumb height, Tile tile height with the width
+    /// doubled, Detail row height) + reflow.
+    pub fn set_item_size(&self, height: f64) {
+        self.apply_item_size(height);
+    }
+
+    /// The shared resize path (the public setter and the Ctrl+wheel
+    /// handler both land here — the C# wheel calls `SetItemSize`).
+    fn apply_item_size(&self, height: f64) {
+        let width = self.state.borrow().config.view_width;
+        {
+            let mut s = self.state.borrow_mut();
+            let (h, tile_w) = super::layout::clamp_item_size(s.config.mode, height);
+            match s.config.mode {
+                ItemViewMode::Thumbnail => s.config.thumb_height = h,
+                ItemViewMode::Tile => s.config.tile_size = (tile_w, h),
+                ItemViewMode::Detail => s.config.row_height = h,
+            }
+            s.relayout(width);
+            // The tile segments carry per-cell font sizes — rebuild.
+            s.tile_render.clear();
+        }
+        self.update_size_request();
+        self.canvas.queue_draw();
+    }
+
+    /// The pre-filter book count (`totalCount` — the C# fills it
+    /// from the list evaluation before the matcher runs).
+    pub fn total_count(&self) -> usize {
+        self.state.borrow().view.books().len()
+    }
+
+    /// The total file size of the DISPLAYED books (`totalSize` — the
+    /// C# sums the matched set while filling the list).
+    pub fn visible_size(&self) -> i64 {
+        let s = self.state.borrow();
+        s.view
+            .display_order()
+            .iter()
+            .map(|&i| s.view.books()[i].file_size.max(0))
+            .sum()
+    }
+
+    /// The total file size of the selected AND displayed books
+    /// (`selectedSize` — the C# sums `SelectedItems`).
+    pub fn selected_size(&self) -> i64 {
+        let s = self.state.borrow();
+        let sel = s.view.selection();
+        s.view
+            .display_order()
+            .iter()
+            .filter(|&&i| sel.contains(&s.view.books()[i].id))
+            .map(|&i| s.view.books()[i].file_size.max(0))
+            .sum()
     }
 
     /// The quick-search filter (`UpdateQuickFilter`): `None` clears.

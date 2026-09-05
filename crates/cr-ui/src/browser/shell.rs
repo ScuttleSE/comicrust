@@ -34,6 +34,7 @@ use super::item_view::ItemView;
 use super::layout::ItemViewMode;
 use super::navigator::Navigator;
 use super::pages_view::PagesPanel;
+use super::status_bar;
 use super::tabstrip::TabId;
 
 /// The browser workspace tabs (the C# `tsbLibrary`/`tsbPages`).
@@ -63,7 +64,8 @@ pub struct BrowserShell {
 struct ShellState {
     window: ApplicationWindow,
     stack: Stack,
-    status: Label,
+    /// The multi-panel status bar (the T8 `statusStrip`).
+    status_bar: super::status_bar::StatusBar,
     navigator: Rc<Navigator>,
     item_view: ItemView,
     quick_view: ItemView,
@@ -87,6 +89,9 @@ struct ShellState {
     app: Application,
     /// The current navigator selection (refreshes after mutations).
     current_list: RefCell<Option<CrGuid>>,
+    /// The current list's name (the status-bar selection panel; set
+    /// on the navigator selection + refreshes).
+    current_list_name: RefCell<String>,
     /// The `win.` action group members by name (the enable-state
     /// sync reaches them here). A RefCell: the map fills while the
     /// state itself already lives in its Rc.
@@ -264,7 +269,10 @@ impl ShellState {
     fn refresh_view_from_list(&self) {
         let id = *self.current_list.borrow();
         if let Some(id) = id {
-            if let Some((_name, books)) = library::evaluate_books(&id) {
+            if let Some((name, books)) = library::evaluate_books(&id) {
+                // The list name feeds the status panel (a rename
+                // shows on the next refresh without a re-select).
+                *self.current_list_name.borrow_mut() = name;
                 // The C# refresh updates the items in place — the
                 // selection survives (the My Rating check reads the
                 // selection right after the rating commit).
@@ -277,13 +285,73 @@ impl ShellState {
         }
     }
 
-    fn update_status(&self, count: usize, selected: usize) {
-        if selected > 0 {
-            self.status
-                .set_text(&format!("{count} book(s), {selected} selected"));
+    /// The status-bar panels (`OnUpdateGui`'s strip updates fold
+    /// into the same sync the actions ride): the selection info, the
+    /// book caption, the page + count, and the thumb slider.
+    fn update_status_panels(&self) {
+        // The selection info (the C# `SelectionInfo`).
+        let count = self.item_view.book_count();
+        let total = self.item_view.total_count();
+        let total_size = self.item_view.visible_size();
+        let selected = self.item_view.selection_len();
+        let selected_size = self.item_view.selected_size();
+        let selected_path = if selected == 1 {
+            self.item_view
+                .selection_ids()
+                .first()
+                .and_then(library::book_path)
         } else {
-            self.status.set_text(&format!("{count} book(s)"));
-        }
+            None
+        };
+        let list_name = self.current_list_name.borrow().clone();
+        // The C# reads the ACTIVE browser service: with the reader
+        // or QuickOpen showing, `FindActiveService<IComicBrowser>`
+        // returns null and the panel goes EMPTY (the "Ready" text is
+        // only the Designer default).
+        let browser_visible = self.stack.visible_child_name().as_deref() == Some("browser");
+        let info = if browser_visible {
+            status_bar::selection_info(
+                &list_name,
+                count,
+                total,
+                total_size,
+                selected,
+                selected_size,
+                selected_path.as_deref(),
+            )
+        } else {
+            String::new()
+        };
+        self.status_bar.set_selection_info(&info);
+
+        // The open book (the caption ellipsized in the C# to 60 —
+        // the label caps at the same width).
+        let caption = self
+            .reader
+            .tab_infos()
+            .into_iter()
+            .find(|t| t.current && t.has_book)
+            .map(|t| t.caption);
+        self.status_bar.set_book(caption.as_deref());
+
+        // The current page + count (the page panel is 1-based;
+        // "NA"/"None" without a book).
+        let has_book = self.reader.has_current_book();
+        let page = if has_book {
+            self.reader.current_display_page()
+        } else {
+            None
+        };
+        let track = cr_ui_settings().borrow().track_current_page;
+        self.status_bar.set_page(page, track);
+        let page_count = self.reader.current_book().map(|(_, c)| c).unwrap_or(0);
+        self.status_bar
+            .set_page_count(&status_bar::page_count_text(page_count));
+
+        // The thumb slider: the browser workspace only (the C#
+        // `mainViewContainer.Expanded`), range/value per mode.
+        let size = self.item_view.item_size();
+        self.status_bar.sync_slider(size, browser_visible);
     }
 }
 
@@ -347,14 +415,13 @@ impl BrowserShell {
         paned.set_shrink_start_child(false);
         paned.set_position(280);
         paned.set_vexpand(true);
-        let status = Label::builder()
-            .halign(gtk4::Align::Start)
-            .valign(gtk4::Align::Center)
-            .margin_top(4)
-            .margin_bottom(4)
-            .margin_start(8)
-            .build();
-        status.set_text("0 book(s)");
+        // The status bar sits below the workspace stack (the C#
+        // `statusStrip` is form-wide). The panels fill at the first
+        // `sync_enabled`.
+        let super::status_bar::StatusBarWidgets {
+            widget: status_widget,
+            bar: status_bar,
+        } = super::status_bar::StatusBar::create();
         // The browser toolbar rides the ITEM VIEW pane (the C#
         // toolStrip spans the ComicBrowserControl's list area — the
         // user report: it must start at the left edge of the RIGHT
@@ -420,13 +487,13 @@ impl BrowserShell {
         content.append(menubar.widget());
         content.append(tab_strip.widget());
         content.append(&stack);
-        content.append(&status);
+        content.append(&status_widget);
         window.set_child(Some(&content));
 
         let state = Rc::new(ShellState {
             window: window.clone(),
             stack: stack.clone(),
-            status,
+            status_bar,
             navigator: Rc::clone(&navigator),
             item_view,
             quick_view,
@@ -440,6 +507,7 @@ impl BrowserShell {
             reader,
             app: app.clone(),
             current_list: RefCell::new(None),
+            current_list_name: RefCell::new(String::new()),
             actions: RefCell::new(HashMap::new()),
             list_history: RefCell::new(Vec::new()),
             list_history_pos: Cell::new(0),
@@ -478,6 +546,22 @@ impl BrowserShell {
     /// here).
     pub fn tabstrip(&self) -> super::tabstrip::TabStrip {
         self.state.tab_strip.clone()
+    }
+
+    /// The status bar handle (the T8 probe gates the panels).
+    pub fn statusbar(&self) -> super::status_bar::StatusBar {
+        self.state.status_bar.clone()
+    }
+
+    /// The browser grid's current thumb height (the slider resize
+    /// gate).
+    pub fn state_grid_thumb_height(&self) -> f64 {
+        self.state.item_view.thumb_height()
+    }
+
+    /// The browser grid's item-size triple (the slider sync gate).
+    pub fn state_grid_item_size(&self) -> Option<(f64, f64, f64)> {
+        self.state.item_view.item_size()
     }
 
     /// Probe: the allocated heights of the workspace stack and the
@@ -720,10 +804,11 @@ impl BrowserShell {
                                 sh.list_history_pos.set(h.len() - 1);
                             }
                         }
-                        if let Some((_name, books)) = library::evaluate_books(id) {
-                            let count = books.len();
+                        if let Some((name, books)) = library::evaluate_books(id) {
+                            // The list name feeds the status-bar
+                            // selection panel (`BookList.Name`).
+                            *sh.current_list_name.borrow_mut() = name;
                             sh.item_view.set_books(books);
-                            sh.update_status(count, 0);
                         }
                         sh.sync_enabled();
                     }
@@ -747,17 +832,16 @@ impl BrowserShell {
                 });
         }
 
-        // The selection count on the status bar.
+        // The selection change feeds the status-bar selection panel
+        // + the enable-state (both ride the sync).
         {
             let state = Rc::downgrade(state);
             state
                 .upgrade()
                 .expect("state")
                 .item_view
-                .connect_selection_changed(move |selected| {
+                .connect_selection_changed(move |_selected| {
                     if let Some(sh) = state.upgrade() {
-                        let count = sh.item_view.book_count();
-                        sh.update_status(count, selected);
                         sh.sync_enabled();
                     }
                 });
@@ -869,6 +953,74 @@ impl BrowserShell {
 
         // The view commands (mode/size/sort/group).
         self.install_actions();
+
+        // The status bar's clicks: the page panel toggles
+        // TrackCurrentPage (the C# `tsCurrentPage_Click` — the
+        // stateful action flips the setting and re-syncs); the lamps
+        // open the Tasks dialog (T13; the disabled stub no-ops).
+        {
+            let state = Rc::downgrade(state);
+            state
+                .upgrade()
+                .expect("state")
+                .status_bar
+                .connect_page_click(move || {
+                    if let Some(sh) = state.upgrade() {
+                        // The disabled stub would return Err — the
+                        // activation is best-effort by design.
+                        let _ = gtk4::prelude::WidgetExt::activate_action(
+                            &sh.window,
+                            "win.track-current-page",
+                            None,
+                        );
+                    }
+                });
+        }
+        {
+            let state = Rc::downgrade(state);
+            state
+                .upgrade()
+                .expect("state")
+                .status_bar
+                .connect_lamp_click(move || {
+                    if let Some(sh) = state.upgrade() {
+                        // The Tasks dialog is a disabled stub until
+                        // T13 — the activation is best-effort.
+                        let _ = gtk4::prelude::WidgetExt::activate_action(
+                            &sh.window,
+                            "win.tasks",
+                            None,
+                        );
+                    }
+                });
+        }
+        // The slider drag → `SetItemSize` (the C# `TrackBar.Scroll`).
+        {
+            let state = Rc::downgrade(state);
+            state
+                .upgrade()
+                .expect("state")
+                .status_bar
+                .connect_slider(move |value| {
+                    if let Some(sh) = state.upgrade() {
+                        sh.item_view.set_item_size(value);
+                    }
+                });
+        }
+        // The 1 s activity poll (`updateActivityTimer`): the lamps
+        // follow the scan/write/export activity.
+        {
+            let state = Rc::downgrade(state);
+            status_bar::start_activity_timer(move || {
+                if let Some(sh) = state.upgrade() {
+                    sh.status_bar.update_lamps(
+                        library::is_scanning(),
+                        library::writes_pending() > 0,
+                        library::export_in_flight(),
+                    );
+                }
+            });
+        }
 
         // The initial fill. The startup view: the QuickOpen covers
         // when the database has books (the C#
@@ -1388,9 +1540,17 @@ impl ShellState {
         if let Some(a) = self.action("pages-view-mode") {
             a.set_state(&self.pages.mode().action_name().to_variant());
         }
+        // `() => Program.Settings.TrackCurrentPage` — the page-panel
+        // lock icon + the menu check derive from the setting.
+        if let Some(a) = self.action("track-current-page") {
+            a.set_state(&cr_ui_settings().borrow().track_current_page.to_variant());
+        }
         // The workspace tab strip (tabs, selection, Pages visibility).
         self.sync_tabs();
         self.update_menubar();
+        // The status panels ride the same sync (the `OnUpdateGui`
+        // strip updates run in the same idle pass).
+        self.update_status_panels();
         self.sync_menubar();
     }
 
@@ -1418,7 +1578,7 @@ impl ShellState {
             show_no_comic,
         );
         self.tab_strip.widget().set_visible(strip_visible);
-        self.status.set_visible(strip_visible);
+        self.status_bar.widget().set_visible(strip_visible);
         // The toolbar: visible while the reader view shows and
         // MinimalGui is off (the C# `MainToolStripVisible`); the
         // reader-only buttons gate on the current book (`OnUpdateGui`).
@@ -2003,6 +2163,9 @@ impl ShellState {
         let matcher = compose_quick_filter(&text, &scope, &show, &ctype, dups);
         *self.current_filter.borrow_mut() = matcher.clone();
         self.item_view.set_filter(matcher);
+        // The filter changed the visible set — the selection-info
+        // panel follows without an action dispatch.
+        self.update_status_panels();
     }
 
     /// The Detail header column chooser: a PLAIN popover of check-
@@ -2714,17 +2877,14 @@ impl ShellState {
             sh.reader.dispatch_current("DoublePageAutoScroll");
         });
         {
-            let track = gio::SimpleAction::new_stateful(
-                "track-current-page",
-                None,
-                &cr_ui_settings().borrow().track_current_page.to_variant(),
-            );
-            track.connect_activate(move |action, _| {
+            // `tsCurrentPage_Click` (`TrackCurrentPage = !…`): the
+            // check derives from the SETTING in the sync (the T6
+            // source-of-truth rule).
+            let track = cr_ui_settings().borrow().track_current_page;
+            self.add_check(&group, "track-current-page", track, |_sh| {
                 let next = !cr_ui_settings().borrow().track_current_page;
                 cr_ui_settings().borrow_mut().track_current_page = next;
-                action.set_state(&next.to_variant());
             });
-            group.add_action(&track);
             // `tbShowMainMenu` (the Tools menu): CHECKED while the
             // menu is NOT auto-hidden — the C# flips
             // `AutoHideMainMenu` (MainForm.cs:1455-1458).

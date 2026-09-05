@@ -62,6 +62,28 @@ pub const CSS: &str = r#"
 .tabstrip .tab-bold {
     font-weight: bold;
 }
+
+/* The status bar (the C# statusStrip): a top-ruled row of sunken
+   panels (`Border3DStyle.SunkenOuter` → inset borders). */
+.status-bar {
+    border-top: 1px solid rgba(128, 128, 128, 0.45);
+    min-height: 22px;
+}
+
+.status-panel {
+    background: rgba(128, 128, 128, 0.14);
+    border: 1px solid rgba(128, 128, 128, 0.30);
+    border-radius: 3px;
+    padding: 0 6px;
+    margin-top: 2px;
+    margin-bottom: 2px;
+}
+
+/* The image-only lamp panels stay square around the icon. */
+.status-bar button.status-panel {
+    padding: 0 2px;
+    min-height: 0;
+}
 "#;
 
 /// Loads the CSS into the default display. Idempotent enough for the

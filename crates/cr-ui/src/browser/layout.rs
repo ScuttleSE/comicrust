@@ -23,6 +23,40 @@ pub const DEFAULT_ROW_HEIGHT: f64 = 16.0;
 pub const DEFAULT_HEADER_HEIGHT: f64 = 20.0;
 pub const DEFAULT_GROUP_HEADER_HEIGHT: f64 = 40.0;
 
+// The status-bar slider + Ctrl+wheel limits (`Program.MinThumbHeight`
+// .. `MaxThumbHeight`, `MinTileHeight`, `MinRowHeight` .. `MaxRowHeight`).
+pub const MIN_THUMB_HEIGHT: f64 = 96.0;
+pub const MAX_THUMB_HEIGHT: f64 = 512.0;
+pub const MIN_TILE_HEIGHT: f64 = 64.0;
+pub const MAX_TILE_HEIGHT: f64 = 512.0;
+pub const MIN_ROW_HEIGHT: f64 = 12.0;
+pub const MAX_ROW_HEIGHT: f64 = 48.0;
+
+/// `ComicBrowserControl.GetItemSize` — the slider/wheel
+/// (min, max, value) triple per view mode.
+pub fn item_size_range(config: &LayoutConfig) -> Option<(f64, f64, f64)> {
+    match config.mode {
+        ItemViewMode::Thumbnail => Some((MIN_THUMB_HEIGHT, MAX_THUMB_HEIGHT, config.thumb_height)),
+        ItemViewMode::Tile => Some((MIN_TILE_HEIGHT, MAX_TILE_HEIGHT, config.tile_size.1)),
+        ItemViewMode::Detail => Some((MIN_ROW_HEIGHT, MAX_ROW_HEIGHT, config.row_height)),
+    }
+}
+
+/// `ComicBrowserControl.SetItemSize` — the clamped height per mode
+/// plus the Tile width (`ItemTileSize = new Size(height * 2, height)`).
+/// Returns `(height, tile_width)`; the tile width is 0 for the other
+/// modes.
+pub fn clamp_item_size(mode: ItemViewMode, height: f64) -> (f64, f64) {
+    match mode {
+        ItemViewMode::Thumbnail => (height.clamp(MIN_THUMB_HEIGHT, MAX_THUMB_HEIGHT), 0.0),
+        ItemViewMode::Tile => {
+            let h = height.clamp(MIN_TILE_HEIGHT, MAX_TILE_HEIGHT);
+            (h, h * 2.0)
+        }
+        ItemViewMode::Detail => (height.clamp(MIN_ROW_HEIGHT, MAX_ROW_HEIGHT), 0.0),
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ItemViewMode {
     Thumbnail,
@@ -579,5 +613,41 @@ mod tests {
             assert_eq!(item.rect.w, 192.0);
             assert_eq!(item.rect.h, 96.0);
         }
+    }
+
+    #[test]
+    fn item_size_triples_follow_the_mode() {
+        let config = LayoutConfig::default();
+        // Thumbnail: 96..512 over the thumb height.
+        assert_eq!(
+            item_size_range(&config),
+            Some((96.0, 512.0, config.thumb_height))
+        );
+        // Tile: 64..512 over the tile HEIGHT.
+        let tile = LayoutConfig {
+            mode: ItemViewMode::Tile,
+            ..Default::default()
+        };
+        assert_eq!(item_size_range(&tile), Some((64.0, 512.0, 96.0)));
+        // Detail: 12..48 over the row height.
+        let detail = LayoutConfig {
+            mode: ItemViewMode::Detail,
+            ..Default::default()
+        };
+        assert_eq!(
+            item_size_range(&detail),
+            Some((12.0, 48.0, config.row_height))
+        );
+    }
+
+    #[test]
+    fn item_size_clamps_per_mode() {
+        // Thumbnail clamps 96..512.
+        assert_eq!(clamp_item_size(ItemViewMode::Thumbnail, 40.0).0, 96.0);
+        assert_eq!(clamp_item_size(ItemViewMode::Thumbnail, 900.0).0, 512.0);
+        // Tile clamps 64..512 and doubles the width.
+        assert_eq!(clamp_item_size(ItemViewMode::Tile, 40.0), (64.0, 128.0));
+        // Detail clamps 12..48.
+        assert_eq!(clamp_item_size(ItemViewMode::Detail, 4.0).0, 12.0);
     }
 }
