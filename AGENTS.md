@@ -329,8 +329,47 @@ Update this section at the **end of every work session**. The next agent must kn
   `menubar_probe` gained the
   dark-click gate; `commands_probe` 70/70; 317 tests. Deviations
   recorded in the kickoff tracker + ADR-025.
-  **Next: T8 (the status bar).** Phase 6 (scripting) starts only
-  after 5.5.
+  T8 (the status bar) IMPLEMENTED (2026-09-05), user test pending.
+  `browser/status_bar.rs` — the panel row under the workspace stack:
+  the selection-info spring panel (the `SelectionInfo` port —
+  "ListName: N Books (M filtered) / size - K selected / size", the
+  single selection shows the file path, sizes via the
+  `FileLengthFormat` port; EMPTY without an active browser
+  workspace — the C# `FindActiveService` shape; "Ready" is only the
+  Designer default), three image lamps (export/write/scan, static
+  PNGs per the T2 record, click → the `win.tasks` T13 stub, the
+  ported 1 s `updateActivityTimer` poll; `library::is_scanning`/
+  `writes_pending`/`export_in_flight` flag the activities), the
+  data-source light (always connected), the book caption ("None",
+  60-char ellipsis), the page panel (1-based display page, "NA"
+  empty, the Locked.png icon while TrackCurrentPage is OFF, click →
+  `win.track-current-page`), the page count ("N Page(s)"/"Unknown"),
+  and the thumb-size slider (a 120 px GtkScale, browser-workspace
+  only, `layout::item_size_range`/`clamp_item_size` — the
+  `GetItemSize`/`SetItemSize` ports; Thumbnail 96..512 thumb height,
+  Tile 64..512 tile HEIGHT with the width doubled, Detail 12..48 row
+  height; the drag → `ItemView::set_item_size`). The panel updates
+  fold into `sync_enabled` + `rebuild_filter`. `track-current-page`
+  became a proper `add_check` action (the check derives from the
+  SETTING in the sync — the old manual registration never re-synced
+  so the lock icon could not follow the click). The Ctrl+wheel now
+  routes through `set_item_size` — FIXES a T7 gap (the browser Tile
+  mode never resized from the wheel). Deviations: the export lamp
+  shows only between synchronous export runs (in-dialog UI-thread
+  export; the C# uses a background queue), the read-info/page/
+  backup/device-sync lamps + the server panel omitted, the Win7
+  overlay icon not portable. Gate: 321 tests, `statusbar_probe`
+  (defaults, the info line, the slider resize/sync, the page click,
+  the lamp flags), all other probes green. **RETEST (the T8
+  acceptance):** the steps in `docs/phase-5.5-kickoff.md` (the T8
+  entry): the bar layout + the info line on selection/search, the
+  book/page/count panels on open, the page-panel click lock, the
+  slider resize + re-range per mode, the scan/write lamps, the
+  MinimalGui hide.
+  **Next: T9 tail is done; after the T8 PASS, the phase continues
+  with T10 (dock modes) or the remaining small tasks (T11 preview,
+  T12 display settings, T13 dialogs, T14 persistence).** Phase 6
+  (scripting) starts only after 5.5.
   Phases 0-5 are complete (their gates stay green). Open Phase 1
   gaps: WebComicProvider and the PDF/DjVu writers (tracked in
   `docs/phase-1-kickoff.md`).

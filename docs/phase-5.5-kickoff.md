@@ -1906,3 +1906,90 @@ covers the whole app. The magnifier lens threads the same color
 reader canvas rides `redraw_on_theme_change`. NOTE: with a light
 surround, white pages blend into it edge-to-edge — the same look
 the C# Auto mode gives on white comics.
+
+- T8 IMPLEMENTED (2026-09-05), user test pending. The multi-panel
+  status bar (`MainForm.statusStrip`):
+  - `browser/status_bar.rs` — the panel row under the workspace
+    stack: the selection-info spring panel (`SelectionInfo` port,
+    `ComicBrowserControl.cs:635` — "ListName: N Books (M filtered) /
+    size - K selected / size", the single selection shows the file
+    path, sizes through the `FileLengthFormat` port; EMPTY when no
+    browser workspace is active — the C# `FindActiveService` null
+    shape, "Ready" is only the Designer default), three image lamps
+    (export/write/scan — the C# six-lamp family reduced to the
+    ported activities; static PNGs per the T2 record: Export.png/
+    UpdateBig.png/Scan.png; click → `win.tasks`, the T13 stub),
+    the data-source light (always connected — a local XML DB),
+    the book caption ("None" default, 60-char ellipsis), the page
+    panel (1-based display page, "NA" without a book; the Locked.png
+    icon shows while TrackCurrentPage is OFF; click →
+    `win.track-current-page`), the page count ("N Page(s)" /
+    "Unknown" — the `PagesAsText` port), and the thumb-size slider
+    (a 120 px GtkScale — the `ToolStripThumbSize` shape; visible on
+    the browser workspace only — the C# `mainViewContainer.Expanded`
+    Fill parity; range/value per mode from the new pure
+    `item_size_range`).
+  - `layout.rs`: `item_size_range` (the `GetItemSize` port:
+    Thumbnail 96..512 over the thumb height, Tile 64..512 over the
+    tile HEIGHT, Detail 12..48 over the row height) +
+    `clamp_item_size` (the `SetItemSize` port: Tile sets
+    `(h * 2, h)`). `ItemView::{item_size, set_item_size,
+    total_count, visible_size, selected_size}` (the pre-filter
+    count, the displayed-set size sums — the C# `totalCount`/
+    `totalSize`/`selectedSize` shapes). The Ctrl+wheel now routes
+    through `set_item_size` (the C# wheel calls `SetItemSize`) —
+    this FIXES a T7 gap: the browser Tile mode never resized from
+    the wheel before (it mutated only `thumb_height`).
+  - `library.rs`: `is_scanning` (the scan worker flag),
+    `writes_pending` (the debounced write timers), `export_in_flight`
+    + `set_export_active` (the export dialog sets it around its run).
+    The lamps poll on the ported 1 s `updateActivityTimer`.
+  - The panel updates fold into `sync_enabled` (the `OnUpdateGui`
+    idle-pass shape) + `rebuild_filter` (a filter change has no
+    action dispatch); the page/count/book panels also follow the
+    `page_change` hook through the same sync. `track-current-page`
+    became a proper `add_check` action (the check derives from the
+    SETTING in the sync — the T6 source-of-truth rule; the old
+    manual registration never re-synced, so the lock icon could not
+    follow the click).
+  - Deviations: the export lamp shows only between synchronous
+    export runs (the port's export is in-dialog on the UI thread —
+    the C# funnels through a background queue; the flag still drives
+    the lamp and a future queue can keep it), the read-info/page/
+    backup/device-sync lamps have no ported activity (omitted), the
+    server-activity panel is omitted (no remote server), the
+    Win7 taskbar overlay icon (the C# mirrors the lamps into it) is
+    not portable.
+  - Gate: 321 tests (+4: the selection-info/page-count unit tests,
+    the item-size range/clamp tests); `statusbar_probe` gates the
+    startup defaults, the info line (name + count + size + the
+    single-selection path), the slider (visible on the browser, the
+    drag resizes the grid 128→256, the value syncs), the page panel
+    (open → caption/2/24 Page(s), the click flips the lock), and
+    the lamp flag paths; commands/menubar/dynmenus/toolbar/
+    browserbar/navpages/tabstrip probes all green.
+  - **USER TEST (the T8 acceptance):**
+    1. `cargo run -p cr-app --release --` — the status bar shows
+       under the workspace: [info line] ... [export][write][scan
+       lamps — hidden while idle] [green light] [None] [NA] [Unknown]
+       [slider]. With QuickOpen at startup the info line is empty.
+    2. Select the Library list — the info line reads
+       "Library: N Books / <total size>"; select ONE book — it
+       shows " - <file path> / <size>"; select TWO — " - 2 selected /
+       <size>"; search — " (N filtered)" appears.
+    3. Open a comic — the book panel shows the caption, the page
+       panel the current page number, the count panel "24 Page(s)";
+       turn pages — the number follows.
+    4. Click the page panel — the Locked icon appears (tracking
+       off); click again — it clears (TrackCurrentPage toggles; the
+       Edit ▸ Track current Page check follows).
+    5. Drag the slider — the browser grid thumbs resize live
+       (Thumbnails AND Tiles); switch to Details — the slider re-ranges
+       to the row height (12..48); switch to the reader — the slider
+       hides; back — it returns at the right value.
+    6. Scan Book Folders (Ctrl+Shift+S) — the scan lamp appears
+       while the scan runs and disappears after; edit a book's
+       metadata — the write lamp blinks for the debounced write.
+    7. F10 (MinimalGui) hides the whole bar; leaving restores it
+       (the bar rides the Fill `flag4` rule with the tab strip).
+
