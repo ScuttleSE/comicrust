@@ -2947,8 +2947,41 @@ impl ShellState {
         }
 
         // --- Display ---
-        // display-settings — T12 lands the dialog.
-        self.add_disabled(&group, "display-settings");
+        // display-settings — the `EditWorkspaceDisplaySettings` port
+        // (F9): snapshot the current reader view (or the session
+        // copy), the dialog edits the copy, OK/Apply push it onto
+        // every open view (`SetWorkspaceDisplayOptions`).
+        {
+            let state = state.clone();
+            let action = gio::SimpleAction::new("display-settings", None);
+            action.connect_activate(move |_, _| {
+                let Some(sh) = state.upgrade() else {
+                    return;
+                };
+                let window = sh.window.clone();
+                let options = sh
+                    .reader
+                    .current_view()
+                    .map(|view| view.display_options())
+                    .unwrap_or_else(crate::reader::page_view::session_display_options);
+                let reader = sh.reader.clone();
+                crate::dialogs::display_settings::show_display_settings(
+                    &window,
+                    options,
+                    move |options| {
+                        // The session copy records FIRST (the
+                        // workspace write-back shape) so a book
+                        // opened later seeds the same options; every
+                        // open view re-applies
+                        // (`SetWorkspaceDisplayOptions`).
+                        crate::reader::page_view::set_session_display_options(options.clone());
+                        reader.apply_display_options_all(options);
+                    },
+                );
+            });
+            group.add_action(&action);
+            self.actions.borrow_mut().insert("display-settings", action);
+        }
         let fit_action = gio::SimpleAction::new_stateful(
             "page-fit",
             Some(glib::VariantTy::STRING),

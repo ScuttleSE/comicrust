@@ -48,11 +48,12 @@ pub const MAXIMUM_ZOOM: f32 = 8.0;
 const ANAMORPHIC_TOLERANCE: f32 = 0.25;
 
 /// The surround color for one frame: Auto samples the page corners
-/// (the C# `GetAutoBackgroundColor`), every other mode uses
-/// `fallback`. The fallback is the THEME base color — recorded
-/// deviation: the C# paints `BackColor = Color.Black` unconditionally
-/// (the reader never follows the Windows theme), the port follows the
-/// dark/light toggle so the whole app flips together.
+/// (the C# `GetAutoBackgroundColor`), Color uses the explicit picker
+/// color when the dialog set one, and otherwise `fallback`. The
+/// fallback is the THEME base color — recorded deviation: the C#
+/// paints `BackColor = Color.Black` unconditionally (the reader
+/// never follows the Windows theme), the port follows the dark/light
+/// toggle so the whole app flips together.
 fn background_color(st: &ViewState, fallback: (f64, f64, f64)) -> (f64, f64, f64) {
     match st.background_mode {
         ImageBackgroundMode::Auto => st
@@ -61,8 +62,131 @@ fn background_color(st: &ViewState, fallback: (f64, f64, f64)) -> (f64, f64, f64
             .map(|p| p.auto_background)
             .map(|(r, g, b)| (f64::from(r), f64::from(g), f64::from(b)))
             .unwrap_or(fallback),
-        _ => fallback,
+        _ => st
+            .background_color
+            .map(|c| (f64::from(c[0]), f64::from(c[1]), f64::from(c[2])))
+            .unwrap_or(fallback),
     }
+}
+
+/// `RenderImageBackground`: the solid surround, then the background
+/// texture per its ImageLayout when the mode is Texture. Identity
+/// space; `width`/`height` = the area to cover.
+fn draw_background(
+    ctx: &cairo::Context,
+    st: &ViewState,
+    width: i32,
+    height: i32,
+    fallback: (f64, f64, f64),
+) {
+    let background = background_color(st, fallback);
+    ctx.set_source_rgb(background.0, background.1, background.2);
+    ctx.rectangle(0.0, 0.0, f64::from(width), f64::from(height));
+    let _ = ctx.fill();
+    if st.background_mode != ImageBackgroundMode::Texture {
+        return;
+    }
+    if let Some(tex) = &st.background_texture {
+        let (tw, th) = (f64::from(tex.width()), f64::from(tex.height()));
+        let (w, h) = (f64::from(width), f64::from(height));
+        if tw <= 0.0 || th <= 0.0 || w <= 0.0 || h <= 0.0 {
+            return;
+        }
+        match st.background_layout {
+            ImageLayout::None => {}
+            ImageLayout::Tile => {
+                let pattern = cairo::SurfacePattern::create(tex);
+                pattern.set_extend(cairo::Extend::Repeat);
+                ctx.set_source(pattern).ok();
+                ctx.rectangle(0.0, 0.0, w, h);
+                let _ = ctx.fill();
+            }
+            ImageLayout::Center => {
+                ctx.set_source_surface(tex, (w - tw) / 2.0, (h - th) / 2.0)
+                    .ok();
+                ctx.rectangle(0.0, 0.0, w, h);
+                let _ = ctx.fill();
+            }
+            ImageLayout::Stretch => {
+                ctx.save().ok();
+                ctx.scale(w / tw, h / th);
+                ctx.set_source_surface(tex, 0.0, 0.0).ok();
+                ctx.rectangle(0.0, 0.0, tw, th);
+                let _ = ctx.fill();
+                ctx.restore().ok();
+            }
+            ImageLayout::Zoom => {
+                // Uniform scale to COVER the view (may crop).
+                let scale = (w / tw).max(h / th);
+                ctx.save().ok();
+                ctx.scale(scale, scale);
+                ctx.set_source_surface(tex, (w / scale - tw) / 2.0, (h / scale - th) / 2.0)
+                    .ok();
+                ctx.rectangle(0.0, 0.0, w / scale, h / scale);
+                let _ = ctx.fill();
+                ctx.restore().ok();
+            }
+        }
+    }
+}
+
+/// The page ornaments (`DrawPageOrnaments` with the C# engine
+/// defaults): a 1 px black frame, the outside shadow (stepped bands —
+/// cairo has no blur; recorded deviation from the C# shadow bitmap),
+/// and the edge bows (`PageBowWidth` 7 % strips, alpha 92 → 0, on
+/// both vertical edges — the C# draws border + center bows, which
+/// lands the same strips).
+fn draw_page_ornaments(ctx: &cairo::Context, rect: (f64, f64, f64, f64), matrix_scale: f64) {
+    let (x, y, w, h) = rect;
+    if w <= 0.0 || h <= 0.0 {
+        return;
+    }
+    // Outside shadow: `PageShadowWidthPercentage` 1 % of the smaller
+    // side, clamped 0..255 device px; four translucent bands.
+    let spread = (w.min(h) * 0.01).clamp(0.0, 255.0) / matrix_scale.max(0.001);
+    if spread >= 1.0 {
+        let bands = 4;
+        let step = spread / f64::from(bands);
+        for k in 1..=bands {
+            let k = f64::from(k);
+            let alpha = 0.6 * (1.0 - (k - 0.5) / f64::from(bands));
+            let outer = (
+                x - step * k,
+                y - step * k,
+                w + 2.0 * step * k,
+                h + 2.0 * step * k,
+            );
+            let inner = (
+                x - step * (k - 1.0),
+                y - step * (k - 1.0),
+                w + 2.0 * step * (k - 1.0),
+                h + 2.0 * step * (k - 1.0),
+            );
+            ctx.set_fill_rule(cairo::FillRule::EvenOdd);
+            ctx.set_source_rgba(0.0, 0.0, 0.0, alpha);
+            ctx.rectangle(outer.0, outer.1, outer.2, outer.3);
+            ctx.rectangle(inner.0, inner.1, inner.2, inner.3);
+            let _ = ctx.fill();
+        }
+        ctx.set_fill_rule(cairo::FillRule::Winding);
+    }
+    // Edge bows: dark at the edge fading inward over 7 % of the page
+    // width (`PageBowWidth`, `PageBowFromAlpha` 92).
+    let bow = (w * 0.07).max(2.0);
+    for (start, dir) in [(x, 1.0), (x + w, -1.0)] {
+        let grad = cairo::LinearGradient::new(start, y, start + bow * dir, y);
+        grad.add_color_stop_rgba(0.0, 0.0, 0.0, 0.0, 92.0 / 255.0);
+        grad.add_color_stop_rgba(1.0, 0.0, 0.0, 0.0, 0.0);
+        ctx.set_source(&grad).ok();
+        let gx = start.min(start + bow * dir);
+        ctx.rectangle(gx, y, bow, h);
+        let _ = ctx.fill();
+    }
+    // The 1 px frame (device px — divide by the matrix scale).
+    ctx.set_source_rgb(0.0, 0.0, 0.0);
+    ctx.set_line_width(1.0 / matrix_scale.max(0.001));
+    ctx.rectangle(x, y, w, h);
+    let _ = ctx.stroke();
 }
 
 /// `EngineConfiguration.KeyboardZoomStepping` default (the Z /
@@ -128,6 +252,288 @@ pub enum ImageBackgroundMode {
     #[default]
     Color,
     Texture,
+}
+
+/// `System.Windows.Forms.ImageLayout` (the C# values in order — the
+/// display-settings combos index straight into them).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum ImageLayout {
+    #[default]
+    None,
+    Tile,
+    Center,
+    Stretch,
+    Zoom,
+}
+
+impl ImageLayout {
+    pub fn from_index(index: i32) -> Self {
+        match index {
+            1 => ImageLayout::Tile,
+            2 => ImageLayout::Center,
+            3 => ImageLayout::Stretch,
+            4 => ImageLayout::Zoom,
+            _ => ImageLayout::None,
+        }
+    }
+
+    pub fn as_index(self) -> i32 {
+        match self {
+            ImageLayout::None => 0,
+            ImageLayout::Tile => 1,
+            ImageLayout::Center => 2,
+            ImageLayout::Stretch => 3,
+            ImageLayout::Zoom => 4,
+        }
+    }
+}
+
+/// The workspace display options the Book Display Settings dialog
+/// edits (the C# `DisplayWorkspace` display family — the fields
+/// `ComicDisplaySettingsDialog.Apply`/`Update` move). A pure data
+/// snapshot: the dialog and the shell pass it around, the view
+/// applies it to its render state.
+///
+/// Defaults = the C# `DisplayWorkspace` ctor + field defaults:
+/// transition Fade, realistic pages ON, no margin (5 % width when
+/// on), Color background (the port's explicit color is None until
+/// the picker sets one — ADR-025 theme-following otherwise), no
+/// textures, Tile layouts, full paper strength.
+#[derive(Clone, Debug, PartialEq)]
+pub struct DisplayOptions {
+    pub transition: PageTransitionEffect,
+    pub realistic_pages: bool,
+    pub page_margin: bool,
+    /// `PageMarginPercentWidth` (0..0.5; the dialog trackbar is 0-50 %).
+    pub page_margin_percent: f32,
+    pub background_mode: ImageBackgroundMode,
+    /// The Solid Color picker result (`BackgroundColor`); `None`
+    /// keeps the ADR-025 theme-following surround.
+    pub background_color: Option<[f32; 3]>,
+    /// `BackgroundTexture` — a texture file path (None = the "None"
+    /// combo row).
+    pub background_texture: Option<String>,
+    pub background_layout: ImageLayout,
+    /// `PaperTexture` — a texture file path (None = the "Default"
+    /// combo row).
+    pub paper_texture: Option<String>,
+    /// `PaperTextureStrength` (0..1).
+    pub paper_strength: f32,
+    pub paper_layout: ImageLayout,
+}
+
+impl Default for DisplayOptions {
+    fn default() -> Self {
+        DisplayOptions {
+            transition: PageTransitionEffect::Fade,
+            realistic_pages: true,
+            page_margin: false,
+            page_margin_percent: 0.05,
+            background_mode: ImageBackgroundMode::Color,
+            background_color: None,
+            background_texture: None,
+            background_layout: ImageLayout::Tile,
+            paper_texture: None,
+            paper_strength: 1.0,
+            paper_layout: ImageLayout::Tile,
+        }
+    }
+}
+
+impl PageTransitionEffect {
+    pub fn from_index(index: i32) -> Self {
+        match index {
+            0 => PageTransitionEffect::None,
+            2 => PageTransitionEffect::LeftRight,
+            3 => PageTransitionEffect::TopDown,
+            4 => PageTransitionEffect::Paging,
+            _ => PageTransitionEffect::Fade,
+        }
+    }
+
+    pub fn as_index(self) -> i32 {
+        match self {
+            PageTransitionEffect::None => 0,
+            PageTransitionEffect::Fade => 1,
+            PageTransitionEffect::LeftRight => 2,
+            PageTransitionEffect::TopDown => 3,
+            PageTransitionEffect::Paging => 4,
+        }
+    }
+}
+
+impl ImageBackgroundMode {
+    pub fn from_index(index: i32) -> Self {
+        match index {
+            0 => ImageBackgroundMode::Auto,
+            2 => ImageBackgroundMode::Texture,
+            _ => ImageBackgroundMode::Color,
+        }
+    }
+
+    pub fn as_index(self) -> i32 {
+        match self {
+            ImageBackgroundMode::Auto => 0,
+            ImageBackgroundMode::Color => 1,
+            ImageBackgroundMode::Texture => 2,
+        }
+    }
+}
+
+thread_local! {
+    /// The session display options — the port's workspace display
+    /// copy. The dialog snapshot (with no reader view open) reads it,
+    /// every new view seeds from it, and `apply_display_options`
+    /// writes it (the C# keeps the values on the workspace + the one
+    /// `ComicDisplay`; the port has one view per book slot).
+    static SESSION_DISPLAY_OPTIONS: RefCell<DisplayOptions> =
+        RefCell::new(DisplayOptions::default());
+}
+
+/// The session display options (the dialog snapshot source when no
+/// reader view is open).
+pub fn session_display_options() -> DisplayOptions {
+    SESSION_DISPLAY_OPTIONS.with(|o| o.borrow().clone())
+}
+
+/// Records the session display options (the apply path; new views
+/// seed from this).
+pub fn set_session_display_options(opts: DisplayOptions) {
+    SESSION_DISPLAY_OPTIONS.with(|o| *o.borrow_mut() = opts);
+}
+
+/// Decodes a paper texture file and pre-composites it over white at
+/// `strength` (`CreateWorkingPaperTexture`: under 0.05 disables).
+pub fn load_paper_surface(path: &str, strength: f32) -> Option<cairo::ImageSurface> {
+    if strength < 0.05 {
+        return None;
+    }
+    let bytes = resolve_texture_bytes(path)?;
+    let image = cr_image::decode::decode(&bytes).ok()?;
+    Some(white_composited(
+        &image.rgba,
+        image.width,
+        image.height,
+        strength,
+    ))
+}
+
+/// Decodes a background texture file (no compositing).
+pub fn load_texture_surface(path: &str) -> Option<cairo::ImageSurface> {
+    let bytes = resolve_texture_bytes(path)?;
+    let image = cr_image::decode::decode(&bytes).ok()?;
+    Some(image_surface_from_rgba(
+        &image.rgba,
+        image.width,
+        image.height,
+    ))
+}
+
+/// Reads a texture by absolute path or from the bundled roots
+/// (`bundled_paper` search shape).
+fn resolve_texture_bytes(path: &str) -> Option<Vec<u8>> {
+    if std::path::Path::new(path).is_absolute() {
+        return std::fs::read(path).ok();
+    }
+    for roots in [PAPER_ROOTS, BACKGROUND_ROOTS] {
+        for root in roots {
+            if let Ok(bytes) = std::fs::read(std::path::Path::new(root).join(path)) {
+                return Some(bytes);
+            }
+        }
+    }
+    std::fs::read(path).ok()
+}
+
+/// The texture asset roots (`LoadDefaultPaperTextures`/
+/// `LoadDefaultBackgroundTextures` shape — the bundled folders, the
+/// papers loader precedent).
+const PAPER_ROOTS: &[&str] = &["assets/papers", "crates/cr-ui/assets/papers"];
+const BACKGROUND_ROOTS: &[&str] = &["assets/backgrounds", "crates/cr-ui/assets/backgrounds"];
+
+/// The bundled texture file names for the dialog combos (sorted —
+/// the C# `FileUtility.GetFiles` result is ordered).
+pub fn bundled_texture_files(backgrounds: bool) -> Vec<String> {
+    let roots = if backgrounds {
+        BACKGROUND_ROOTS
+    } else {
+        PAPER_ROOTS
+    };
+    let mut names: Vec<String> = roots
+        .iter()
+        .filter_map(|root| std::fs::read_dir(root).ok())
+        .flat_map(|rd| {
+            rd.filter_map(std::result::Result::ok)
+                .filter(|e| e.path().is_file())
+                .filter_map(|e| e.file_name().to_str().map(str::to_string))
+        })
+        .filter(|n| {
+            let lower = n.to_lowercase();
+            lower.ends_with(".jpg") || lower.ends_with(".png") || lower.ends_with(".gif")
+        })
+        .collect();
+    names.sort();
+    names.dedup();
+    names
+}
+
+/// Resolves a texture file name to an asset path (the two roots,
+/// first hit wins).
+pub fn texture_asset_path(backgrounds: bool, file: &str) -> Option<std::path::PathBuf> {
+    let roots = if backgrounds {
+        BACKGROUND_ROOTS
+    } else {
+        PAPER_ROOTS
+    };
+    roots
+        .iter()
+        .map(|root| std::path::Path::new(root).join(file))
+        .find(|p| p.is_file())
+}
+
+/// `TextureFileItem.ParseFileName`: strips a trailing `[C]`/`[S]`/`[Z]`
+/// layout code (case-insensitive, optional leading whitespace) from
+/// the file stem and maps it to the ImageLayout (default Tile); the
+/// display name is the Pascal-cased stem spaced out
+/// (`PascalToSpaced`, the TR "Textures" table fallback). Returns
+/// (name, layout).
+pub fn parse_texture_file_name(file: &str) -> (String, ImageLayout) {
+    let stem = std::path::Path::new(file)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(file);
+    let mut layout = ImageLayout::Tile;
+    let mut name = stem.to_string();
+    let lower = stem.to_lowercase();
+    for (code, lay) in [
+        ("[c]", ImageLayout::Center),
+        ("[s]", ImageLayout::Stretch),
+        ("[z]", ImageLayout::Zoom),
+    ] {
+        if let Some(rest) = lower.strip_suffix(code) {
+            // Keep the original casing minus the code (the regex also
+            // eats whitespace before the bracket); the lowercase map
+            // preserves char count for the ASCII asset names.
+            let trimmed = rest.trim_end();
+            name = stem.get(..trimmed.len()).unwrap_or(stem).to_string();
+            layout = lay;
+            break;
+        }
+    }
+    (pascal_to_spaced(&name), layout)
+}
+
+/// cYo `StringExtensions.PascalToSpaced`: a space before every
+/// uppercase letter that does not start the string.
+fn pascal_to_spaced(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 4);
+    for (i, ch) in s.chars().enumerate() {
+        if i > 0 && ch.is_ascii_uppercase() {
+            out.push(' ');
+        }
+        out.push(ch);
+    }
+    out
 }
 
 /// A decoded page kept for composition (`PageImage` analog).
@@ -249,6 +655,26 @@ struct ViewState {
     background_mode: ImageBackgroundMode,
     /// White-composited paper texture (`workingPaperTexture`).
     paper: Option<cairo::ImageSurface>,
+    // ----- workspace display options (the Book Display Settings
+    // dialog, T12; the session copy seeds new views) -----
+    /// `DrawRealisticPages` — the page ornaments (frame, edge bows,
+    /// outside shadow).
+    realistic_pages: bool,
+    /// `PageMargin` + `PageMarginPercentWidth` (0..0.5).
+    page_margin: bool,
+    page_margin_percent: f32,
+    /// The explicit Solid Color (`BackgroundColor`); None keeps the
+    /// theme-following surround (ADR-025).
+    background_color: Option<[f32; 3]>,
+    /// `BackgroundTexture` (path + decoded surface).
+    background_texture_path: Option<String>,
+    background_texture: Option<cairo::ImageSurface>,
+    background_layout: ImageLayout,
+    /// `PaperTexture` source path + strength + layout (the surface is
+    /// `paper`, pre-composited over white at strength).
+    paper_path: Option<String>,
+    paper_strength: f32,
+    paper_layout: ImageLayout,
     /// The BOOK's color adjustment — the page keys carry it (the
     /// pool renders it; the disk cache tiers by it).
     base_adjustment: BitmapAdjustment,
@@ -335,6 +761,14 @@ impl ViewState {
     /// overrides: continuous mode forces FitWidth, clears rotation
     /// and RTL, and uses the strip's total size as the image size.
     fn effective_config(&self, view: (i32, i32)) -> DisplayConfig {
+        // The margin zoom factor (`ComicDisplayControl.cs:1368` —
+        // `ImageZoom * (PageMargin ? 1 - PageMarginPercentWidth : 1)`;
+        // the interaction zoom stays, the fit scale shrinks).
+        let margin = if self.page_margin {
+            (1.0 - self.page_margin_percent.clamp(0.0, 0.5)).max(0.1)
+        } else {
+            1.0
+        };
         if self.page_layout == PageLayoutMode::Continuous {
             let total = self
                 .continuous
@@ -355,7 +789,7 @@ impl ViewState {
                 rtl: false,
                 part: self.visible,
                 image_zoom: self.image_zoom,
-                zoom: self.image_zoom,
+                zoom: self.image_zoom * margin,
                 rotation: ImageRotation::None,
                 two_page_auto_scroll: false,
             };
@@ -379,7 +813,7 @@ impl ViewState {
             rtl: self.rtl,
             part: self.visible,
             image_zoom: self.image_zoom,
-            zoom: self.image_zoom,
+            zoom: self.image_zoom * margin,
             rotation: if self.auto_rotate && landscape {
                 rotate_left(self.rotation)
             } else {
@@ -774,6 +1208,10 @@ impl PageView {
         // has no cross-thread channel; a std mpsc + local timeout
         // keeps the dependency surface small).
         let (tx, rx) = std::sync::mpsc::channel::<PageDone>();
+        // The workspace display options seed this view (the C#
+        // applies the workspace to the one `ComicDisplay`; the port
+        // has one view per book slot).
+        let seed = session_display_options();
         let state = Rc::new(RefCell::new(ViewState {
             pool,
             page_tx: PageTx::new(tx),
@@ -798,9 +1236,25 @@ impl PageView {
             rtl_mode: RtlReadingMode::FlipPages,
             page_layout: PageLayoutMode::Single,
             double_page_overlap: 0.0,
-            transition: PageTransitionEffect::Fade,
-            background_mode: ImageBackgroundMode::Color,
-            paper: None,
+            transition: seed.transition,
+            background_mode: seed.background_mode,
+            realistic_pages: seed.realistic_pages,
+            page_margin: seed.page_margin,
+            page_margin_percent: seed.page_margin_percent,
+            background_color: seed.background_color,
+            background_texture_path: seed.background_texture.clone(),
+            background_texture: seed
+                .background_texture
+                .as_deref()
+                .and_then(load_texture_surface),
+            background_layout: seed.background_layout,
+            paper_path: seed.paper_texture.clone(),
+            paper_strength: seed.paper_strength,
+            paper_layout: seed.paper_layout,
+            paper: seed
+                .paper_texture
+                .as_deref()
+                .and_then(|p| load_paper_surface(p, seed.paper_strength)),
             // The BOOK's color adjustment (the page keys carry it).
             base_adjustment: BitmapAdjustment::default(),
             two_page_navigation: true,
@@ -1841,39 +2295,13 @@ impl PageView {
         self.set_page_layout(next);
     }
 
-    /// The MainForm `ToggleRealisticPages` command. The reader folds
-    /// the paper texture into `background_mode` (Texture ↔ Color);
-    /// the C# keeps the paper selection in the workspace settings.
+    /// The MainForm `ToggleRealisticPages` command (Shift+D): flip
+    /// the page ornaments (`ComicDisplay.ToogleRealisticPages`).
     pub fn toggle_realistic_pages(&self) {
-        let next = match self.state.borrow().background_mode {
-            ImageBackgroundMode::Texture => ImageBackgroundMode::Color,
-            _ => ImageBackgroundMode::Texture,
-        };
         let mut st = self.state.borrow_mut();
-        st.background_mode = next;
-        st.paper = if next == ImageBackgroundMode::Texture {
-            Self::bundled_paper("Checkered.jpg")
-        } else {
-            None
-        };
-        st.invalidate();
+        st.realistic_pages = !st.realistic_pages;
         drop(st);
         self.area.queue_draw();
-    }
-
-    fn bundled_paper(name: &str) -> Option<cairo::ImageSurface> {
-        let bytes = std::fs::read(name).ok().or_else(|| {
-            std::fs::read(format!("assets/papers/{name}"))
-                .ok()
-                .or_else(|| std::fs::read(format!("crates/cr-ui/assets/papers/{name}")).ok())
-        })?;
-        let image = cr_image::decode::decode(&bytes).ok()?;
-        Some(white_composited(
-            &image.rgba,
-            image.width,
-            image.height,
-            1.0,
-        ))
     }
 
     pub fn set_transition(&self, effect: PageTransitionEffect) {
@@ -1893,14 +2321,65 @@ impl PageView {
     /// (`CreateWorkingPaperTexture`).
     pub fn set_paper_texture(&self, path: Option<&Path>, strength: f32) {
         let mut st = self.state.borrow_mut();
-        st.paper = path.and_then(|p| {
-            let bytes = std::fs::read(p).ok()?;
-            let image = cr_image::decode::decode(&bytes).ok()?;
-            let working = white_composited(&image.rgba, image.width, image.height, strength);
-            Some(working)
-        });
+        st.paper_path = path.map(|p| p.to_string_lossy().into_owned());
+        st.paper_strength = strength;
+        st.paper = path.and_then(|p| load_paper_surface(&p.to_string_lossy(), strength));
         st.invalidate();
         drop(st);
+        self.area.queue_draw();
+    }
+
+    /// A snapshot of the workspace display options this view renders
+    /// with (the C# dialog reads the live `ComicDisplay` through
+    /// `StoreWorkspace`).
+    pub fn display_options(&self) -> DisplayOptions {
+        let st = self.state.borrow();
+        DisplayOptions {
+            transition: st.transition,
+            realistic_pages: st.realistic_pages,
+            page_margin: st.page_margin,
+            page_margin_percent: st.page_margin_percent,
+            background_mode: st.background_mode,
+            background_color: st.background_color,
+            background_texture: st.background_texture_path.clone(),
+            background_layout: st.background_layout,
+            paper_texture: st.paper_path.clone(),
+            paper_strength: st.paper_strength,
+            paper_layout: st.paper_layout,
+        }
+    }
+
+    /// Applies the workspace display options to the render state
+    /// (`SetWorkspaceDisplayOptions` — the `ComicPageDisplay` half).
+    /// The session copy (what new views seed from) is the SHELL's
+    /// apply responsibility — the C# keeps the values on the
+    /// workspace, not on the display. The LAYOUT fields (page
+    /// layout, fit, rotation, zoom) stay on the view: the C# dialog
+    /// does not edit them either.
+    pub fn apply_display_options(&self, opts: &DisplayOptions) {
+        {
+            let mut st = self.state.borrow_mut();
+            st.transition = opts.transition;
+            st.realistic_pages = opts.realistic_pages;
+            st.page_margin = opts.page_margin;
+            st.page_margin_percent = opts.page_margin_percent;
+            st.background_mode = opts.background_mode;
+            st.background_color = opts.background_color;
+            st.background_texture_path = opts.background_texture.clone();
+            st.background_texture = opts
+                .background_texture
+                .as_deref()
+                .and_then(load_texture_surface);
+            st.background_layout = opts.background_layout;
+            st.paper_path = opts.paper_texture.clone();
+            st.paper_strength = opts.paper_strength;
+            st.paper_layout = opts.paper_layout;
+            st.paper = opts
+                .paper_texture
+                .as_deref()
+                .and_then(|p| load_paper_surface(p, opts.paper_strength));
+            st.invalidate();
+        }
         self.area.queue_draw();
     }
 
@@ -2571,12 +3050,10 @@ fn draw_frame(
         let theme_bg = crate::theme::palette(area).base;
 
         // Background first, always in identity space
-        // (`RenderImageBackground`).
-        let background = background_color(&st, theme_bg);
+        // (`RenderImageBackground` — the solid color, then the
+        // background texture per its layout).
         ctx.identity_matrix();
-        ctx.set_source_rgb(background.0, background.1, background.2);
-        ctx.rectangle(0.0, 0.0, f64::from(width), f64::from(height));
-        let _ = ctx.fill();
+        draw_background(ctx, &st, width, height, theme_bg);
 
         if display.is_empty() {
             return;
@@ -2592,7 +3069,6 @@ fn draw_frame(
             let old = (anim.old.clone(), anim.old_surfaces.clone());
             let old_display = anim.old_display.clone();
             let new_comp = st.composition.clone();
-            let background = background_color(&st, theme_bg);
             let paper = st.paper.clone();
             drop(st);
 
@@ -2607,7 +3083,7 @@ fn draw_frame(
                 effect,
                 backward,
                 p,
-                background,
+                theme_bg,
                 paper.as_ref(),
             );
             if anim_done {
@@ -2633,7 +3109,6 @@ fn draw_frame(
                 None => return,
             };
             let paper = st.paper.clone();
-            let paper_mode = st.background_mode == ImageBackgroundMode::Texture;
             let background = background_color(&st, theme_bg);
             draw_composition(
                 ctx,
@@ -2641,7 +3116,8 @@ fn draw_frame(
                 &comp,
                 &st.loaded,
                 paper.as_ref(),
-                paper_mode,
+                st.paper_layout,
+                st.realistic_pages,
                 background,
             );
         }
@@ -2715,22 +3191,22 @@ fn draw_magnifier(
     ctx.new_path();
     ctx.arc(mx, my, radius - 2.0, 0.0, std::f64::consts::TAU);
     ctx.clip();
+    ctx.translate(mx - radius, my - radius);
+    draw_background(ctx, st, MAGNIFIER_SIZE, MAGNIFIER_SIZE, theme_bg);
     let background = background_color(st, theme_bg);
-    ctx.set_source_rgb(background.0, background.1, background.2);
-    ctx.rectangle(mx - radius, my - radius, radius * 2.0, radius * 2.0);
-    let _ = ctx.fill();
     if st.page_layout == PageLayoutMode::Continuous {
         draw_continuous(ctx, &zoomed, st);
     } else if let Some(comp) = st.composition.clone() {
         let paper = st.paper.clone();
-        let paper_mode = st.background_mode == ImageBackgroundMode::Texture;
+        let (paper_layout, realistic_pages) = (st.paper_layout, st.realistic_pages);
         draw_composition(
             ctx,
             &zoomed,
             &comp,
             &st.loaded,
             paper.as_ref(),
-            paper_mode,
+            paper_layout,
+            realistic_pages,
             background,
         );
     }
@@ -2748,17 +3224,20 @@ fn draw_magnifier(
 
 /// Draws one composed frame through the part transform
 /// (`RenderImage` → `DrawImage(destination, source)` per page).
+#[allow(clippy::too_many_arguments)] // mirrors the C# render family (paper, layout, ornaments, background)
 fn draw_composition(
     ctx: &cairo::Context,
     display: &DisplayOutput,
     comp: &Composition,
     loaded: &HashMap<usize, LoadedPageData>,
     paper: Option<&cairo::ImageSurface>,
-    paper_mode: bool,
+    paper_layout: ImageLayout,
+    realistic_pages: bool,
     background: (f64, f64, f64),
 ) {
     let bounds = display.part_bounds;
     let m = &display.mat;
+    let matrix_scale = f64::from(m.e[0]).abs().max(f64::from(m.e[3]).abs());
     ctx.set_matrix(cairo::Matrix::new(
         f64::from(m.e[0]),
         f64::from(m.e[1]),
@@ -2802,20 +3281,71 @@ fn draw_composition(
         let _ = ctx.fill();
         ctx.restore().ok();
     }
-    // Paper texture MULTIPLY over the visible page area
-    // (`RenderImageEffect`).
-    if let Some(paper) = paper {
-        let pattern = cairo::SurfacePattern::create(paper);
-        pattern.set_extend(cairo::Extend::Repeat);
-        ctx.set_source(pattern).ok();
-        ctx.set_operator(cairo::Operator::Multiply);
-        ctx.rectangle(0.0, 0.0, f64::from(bounds.w), f64::from(bounds.h));
-        let _ = ctx.fill();
-        ctx.set_operator(cairo::Operator::Over);
-        if paper_mode {
-            // Texture background mode tiles the paper behind the
-            // pages too; done in the background pass.
+    // The realistic-page ornaments (`DrawPageOrnaments`: frame, edge
+    // bows, outside shadow) draw with the pages, before the paper
+    // effect (`RenderImageEffect` multiplies over the composed
+    // result).
+    if realistic_pages {
+        for placement in &comp.pages {
+            if !loaded.contains_key(&placement.page) {
+                continue;
+            }
+            if placement.dest.w <= 0 || placement.dest.h <= 0 {
+                continue;
+            }
+            draw_page_ornaments(
+                ctx,
+                (
+                    f64::from(placement.dest.x - bounds.x),
+                    f64::from(placement.dest.y - bounds.y),
+                    f64::from(placement.dest.w),
+                    f64::from(placement.dest.h),
+                ),
+                matrix_scale,
+            );
         }
+    }
+    // Paper texture MULTIPLY over the visible page area
+    // (`RenderImageEffect`), per the paper layout.
+    if let Some(paper) = paper {
+        let (pw, ph) = (f64::from(paper.width()), f64::from(paper.height()));
+        let (bw, bh) = (f64::from(bounds.w), f64::from(bounds.h));
+        ctx.set_operator(cairo::Operator::Multiply);
+        match paper_layout {
+            ImageLayout::None => {}
+            ImageLayout::Tile => {
+                let pattern = cairo::SurfacePattern::create(paper);
+                pattern.set_extend(cairo::Extend::Repeat);
+                ctx.set_source(pattern).ok();
+                ctx.rectangle(0.0, 0.0, bw, bh);
+                let _ = ctx.fill();
+            }
+            ImageLayout::Center => {
+                ctx.set_source_surface(paper, (bw - pw) / 2.0, (bh - ph) / 2.0)
+                    .ok();
+                ctx.rectangle(0.0, 0.0, bw, bh);
+                let _ = ctx.fill();
+            }
+            ImageLayout::Stretch => {
+                ctx.save().ok();
+                ctx.scale(bw / pw.max(1.0), bh / ph.max(1.0));
+                ctx.set_source_surface(paper, 0.0, 0.0).ok();
+                ctx.rectangle(0.0, 0.0, pw, ph);
+                let _ = ctx.fill();
+                ctx.restore().ok();
+            }
+            ImageLayout::Zoom => {
+                let scale = (bw / pw.max(1.0)).max(bh / ph.max(1.0));
+                ctx.save().ok();
+                ctx.scale(scale, scale);
+                ctx.set_source_surface(paper, (bw / scale - pw) / 2.0, (bh / scale - ph) / 2.0)
+                    .ok();
+                ctx.rectangle(0.0, 0.0, bw / scale, bh / scale);
+                let _ = ctx.fill();
+                ctx.restore().ok();
+            }
+        }
+        ctx.set_operator(cairo::Operator::Over);
     }
     ctx.identity_matrix();
 }
@@ -2837,6 +3367,8 @@ fn draw_continuous(ctx: &cairo::Context, display: &DisplayOutput, st: &mut ViewS
         .map(|p| (p.page, p.bounds))
         .collect();
     let m = &display.mat;
+    let matrix_scale = f64::from(m.e[0]).abs().max(f64::from(m.e[3]).abs());
+    let realistic = st.realistic_pages;
     ctx.set_matrix(cairo::Matrix::new(
         f64::from(m.e[0]),
         f64::from(m.e[1]),
@@ -2866,6 +3398,18 @@ fn draw_continuous(ctx: &cairo::Context, display: &DisplayOutput, st: &mut ViewS
         ctx.rectangle(0.0, 0.0, f64::from(data.size.0), f64::from(data.size.1));
         let _ = ctx.fill();
         ctx.restore().ok();
+        if realistic {
+            draw_page_ornaments(
+                ctx,
+                (
+                    f64::from(page_bounds.x - viewport.x),
+                    f64::from(page_bounds.y - viewport.y),
+                    f64::from(page_bounds.w),
+                    f64::from(page_bounds.h),
+                ),
+                matrix_scale,
+            );
+        }
     }
     ctx.identity_matrix();
 }
@@ -2889,11 +3433,17 @@ fn draw_transition_frame(
     paper: Option<&cairo::ImageSurface>,
 ) {
     let (old_comp, old_surfaces) = old;
-    // Background.
+    let (paper_layout, realistic_pages) = {
+        let st = state.borrow();
+        (st.paper_layout, st.realistic_pages)
+    };
+    // Background (solid + the texture per its layout —
+    // `RenderImageBackground` runs inside transitions too).
     ctx.identity_matrix();
-    ctx.set_source_rgb(background.0, background.1, background.2);
-    ctx.rectangle(0.0, 0.0, f64::from(width), f64::from(height));
-    let _ = ctx.fill();
+    {
+        let st = state.borrow();
+        draw_background(ctx, &st, width, height, background);
+    }
 
     let old_loaded = fake_loaded_map(old_surfaces);
 
@@ -2928,7 +3478,8 @@ fn draw_transition_frame(
                 old_comp,
                 &old_loaded,
                 paper,
-                false,
+                paper_layout,
+                realistic_pages,
                 background,
             );
             if let (Some(comp), Some(display)) = (new_comp, new_display.as_ref()) {
@@ -2940,7 +3491,8 @@ fn draw_transition_frame(
                     comp,
                     &state.borrow().loaded,
                     paper,
-                    false,
+                    paper_layout,
+                    realistic_pages,
                     background,
                 );
                 ctx.restore().ok();
@@ -2958,7 +3510,8 @@ fn draw_transition_frame(
                 old_comp,
                 &old_loaded,
                 paper,
-                false,
+                paper_layout,
+                realistic_pages,
                 background,
             );
             ctx.pop_group_to_source().ok();
@@ -2971,7 +3524,8 @@ fn draw_transition_frame(
                     comp,
                     &state.borrow().loaded,
                     paper,
-                    false,
+                    paper_layout,
+                    realistic_pages,
                     background,
                 );
                 ctx.pop_group_to_source().ok();
@@ -3178,5 +3732,76 @@ mod spread_tests {
         assert_eq!(comp.size, (2000, 1200));
         assert_eq!(comp.pages[0].dest, Rect::new(0, 0, 1200, 1200));
         assert_eq!(comp.pages[1].dest, Rect::new(1200, 0, 800, 1200));
+    }
+}
+
+#[cfg(test)]
+mod display_options_tests {
+    use super::*;
+
+    #[test]
+    fn defaults_match_the_csharp_workspace() {
+        let opts = DisplayOptions::default();
+        // `DisplayWorkspace`: Fade, DrawRealisticPages true, no
+        // margin (5 % width when on), Color background, Tile
+        // layouts, full paper strength.
+        assert_eq!(opts.transition, PageTransitionEffect::Fade);
+        assert!(opts.realistic_pages);
+        assert!(!opts.page_margin);
+        assert!((opts.page_margin_percent - 0.05).abs() < f32::EPSILON);
+        assert_eq!(opts.background_mode, ImageBackgroundMode::Color);
+        assert_eq!(opts.background_color, None);
+        assert_eq!(opts.background_texture, None);
+        assert_eq!(opts.background_layout, ImageLayout::Tile);
+        assert_eq!(opts.paper_texture, None);
+        assert!((opts.paper_strength - 1.0).abs() < f32::EPSILON);
+        assert_eq!(opts.paper_layout, ImageLayout::Tile);
+    }
+
+    #[test]
+    fn enum_indexes_match_the_dialog_combo_order() {
+        // PageTransitionEffect: None/Fade/LeftRight/TopDown/Paging.
+        for i in 0..5 {
+            assert_eq!(PageTransitionEffect::from_index(i).as_index(), i);
+        }
+        // ImageBackgroundMode: Auto/Color/Texture.
+        for i in 0..3 {
+            assert_eq!(ImageBackgroundMode::from_index(i).as_index(), i);
+        }
+        // ImageLayout: None/Tile/Center/Stretch/Zoom.
+        for i in 0..5 {
+            assert_eq!(ImageLayout::from_index(i).as_index(), i);
+        }
+    }
+
+    #[test]
+    fn texture_name_parses_the_layout_code() {
+        // The bundled background file carries a Stretch code.
+        let (name, layout) = parse_texture_file_name("Black [S].jpg");
+        assert_eq!(name, "Black");
+        assert_eq!(layout, ImageLayout::Stretch);
+        let (name, layout) = parse_texture_file_name("Something [Z].png");
+        assert_eq!(layout, ImageLayout::Zoom);
+        assert_eq!(name, "Something");
+        let (name, layout) = parse_texture_file_name("Checkered.jpg");
+        assert_eq!(layout, ImageLayout::Tile);
+        assert_eq!(name, "Checkered");
+        // PascalToSpaced.
+        let (name, _) = parse_texture_file_name("WhitePaper2.jpg");
+        assert_eq!(name, "White Paper2");
+    }
+
+    #[test]
+    fn bundled_texture_lists_contain_the_csharp_sets() {
+        // 4 papers (already bundled in Phase 3) and the 14
+        // background textures from `Resources/Textures/Backgrounds`.
+        let papers = bundled_texture_files(false);
+        assert!(papers.contains(&"Checkered.jpg".to_string()));
+        assert_eq!(papers.len(), 4);
+        let backgrounds = bundled_texture_files(true);
+        assert_eq!(backgrounds.len(), 14);
+        assert!(backgrounds.contains(&"Black [S].jpg".to_string()));
+        // The asset path resolves.
+        assert!(texture_asset_path(true, "Black [S].jpg").is_some());
     }
 }

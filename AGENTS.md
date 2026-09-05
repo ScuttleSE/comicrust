@@ -384,10 +384,45 @@ Update this section at the **end of every work session**. The next agent must kn
   disabled. After T12: T13 (small dialogs), T14 (persistence,
   now carrying the display-options persistence). Phase 6
   (scripting) starts only after 5.5.
+  T12 IMPLEMENTED (2026-09-05), user test pending. The C#
+  `ComicDisplaySettingsDialog` port — the STUDY-THE-SOURCE
+  correction: the dialog is WORKSPACE-scoped, not per-comic
+  (`EditWorkspaceDisplaySettings` snapshots the live display into a
+  `DisplayWorkspace`; OK/Apply push back via
+  `SetWorkspaceDisplayOptions`). `page_view.rs` gained `ImageLayout`,
+  the `DisplayOptions` snapshot + the session copy (new views seed
+  from it), `parse_texture_file_name` (the `[C]`/`[S]`/`[Z]` layout
+  codes + `PascalToSpaced`), `PageView::display_options/
+  apply_display_options`, the real render for every dialog field:
+  background TEXTURE per layout (None/Tile/Center/Stretch/Zoom) over
+  the solid surround, Solid Color via the picker (only when picked —
+  the ADR-025 theme base otherwise), Realistic Pages ornaments (the
+  1 px frame + edge bows at 7 %/alpha 92 + a stepped-band shadow —
+  the cairo no-blur deviation) in composition AND continuous paths,
+  paper strength (the `CreateWorkingPaperTexture` white composite,
+  <0.05 disables) + paper layout, and the margin zoom factor
+  (`ImageZoom * (1 - percent)`, `ComicDisplayControl.cs:1368`).
+  DEFAULT CHANGE (C# parity): `DrawRealisticPages` = TRUE — the
+  reader draws the ornaments out of the box; Shift+D
+  (`ToggleRealisticPages`) flips the real flag now (the old
+  paper-fold hack is gone). The dialog
+  (`dialogs/display_settings.rs`): General/Effects/Background
+  groups + OK/Apply/Cancel, the C# visibility rules, `SelectTexture`
+  File parity (case-insensitive match, last-custom replaced on
+  browse), bundled layouts parse from file names and apply silently;
+  the 14 background textures bundled (`assets/backgrounds/` + both
+  release workflows). `win.display-settings` un-stubbed (always
+  enabled — no C# gate); apply records the session copy first, then
+  pushes onto every open view (`apply_display_options_all`).
+  Deviations: persistence lands with T14, combo swatches/the named
+  color list/tooltips reduced, the Effects group always shows (the
+  C# gates it on the hardware renderer), Page Turn degrades to Fade
+  (Phase 3 record). Gate: 325 tests (+4),
+  `displaysettings_probe` (5 gates), all probes green.
   Phases 0-5 are complete (their gates stay green). Open Phase 1
   gaps: WebComicProvider and the PDF/DjVu writers (tracked in
   `docs/phase-1-kickoff.md`).
-- **State:** `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` are green. 321 tests. CI runs on the `docker-runner-amd64` container runner (ADR-020). The release tracks are `release.yaml` (rolling prerelease per push) and `tagged-release.yaml` (manual dispatch, stable release for an existing tag — ADR-021, 2026-09-03). Until the runner is registered and `comicrust-ci:latest` is built on the runner host, pushed and dispatched workflows sit queued on that label.
+- **State:** `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` are green. 325 tests. CI runs on the `docker-runner-amd64` container runner (ADR-020). The release tracks are `release.yaml` (rolling prerelease per push) and `tagged-release.yaml` (manual dispatch, stable release for an existing tag — ADR-021, 2026-09-03). Until the runner is registered and `comicrust-ci:latest` is built on the runner host, pushed and dispatched workflows sit queued on that label.
 - **Phase 0 gate status:** byte-stable ComicDb.xml round-trip proven on all three synthetic fixtures AND the real-world database `tests/realworld/ComicDb.xml` (255 books, 584 KB, 2026-09-02, user-approved commit).
 - **Phase 2 gate status:** every saved smart list in the real-world DB (a) binds to the matcher registry, (b) renders to a `Match` query string that re-parses and re-renders byte-identically, and (c) evaluates to the SAME book sets the C# cached in `CacheStorage` (Never Read = all 255, Files to update = the 3 dirty books, Reading/Read = empty). Evidence: `crates/cr-engine/tests/realworld_query.rs`.
 - **Phase 3 gate status (COMPLETE):** a real comic (`tests/testfiles/`, git-ignored, user-supplied) opens in a GTK4 window and reads comfortably: single/double/adaptive/continuous layouts, spread composition with cover-right + binding-edge rules, fit modes with anamorphic tolerance, zoom/pan/rotation, RTL, continuous scroll with anchor-stable layout rebuilds, fade/slide transitions, paper texture, Auto/Color/Texture backgrounds, the real `MainForm` input map, session tabs with undock, fullscreen chrome with cursor auto-hide, reading-state tracking, the magnifier, error pages, and pool-queue page loads. User-verified after each task; UI smoke tests on this machine run headless under Xvfb + screenshots (see the probe lessons below — the key-injection tools are unreliable; only user tests decide input behavior).

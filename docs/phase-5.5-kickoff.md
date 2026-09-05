@@ -2159,3 +2159,124 @@ disabled (the T1/T3 tracker entries re-homed); the T9 dock-mode
 button note re-homed; the T14 persistence scope drops the
 dock-mode and preview keys until the backlog items land. **Next:
 T12 (the Book Display Settings dialog, F9).**
+
+### T12 — Book Display Settings dialog (IMPLEMENTED — user test pending)
+
+- C# spec (studied first — the scope correction above): the dialog
+  is WORKSPACE-scoped. `EditWorkspaceDisplaySettings`
+  (MainForm.cs:2519-2527) snapshots the live `ComicDisplay` into a
+  `DisplayWorkspace`, the dialog edits the copy, OK/Apply push it
+  back through `SetWorkspaceDisplayOptions`
+  (MainForm.cs:2689-2732). Not per-comic (the earlier note here was
+  wrong).
+- Assets: the 14 C# background textures bundled verbatim
+  (`cr-ui/assets/backgrounds/`, the papers precedent); both release
+  workflows copy the new folder.
+- Model (`cr-ui/src/reader/page_view.rs`):
+  - `ImageLayout` (the C# `System.Windows.Forms.ImageLayout` values,
+    combo-index round trips), `DisplayOptions` (the dialog snapshot:
+    transition, realistic, margin + percent, background
+    mode/color/texture + layout, paper + strength + layout) with
+    the C# `DisplayWorkspace` defaults, and the session copy
+    (`session_display_options`/`set_session_display_options` — the
+    port's workspace display state; new views seed from it, the
+    shell apply writes it).
+  - `parse_texture_file_name` (the `TextureFileItem.ParseFileName`
+    port: trailing `[C]`/`[S]`/`[Z]` code → layout, the display
+    name via a `PascalToSpaced` port) + `bundled_texture_files`/
+    `texture_asset_path` (the `LoadDefaultPaperTextures`/
+    `LoadDefaultBackgroundTextures` shape over the bundled roots).
+  - `PageView::{display_options, apply_display_options}` (the
+    snapshot + `SetWorkspaceDisplayOptions` display half),
+    `load_paper_surface` (the `CreateWorkingPaperTexture` port —
+    white composite at strength, under 0.05 disables) and
+    `load_texture_surface`.
+- Render (`page_view.rs`):
+  - The background pass (`RenderImageBackground`) draws the texture
+    per its layout (None/Tile/Center/Stretch/Zoom — Zoom covers)
+    over the solid surround; Solid Color uses the picker color when
+    one was picked, otherwise the ADR-025 theme base stands (the
+    color rides only when the user touches the picker).
+  - Realistic pages (`DrawPageOrnaments`, engine defaults): a 1 px
+    black frame, the edge bows (7 % strips, alpha 92 → 0, both
+    vertical edges — the C# border + center bows land the same
+    strips), and an outside shadow as four stepped translucent bands
+    (cairo has no blur — recorded deviation from the C# shadow
+    bitmap). Drawn in composition AND continuous paths, before the
+    paper effect (`RenderImageEffect` order).
+  - The paper multiplies per its layout (Tile repeat / Center /
+    Stretch / Zoom over the part bounds); strength rides the white
+    composite. DEFAULT CHANGE (C# parity): `DrawRealisticPages`
+    defaults TRUE — the reader now draws the ornaments unless the
+    dialog/Shift+D turn them off. `ToggleRealisticPages` (Shift+D)
+    flips the real flag now (the old paper-fold hack is gone).
+  - Margin: the display-config zoom multiplies by
+    `1 - PageMarginPercentWidth` when PageMargin is on
+    (`ComicDisplayControl.cs:1368` parity; both branches).
+- Dialog (`cr-ui/src/dialogs/display_settings.rs`): the three
+  groups (General / Effects / Background) + OK/Apply/Cancel; the
+  C# visibility rules ported (strength row on a non-empty paper,
+  layout combos for CUSTOM textures only, color row on Solid Color,
+  texture row on Texture); a bundled texture's layout parses from
+  its file name and applies silently (the C# SelectedIndexChanged
+  shape); `SelectTextureFile` parity (case-insensitive path match,
+  the last custom row replaced on browse); the texture combos list
+  the display names only (recorded deviation — no owner-drawn
+  swatches); a ColorButton instead of the SimpleColorPicker named
+  list (recorded); percent labels instead of tooltips. Apply runs
+  the callback and stays open; OK applies + closes (the `done`
+  one-shot guard); Cancel discards. The Effects group always shows
+  (the C# gates it on the hardware renderer; the port's cairo
+  renderer supports the effects — recorded).
+- Wiring: `win.display-settings` un-stubbed (always enabled — the
+  C# command has no enable gate); the handler snapshots the current
+  reader view (or the session copy with no view open) and the apply
+  closure records the session copy FIRST, then pushes onto every
+  open view (`ReaderShell::apply_display_options_all` — the C#
+  applies to the one `ComicDisplay`; the port has one view per
+  book slot).
+- Gate: 325 tests (+4: the defaults/enum-index/texture-name/
+  bundled-sets unit tests); `displaysettings_probe` (5 gates: the
+  defaults, the visibility rules, apply + session copy, the view
+  seed + apply + toggle, OK closes / Cancel discards); all other
+  probes green; fmt/clippy clean.
+- Omissions/deviations: persistence lands with T14 (the C#
+  persists through the workspace save on exit); the combo swatch
+  previews, the known-colors picker list and the tooltips are
+  reduced (labels); the Effects group shows unconditionally; the
+  "Page Turn Effect" transition degrades to Fade (the recorded
+  Phase 3 gap); the background layout combo keeps the STORED layout
+  at open (the C# re-parses immediately — same values for the
+  bundled sets).
+- **USER TEST (the T12 acceptance):**
+  1. `cargo run -p cr-app --release --` and open a comic — the
+     reader now draws the realistic-page look by DEFAULT (the thin
+     frame, the soft shadow, the edge shading — the C#
+     DrawRealisticPages default true; compare with CR).
+  2. F9 (or Display ▸ Book Display Settings... / the reader
+     toolbar's Tools menu) opens the dialog: General (Realistic
+     Book Display, margins + slider), Effects (Page Transition,
+     Paper + Strength, Layout), Background (Type, Color, Texture,
+     Layout).
+  3. Uncheck Realistic Book Display → Apply — the frame/shadow
+     disappear immediately, the dialog stays open.
+  4. Page Transition → "New Page scrolls in horizontally" →
+     Apply — turning pages slides. Set "No Page Transition Effect"
+     — pages flip instantly.
+  5. Background Type → Texture — pick a texture (tile/center/
+     stretch/zoom from the Layout combo) — the surround shows it;
+     the "..." browse accepts any image file.
+  6. Background Type → Solid Color — the picker appears; pick a
+     color — the surround follows. Cancel the dialog (after an
+     Apply) and reopen — the values persisted into the session.
+  7. Margins: check "Leave margins around the pages", set 20 % —
+     the page shrinks inside the window; uncheck — back.
+  8. Paper: pick a paper (e.g. Checkered) with Strength ~30 — the
+     page gets a subtle texture; Strength 0 (or under 5) removes
+     it; a custom paper via "..." works; the Layout combo applies
+     (Tile vs Stretch visibly differ).
+  9. Open a SECOND comic tab — the new tab carries the same display
+     options (workspace shape). Shift+D flips Realistic Pages
+     without the dialog.
+  10. Cancel with changes made and NOT applied — the reader keeps
+      the previous options (OK/Apply commit, Cancel discards).

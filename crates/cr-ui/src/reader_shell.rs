@@ -42,7 +42,7 @@ fn cr_ui_settings() -> std::rc::Rc<std::cell::RefCell<cr_core::settings::Setting
     library::settings()
 }
 use crate::reader::display::ImageFitMode;
-use crate::reader::page_view::{PageLayoutMode, PageView};
+use crate::reader::page_view::{DisplayOptions, PageLayoutMode, PageView};
 
 /// Default reader window size (the C# persists its own window layout;
 /// workspace persistence arrives in Phase 7).
@@ -793,6 +793,18 @@ impl ReaderShell {
         };
         for tab in &s.tabs {
             tab.view.apply_display_settings(wheel, browse, wall);
+        }
+    }
+
+    /// `SetWorkspaceDisplayOptions` parity: push the workspace
+    /// display options onto every open view (the C# has one
+    /// `ComicDisplay`; the port has one view per book slot — the
+    /// options are workspace-scoped, so all of them follow). Each
+    /// apply also records the session copy.
+    pub fn apply_display_options_all(&self, opts: &DisplayOptions) {
+        let s = self.state.borrow();
+        for tab in &s.tabs {
+            tab.view.apply_display_options(opts);
         }
     }
 
