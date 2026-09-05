@@ -87,6 +87,11 @@ struct ShellState {
     menubar: super::menubar::MenubarWidget,
     /// The Alt-reveal override (the `AutoHideMainMenu` toggle).
     menubar_revealed: Cell<bool>,
+    /// The reader toolbar (the T5 `mainToolStrip`).
+    toolbar: super::toolbar::ReaderToolbar,
+    /// The reader page box (the toolbar's docked parent — the
+    /// undock moves the toolbar in and out of it).
+    reader_page_box: gtk4::Box,
 }
 
 impl ShellState {
@@ -287,12 +292,18 @@ impl BrowserShell {
         stack.set_hhomogeneous(false);
         stack.add_named(&quick_page, Some("quickopen"));
         stack.add_named(&browser_page, Some("browser"));
-        stack.add_named(&reader_widgets.notebook(), Some("reader"));
 
         // The menubar (the C# `mainMenuStrip`) rides above the
         // content — the T3 custom bar (GTK4 model menus cannot show
         // the C# menu-item icons).
         let menubar = super::menubar::create_menubar(&window);
+        // The reader toolbar (the T5 `mainToolStrip`): rides above
+        // the reader content (the C# Dock=Right inside the tab row).
+        let toolbar = super::toolbar::ReaderToolbar::create(&window);
+        let reader_page = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+        reader_page.append(toolbar.widget());
+        reader_page.append(&reader_widgets.notebook());
+        stack.add_named(&reader_page, Some("reader"));
         let content = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
         content.append(menubar.widget());
         content.append(&stack);
@@ -319,6 +330,8 @@ impl BrowserShell {
             random_picked: RefCell::new(Vec::new()),
             menubar,
             menubar_revealed: Cell::new(false),
+            toolbar,
+            reader_page_box: reader_page.clone(),
         });
         let shell = BrowserShell {
             window: window.clone(),
@@ -835,6 +848,44 @@ impl BrowserShell {
         let provider = self.state.reader.provider_index_of_display(display)?;
         book.info.pages.get(provider).map(|p| p.page_type.0 as i16)
     }
+
+    /// The reader toolbar handle (the probe).
+    pub fn toolbar_widget(&self) -> gtk4::Widget {
+        self.state.toolbar.widget().clone().upcast()
+    }
+
+    /// The toolbar's zoom state text (the probe).
+    pub fn toolbar_zoom_text(&self) -> String {
+        self.state.toolbar.zoom_text()
+    }
+
+    /// The toolbar's rotation state text (the probe).
+    pub fn toolbar_rotate_label(&self) -> String {
+        self.state.toolbar.rotate_text()
+    }
+
+    /// The toolbar dropdown by name (the probe).
+    pub fn toolbar_dropdown(&self, name: &str) -> Option<crate::browser::menubar::Dropdown> {
+        self.state.toolbar.dropdown(name)
+    }
+
+    /// The current fit mode as the action name (the probe).
+    pub fn reader_current_fit_name(&self) -> Option<&'static str> {
+        self.state.reader.current_fit_mode().map(fit_action_name)
+    }
+
+    /// Sets a bookmark on a provider page of the CURRENT book,
+    /// bypassing the prompt (the probe).
+    pub fn state_set_bookmark_silent(&self, provider: usize, name: &str) {
+        let book = self.state.reader.edit_current_book(|b| {
+            if let Some(p) = b.info.pages.get_mut(provider) {
+                p.bookmark = Some(name.to_string());
+            }
+        });
+        if let Some(book) = book {
+            library::apply_edited(&book);
+        }
+    }
 }
 
 impl ShellState {
@@ -996,12 +1047,20 @@ impl ShellState {
         if let Some(a) = self.action("full-screen") {
             a.set_state(&self.reader.is_fullscreen().to_variant());
         }
+        // `tbShowMainMenu`: checked while the menu is NOT
+        // auto-hidden.
+        if let Some(a) = self.action("show-main-menu") {
+            let checked = !cr_ui_settings().borrow().auto_hide_main_menu;
+            a.set_state(&checked.to_variant());
+        }
         self.update_menubar();
         self.sync_menubar();
     }
 
     /// Applies the menubar visibility rule (`OnGuiVisibilities`
-    /// Fill-mode parity — `menubar::menubar_visible`).
+    /// Fill-mode parity — `menubar::menubar_visible`) plus the T5
+    /// toolbar visibility (MinimalGui hides the strip; the
+    /// reader-only buttons need a book).
     fn update_menubar(&self) {
         let minimal = self.reader.is_minimal_gui();
         let undocked = self.reader.is_undocked();
@@ -1023,11 +1082,15 @@ impl ShellState {
             revealed,
         );
         self.menubar.widget().set_visible(visible);
+        // The toolbar: visible while the reader view shows and
+        // MinimalGui is off (the C# `MainToolStripVisible`).
+        self.toolbar.sync_visibility(has_book, !minimal);
     }
 
-    /// Pushes the current action states into the menubar rows
-    /// (check/radio marks + disabled graying + the hide rules — the
-    /// custom bar has no model-driven state rendering).
+    /// Pushes the current action states into the menubar rows and
+    /// the toolbar dropdowns (check/radio marks + disabled graying +
+    /// the hide rules — the custom bars have no model-driven state
+    /// rendering).
     fn sync_menubar(&self) {
         let actions = self.actions.borrow();
         // The active-panel emphasis (the C# highlights the
@@ -1038,7 +1101,7 @@ impl ShellState {
         // `fileMenu_DropDownOpening`: "Update all Book Files" hides
         // while `AutoUpdateComicsFiles` is on.
         let update_files_visible = !cr_ui_settings().borrow().auto_update_comics_files;
-        self.menubar.sync(&|base| {
+        let resolve = |base: &str| {
             let action = actions.get(base)?;
             let highlight = match base {
                 "view-library" => panel == "library",
@@ -1055,7 +1118,19 @@ impl ShellState {
                 highlight,
                 visible,
             })
-        });
+        };
+        self.menubar.sync(&resolve);
+        self.toolbar.sync(&resolve);
+        // The state text/icons (`viewer_PageDisplayModeChanged`).
+        self.toolbar.sync_state(
+            self.reader.current_zoom(),
+            self.reader.current_rotation(),
+            self.reader.current_fit_mode(),
+            self.reader.current_page_layout(),
+            self.reader.current_rtl(),
+            self.reader.current_magnifier(),
+            self.reader.current_auto_rotate(),
+        );
         // The submenu PARENT enables (`OnGuiVisibilities` +
         // `DropDownOpening` rules).
         self.menubar
@@ -1279,11 +1354,18 @@ impl ShellState {
     /// command states.
     fn install_dyn_fills(self: &Rc<ShellState>) {
         let state = Rc::downgrade(self);
-        self.menubar
-            .set_dyn_fill(Rc::new(move |id| match state.upgrade() {
-                Some(sh) => sh.dyn_fill(id),
-                None => Vec::new(),
-            }));
+        let fill: crate::browser::menubar::DynFillFn = Rc::new(move |id| match state.upgrade() {
+            Some(sh) => sh.dyn_fill(id),
+            None => Vec::new(),
+        });
+        self.menubar.set_dyn_fill(Rc::clone(&fill));
+        self.toolbar.set_dyn_fill(fill);
+        // The toolbar rides into the undocked window (the T5
+        // chrome).
+        self.reader.set_undock_chrome(
+            self.toolbar.widget().clone().upcast(),
+            self.reader_page_box.clone(),
+        );
     }
 
     fn dyn_fill(&self, id: &str) -> Vec<super::menubar::DynNode> {
@@ -1373,6 +1455,47 @@ impl ShellState {
                         })
                     })
                     .collect()
+            }
+            // The TOOLBAR bookmark drops (`tbPrevPage`/
+            // `tbNextPage_DropDownOpening` → `UpdateBookmarkMenu(
+            // direction)`): the bookmarks BEFORE (-1) / AFTER (+1)
+            // the current page; all rows clickable.
+            "bookmarks-prev" | "bookmarks-next" => {
+                let dir = if id == "bookmarks-prev" { -1 } else { 1 };
+                let Some(book) = self.reader.current_comic_book() else {
+                    return Vec::new();
+                };
+                let Some(current) = self.current_provider_page().map(|(_, provider)| provider)
+                else {
+                    return Vec::new();
+                };
+                let mut rows: Vec<_> = book
+                    .info
+                    .pages
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, p)| {
+                        p.bookmark.as_deref().is_some_and(|b| !b.is_empty())
+                            && if dir < 0 { *i < current } else { *i > current }
+                    })
+                    .map(|(i, p)| {
+                        let name = p.bookmark.clone().unwrap_or_default();
+                        DynNode::Item(DynItem {
+                            label: format!("{name} (Page {})", i + 1),
+                            action: format!("win.open-bookmark::{i}"),
+                            accel: String::new(),
+                            icon: "",
+                            checked: false,
+                            enabled: true,
+                        })
+                    })
+                    .collect();
+                // The C# reverses for the backward direction (the
+                // nearest bookmark first).
+                if dir < 0 {
+                    rows.reverse();
+                }
+                rows
             }
             // Edit ▸ Page Type: the enum radio over the CURRENT
             // page (all rows disabled without a book — the C#
@@ -1885,6 +2008,28 @@ impl ShellState {
                 action.set_state(&next.to_variant());
             });
             group.add_action(&track);
+            // `tbShowMainMenu` (the Tools menu): CHECKED while the
+            // menu is NOT auto-hidden — the C# flips
+            // `AutoHideMainMenu` (MainForm.cs:1455-1458).
+            let show = gio::SimpleAction::new_stateful(
+                "show-main-menu",
+                None,
+                &(!cr_ui_settings().borrow().auto_hide_main_menu).to_variant(),
+            );
+            {
+                let state = state.clone();
+                show.connect_activate(move |action, _| {
+                    let Some(sh) = state.upgrade() else {
+                        return;
+                    };
+                    let next = !cr_ui_settings().borrow().auto_hide_main_menu;
+                    cr_ui_settings().borrow_mut().auto_hide_main_menu = next;
+                    action.set_state(&(!next).to_variant());
+                    sh.update_menubar();
+                });
+            }
+            group.add_action(&show);
+            self.actions.borrow_mut().insert("show-main-menu", show);
         }
 
         // --- Display ---

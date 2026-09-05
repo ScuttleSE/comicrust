@@ -144,8 +144,22 @@ Update this section at the **end of every work session**. The next agent must kn
   hide rule is immediate). The menubar-hides-in-browser-with-a-
   book-open observation is DEFERRED to T9 (the port matches the
   C# formula per the menubarvis_probe evidence; side-by-side then).
-  296 tests. **Next: T5 (the reader toolbar).** Phase 6
-  (scripting) starts only after 5.5.
+  296 tests.
+  T5 (the reader toolbar) IMPLEMENTED (2026-09-05), user test
+  pending. `browser/toolbar.rs` — the nine-button strip (prev/next
+  split buttons with page-turn main clicks, layout/fit drop-only,
+  zoom% + rotate° state text, magnifier/fullscreen toggles, the
+  Tools flattened menu) above the reader, right-aligned; the drops
+  reuse the menubar row machinery (`menubar::build_dropdown` —
+  one shared resolve closure pushes the action states into both
+  bars); the RTL/fit/layout icons track the reader; the bar rides
+  the undock (`ReaderShell::set_undock_chrome`); `win.show-main-
+  menu` (check = !AutoHideMainMenu). FIXED: `do_zoom` dropped a
+  preset with no composed page (the C# ImageZoom setter stores
+  unconditionally). Fill-mode placement into the browser tab strip
+  is T9. 299 tests, probes green. **Next: T6 (the browser toolbar
+  reorg + the Detail column chooser).** Phase 6 (scripting) starts
+  only after 5.5.
   Phases 0-5 are complete (their gates stay green). Open Phase 1
   gaps: WebComicProvider and the PDF/DjVu writers (tracked in
   `docs/phase-1-kickoff.md`).

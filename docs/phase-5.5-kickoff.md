@@ -1100,6 +1100,78 @@ change; it lands after the bars so they exist in both modes.
   extra observation DEFERRED to T9 (see the T4 tracker entry): the
   menubar hides in the browser view while a book stays open in a
   reader tab. **Next: T5 (the reader toolbar).**
+- T5 IMPLEMENTED (2026-09-05), user test pending. The nine-button
+  reader strip (`mainToolStrip`):
+  - `menubar.rs` grew the reusable `Dropdown` (`build_dropdown`):
+    the same row builder/state sync as the menubar popovers, one
+    popover per instance (`open` refreshes the top-level fills
+    first, `sync`/`click_row`/`dyn_rows_snapshot` shared) — the
+    menubar and the toolbar resolve the SAME action states through
+    one closure in `sync_menubar`.
+  - `toolbar.rs`: the strip in Designer order — prev/next split
+    buttons (main click = page turn via `CommandMapper` parity),
+    page layout / fit (drop-only — the C# split buttons have no
+    main-click handler), zoom (icon + "NNN%" text), rotate (icon +
+    "NN°" text), magnifier (toggle; Zoom/ZoomClear icon), full
+    screen (toggle), tools (the flattened menu: open/info/
+    Bookmarks+list/AutoScroll/Minimal/Undock/Scan/Update/
+    Thumbnails/DisplaySettings/Preferences/About/Show Main Menu/
+    Exit; ADR-024 omissions absent). The dropdowns reuse the
+    menubar tables (PAGE_LAYOUT) + the fit/zoom/rotate tables;
+    layout/fit icons track the reader state (the C#
+    `GetFitModeImage`/`GetLayoutImage` — the RTL variants bundle).
+    The whole bar mounts right-aligned above the reader content
+    (the C# Dock=Right inside the tab row — Fill-mode placement
+    into the browser tab strip is T9). `sync_visibility(has_book,
+    !minimal)` gates the reader-only buttons (`OnUpdateGui`) and
+    the whole bar (MinimalGui).
+  - The toolbar rides the UNDOCK (`ReaderForm` keeps the strip):
+    `ReaderShell::set_undock_chrome(widget, docked_parent)` moves
+    it above the undocked view and back on re-dock.
+  - `win.show-main-menu` (stateful check = !AutoHideMainMenu — the
+    `tbShowMainMenu` command port; flips the setting + re-applies
+    the menubar rule immediately).
+  - FIXED on the way: `PageView::do_zoom` returned early with no
+    composed page — the C# `ImageZoom` setter stores
+    unconditionally (a preset before the first decode silently
+    dropped); now the zoom stores and the next compose renders at
+    it. Plus `PageView::zoom()/rotation()/magnifier_visible()` and
+    `ReaderShell::current_zoom/current_rotation/current_magnifier`
+    for the state text.
+  - Dyn fills: `bookmarks-prev`/`bookmarks-next` (the C#
+    `UpdateBookmarkMenu(direction)`: the bookmarks before/after the
+    current page, nearest first for the backward drop, all
+    clickable).
+  - Gate: 299 tests (+3 toolbar gates: actions exist, the
+    layout-table reuse, every icon resolves), fmt/clippy clean;
+    `toolbar_probe` (the bar mounts, the zoom text 200%, the
+    rotate text 90°, the fit dropdown row click fires, the
+    next-page drop lists the bookmark), the other probes
+    unchanged. **USER TEST (the T5 acceptance):**
+    1. Open a comic — the strip sits at the top right of the
+       reader: [prev][next] | layout fit zoom% rotate° | magnifier
+       fullscreen | tools, with the C# icons.
+    2. Click the next-page main part — the page turns (the prev
+       part turns back); the chevrons open the drops: prev = First
+       Page/Previous Bookmark/bookmarks-before/Previous Book from
+       List; next = Last Page/Next Bookmark/Last Page Read/
+       bookmarks/Next+Random Book.
+    3. Zoom presets set the % text; Rotate 90 sets the angle text;
+       the fit/layout icons track the mode; the magnifier icon
+       flips with M.
+    4. The layout/fit/zoom/rotate drops carry the radio dots (fit
+       original after clicking it).
+    5. MinimalGui (F10/K) hides the whole strip; leaving restores.
+    6. Close the comic — the reader-only buttons (prev/next/
+       layout/fit/zoom/rotate/magnifier) hide with the reader
+       page.
+    7. Tools: About/Preferences/Display Settings open their
+       dialogs; Auto Scrolling/Minimal/Full Screen check-flip; Show
+       Main Menu flips the menubar auto-hide (the bar stays visible
+       with a book open when checked OFF... actually the Alt-reveal
+       stops hiding the bar).
+    8. Undock (D) — the strip rides into the undocked window and
+       works; D returns it.
 
 ## Omitted / postponed per task (the tracker)
 

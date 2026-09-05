@@ -9,4 +9,5 @@ pub mod menubar;
 pub mod navigator;
 pub mod pages_view;
 pub mod shell;
+pub mod toolbar;
 pub mod view_state;

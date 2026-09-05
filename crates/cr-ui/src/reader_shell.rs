@@ -107,6 +107,10 @@ struct ShellState {
     /// (`NextComic`/`PrevComic`/`RandomComic`/`ShowBrowser`) — the
     /// C# handlers live on `MainForm` (the browser list context).
     on_library_command: Option<LibraryCommandFn>,
+    /// The chrome widget that rides the reader into the undocked
+    /// window (the T5 toolbar) + its docked parent box.
+    undock_chrome: Option<gtk4::Widget>,
+    undock_chrome_docked_parent: Option<gtk4::Box>,
     /// The host runs this whenever the chrome visibility resolves
     /// (fullscreen enter/leave, MinimalGui) — the T3 menubar rides
     /// the same visibility.
@@ -188,6 +192,8 @@ impl ReaderShell {
                 on_book_changed: None,
                 on_library_command: None,
                 on_chrome_change: None,
+                undock_chrome: None,
+                undock_chrome_docked_parent: None,
             })),
         };
 
@@ -382,6 +388,27 @@ impl ReaderShell {
         Some(s.tabs.get(current as usize)?.view.auto_rotate())
     }
 
+    /// The current view's zoom (`ComicDisplay.ImageZoom`).
+    pub fn current_zoom(&self) -> Option<f32> {
+        let s = self.state.borrow();
+        let current = s.notebook.current_page()?;
+        Some(s.tabs.get(current as usize)?.view.zoom())
+    }
+
+    /// The current view's rotation.
+    pub fn current_rotation(&self) -> Option<cr_core::model::enums::ImageRotation> {
+        let s = self.state.borrow();
+        let current = s.notebook.current_page()?;
+        Some(s.tabs.get(current as usize)?.view.rotation())
+    }
+
+    /// The current view's magnifier state.
+    pub fn current_magnifier(&self) -> Option<bool> {
+        let s = self.state.borrow();
+        let current = s.notebook.current_page()?;
+        Some(s.tabs.get(current as usize)?.view.magnifier_visible())
+    }
+
     /// `MainForm.MinimalGui`.
     pub fn is_minimal_gui(&self) -> bool {
         self.state.borrow().minimal_gui
@@ -409,6 +436,16 @@ impl ReaderShell {
     /// the T3 menubar rides the same visibility.
     pub fn set_on_chrome_change<F: Fn(bool) + 'static>(&self, f: F) {
         self.state.borrow_mut().on_chrome_change = Some(Rc::new(f));
+    }
+
+    /// The chrome widget that rides the reader into the undocked
+    /// window (the T5 toolbar — the C# ReaderForm keeps the strip):
+    /// `docked_parent` is where it lives while docked; the undock
+    /// moves it above the view, the re-dock puts it back.
+    pub fn set_undock_chrome(&self, widget: gtk4::Widget, docked_parent: gtk4::Box) {
+        let mut s = self.state.borrow_mut();
+        s.undock_chrome = Some(widget);
+        s.undock_chrome_docked_parent = Some(docked_parent);
     }
 
     fn fire_book_changed(state: &Rc<RefCell<ShellState>>) {
@@ -1056,9 +1093,23 @@ impl ReaderShell {
             }
         };
         if let Some((position, view, tab_widget, window)) = redock {
-            // Unparent from the undocked window first
-            // (`gtk_notebook.insert_page` asserts on a parented
-            // child), then close the bare window.
+            // Unparent the chrome (the T5 toolbar) from the undocked
+            // box back into the docked parent first, then unparent
+            // the view (`gtk_notebook.insert_page` asserts on a
+            // parented child) and close the bare window.
+            let (chrome, docked_parent) = {
+                let st = state.borrow();
+                (
+                    st.undock_chrome.clone(),
+                    st.undock_chrome_docked_parent.clone(),
+                )
+            };
+            if let (Some(chrome), Some(docked_parent)) = (chrome, docked_parent) {
+                if let Some(box_) = window.child().and_downcast::<gtk4::Box>() {
+                    box_.remove(&chrome);
+                }
+                docked_parent.append(&chrome);
+            }
             window.set_child(None::<&gtk4::Widget>);
             window.close();
             notebook.insert_page(view.widget(), Some(&tab_widget), Some(position as u32));
@@ -1078,16 +1129,28 @@ impl ReaderShell {
         // the shell borrow: the notebook mutations emit switch-page,
         // whose handler borrows the shell.
         notebook.remove_page(Some(position as u32));
-        // The undocked reader is chrome-less (`ReaderForm` is a bare
-        // form). Q keeps closing the whole shell via the exit
-        // callback.
+        // The chrome (the T5 toolbar) rides into the undocked window
+        // above the view (the C# ReaderForm keeps the strip).
         let undocked_window = ApplicationWindow::builder()
             .application(&app)
             .title(&caption)
             .default_width(DEFAULT_WIDTH)
             .default_height(DEFAULT_HEIGHT)
             .build();
-        undocked_window.set_child(Some(view.widget()));
+        let undocked_box = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+        let (chrome, docked_parent) = {
+            let st = state.borrow();
+            (
+                st.undock_chrome.clone(),
+                st.undock_chrome_docked_parent.clone(),
+            )
+        };
+        if let (Some(chrome), Some(docked_parent)) = (chrome, docked_parent) {
+            docked_parent.remove(&chrome);
+            undocked_box.append(&chrome);
+        }
+        undocked_box.append(view.widget());
+        undocked_window.set_child(Some(&undocked_box));
         // The undocked window is not active yet at this point — the
         // grab_focus below would be ignored. Re-grab on activation
         // (same race as the main window).

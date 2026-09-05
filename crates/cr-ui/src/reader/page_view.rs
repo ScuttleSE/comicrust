@@ -1540,7 +1540,15 @@ impl PageView {
     fn do_zoom(&self, center: (i32, i32), zoom: f32) {
         let zoom = zoom.clamp(MINIMUM_ZOOM, MAXIMUM_ZOOM);
         let mut st = self.state.borrow_mut();
-        if st.image_zoom == zoom || st.composition.is_none() {
+        if st.image_zoom == zoom {
+            return;
+        }
+        if st.composition.is_none() {
+            // Nothing composed yet (the page is still decoding): the
+            // C# ImageZoom setter STORES unconditionally — the next
+            // compose renders at the stored zoom.
+            st.image_zoom = zoom;
+            drop(st);
             return;
         }
         let (w, h) = (self.area.width(), self.area.height());
@@ -1787,6 +1795,21 @@ impl PageView {
 
     pub fn page_layout(&self) -> PageLayoutMode {
         self.state.borrow().page_layout
+    }
+
+    /// The view zoom (`ComicDisplay.ImageZoom` — the toolbar text).
+    pub fn zoom(&self) -> f32 {
+        self.state.borrow().image_zoom
+    }
+
+    /// The view rotation (`ComicDisplay.ImageRotation`).
+    pub fn rotation(&self) -> ImageRotation {
+        self.state.borrow().rotation
+    }
+
+    /// `ComicDisplay.MagnifierVisible`.
+    pub fn magnifier_visible(&self) -> bool {
+        self.state.borrow().magnifier
     }
 
     /// The MainForm `ToggleTwoPages` command — the `TogglePageLayout`

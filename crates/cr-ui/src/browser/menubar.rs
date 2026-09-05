@@ -941,47 +941,12 @@ impl MenubarWidget {
     /// `resolve` maps an action base name to (enabled, state).
     pub fn sync(&self, resolve: &dyn Fn(&str) -> Option<ActionState>) {
         for row in self.rows.iter() {
-            self.sync_row(row, resolve);
+            sync_row(row, resolve);
         }
         for slot in self.dyn_ctx.slots.borrow().iter() {
             for row in slot.rows.borrow().iter() {
-                self.sync_row(row, resolve);
+                sync_row(row, resolve);
             }
-        }
-    }
-
-    fn sync_row(&self, row: &ItemRow, resolve: &dyn Fn(&str) -> Option<ActionState>) {
-        if row.base.is_empty() {
-            return;
-        }
-        let Some(view) = resolve(row.base) else {
-            return;
-        };
-        row.button.set_visible(view.visible);
-        row.button.set_sensitive(view.enabled);
-        let checked = match row.value {
-            Some(value) => view
-                .state
-                .as_ref()
-                .and_then(|s| s.get::<String>())
-                .is_some_and(|s| s == value),
-            None => view
-                .state
-                .as_ref()
-                .and_then(|s| s.get::<bool>())
-                .unwrap_or(false),
-        };
-        if checked {
-            row.indicator.set_icon_name(Some("object-select-symbolic"));
-        } else {
-            row.indicator.set_icon_name(None);
-        }
-        // The active-panel emphasis (view-library/view-pages):
-        // a row highlight, never a check mark (CR parity).
-        if view.highlight {
-            row.button.add_css_class("menu-row-active");
-        } else {
-            row.button.remove_css_class("menu-row-active");
         }
     }
 
@@ -1010,6 +975,176 @@ impl MenubarWidget {
             }
         }
         out
+    }
+}
+
+/// A standalone dropdown menu (the T5 toolbar's split-button drops):
+/// the same row builder + state sync as the menubar popovers, one
+/// popover per instance.
+pub struct Dropdown {
+    popover: gtk4::Popover,
+    rows: Rc<Vec<ItemRow>>,
+    dyn_ctx: Rc<MenubarDyn>,
+}
+
+impl Clone for Dropdown {
+    fn clone(&self) -> Self {
+        Self {
+            popover: self.popover.clone(),
+            rows: Rc::clone(&self.rows),
+            dyn_ctx: Rc::clone(&self.dyn_ctx),
+        }
+    }
+}
+
+impl Dropdown {
+    pub fn popover(&self) -> &gtk4::Popover {
+        &self.popover
+    }
+
+    /// Opens the popover below `button` (the fill refresh runs
+    /// first — the top-level slots of a standalone dropdown).
+    pub fn open(&self, button: &gtk4::Button) {
+        self.dyn_ctx.refresh_top(0);
+        align_below_button(button, &self.popover);
+        self.popover.popup();
+    }
+
+    /// Applies the action states to the rows (checks/disabled/
+    /// highlight — the shell resolves the same states as the
+    /// menubar's).
+    pub fn sync(&self, resolve: &dyn Fn(&str) -> Option<ActionState>) {
+        for row in self.rows.iter() {
+            sync_row(row, resolve);
+        }
+        let slots = self.dyn_ctx.slots.borrow();
+        for slot in slots.iter() {
+            for row in slot.rows.borrow().iter() {
+                sync_row(row, resolve);
+            }
+        }
+    }
+
+    /// Installs the dynamic fill provider (the shell shares its
+    /// provider with the menubar).
+    pub fn set_dyn_fill(&self, fill: DynFillFn) {
+        *self.dyn_ctx.fill.borrow_mut() = Some(fill);
+    }
+
+    /// Re-fills ONE dynamic slot (the probe gate for the map hook).
+    pub fn refresh_slot(&self, id: &str) {
+        self.dyn_ctx.refresh_slot(id);
+    }
+
+    /// Probe: clicks a row through the real widget path. Returns
+    /// whether the action exists in this dropdown.
+    pub fn click_row(&self, action: &str) -> bool {
+        for row in self.rows.iter() {
+            if row.action == action {
+                row.button.emit_clicked();
+                return true;
+            }
+        }
+        let slots = self.dyn_ctx.slots.borrow();
+        for slot in slots.iter() {
+            for row in slot.rows.borrow().iter() {
+                if row.action == action {
+                    row.button.emit_clicked();
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
+    /// Probe: the rows of one dynamic slot (label, checked, enabled).
+    pub fn dyn_rows_snapshot(&self, id: &str) -> Vec<(String, bool, bool)> {
+        let slots = self.dyn_ctx.slots.borrow();
+        let mut out = Vec::new();
+        for slot in slots.iter().filter(|s| s.id == id) {
+            for row in slot.rows.borrow().iter() {
+                let checked = row
+                    .indicator
+                    .icon_name()
+                    .is_some_and(|n| n == "object-select-symbolic");
+                out.push((row_label(&row.button), checked, row.button.is_sensitive()));
+            }
+        }
+        out
+    }
+}
+
+/// Applies the action states to ONE row (checks, radio marks,
+/// disabled graying, visibility, the active emphasis) — shared by
+/// the menubar and the standalone dropdowns.
+fn sync_row(row: &ItemRow, resolve: &dyn Fn(&str) -> Option<ActionState>) {
+    if row.base.is_empty() {
+        return;
+    }
+    let Some(view) = resolve(row.base) else {
+        return;
+    };
+    row.button.set_visible(view.visible);
+    row.button.set_sensitive(view.enabled);
+    let checked = match row.value {
+        Some(value) => view
+            .state
+            .as_ref()
+            .and_then(|s| s.get::<String>())
+            .is_some_and(|s| s == value),
+        None => view
+            .state
+            .as_ref()
+            .and_then(|s| s.get::<bool>())
+            .unwrap_or(false),
+    };
+    if checked {
+        row.indicator.set_icon_name(Some("object-select-symbolic"));
+    } else {
+        row.indicator.set_icon_name(None);
+    }
+    // The active-panel emphasis (view-library/view-pages):
+    // a row highlight, never a check mark (CR parity).
+    if view.highlight {
+        row.button.add_css_class("menu-row-active");
+    } else {
+        row.button.remove_css_class("menu-row-active");
+    }
+}
+
+/// Builds a standalone dropdown from a node table (the toolbar's
+/// split-button menus).
+pub fn build_dropdown(defs: &[MenuNode], window: &gtk4::ApplicationWindow) -> Dropdown {
+    let dyn_ctx = Rc::new(MenubarDyn {
+        window: window.clone(),
+        slots: RefCell::new(Vec::new()),
+        fill: RefCell::new(None),
+    });
+    let mut rows = Vec::new();
+    let mut subs = Vec::new();
+    let mut child_popovers = Vec::new();
+    let (content, _first, _top_dyn) = build_menu_content(
+        defs,
+        window,
+        &mut rows,
+        &mut child_popovers,
+        &mut subs,
+        &dyn_ctx,
+        0,
+    );
+    let popover = gtk4::Popover::new();
+    popover.set_child(Some(&content));
+    popover.set_has_arrow(false);
+    popover.set_position(gtk4::PositionType::Bottom);
+    popover.set_size_request(POP_WIDTH, -1);
+    for child in child_popovers.iter() {
+        let child = child.clone();
+        popover.connect_closed(move |_| child.popdown());
+    }
+    Dropdown {
+        popover,
+        rows: Rc::new(rows),
+        dyn_ctx,
     }
 }
 
