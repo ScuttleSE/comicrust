@@ -977,6 +977,110 @@ change; it lands after the bars so they exist in both modes.
   Browse ▸ Library/Pages, no arrow + left-edge alignment, submenu
   rows without the button frame, accel display text, disabled
   stubs grey. **Next: T4 (the dynamic menus).**
+- T4 IMPLEMENTED (2026-09-05), user test pending. The dynamic
+  fills (the C# `DropDownOpening` rebuilds) for Open Books, Recent
+  Books, Bookmarks, Page Type, Page Rotation + the bookmark
+  commands themselves:
+  - `menubar.rs`: a `MenuNode::Dyn(id)` slot — the shell installs
+    a fill provider (`set_dyn_fill`) and every menu open rebuilds
+    the slot's rows (`refresh_top` runs at the click/hover/arrow/
+    open_top funnel, BEFORE the popover maps — the C#
+    `DropDownOpening` shape). The fill BAKES checked/disabled (the
+    C# also refreshes at open, not through command states); dyn
+    rows skip the state sync (base = ""). New `set_sub_enabled`
+    (the parent enables: Open Books/Recent Books/Page Type/Page
+    Rotation) and `ActionState.visible` (the
+    `fileMenu_DropDownOpening` hide rule — "Update all Book Files"
+    hides while `AutoUpdateComicsFiles` is on; the T1-postponed
+    entry). Probe accessors: `dyn_rows_snapshot`.
+  - Fills: Open Books = one row per open tab (caption through
+    `display_text::caption` — `GetSlotCaption` → `Comic.Caption`
+    parity), checked on the current, Ctrl+Alt+F1..F12 on the first
+    12 (registered per slot value at fill time). Recent Books =
+    `library::recent_books(20)` (`GetRecentFiles` parity:
+    OpenedTime desc, `RecentFileCount` = 20, existing files only,
+    numbered "N - filename"). Bookmarks = the per-page list after
+    the C# "bms" separator ("name (Page N)", disabled on the
+    current page, `win.open-bookmark::<provider>`). Page Type =
+    the 11-value enum radio over the CURRENT page (the editor's
+    shared `PAGE_TYPE_ITEMS` table; all rows disabled without a
+    book — `pageEditor.IsValid`). Page Rotation = the
+    None/90/180/270 radio with the C# Permanent icons.
+  - Bookmark commands (`SetBookmark`/`RemoveBookmark`/
+    `DisplayPreviousBookmarkedPage`/`DisplayNextBookmarkedPage`):
+    `cr-core::ComicInfo::seek_bookmark` (the C#
+    `ComicPageInfoCollection.SeekBookmark` — start page counts,
+    the callers pass `current + dir`), `ReaderShell::bookmark_nav`
+    (provider-space seek → display-sequence navigation), the Set
+    flow opens the new `dialogs::name_prompt` (`SelectItemDialog
+    .GetName` shape; the proposal = the existing bookmark or "Page
+    N") and writes through `ComicInfo.UpdateBookmark` semantics
+    (empty clears) + `apply_edited` (the dirty mark + the gated
+    file write). The reader KEYS (Ctrl+PageUp/PageDown →
+    MoveToPrevBookmark/MoveToNextBookmark) now forward from the
+    view through the shell (the dispatch no-op is gone).
+  - Page Type/Rotation SET: `win.page-type::<value>` /
+    `win.page-rotation::<value>` → `edit_open_book` (the session
+    book mutates, `apply_edited` mirrors, the Pages panel rebinds)
+    + the view rotation map for rotation
+    (`PageView::set_page_rotation_for`). The Y/Shift+Y
+    page-rotate commands now write through too
+    (`PageRotateC`/`CC` forward to the shell → the view applies +
+    the book copies mirror). The stored rotations now seed the
+    view at OPEN (`ComicPageInfo.Rotation` seeds the map through
+    the display sequence — the C# render pipeline reads them per
+    page).
+  - My Rating check states: the rating actions became STATEFUL
+    (and joined the actions registry — they were silently absent
+    from the enable sync, a T1 gap the probe caught);
+    `selection_common_rating` = the `RatingEditor.GetRating` port
+    (the common value, -1 mixed), check = `round == n`.
+  - `refresh_view_from_list` now RESTORES the selection after the
+    book-set swap (`ItemView::reselect` — the C# refresh updates
+    items in place; without it every rating commit cleared the
+    selection and the check never showed).
+  - FIXED (the T3 regression the probe caught): the row-click
+    handler passed the DETAILED action name PLUS an explicit
+    parameter — `activate_action` parses a detailed name only when
+    no args ride along; the combo errors silently, so the T3
+    RADIO rows (page-fit/page-layout/zoom presets) never fired
+    from clicks (accels kept working). Both click handlers (the
+    static + the dynamic builder) now pass the BARE name + the
+    value as the parameter. The `dynmenus_probe` gates the row
+    click on a parametered target.
+  - Gate: 296 tests (+ `seek_bookmark`, + the dyn-slot table
+    test; the omissions test now asserts the dynamic parents
+    PRESENT), fmt/clippy clean, `dynmenus_probe` (Open Books = 2
+    rows/1 checked, the row click moves slots, the bookmark prompt
+    round-trip → the fill row + the state, the page-type radio +
+    SET round-trip, rating-4 check + the DB rating), `menubar_probe`
+    and `commands_probe` 69/69 unchanged.
+  - DEVIATIONS recorded (the tracker section): Recent Books is
+    text-only (the C# fetches 16 px cover thumbs at menu-open);
+    a bookmark on a Deleted page has no display position and is
+    unreachable (the C# navigates provider space); the hide rule
+    for Update all Book Files runs in the continuous sync (the C#
+    refreshes at menu-open); the recent-books label uses the raw
+    file name (no `GetSafeFileName` ellipsis — it IS the file
+    name); slot accels live from the first fill (no per-open
+    teardown). **USER TEST (the T4 acceptance):** 1. Open three
+    comics — File ▸ Open Books lists all three, checks the
+    current, Ctrl+Alt+F1..F3 switch tabs; the grey parent turns on
+    with the first open. 2. Set Bookmark (Ctrl+Shift+B) — the
+    prompt proposes "Page N"/the old name; OK → Edit ▸ Bookmarks
+    lists "name (Page N)" (grey on the current page); clicking
+    another comic's tab makes the row clickable → it jumps back.
+    Remove Bookmark clears it (the row vanishes). 3. Prev/Next
+    Bookmark (Ctrl+Shift+P / the unbound next) walk the bookmarks;
+    grey when no bookmark lies before/after. 4. Rate 4 stars
+    (Alt+Shift+4 or the menu) — Edit ▸ My Rating checks the 4-star
+    row; a mixed selection unchecks all. 5. Page Type/Page
+    Rotation (Edit menu) — the radio marks the current page; set
+    another type/rotation — the reader re-decodes (rotation), the
+    Pages panel follows; Y/Shift+Y keep working. 6. File ▸ Recent
+    Books lists the opened books; clicking opens. 7. Preferences →
+    turn Auto Update Comics Files ON — "Update all Book Files"
+    hides from the File menu (reveal again with it OFF).
 
 ## Omitted / postponed per task (the tracker)
 
@@ -996,13 +1100,14 @@ owns the Phase 5.5 omissions).
 - Update all Book Files covers library books only (temporary books
   unported).
 - Stub actions stay DISABLED until their owning task: Tasks (T13),
-  Zoom Custom (T13), Display Settings (T12), About (T13), Set/
-  Remove Bookmark (T4), Quick Rating (T13), Copy/Export Page (T13),
-  Small Preview (T11), New Book Entry (unported fileless books),
-  navigator search (T7).
+  Zoom Custom (T13), Display Settings (T12), About (T13), Quick
+  Rating (T13), Copy/Export Page (T13), Small Preview (T11), New
+  Book Entry (unported fileless books), navigator search (T7).
+  RESOLVED in T4: Set/Remove Bookmark (the commands + the fills
+  landed).
 - Automation submenu omitted (Phase 6 scripting hooks it).
-- POSTPONED to T4: "Update all Book Files" should HIDE when
-  AutoUpdateComicsFiles is on (fileMenu_DropDownOpening parity).
+- RESOLVED in T4: "Update all Book Files" hides when
+  AutoUpdateComicsFiles is on (`ActionState.visible` + the sync).
 
 ### T2 — Bundled icon set (COMPLETE)
 - The 17 resx GIFs (task animations: scan/export/device-sync/
@@ -1019,17 +1124,18 @@ owns the Phase 5.5 omissions).
 ### T3 — Menubar (COMPLETE — see the closure entry in the progress log)
 - Present-but-disabled stubs (grey): Generate Cover Thumbnails
   (thumbnail-queue work), Tasks (T13), New fileless Book Entry
-  (fileless books unported), Quick Rating (T13), Set/Remove
-  Bookmark (bookmark work), Copy Page / Export Page (T13), Small
-  Preview (T11), Zoom Custom (T13), Book Display Settings (T12),
-  About (T13).
+  (fileless books unported), Quick Rating (T13), Copy Page /
+  Export Page (T13), Small Preview (T11), Zoom Custom (T13), Book
+  Display Settings (T12), About (T13). RESOLVED in T4: Set/Remove
+  Bookmark.
 - Absent per ADR-024: Update Web Comics (WebComicProvider gap),
   Synchronize Devices, Automation (Phase 6), Open Remote Library
   (Phase 7), Undo/Redo, Devices..., Folders (F7, Phase 7), Search
   Browser, Info Panel, Workspaces, List Layout (T6/T14 data), the
   Help docs/homepage/forum/news/update links.
-- Deferred to T4 (dynamic parents): Open Books, Recent Books, Page
-  Type, Page Rotation, the bookmark list.
+- Deferred to T4 (dynamic parents): RESOLVED — Open Books, Recent
+  Books, Page Type, Page Rotation and the bookmark list fill
+  dynamically (T4).
 - NOT A MENU ITEM: "New fileless Book Series..." is the bundled
   script `Output/Scripts/NewComics.py` under the C# Automation
   submenu — covered by the Automation omission; native-port
@@ -1044,6 +1150,13 @@ owns the Phase 5.5 omissions).
 - Fixed in-round: the Wayland grab (one active popover), the
   stripped action name (full "win." form), the MenuButton frame,
   the active-panel highlight.
+- FIXED in T4 (a silent regression of this task): the radio-row
+  clicks passed a DETAILED action name plus an explicit parameter;
+  `activate_action` parses a detailed name only WITHOUT args — the
+  combo errors silently, so the radio rows (page-fit/page-layout/
+  zoom presets) fired only from their accelerators, never from
+  clicks. Both click handlers pass the BARE name + the parameter
+  now; the `dynmenus_probe` gates a parametered row click.
 - T3 POLISH 2 (2026-09-05, user feedback): the menus popped with a
   pointing arrow centered on the button. Fix: `has_arrow(false)`
   (top popovers AND the nested submenu popovers) and the
@@ -1054,3 +1167,28 @@ owns the Phase 5.5 omissions).
   the auto-size the arrow shape used to force). Screenshot-proved
   on the Edit menu (open state, arrow gone, edges flush). 294
   tests, clippy clean.
+
+### T4 — Dynamic menus (IMPLEMENTED — user test pending)
+- DEVIATIONS (vs the C# fills):
+  - Recent Books is TEXT-ONLY: the C# fetches a 16 px front-cover
+    thumb per row at every menu-open (a synchronous thumb render
+    per entry — stall-prone on real libraries); the rows carry the
+    numbered file name only.
+  - A bookmark on a Deleted page has no display position — the
+    row lists it but the click no-ops (the C# navigates provider
+    space; the port's display model skips Deleted pages).
+  - The Update-all-Book-Files hide rule runs in the continuous
+    sync (every action dispatch / selection change), not at
+    menu-open.
+  - The Open Books slot accels (Ctrl+Alt+F1..F12) register at the
+    first fill and stay (no teardown for closed slots; the stale
+    accel targets a dead slot id and stays inert).
+  - The bookmark proposal uses the provider page number ("Page N")
+    — the C# proposal is `CurrentPageAsText` in provider space
+    too; with Deleted pages present the DISPLAY number differs
+    (the same deviation family as the fill caption).
+- KNOWN-GAP notes carried (not T4 scope): page-type changes do
+  not recompose spreads (the composition model has no page-type
+  input — the Phase 3 record); the Properties editor's session
+  book staleness after external editor commits predates T4 (the
+  clone round-trip shape).

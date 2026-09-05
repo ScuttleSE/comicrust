@@ -364,6 +364,17 @@ impl ViewState {
         self.anchor = Some(id);
     }
 
+    /// `RefreshList` selection restoration: replace the selection
+    /// with the given ids (focus + anchor follow the first).
+    pub fn restore_selection(&mut self, ids: &[CrGuid]) {
+        self.selected.clear();
+        for id in ids {
+            self.selected.insert(*id);
+        }
+        self.focus = ids.first().copied();
+        self.anchor = ids.first().copied();
+    }
+
     /// Ctrl+click: flip the item's selection (`Flip(Selected)`); the
     /// focus follows the item, the anchor stays (it marks the last
     /// plain click — the range start).

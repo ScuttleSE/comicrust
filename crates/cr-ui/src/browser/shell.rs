@@ -139,7 +139,14 @@ impl ShellState {
         let id = *self.current_list.borrow();
         if let Some(id) = id {
             if let Some((_name, books)) = library::evaluate_books(&id) {
+                // The C# refresh updates the items in place — the
+                // selection survives (the My Rating check reads the
+                // selection right after the rating commit).
+                let selected = self.item_view.selection_ids();
                 self.item_view.set_books(books);
+                if !selected.is_empty() {
+                    self.item_view.reselect(&selected);
+                }
             }
         }
     }
@@ -725,6 +732,7 @@ impl BrowserShell {
     fn install_actions(&self) {
         ShellState::install_commands(&self.state);
         ShellState::install_menubar_keys(&self.state);
+        ShellState::install_dyn_fills(&self.state);
     }
 
     /// Opens a comic into the docked reader (the app's `open_reader`
@@ -735,6 +743,97 @@ impl BrowserShell {
 
     pub fn present(&self) {
         self.window.present();
+    }
+
+    // ----- probe accessors (headless gates; not app paths) -----
+
+    /// The open reader tab count.
+    pub fn state_reader_tab_count(&self) -> usize {
+        self.state.reader.tab_count()
+    }
+
+    /// The current reader slot id.
+    pub fn state_reader_slot(&self) -> Option<usize> {
+        self.state.reader.current_slot_id()
+    }
+
+    /// The slot of the FIRST open tab (the Open Books first row).
+    pub fn state_first_open_slot(&self) -> Option<usize> {
+        self.state.reader.open_tabs().first().map(|(s, _)| *s)
+    }
+
+    /// Whether the CURRENT reader page carries a bookmark.
+    pub fn state_current_page_bookmark(&self) -> bool {
+        self.state.current_page_has_bookmark()
+    }
+
+    /// Selects the current view's first book (the rating path).
+    pub fn state_select_first_book(&self) {
+        let view = self.state.item_view.view_state();
+        if let Some(first) = view.books().first() {
+            self.state.item_view.select_book(&first.id);
+            self.state.sync_enabled();
+        }
+    }
+
+    /// Fires a detailed action on the window (the dispatch path).
+    pub fn state_dispatch(&self, action: &str) -> bool {
+        gtk4::prelude::WidgetExt::activate_action(&self.window, action, None).is_ok()
+    }
+
+    /// Fires an action with an explicit string parameter (bare name
+    /// + variant).
+    pub fn state_dispatch_param(&self, action: &str, value: &str) -> bool {
+        gtk4::prelude::WidgetExt::activate_action(&self.window, action, Some(&value.to_variant()))
+            .is_ok()
+    }
+
+    /// The state of a rating check action.
+    pub fn state_rating_checked(&self, n: u32) -> bool {
+        self.state
+            .action(&format!("rating-{n}"))
+            .and_then(|a| a.state())
+            .and_then(|v| v.get::<bool>())
+            .unwrap_or(false)
+    }
+
+    /// Whether an action is enabled (the probe).
+    pub fn state_action_enabled(&self, name: &str) -> bool {
+        self.state.action(name).is_some_and(|a| a.is_enabled())
+    }
+
+    /// The grid's book count (the probe).
+    pub fn state_grid_book_count(&self) -> usize {
+        self.state.item_view.book_count()
+    }
+
+    /// The grid's selection length (the probe).
+    pub fn state_grid_selection_len(&self) -> usize {
+        self.state.item_view.selection_len()
+    }
+
+    /// The selected book's rating in the library (the probe).
+    pub fn state_selected_book_rating(&self) -> f32 {
+        let ids = self.state.item_view.selection_ids();
+        if ids.is_empty() {
+            return f32::NAN;
+        }
+        let lib = library::session();
+        let l = lib.borrow();
+        l.database()
+            .books
+            .iter()
+            .find(|b| ids.contains(&b.id))
+            .map(|b| b.rating)
+            .unwrap_or(f32::NAN)
+    }
+
+    /// The current reader page's type (the probe).
+    pub fn state_current_page_type(&self) -> Option<i16> {
+        let book = self.state.reader.current_comic_book()?;
+        let display = self.state.reader.current_display_page()?;
+        let provider = self.state.reader.provider_index_of_display(display)?;
+        book.info.pages.get(provider).map(|p| p.page_type.0 as i16)
     }
 }
 
@@ -818,6 +917,37 @@ impl ShellState {
         ] {
             self.set_action_enabled(name, selected > 0);
         }
+        // Bookmark commands (`CanBookmark`/`CanNavigateBookmark`/
+        // the current-page bookmark check).
+        self.set_action_enabled("set-bookmark", has_book);
+        self.set_action_enabled(
+            "remove-bookmark",
+            has_book && self.current_page_has_bookmark(),
+        );
+        self.set_action_enabled(
+            "prev-bookmark",
+            has_book && self.reader.can_navigate_bookmark(-1),
+        );
+        self.set_action_enabled(
+            "next-bookmark",
+            has_book && self.reader.can_navigate_bookmark(1),
+        );
+        // The My Rating check states (`Math.Round(GetRating()) == N`
+        // — the selection's COMMON rating, -1 = mixed).
+        let common = self.selection_common_rating();
+        for (n, name) in [
+            (0u32, "rating-0"),
+            (1, "rating-1"),
+            (2, "rating-2"),
+            (3, "rating-3"),
+            (4, "rating-4"),
+            (5, "rating-5"),
+        ] {
+            if let Some(a) = self.action(name) {
+                let checked = common >= 0.0 && common.round() == n as f32;
+                a.set_state(&checked.to_variant());
+            }
+        }
         self.set_action_enabled("prev-list", can_prev);
         self.set_action_enabled("next-list", can_next);
         // Radio/check state follows the reader (`IsPageFitBest`,
@@ -896,8 +1026,8 @@ impl ShellState {
     }
 
     /// Pushes the current action states into the menubar rows
-    /// (check/radio marks + disabled graying — the custom bar has
-    /// no model-driven state rendering).
+    /// (check/radio marks + disabled graying + the hide rules — the
+    /// custom bar has no model-driven state rendering).
     fn sync_menubar(&self) {
         let actions = self.actions.borrow();
         // The active-panel emphasis (the C# highlights the
@@ -905,6 +1035,9 @@ impl ShellState {
         // checkbox on those items).
         let panel = self.panel_stack.visible_child_name().unwrap_or_default();
         let panel = panel.as_str();
+        // `fileMenu_DropDownOpening`: "Update all Book Files" hides
+        // while `AutoUpdateComicsFiles` is on.
+        let update_files_visible = !cr_ui_settings().borrow().auto_update_comics_files;
         self.menubar.sync(&|base| {
             let action = actions.get(base)?;
             let highlight = match base {
@@ -912,12 +1045,30 @@ impl ShellState {
                 "view-pages" => panel == "pages",
                 _ => false,
             };
+            let visible = match base {
+                "update-book-files" => update_files_visible,
+                _ => true,
+            };
             Some(super::menubar::ActionState {
                 enabled: action.is_enabled(),
                 state: action.state(),
                 highlight,
+                visible,
             })
         });
+        // The submenu PARENT enables (`OnGuiVisibilities` +
+        // `DropDownOpening` rules).
+        self.menubar
+            .set_sub_enabled("Open Books", self.reader.tab_count() > 0);
+        let recent_count = library::recent_books(20)
+            .iter()
+            .filter(|b| Path::new(&b.file_path).exists())
+            .count();
+        self.menubar
+            .set_sub_enabled("Recent Books", recent_count > 0);
+        let has_book = !self.reader.is_empty();
+        self.menubar.set_sub_enabled("Page Type", has_book);
+        self.menubar.set_sub_enabled("Page Rotation", has_book);
     }
 
     /// `OpenNextComic(relative)`: the neighbor book in the current
@@ -1061,6 +1212,243 @@ impl ShellState {
             library::apply_edited(&book);
         }
         self.refresh_view_from_list();
+    }
+
+    /// `RatingEditor.GetRating`: the selection's rating when all
+    /// selected books agree, else -1 (mixed / empty).
+    fn selection_common_rating(&self) -> f32 {
+        let ids = self.item_view.selection_ids();
+        if ids.is_empty() {
+            return -1.0;
+        }
+        let lib = library::session();
+        let l = lib.borrow();
+        let mut num = -1.0f32;
+        for book in l.database().books.iter().filter(|b| ids.contains(&b.id)) {
+            if num == -1.0 {
+                num = book.rating;
+            } else if num != book.rating {
+                return -1.0;
+            }
+        }
+        num
+    }
+
+    /// Whether the CURRENT reader page carries a bookmark
+    /// (`RemoveBookmarkAvailable`).
+    fn current_page_has_bookmark(&self) -> bool {
+        let Some(book) = self.reader.current_comic_book() else {
+            return false;
+        };
+        let Some(display) = self.reader.current_display_page() else {
+            return false;
+        };
+        let Some(provider) = self.reader.provider_index_of_display(display) else {
+            return false;
+        };
+        book.info
+            .pages
+            .get(provider)
+            .and_then(|p| p.bookmark.as_deref())
+            .is_some_and(|b| !b.is_empty())
+    }
+
+    /// The current provider page of the open book (the page-edit
+    /// target). `None` without an open comic.
+    fn current_provider_page(&self) -> Option<(usize, usize)> {
+        let display = self.reader.current_display_page()?;
+        let provider = self.reader.provider_index_of_display(display)?;
+        Some((display, provider))
+    }
+
+    /// Applies an edit to the CURRENT reader book: the session copy
+    /// mutates, the library entry replaces (`apply_edited` — the
+    /// dirty mark + the gated file write), and the Pages panel
+    /// rebinds. `None` without an open comic.
+    fn edit_open_book<F: FnOnce(&mut ComicBook)>(&self, f: F) -> Option<ComicBook> {
+        let book = self.reader.edit_current_book(f)?;
+        library::apply_edited(&book);
+        self.pages.set_book(book.clone());
+        Some(book)
+    }
+
+    /// The dynamic fill provider (the `DropDownOpening` parity):
+    /// every menu open rebuilds the dynamic slots from the live
+    /// book/tabs state. The check/disabled state is baked here —
+    /// the C# also refreshes at `DropDownOpening`, not through the
+    /// command states.
+    fn install_dyn_fills(self: &Rc<ShellState>) {
+        let state = Rc::downgrade(self);
+        self.menubar
+            .set_dyn_fill(Rc::new(move |id| match state.upgrade() {
+                Some(sh) => sh.dyn_fill(id),
+                None => Vec::new(),
+            }));
+    }
+
+    fn dyn_fill(&self, id: &str) -> Vec<super::menubar::DynNode> {
+        use super::menubar::{DynItem, DynNode};
+        match id {
+            // File ▸ Open Books: one row per open tab, checked on
+            // the current, Ctrl+Alt+F1..F12 on the first 12.
+            "open-books" => {
+                let current = self.reader.current_slot_id();
+                self.reader
+                    .open_tabs()
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, (slot, caption))| {
+                        let accel = if i < 12 {
+                            format!("<Control><Alt>F{}", i + 1)
+                        } else {
+                            String::new()
+                        };
+                        let detailed = format!("win.open-tab::{slot}");
+                        if !accel.is_empty() {
+                            self.app.set_accels_for_action(&detailed, &[accel.as_str()]);
+                        }
+                        DynNode::Item(DynItem {
+                            label: caption,
+                            action: detailed,
+                            accel,
+                            icon: "",
+                            checked: current == Some(slot),
+                            enabled: true,
+                        })
+                    })
+                    .collect()
+            }
+            // File ▸ Recent Books: numbered file names, existing
+            // files only (`RecentFilesMenuOpening`).
+            "recent-books" => {
+                let mut out = Vec::new();
+                let mut n = 0usize;
+                for book in library::recent_books(20) {
+                    if !Path::new(&book.file_path).exists() {
+                        continue;
+                    }
+                    n += 1;
+                    let name = Path::new(&book.file_path)
+                        .file_name()
+                        .map(|f| f.to_string_lossy().into_owned())
+                        .unwrap_or_else(|| book.file_path.clone());
+                    out.push(DynNode::Item(DynItem {
+                        label: format!("{n} - {name}"),
+                        // The raw path rides the detailed name's
+                        // value (split_once takes everything after
+                        // the first "::" — colons in paths survive).
+                        action: format!("win.recent-book::{}", book.file_path),
+                        accel: String::new(),
+                        icon: "",
+                        checked: false,
+                        enabled: true,
+                    }));
+                }
+                out
+            }
+            // Edit ▸ Bookmarks: the per-page list (the C# "bm"
+            // items — disabled on the current page).
+            "bookmarks" => {
+                let Some(book) = self.reader.current_comic_book() else {
+                    return Vec::new();
+                };
+                let Some(current) = self.current_provider_page().map(|(_, provider)| provider)
+                else {
+                    return Vec::new();
+                };
+                book.info
+                    .pages
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, p)| p.bookmark.as_deref().is_some_and(|b| !b.is_empty()))
+                    .map(|(i, p)| {
+                        let name = p.bookmark.clone().unwrap_or_default();
+                        DynNode::Item(DynItem {
+                            label: format!("{name} (Page {})", i + 1),
+                            action: format!("win.open-bookmark::{i}"),
+                            accel: String::new(),
+                            icon: "",
+                            checked: false,
+                            enabled: i != current,
+                        })
+                    })
+                    .collect()
+            }
+            // Edit ▸ Page Type: the enum radio over the CURRENT
+            // page (all rows disabled without a book — the C#
+            // `pageEditor.IsValid` rule).
+            "page-type" => {
+                let has_book = !self.reader.is_empty();
+                let current = self.current_provider_page().and_then(|(_, provider)| {
+                    self.reader
+                        .current_comic_book()
+                        .and_then(|b| b.info.pages.get(provider).map(|p| p.page_type))
+                });
+                crate::dialogs::book_editor::PAGE_TYPE_ITEMS
+                    .iter()
+                    .map(|(label, v)| {
+                        DynNode::Item(DynItem {
+                            label: (*label).to_string(),
+                            action: format!("win.page-type::{}", v.0),
+                            accel: String::new(),
+                            icon: "",
+                            checked: current.is_some_and(|c| c == *v),
+                            enabled: has_book,
+                        })
+                    })
+                    .collect()
+            }
+            // Edit ▸ Page Rotation: the rotation radio with the C#
+            // Permanent icons (`EnumMenuUtility` images dict).
+            "page-rotation" => {
+                let has_book = !self.reader.is_empty();
+                let current = self
+                    .reader
+                    .current_view()
+                    .map(|v| v.page_rotation_of(v.current_page()));
+                const NONE: cr_core::model::enums::ImageRotation =
+                    cr_core::model::enums::ImageRotation::None;
+                [
+                    ("None", NONE, "Rotate0Permanent"),
+                    (
+                        "90\u{b0}",
+                        cr_core::model::enums::ImageRotation::Rotate90,
+                        "Rotate90Permanent",
+                    ),
+                    (
+                        "180\u{b0}",
+                        cr_core::model::enums::ImageRotation::Rotate180,
+                        "Rotate180Permanent",
+                    ),
+                    (
+                        "270\u{b0}",
+                        cr_core::model::enums::ImageRotation::Rotate270,
+                        "Rotate270Permanent",
+                    ),
+                ]
+                .into_iter()
+                .map(|(label, rot, icon)| {
+                    DynNode::Item(DynItem {
+                        label: label.to_string(),
+                        action: format!(
+                            "win.page-rotation::{}",
+                            match rot {
+                                NONE => "none",
+                                cr_core::model::enums::ImageRotation::Rotate90 => "90",
+                                cr_core::model::enums::ImageRotation::Rotate180 => "180",
+                                cr_core::model::enums::ImageRotation::Rotate270 => "270",
+                            }
+                        ),
+                        accel: String::new(),
+                        icon,
+                        checked: current.is_some_and(|c| c == rot),
+                        enabled: has_book,
+                    })
+                })
+                .collect()
+            }
+            _ => Vec::new(),
+        }
     }
 
     /// `RefreshDisplay` (F5): the tree re-fills and the current list
@@ -1210,6 +1598,41 @@ impl ShellState {
         self.add_simple(&group, "close-all", |sh| sh.reader.close_all_tabs());
         // `OpenBooks.AddSlot`: the empty slot shows QuickOpen.
         self.add_simple(&group, "new-tab", |sh| sh.show_quick_open());
+        // The Open Books rows (`OpenBooks_Clicked`: CurrentSlot = i).
+        {
+            let open_tab = gio::SimpleAction::new("open-tab", Some(glib::VariantTy::STRING));
+            let state = state.clone();
+            open_tab.connect_activate(move |_, value| {
+                let Some(sh) = state.upgrade() else {
+                    return;
+                };
+                let Some(text) = value.and_then(|v| v.get::<String>()) else {
+                    return;
+                };
+                let Ok(slot) = text.parse::<usize>() else {
+                    return;
+                };
+                sh.reader.switch_to_slot(slot);
+                sh.sync_enabled();
+            });
+            group.add_action(&open_tab);
+        }
+        // The Recent Books rows (`OnOpenRecent`: open the path).
+        {
+            let recent = gio::SimpleAction::new("recent-book", Some(glib::VariantTy::STRING));
+            let state = state.clone();
+            recent.connect_activate(move |_, value| {
+                let Some(sh) = state.upgrade() else {
+                    return;
+                };
+                let Some(path) = value.and_then(|v| v.get::<String>()) else {
+                    return;
+                };
+                sh.open_comic(Path::new(&path));
+                sh.sync_enabled();
+            });
+            group.add_action(&recent);
+        }
         self.add_simple(&group, "add-folder", |sh| {
             let window = sh.window.clone();
             crate::app::add_folder_dialog(&window);
@@ -1276,20 +1699,87 @@ impl ShellState {
             (4, "rating-4"),
             (5, "rating-5"),
         ] {
-            let action = gio::SimpleAction::new(name, None);
+            // STATEFUL (the check state — `Math.Round(GetRating())
+            // == N`; sync_enabled writes it).
+            let action = gio::SimpleAction::new_stateful(name, None, &false.to_variant());
             let state = state.clone();
             action.connect_activate(move |_, _| {
                 if let Some(sh) = state.upgrade() {
                     sh.set_rating(n as f32);
+                    sh.sync_enabled();
                 }
             });
             group.add_action(&action);
+            self.actions.borrow_mut().insert(name, action);
         }
         // quick-rating — T13 lands the dialog.
         self.add_disabled(&group, "quick-rating");
-        // set/remove-bookmark — the bookmark editor is unported.
-        self.add_disabled(&group, "set-bookmark");
-        self.add_disabled(&group, "remove-bookmark");
+        // Set Bookmark — the name prompt over the CURRENT page
+        // (`SetBookmark`: the proposal is the existing bookmark or
+        // the page number; an empty entry clears the bookmark).
+        self.add_simple(&group, "set-bookmark", |sh| {
+            let Some((_, provider)) = sh.current_provider_page() else {
+                return;
+            };
+            let Some(book) = sh.reader.current_comic_book() else {
+                return;
+            };
+            let existing = book
+                .info
+                .pages
+                .get(provider)
+                .and_then(|p| p.bookmark.clone())
+                .unwrap_or_default();
+            let proposal = if existing.is_empty() {
+                format!("Page {}", provider + 1)
+            } else {
+                existing
+            };
+            let state = Rc::downgrade(sh);
+            crate::dialogs::name_prompt::show_name_prompt(
+                &sh.window,
+                "Bookmark",
+                &proposal,
+                move |name| {
+                    let Some(sh) = state.upgrade() else {
+                        return;
+                    };
+                    sh.edit_open_book(|b| update_bookmark_entry(b, provider, &name));
+                    sh.sync_enabled();
+                },
+            );
+        });
+        // Remove Bookmark: clears the CURRENT page's bookmark
+        // (`UpdateBookmark(page, "")`).
+        self.add_simple(&group, "remove-bookmark", |sh| {
+            let Some((_, provider)) = sh.current_provider_page() else {
+                return;
+            };
+            sh.edit_open_book(|b| update_bookmark_entry(b, provider, ""));
+            sh.sync_enabled();
+        });
+        // The Bookmarks list rows (`win.open-bookmark::<provider>`).
+        {
+            let jump = gio::SimpleAction::new("open-bookmark", Some(glib::VariantTy::STRING));
+            let state = state.clone();
+            jump.connect_activate(move |_, value| {
+                let Some(sh) = state.upgrade() else {
+                    return;
+                };
+                let Some(text) = value.and_then(|v| v.get::<String>()) else {
+                    return;
+                };
+                let Ok(provider) = text.parse::<usize>() else {
+                    return;
+                };
+                let Some(target) = sh.reader.display_of_provider(provider) else {
+                    return;
+                };
+                sh.reader.navigate_current(target);
+                sh.sync_enabled();
+            });
+            group.add_action(&jump);
+        }
         self.add_simple(&group, "prev-bookmark", |sh| {
             sh.reader.dispatch_current("MoveToPrevBookmark")
         });
@@ -1524,6 +2014,64 @@ impl ShellState {
         self.add_simple(&group, "rotate-270", |sh| {
             sh.reader.dispatch_current("Rotate270")
         });
+        // The Page Rotation EDITOR items (`GetPageEditor().Rotation`
+        // — the CURRENT PAGE's stored rotation, radio).
+        {
+            let pr = gio::SimpleAction::new("page-rotation", Some(glib::VariantTy::STRING));
+            let state = Rc::downgrade(self);
+            pr.connect_activate(move |_, value| {
+                let Some(sh) = state.upgrade() else {
+                    return;
+                };
+                let Some(name) = value.and_then(|v| v.get::<String>()) else {
+                    return;
+                };
+                let rot = match name.as_str() {
+                    "none" => cr_core::model::enums::ImageRotation::None,
+                    "90" => cr_core::model::enums::ImageRotation::Rotate90,
+                    "180" => cr_core::model::enums::ImageRotation::Rotate180,
+                    "270" => cr_core::model::enums::ImageRotation::Rotate270,
+                    _ => return,
+                };
+                let Some(view) = sh.reader.current_view() else {
+                    return;
+                };
+                let display = view.current_page();
+                view.set_page_rotation_for(display, rot);
+                if let Some(provider) = view.provider_index_of(display) {
+                    sh.edit_open_book(|b| b.info.update_page_rotation(provider, rot));
+                }
+                sh.sync_enabled();
+            });
+            group.add_action(&pr);
+        }
+        // The Page Type EDITOR items (`GetPageEditor().PageType` —
+        // the CURRENT PAGE's type, radio; the parameter is the type
+        // VALUE).
+        {
+            let pt = gio::SimpleAction::new("page-type", Some(glib::VariantTy::STRING));
+            let state = Rc::downgrade(self);
+            pt.connect_activate(move |_, value| {
+                let Some(sh) = state.upgrade() else {
+                    return;
+                };
+                let Some(name) = value.and_then(|v| v.get::<String>()) else {
+                    return;
+                };
+                let Some((_, pt_value)) = crate::dialogs::book_editor::PAGE_TYPE_ITEMS
+                    .iter()
+                    .find(|(_, v)| name == v.0.to_string())
+                else {
+                    return;
+                };
+                let Some((_, provider)) = sh.current_provider_page() else {
+                    return;
+                };
+                sh.edit_open_book(|b| b.info.update_page_type(provider, *pt_value));
+                sh.sync_enabled();
+            });
+            group.add_action(&pt);
+        }
         {
             let auto = gio::SimpleAction::new_stateful("auto-rotate", None, &false.to_variant());
             let state = state.clone();
@@ -1727,6 +2275,24 @@ impl ShellState {
                 app.set_accels_for_action(&format!("win.page-layout::{value}"), &[*accel]);
             }
         }
+    }
+}
+
+/// `ComicInfo.UpdateBookmark(page, bookmark)`: an empty name clears
+/// (the C# writes an empty bookmark; the model stores `None`),
+/// a change only when the entry really changes.
+fn update_bookmark_entry(book: &mut ComicBook, provider: usize, name: &str) {
+    let Some(p) = book.info.pages.get_mut(provider) else {
+        return;
+    };
+    let old = p.bookmark.clone().unwrap_or_default();
+    let changed = (!old.is_empty() || !name.is_empty()) && old != name;
+    if changed {
+        p.bookmark = if name.is_empty() {
+            None
+        } else {
+            Some(name.into())
+        };
     }
 }
 

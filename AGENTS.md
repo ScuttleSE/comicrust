@@ -97,12 +97,46 @@ Update this section at the **end of every work session**. The next agent must kn
   `menubar_probe` gates: the six menus, the visibility rule, the
   row-click + highlight proof (real widget path via
   `MenubarWidget::click_row`), the switching sequence;
-  `commands_probe` 69/69; 294 tests. OMISSIONS/BACKLOG TRACKING:
+  `commands_probe` 69/69. OMISSIONS/BACKLOG TRACKING:
   per-task "Omitted / postponed per task" section in
   `docs/phase-5.5-kickoff.md` (keep it current; a task closes only
   when its entries are resolved or re-homed); cross-phase ideas in
   `docs/port-plan.md` §6 (e.g. port NewComics.py natively instead
-  of the Python host). **Next: T4 (the dynamic menus).** Phase 6
+  of the Python host).
+  T4 (the dynamic menus) IMPLEMENTED (2026-09-05), user test
+  pending. `MenuNode::Dyn(id)` slots in the pure table (File ▸
+  Open Books / Recent Books, Edit ▸ Page Type / Page Rotation, and
+  the Bookmarks dynamic list) rebuilt by a shell-owned fill
+  provider at every menu open (`MenubarWidget::set_dyn_fill` +
+  `refresh_top` in the open funnel — the C# `DropDownOpening`
+  shape; check/disabled state is BAKED at fill). New actions:
+  `open-tab`/`recent-book`/`open-bookmark`/`page-type`/
+  `page-rotation` (string parameters) + Set/Remove Bookmark now
+  real (the C# `UpdateBookmark` parity; the name prompt is
+  `dialogs::name_prompt.rs` — the `SelectItemDialog.GetName`
+  shape). `cr-core::ComicInfo::seek_bookmark` (the collection
+  SeekBookmark port; the callers pass `current + dir`) + the
+  reader-key bookmark commands forward from the view to
+  `ReaderShell::bookmark_nav`. Page edits (`edit_open_book`) go
+  through the session book → `apply_edited` (the gates) → the
+  Pages panel rebind; the Y page-rotations write through now and
+  the stored rotations seed the view at open. My Rating became
+  STATEFUL checks (`selection_common_rating` = the
+  `RatingEditor.GetRating` port) — the rating actions had silently
+  skipped the actions registry (a T1 gap); `refresh_view_from_list`
+  now RESTORES the selection (`ItemView::reselect` — the C#
+  refresh keeps it; without it every rating commit cleared the
+  selection). FIXED (T3 regression): radio-row clicks passed a
+  detailed name + an explicit parameter — `activate_action` parses
+  a detailed name only WITHOUT args, so the radio rows never fired
+  from clicks; the handlers pass the BARE name + the parameter
+  now. Probe `dynmenus_probe` gates all five fills + the row-click
+  switch + the bookmark/page-type/rating round-trips;
+  `menubar_probe`/`commands_probe` 69/69 unchanged; 296 tests.
+  Deviations in the kickoff tracker: Recent Books text-only (no
+  16 px cover thumbs), a Deleted-page bookmark unreachable, the
+  hide rule in the sync (not menu-open), slot accels live from the
+  first fill. **Next: T5 (the reader toolbar).** Phase 6
   (scripting) starts only after 5.5.
   Phases 0-5 are complete (their gates stay green). Open Phase 1
   gaps: WebComicProvider and the PDF/DjVu writers (tracked in

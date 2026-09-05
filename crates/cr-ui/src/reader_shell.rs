@@ -426,6 +426,144 @@ impl ReaderShell {
         s.books.get(&(s.tabs.get(current as usize)?.slot)).cloned()
     }
 
+    /// The open reader slots (`OpenBooks.Slots`) with the C# slot
+    /// captions (`GetSlotCaption` → `Comic.Caption`) — the File ▸
+    /// Open Books fill.
+    pub fn open_tabs(&self) -> Vec<(usize, String)> {
+        let s = self.state.borrow();
+        s.tabs
+            .iter()
+            .map(|t| {
+                let caption = s
+                    .books
+                    .get(&t.slot)
+                    .map(cr_engine::display_text::caption)
+                    .unwrap_or_else(|| Self::window_title(&t.path));
+                (t.slot, caption)
+            })
+            .collect()
+    }
+
+    /// The current reader slot id (the Open Books check + bookmark
+    /// context).
+    pub fn current_slot_id(&self) -> Option<usize> {
+        self.state.borrow().current_slot()
+    }
+
+    /// `OpenBooks.CurrentSlot = i` — switches the notebook to the
+    /// tab with that slot id.
+    pub fn switch_to_slot(&self, slot: usize) {
+        let (pos, notebook) = match self.state.borrow().position_of(slot) {
+            Some(pos) => (pos as u32, self.state.borrow().notebook.clone()),
+            None => return,
+        };
+        notebook.set_current_page(Some(pos));
+    }
+
+    /// The current view's display page (the bookmark/menu context).
+    pub fn current_display_page(&self) -> Option<usize> {
+        let s = self.state.borrow();
+        let current = s.notebook.current_page()?;
+        Some(s.tabs.get(current as usize)?.view.current_page())
+    }
+
+    /// The provider page index behind a display position of the
+    /// CURRENT slot's view (`ComicBookNavigator.CurrentPage` space).
+    pub fn provider_index_of_display(&self, display: usize) -> Option<usize> {
+        let s = self.state.borrow();
+        let current = s.notebook.current_page()?;
+        s.tabs
+            .get(current as usize)?
+            .view
+            .provider_index_of(display)
+    }
+
+    /// The display position that shows a provider page.
+    pub fn display_of_provider(&self, provider: usize) -> Option<usize> {
+        let s = self.state.borrow();
+        let current = s.notebook.current_page()?;
+        s.tabs
+            .get(current as usize)?
+            .view
+            .display_of_provider(provider)
+    }
+
+    /// Mutates the CURRENT slot's book in place (`Book.Comic` edits —
+    /// the page editor family) and returns the edited clone for the
+    /// host. `None` without an open comic.
+    pub fn edit_current_book<F: FnOnce(&mut ComicBook)>(&self, f: F) -> Option<ComicBook> {
+        let mut s = self.state.borrow_mut();
+        let current = s.notebook.current_page()?;
+        let slot = s.tabs.get(current as usize)?.slot;
+        let book = s.books.get_mut(&slot)?;
+        f(book);
+        Some(book.clone())
+    }
+
+    /// `ComicDisplay.DisplayPreviousBookmarkedPage`/
+    /// `DisplayNextBookmarkedPage`: seek over the CURRENT book's
+    /// bookmarked pages (provider space — the C#
+    /// `ComicBookNavigator.SeekBookmark` walks `Comic.Pages`) and
+    /// navigate through the display sequence. A bookmark on a
+    /// Deleted page has no display position and is skipped (the
+    /// C# navigates it in provider space — recorded deviation).
+    pub fn bookmark_nav(&self, dir: i32) {
+        let Some(book) = self.current_comic_book() else {
+            return;
+        };
+        let Some(display) = self.current_display_page() else {
+            return;
+        };
+        let Some(current) = self.provider_index_of_display(display) else {
+            return;
+        };
+        let next = book.info.seek_bookmark(current as i32 + dir, dir);
+        if next < 0 {
+            return;
+        }
+        let Some(target) = self.display_of_provider(next as usize) else {
+            return;
+        };
+        self.navigate_current(target);
+    }
+
+    /// Whether a bookmark exists before (`dir < 0`) / after (`dir >
+    /// 0`) the current page (`CanNavigateBookmark` parity).
+    pub fn can_navigate_bookmark(&self, dir: i32) -> bool {
+        let Some(book) = self.current_comic_book() else {
+            return false;
+        };
+        let Some(display) = self.current_display_page() else {
+            return false;
+        };
+        let Some(current) = self.provider_index_of_display(display) else {
+            return false;
+        };
+        book.info.seek_bookmark(current as i32 + dir, dir) >= 0
+    }
+
+    /// The Y page-rotation commands (`GetPageEditor().Rotation`
+    /// write-through): the view applies + re-decodes, the session
+    /// book and the library entry mirror (`apply_edited` gates the
+    /// file write), and the Pages panel rebinds.
+    pub fn page_rotate_current(&self, right: bool) {
+        let Some(view) = self.current_view() else {
+            return;
+        };
+        view.page_rotate(right);
+        let display = view.current_page();
+        let (Some(provider), rot) = (
+            view.provider_index_of(display),
+            view.page_rotation_of(display),
+        ) else {
+            return;
+        };
+        if let Some(book) = self.edit_current_book(|b| b.info.update_page_rotation(provider, rot)) {
+            library::apply_edited(&book);
+        }
+        ReaderShell::fire_book_changed(&self.state);
+    }
+
     /// Focuses the current reader tab (the host's is-active handler
     /// calls this before any keypress can land).
     pub fn focus_current(&self) {
@@ -485,7 +623,7 @@ impl ReaderShell {
 
     /// The current slot's view handle (cloned out before any
     /// callback fires — the RefCell lesson).
-    fn current_view(&self) -> Option<PageView> {
+    pub fn current_view(&self) -> Option<PageView> {
         let s = self.state.borrow();
         let current = s.notebook.current_page()?;
         s.tabs.get(current as usize).map(|t| t.view.clone())
@@ -613,6 +751,24 @@ impl ReaderShell {
         book.last_page_read = book.last_page_read.clamp(0, max_page);
         let last_read = book.last_page_read.max(0) as usize;
 
+        // Seed the stored per-page rotations (`ComicPageInfo.Rotation`
+        // — the C# render pipeline reads them per page): DISPLAY-keyed
+        // through the sequence.
+        let stored_rotations: HashMap<usize, cr_core::model::enums::ImageRotation> = book
+            .info
+            .pages
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| p.rotation != cr_core::model::enums::ImageRotation::None)
+            .filter_map(|(i, p)| {
+                let display = match &sequence {
+                    Some(seq) => seq.iter().position(|&x| x == i)?,
+                    None => i,
+                };
+                Some((display, p.rotation))
+            })
+            .collect();
+
         let (slot, view, tab_widget);
         {
             let mut st = self.state.borrow_mut();
@@ -678,6 +834,25 @@ impl ReaderShell {
                         "PrevTab" => ReaderShell::switch_slot(&sh, -1),
                         "ToggleUndockReader" => ReaderShell::toggle_undock(&sh),
                         "ToggleMenu" => ReaderShell::toggle_minimal_gui(&sh),
+                        // Bookmark navigation — the book copy lives
+                        // in this shell (`Comic.Pages` seek + the
+                        // display-sequence navigation).
+                        "MoveToPrevBookmark" | "MoveToNextBookmark" => {
+                            let dir = if command == "MoveToNextBookmark" {
+                                1
+                            } else {
+                                -1
+                            };
+                            ReaderShell { state: sh.clone() }.bookmark_nav(dir);
+                        }
+                        // The Y page rotations write through into the
+                        // book (`GetPageEditor().Rotation` setter
+                        // parity) — the view applies + the session/
+                        // library copies mirror.
+                        "PageRotateC" | "PageRotateCC" => {
+                            ReaderShell { state: sh.clone() }
+                                .page_rotate_current(command == "PageRotateC");
+                        }
                         // Library-group commands — the C# handlers
                         // are MainForm methods (the browser list
                         // context); the host (browser shell) owns
@@ -740,6 +915,9 @@ impl ReaderShell {
         notebook.append_page(&widget, Some(&tab_widget));
         view.open_with_sequence(provider, path, sequence, resume, last_read)
             .map_err(|e| anyhow::anyhow!(e))?;
+        // Apply the stored rotations (after the open — the map keys
+        // are the DISPLAY positions the view tracks).
+        view.set_stored_page_rotations(stored_rotations);
         // Select the new tab outside the state borrow — the
         // switch-page handler borrows the shell itself.
         let last = (self.state.borrow().tabs.len() as u32).saturating_sub(1);

@@ -358,7 +358,7 @@ pub(crate) const PLOT_ROWS: [TextRow; 4] = [
 
 /// The single-value page-type list (the C# `EnumMenuUtility
 /// (flagsMode: false)` menu omits the composite members).
-const PAGE_TYPE_ITEMS: [(&str, ComicPageType); 11] = [
+pub const PAGE_TYPE_ITEMS: [(&str, ComicPageType); 11] = [
     ("Front Cover", ComicPageType(1)),
     ("Inner Cover", ComicPageType(2)),
     ("Roundup", ComicPageType(4)),

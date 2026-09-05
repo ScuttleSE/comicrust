@@ -23,10 +23,10 @@
 
 use gtk4::glib;
 use gtk4::prelude::*;
-use std::cell::Cell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
-use MenuNode::{Item, Sep, Sub};
+use MenuNode::{Dyn, Item, Sep, Sub};
 
 /// One menubar node. Actions are detailed `win.` names (radio
 /// targets spell the value: `win.page-fit::original`); check/radio
@@ -40,12 +40,16 @@ pub enum MenuNode {
     Sub(&'static str, &'static [MenuNode]),
     /// A separator.
     Sep,
+    /// A dynamic fill slot (`MainForm` `DropDownOpening` rebuilds):
+    /// the provider set with [`MenubarWidget::set_dyn_fill`] supplies
+    /// the rows every time the owning menu opens.
+    Dyn(&'static str),
 }
 
 /// The File menu (`fileMenu.DropDownItems`, Designer:451-476).
 /// Absent per ADR-024: Update Web Comics (provider gap),
 /// Synchronize Devices, Automation (Phase 6), Open Remote Library.
-/// Open Books/Recent Books are dynamic (T4).
+/// Open Books/Recent Books carry the dynamic fills (T4).
 pub const FILE: &[MenuNode] = &[
     Item("_Open File...", "win.open-file", "<Control>o", "Open"),
     Item("_Close", "win.close", "<Control>x", ""),
@@ -91,6 +95,11 @@ pub const FILE: &[MenuNode] = &[
         "",
     ),
     Sep,
+    // The dynamic Open Books / Recent Books submenus (`miOpenNow`/
+    // `miOpenRecent`; the parents carry no C# images).
+    Sub("_Open Books", &[Dyn("open-books")]),
+    Sub("&Recent Books", &[Dyn("recent-books")]),
+    Sep,
     Item("Rest_art", "win.restart", "<Control><Shift>q", "Restart"),
     Sep,
     Item("_Exit", "win.quit", "<Control>q", ""),
@@ -119,7 +128,8 @@ pub const RATING: &[MenuNode] = &[
 ];
 
 /// The Bookmarks submenu (`miBookmarks.DropDownItems`,
-/// Designer:823-830). The dynamic per-page bookmark list lands T4.
+/// Designer:823-830): the five static items, then the dynamic
+/// per-page list after the C# "bms" separator (T4).
 pub const BOOKMARKS: &[MenuNode] = &[
     Item(
         "Set Bookmark...",
@@ -149,15 +159,20 @@ pub const BOOKMARKS: &[MenuNode] = &[
         "<Control><Shift>l",
         "",
     ),
+    Sep,
+    Dyn("bookmarks"),
 ];
 
 /// The Edit menu (`editMenu.DropDownItems`, Designer:662-679).
-/// Absent: Undo/Redo (ADR-024), Devices..., the Page Type / Page
-/// Rotation parents (dynamic fills — T4).
+/// Absent: Undo/Redo (ADR-024), Devices... The Page Type / Page
+/// Rotation parents sit between My Rating and Bookmarks (Designer
+/// order) and fill dynamically (T4).
 pub const EDIT: &[MenuNode] = &[
     Item("Info...", "win.info", "<Control>i", "GetInfo"),
     Sep,
     Sub("My R_ating", RATING),
+    Sub("&Page Type", &[Dyn("page-type")]),
+    Sub("Page Rotation", &[Dyn("page-rotation")]),
     Sub("_Bookmarks", BOOKMARKS),
     Sep,
     Item("_Copy Page", "win.copy-page", "<Control>c", "Copy"),
@@ -547,15 +562,217 @@ pub fn accel_display(accel: &str) -> String {
 /// One syncable item row (plain items AND the leaf rows inside
 /// submenus; the submenu buttons themselves are not activatable).
 pub struct ItemRow {
-    /// The action registry key, e.g. "page-fit".
+    /// The action registry key, e.g. "page-fit". Empty for dynamic
+    /// rows (they bake their own check/disabled state at fill time —
+    /// the C# refreshes them at DropDownOpening, not through the
+    /// command states).
     base: &'static str,
     /// The radio value for parametered targets.
     value: Option<&'static str>,
     /// The full detailed action ("win.next-page") — the probe's
-    /// row-click path keys on it.
-    action: &'static str,
+    /// row-click path keys on it. Dynamic rows carry dynamic targets
+    /// (slot ids, paths).
+    action: String,
     button: gtk4::Button,
     indicator: gtk4::Image,
+}
+
+/// One dynamic fill item (the `DropDownOpening` ToolStripMenuItem).
+pub struct DynItem {
+    pub label: String,
+    /// The full detailed action ("win.open-tab::3").
+    pub action: String,
+    /// The displayed accelerator ("" = none).
+    pub accel: String,
+    /// The resx icon ("" = none).
+    pub icon: &'static str,
+    pub checked: bool,
+    pub enabled: bool,
+}
+
+/// A dynamic fill node.
+pub enum DynNode {
+    Item(DynItem),
+    Sep,
+}
+
+/// The fill provider: id → the rows for that slot (the shell owns
+/// the book/tabs context).
+pub type DynFillFn = Rc<dyn Fn(&str) -> Vec<DynNode>>;
+
+/// One dynamic slot's rows (rebuilt on every menu open; the rows
+/// share the click path with the static ones).
+struct DynSlot {
+    id: &'static str,
+    /// The owning top menu (refresh on its open).
+    top: usize,
+    container: gtk4::Box,
+    rows: RefCell<Vec<ItemRow>>,
+}
+
+/// The dynamic-fill context (shared with every widget clone).
+struct MenubarDyn {
+    window: gtk4::ApplicationWindow,
+    slots: RefCell<Vec<DynSlot>>,
+    fill: RefCell<Option<DynFillFn>>,
+}
+
+impl MenubarDyn {
+    /// Rebuilds every slot of one top menu (`DropDownOpening`
+    /// parity — the fill runs BEFORE the popover maps, so the
+    /// checked/disabled state is fresh).
+    fn refresh_top(&self, top: usize) {
+        let fill = self.fill.borrow().clone();
+        let Some(fill) = fill else {
+            return;
+        };
+        let slots = self.slots.borrow();
+        for slot in slots.iter().filter(|s| s.top == top) {
+            while let Some(child) = slot.container.first_child() {
+                slot.container.remove(&child);
+            }
+            let mut rows = slot.rows.borrow_mut();
+            rows.clear();
+            for node in fill(slot.id) {
+                match node {
+                    DynNode::Sep => {
+                        let sep = gtk4::Separator::new(gtk4::Orientation::Horizontal);
+                        sep.set_margin_top(3);
+                        sep.set_margin_bottom(3);
+                        slot.container.append(&sep);
+                    }
+                    DynNode::Item(item) => {
+                        let row = build_dyn_row(&item, &self.window);
+                        slot.container.append(&row.button);
+                        rows.push(ItemRow {
+                            base: "",
+                            value: None,
+                            action: row.action,
+                            button: row.button,
+                            indicator: row.indicator,
+                        });
+                    }
+                }
+            }
+        }
+    }
+}
+
+struct BuiltRow {
+    action: String,
+    button: gtk4::Button,
+    indicator: gtk4::Image,
+}
+
+/// Builds one dynamic row: baked check/disabled state (the fill is
+/// the state source — the command states never drive these), the
+/// full detailed action on click.
+fn build_dyn_row(item: &DynItem, window: &gtk4::ApplicationWindow) -> BuiltRow {
+    let hbox = dyn_row_content(&item.label, &item.accel, item.icon);
+    let button = gtk4::Button::builder()
+        .css_classes(["flat", "menu-row"])
+        .child(&hbox)
+        .build();
+    button.set_sensitive(item.enabled);
+    button.set_halign(gtk4::Align::Fill);
+    // Baked check mark (the fill ran at open — the C# DropDownOpening
+    // shape; a reopened menu refreshes).
+    let indicator = hbox_indicator(&hbox);
+    if item.checked {
+        indicator.set_icon_name(Some("object-select-symbolic"));
+    }
+    // Click → close the popover, fire the full detailed action
+    // (the T3 round-2 lesson: the FULL "win." form). The value rides
+    // as the explicit parameter (detailed + args errors silently —
+    // the T4 probe lesson).
+    {
+        let window = window.clone();
+        let (bare, value) = match item.action.split_once("::") {
+            Some((b, v)) => (b.to_string(), Some(v.to_string())),
+            None => (item.action.clone(), None),
+        };
+        button.connect_clicked(move |btn| {
+            if let Some(popover) = btn
+                .ancestor(gtk4::Popover::static_type())
+                .and_downcast::<gtk4::Popover>()
+            {
+                popover.popdown();
+            }
+            let variant = value
+                .as_ref()
+                .map(|v| gtk4::glib::Variant::from(v.as_str()));
+            let _ =
+                gtk4::prelude::WidgetExt::activate_action(&window, bare.as_str(), variant.as_ref());
+        });
+    }
+    BuiltRow {
+        action: item.action.clone(),
+        button,
+        indicator,
+    }
+}
+
+/// The dynamic row content ([check slot][icon][label][accel]) — the
+/// owned-string shape of `row_content`. The indicator lives in the
+/// hbox's first slot; `hbox_indicator` reaches it.
+fn dyn_row_content(label: &str, accel: &str, icon: &'static str) -> gtk4::Box {
+    let hbox = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
+    hbox.set_width_request(250);
+    let indicator_slot = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+    indicator_slot.set_width_request(16);
+    let indicator = gtk4::Image::new();
+    indicator.set_pixel_size(16);
+    indicator_slot.append(&indicator);
+    hbox.append(&indicator_slot);
+    let icon_widget = gtk4::Image::new();
+    icon_widget.set_pixel_size(16);
+    if !icon.is_empty() {
+        if let Some(texture) = crate::icon::icon(icon) {
+            icon_widget.set_paintable(Some(&texture));
+        }
+    }
+    hbox.append(&icon_widget);
+    let label_widget = gtk4::Label::builder()
+        .label(label)
+        .halign(gtk4::Align::Start)
+        .build();
+    hbox.append(&label_widget);
+    let accel_widget = gtk4::Label::builder()
+        .label(accel_display(accel))
+        .halign(gtk4::Align::End)
+        .hexpand(true)
+        .css_classes(["dim-label"])
+        .build();
+    hbox.append(&accel_widget);
+    hbox
+}
+
+/// The check indicator of a built dynamic row (the first 16 px Image
+/// inside the row's hbox).
+fn hbox_indicator(hbox: &gtk4::Box) -> gtk4::Image {
+    let slot = hbox
+        .first_child()
+        .and_then(|w| w.downcast::<gtk4::Box>().ok())
+        .expect("row hbox check slot");
+    slot.first_child()
+        .and_downcast::<gtk4::Image>()
+        .expect("indicator image")
+}
+
+/// The label text of a row button (the probe snapshot). The row
+/// hbox children: [check slot][icon][label][accel].
+fn row_label(button: &gtk4::Button) -> String {
+    button
+        .child()
+        .and_downcast::<gtk4::Box>()
+        .and_then(|hbox| {
+            hbox.first_child()
+                .and_then(|slot| slot.next_sibling())
+                .and_then(|icon| icon.next_sibling())
+                .and_downcast::<gtk4::Label>()
+        })
+        .map(|l| l.text().to_string())
+        .unwrap_or_default()
 }
 
 /// The action view the host resolves per base name.
@@ -566,6 +783,10 @@ pub struct ActionState {
     /// shape: the selected panel highlights the row's icon instead
     /// of a check mark — the C# has no checkbox on these).
     pub highlight: bool,
+    /// Visibility (the `fileMenu_DropDownOpening` hide rule — e.g.
+    /// "Update all Book Files" hides while `AutoUpdateComicsFiles`
+    /// is on).
+    pub visible: bool,
 }
 
 /// One top-level menu (the bar's flat row).
@@ -592,6 +813,12 @@ pub struct MenubarWidget {
     /// Shared with every clone/handle (the sync and the row-click
     /// path both walk it).
     rows: Rc<Vec<ItemRow>>,
+    /// The submenu parent rows by label (without the mnemonic) —
+    /// the parent enable-state sync.
+    subs: Rc<RefCell<Vec<(String, gtk4::MenuButton)>>>,
+    /// The dynamic fill slots + provider (shared with every clone —
+    /// the probe clicks the rebuilt rows through the handle).
+    dyn_ctx: Rc<MenubarDyn>,
     active: ActiveSlot,
 }
 
@@ -608,6 +835,8 @@ impl Clone for MenubarWidget {
                 })
                 .collect(),
             rows: Rc::clone(&self.rows),
+            subs: Rc::clone(&self.subs),
+            dyn_ctx: Rc::clone(&self.dyn_ctx),
             active: Rc::clone(&self.active),
         }
     }
@@ -630,8 +859,10 @@ impl MenubarWidget {
     }
 
     /// Opens a top menu programmatically (the probe; GTK4 cannot
-    /// open a model menubar from code — the custom shape can).
+    /// open a model menubar from code — the custom shape can). The
+    /// dynamic slots of that menu refresh first.
     pub fn open_top(&self, index: usize) {
+        self.dyn_ctx.refresh_top(index);
         set_active_item(&self.tops, &self.active, index);
     }
 
@@ -647,44 +878,84 @@ impl MenubarWidget {
                 return;
             }
         }
+        for slot in self.dyn_ctx.slots.borrow().iter() {
+            for row in slot.rows.borrow().iter() {
+                if row.action == action {
+                    row.button.emit_clicked();
+                    return;
+                }
+            }
+        }
+    }
+
+    /// Installs the dynamic fill provider (`DropDownOpening`
+    /// rebuilds).
+    pub fn set_dyn_fill(&self, fill: DynFillFn) {
+        *self.dyn_ctx.fill.borrow_mut() = Some(fill);
+    }
+
+    /// Enables/disables a submenu PARENT row (the C# enables the
+    /// parent with the fill: `miOpenNow.Enabled`, the Page Type/
+    /// Rotation `EnumMenuUtility.Enabled`). `label` is the menu
+    /// label without the `_` mnemonic.
+    pub fn set_sub_enabled(&self, label: &str, enabled: bool) {
+        let hit = self
+            .subs
+            .borrow()
+            .iter()
+            .find(|(key, _)| *key == label)
+            .map(|(_, b)| b.clone());
+        if let Some(btn) = hit {
+            btn.set_sensitive(enabled);
+        }
     }
 
     /// Applies the action states: check marks (checks and radio
-    /// targets) and disabled graying. `resolve` maps an action base
-    /// name to (enabled, state).
+    /// targets), disabled graying, and the visibility rule.
+    /// `resolve` maps an action base name to (enabled, state).
     pub fn sync(&self, resolve: &dyn Fn(&str) -> Option<ActionState>) {
         for row in self.rows.iter() {
-            if row.base.is_empty() {
-                continue;
+            self.sync_row(row, resolve);
+        }
+        for slot in self.dyn_ctx.slots.borrow().iter() {
+            for row in slot.rows.borrow().iter() {
+                self.sync_row(row, resolve);
             }
-            let Some(view) = resolve(row.base) else {
-                continue;
-            };
-            row.button.set_sensitive(view.enabled);
-            let checked = match row.value {
-                Some(value) => view
-                    .state
-                    .as_ref()
-                    .and_then(|s| s.get::<String>())
-                    .is_some_and(|s| s == value),
-                None => view
-                    .state
-                    .as_ref()
-                    .and_then(|s| s.get::<bool>())
-                    .unwrap_or(false),
-            };
-            if checked {
-                row.indicator.set_icon_name(Some("object-select-symbolic"));
-            } else {
-                row.indicator.set_icon_name(None);
-            }
-            // The active-panel emphasis (view-library/view-pages):
-            // a row highlight, never a check mark (CR parity).
-            if view.highlight {
-                row.button.add_css_class("menu-row-active");
-            } else {
-                row.button.remove_css_class("menu-row-active");
-            }
+        }
+    }
+
+    fn sync_row(&self, row: &ItemRow, resolve: &dyn Fn(&str) -> Option<ActionState>) {
+        if row.base.is_empty() {
+            return;
+        }
+        let Some(view) = resolve(row.base) else {
+            return;
+        };
+        row.button.set_visible(view.visible);
+        row.button.set_sensitive(view.enabled);
+        let checked = match row.value {
+            Some(value) => view
+                .state
+                .as_ref()
+                .and_then(|s| s.get::<String>())
+                .is_some_and(|s| s == value),
+            None => view
+                .state
+                .as_ref()
+                .and_then(|s| s.get::<bool>())
+                .unwrap_or(false),
+        };
+        if checked {
+            row.indicator.set_icon_name(Some("object-select-symbolic"));
+        } else {
+            row.indicator.set_icon_name(None);
+        }
+        // The active-panel emphasis (view-library/view-pages):
+        // a row highlight, never a check mark (CR parity).
+        if view.highlight {
+            row.button.add_css_class("menu-row-active");
+        } else {
+            row.button.remove_css_class("menu-row-active");
         }
     }
 
@@ -695,6 +966,24 @@ impl MenubarWidget {
             .iter()
             .find(|row| row.action == action)
             .is_some_and(|row| row.button.has_css_class("menu-row-active"))
+    }
+
+    /// The dynamic slot rows for one id: (label, checked, enabled) —
+    /// the probe evidence for the fills (a probe calls open_top
+    /// first, which rebuilds).
+    pub fn dyn_rows_snapshot(&self, id: &str) -> Vec<(String, bool, bool)> {
+        let slots = self.dyn_ctx.slots.borrow();
+        let mut out = Vec::new();
+        for slot in slots.iter().filter(|s| s.id == id) {
+            for row in slot.rows.borrow().iter() {
+                let checked = row
+                    .indicator
+                    .icon_name()
+                    .is_some_and(|n| n == "object-select-symbolic");
+                out.push((row_label(&row.button), checked, row.button.is_sensitive()));
+            }
+        }
+        out
     }
 }
 
@@ -776,6 +1065,9 @@ fn build_menu_content(
     window: &gtk4::ApplicationWindow,
     rows: &mut Vec<ItemRow>,
     child_popovers: &mut Vec<gtk4::Popover>,
+    subs: &mut Vec<(String, gtk4::MenuButton)>,
+    dyn_slots: &mut Vec<DynSlot>,
+    top: usize,
 ) -> (gtk4::Box, Option<gtk4::Widget>) {
     let content = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
     let mut nav: Vec<gtk4::Widget> = Vec::new();
@@ -800,12 +1092,18 @@ fn build_menu_content(
                 // resolves actions through action GROUPS; a stripped
                 // "next-page" finds no group and silently fails
                 // (the T3 round-2 bug: accels worked, clicks did
-                // not). Radio targets split at "::": the value
-                // becomes the parameter.
+                // not). Radio targets split at "::": the BARE name
+                // plus the value as the explicit parameter —
+                // `activate_action` parses a detailed name ONLY when
+                // no args ride along; detailed + args errors and
+                // the click dies silently (the T4 probe caught the
+                // T3 radio rows dead on click).
                 {
                     let window = window.clone();
-                    let detailed = (*action).to_string();
-                    let value = action.split_once("::").map(|(_, v)| v.to_string());
+                    let (bare, value) = match action.split_once("::") {
+                        Some((b, v)) => ((*b).to_string(), Some(v.to_string())),
+                        None => ((*action).to_string(), None),
+                    };
                     button.connect_clicked(move |btn| {
                         if let Some(popover) = btn
                             .ancestor(gtk4::Popover::static_type())
@@ -818,7 +1116,7 @@ fn build_menu_content(
                             .map(|v| gtk4::glib::Variant::from(v.as_str()));
                         let _ = gtk4::prelude::WidgetExt::activate_action(
                             &window,
-                            detailed.as_str(),
+                            bare.as_str(),
                             variant.as_ref(),
                         );
                     });
@@ -832,7 +1130,7 @@ fn build_menu_content(
                 rows.push(ItemRow {
                     base,
                     value,
-                    action,
+                    action: (*action).to_string(),
                     button,
                     indicator,
                 });
@@ -853,13 +1151,35 @@ fn build_menu_content(
                 let child_popover = gtk4::Popover::new();
                 child_popover.set_position(gtk4::PositionType::Right);
                 child_popover.set_has_arrow(false);
-                let (child_content, _child_first) =
-                    build_menu_content(children, window, rows, child_popovers);
+                let (child_content, _child_first) = build_menu_content(
+                    children,
+                    window,
+                    rows,
+                    child_popovers,
+                    subs,
+                    dyn_slots,
+                    top,
+                );
                 child_popover.set_child(Some(&child_content));
                 sub.set_popover(Some(&child_popover));
                 child_popovers.push(child_popover);
                 content.append(&sub);
                 nav.push(sub.clone().upcast());
+                // The parent registry (set_sub_enabled keys on the
+                // label without the mnemonic).
+                subs.push((label.replace('_', ""), sub));
+            }
+            MenuNode::Dyn(id) => {
+                // The fill container: the provider rebuilds it at
+                // every menu open (`DropDownOpening`).
+                let container = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+                content.append(&container);
+                dyn_slots.push(DynSlot {
+                    id,
+                    top,
+                    container,
+                    rows: RefCell::new(Vec::new()),
+                });
             }
         }
     }
@@ -871,10 +1191,21 @@ fn build_menu_content(
 fn popover_with(
     defs: &[MenuNode],
     window: &gtk4::ApplicationWindow,
+    top: usize,
+    subs: &mut Vec<(String, gtk4::MenuButton)>,
+    dyn_slots: &mut Vec<DynSlot>,
 ) -> (gtk4::Popover, Vec<ItemRow>) {
     let mut rows = Vec::new();
     let mut child_popovers = Vec::new();
-    let (content, first) = build_menu_content(defs, window, &mut rows, &mut child_popovers);
+    let (content, first) = build_menu_content(
+        defs,
+        window,
+        &mut rows,
+        &mut child_popovers,
+        subs,
+        dyn_slots,
+        top,
+    );
     let popover = gtk4::Popover::new();
     popover.set_child(Some(&content));
     // No pointing arrow, fixed width (the C# ToolStrip drop-down
@@ -947,8 +1278,10 @@ pub fn create_menubar(window: &gtk4::ApplicationWindow) -> MenubarWidget {
     bar.set_halign(gtk4::Align::Start);
     let active: ActiveSlot = Rc::new(Cell::new(None));
     let mut rows = Vec::new();
+    let mut subs: Vec<(String, gtk4::MenuButton)> = Vec::new();
+    let mut dyn_slots: Vec<DynSlot> = Vec::new();
     let mut tops: Vec<TopMenu> = Vec::new();
-    for (label, defs) in MENUS.iter() {
+    for (top, (label, defs)) in MENUS.iter().enumerate() {
         let button = gtk4::Button::new();
         let lbl = gtk4::Label::builder()
             .label(*label)
@@ -956,7 +1289,7 @@ pub fn create_menubar(window: &gtk4::ApplicationWindow) -> MenubarWidget {
             .build();
         button.set_child(Some(&lbl));
         button.set_css_classes(&["flat"]);
-        let (popover, menu_rows) = popover_with(defs, window);
+        let (popover, menu_rows) = popover_with(defs, window, top, &mut subs, &mut dyn_slots);
         // Explicit parenting (the MenuButton toggle semantics are
         // what made parallel presents possible).
         popover.set_parent(&button);
@@ -972,6 +1305,11 @@ pub fn create_menubar(window: &gtk4::ApplicationWindow) -> MenubarWidget {
         bar.append(&button);
         tops.push(TopMenu { button, popover });
     }
+    let dyn_ctx = Rc::new(MenubarDyn {
+        window: window.clone(),
+        slots: RefCell::new(dyn_slots),
+        fill: RefCell::new(None),
+    });
     // Wire the state machine now that every TopMenu exists.
     let shared_tops: Rc<Vec<TopMenu>> = Rc::new(
         tops.iter()
@@ -987,6 +1325,7 @@ pub fn create_menubar(window: &gtk4::ApplicationWindow) -> MenubarWidget {
         {
             let tops = Rc::clone(&shared_tops);
             let active = Rc::clone(&active);
+            let dyn_ctx = Rc::clone(&dyn_ctx);
             shared_tops[index].button.connect_clicked(move |_| {
                 let current = active.get();
                 if current == Some(index) {
@@ -994,6 +1333,7 @@ pub fn create_menubar(window: &gtk4::ApplicationWindow) -> MenubarWidget {
                         top.popover.popdown();
                     }
                 } else {
+                    dyn_ctx.refresh_top(index);
                     set_active_item(&tops, &active, index);
                 }
             });
@@ -1004,10 +1344,12 @@ pub fn create_menubar(window: &gtk4::ApplicationWindow) -> MenubarWidget {
         {
             let tops = Rc::clone(&shared_tops);
             let active = Rc::clone(&active);
+            let dyn_ctx = Rc::clone(&dyn_ctx);
             let motion = gtk4::EventControllerMotion::new();
             motion.connect_enter(move |_, _, _| {
                 let current = active.get();
                 if current.is_some() && current != Some(index) {
+                    dyn_ctx.refresh_top(index);
                     set_active_item(&tops, &active, index);
                 }
             });
@@ -1019,6 +1361,7 @@ pub fn create_menubar(window: &gtk4::ApplicationWindow) -> MenubarWidget {
         {
             let tops = Rc::clone(&shared_tops);
             let active = Rc::clone(&active);
+            let dyn_ctx = Rc::clone(&dyn_ctx);
             let controller = gtk4::EventControllerKey::new();
             controller.connect_key_pressed(move |_c, key, _code, _mods| {
                 if !matches!(key, gtk4::gdk::Key::Left | gtk4::gdk::Key::Right) {
@@ -1029,6 +1372,7 @@ pub fn create_menubar(window: &gtk4::ApplicationWindow) -> MenubarWidget {
                 };
                 let step = if key == gtk4::gdk::Key::Left { -1 } else { 1 };
                 let next = (idx as isize + step).rem_euclid(tops.len() as isize) as usize;
+                dyn_ctx.refresh_top(next);
                 set_active_item(&tops, &active, next);
                 glib::Propagation::Stop
             });
@@ -1055,6 +1399,8 @@ pub fn create_menubar(window: &gtk4::ApplicationWindow) -> MenubarWidget {
             })
             .collect(),
         rows: Rc::new(rows),
+        subs: Rc::new(RefCell::new(subs)),
+        dyn_ctx,
         active,
     }
 }
@@ -1126,6 +1472,12 @@ mod tests {
                 "group-by",
                 "thumb-bigger",
                 "thumb-smaller",
+                // The T4 dynamic fill targets.
+                "open-tab",
+                "recent-book",
+                "open-bookmark",
+                "page-type",
+                "page-rotation",
             ])
             .collect();
         for (_, action, _) in all_items() {
@@ -1179,8 +1531,9 @@ mod tests {
         }
     }
 
-    /// The ADR-024 omissions and the T4 dynamic parents stay out of
-    /// the skeleton.
+    /// The ADR-024 omissions stay out of the skeleton. The T4
+    /// dynamic parents (Open Books, Recent Books, Page Type, Page
+    /// Rotation) are PRESENT (the fill slots assert below).
     #[test]
     fn omitted_items_are_absent() {
         let all_labels: Vec<String> = MENUS
@@ -1190,6 +1543,7 @@ mod tests {
                 Item(label, _, _, _) => (*label).to_string(),
                 Sub(label, _) => (*label).to_string(),
                 Sep => String::new(),
+                Dyn(_) => String::new(),
             })
             .collect();
         let top: Vec<&str> = MENUS.iter().map(|(l, _)| *l).collect();
@@ -1200,8 +1554,6 @@ mod tests {
         for absent in [
             "Undo",
             "Redo",
-            "Page Type",
-            "Page Rotation",
             "Devices...",
             "Search Browser",
             "Info Panel",
@@ -1211,8 +1563,6 @@ mod tests {
             "Synchronize Devices",
             "Automation",
             "Open Remote Library",
-            "Open Books",
-            "Recent Books",
             "News",
         ] {
             assert!(
@@ -1223,6 +1573,39 @@ mod tests {
         // The Browse "Folders" item (F7, Phase 7) is its own label —
         // distinct from "Scan Book _Folders".
         assert!(!all_labels.iter().any(|l| l == "Folders"));
+    }
+
+    /// The dynamic fill slots sit exactly where the C# dynamic
+    /// submenus live (the ids the shell's fill provider serves).
+    #[test]
+    fn dyn_slots_match_the_csharp_dynamic_fills() {
+        let mut found: Vec<&str> = Vec::new();
+        for (_, defs) in MENUS {
+            for node in defs.iter() {
+                match node {
+                    Sub(_, children) => {
+                        for child in children.iter() {
+                            if let Dyn(id) = child {
+                                found.push(id);
+                            }
+                        }
+                    }
+                    Dyn(id) => found.push(id),
+                    _ => {}
+                }
+            }
+        }
+        found.sort_unstable();
+        assert_eq!(
+            found,
+            [
+                "bookmarks",
+                "open-books",
+                "page-rotation",
+                "page-type",
+                "recent-books"
+            ]
+        );
     }
 
     /// The icon table matches the Designer assignment-for-assignment

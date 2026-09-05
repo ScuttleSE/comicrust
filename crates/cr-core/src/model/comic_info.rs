@@ -523,6 +523,25 @@ impl ComicInfo {
             self.pages.push(old[i].clone());
         }
     }
+
+    /// `ComicPageInfoCollection.SeekBookmark(page, direction)`:
+    /// starting AT `page` (the C# callers pass `current + direction`),
+    /// walk in `direction` until a page with a bookmark, else -1.
+    pub fn seek_bookmark(&self, page: i32, direction: i32) -> i32 {
+        let direction = direction.signum();
+        let mut page = page;
+        while page >= 0 && (page as usize) < self.pages.len() {
+            if self.pages[page as usize]
+                .bookmark
+                .as_deref()
+                .is_some_and(|b| !b.is_empty())
+            {
+                return page;
+            }
+            page += direction;
+        }
+        -1
+    }
 }
 
 #[cfg(test)]
@@ -561,6 +580,30 @@ mod page_op_tests {
         let info = info_with(&[(5, ComicPageType(8)), (2, ComicPageType(8))]);
         assert_eq!(info.translate_image_index_to_page(2), 1);
         assert_eq!(info.translate_image_index_to_page(9), 9);
+    }
+
+    #[test]
+    fn seek_bookmark_walks_the_direction_from_the_start() {
+        let mut info = info_with(&[
+            (0, ComicPageType(8)),
+            (1, ComicPageType(8)),
+            (2, ComicPageType(8)),
+            (3, ComicPageType(8)),
+        ]);
+        info.pages[1].bookmark = Some("mid".into());
+        info.pages[3].bookmark = Some("end".into());
+        // `NavigateBookmark` seeks from current + direction.
+        assert_eq!(info.seek_bookmark(2, -1), 1); // prev from page 2
+        assert_eq!(info.seek_bookmark(0, -1), -1); // nothing before 0
+        assert_eq!(info.seek_bookmark(0, 1), 1);
+        assert_eq!(info.seek_bookmark(2, 1), 3);
+        // Nothing after the last bookmark (the caller passes the
+        // page after it).
+        assert_eq!(info.seek_bookmark(4, 1), -1);
+        // The start page counts (the C# callers pass current + dir,
+        // so the current page's own bookmark never stops the seek).
+        assert_eq!(info.seek_bookmark(1, 1), 1);
+        assert_eq!(info.seek_bookmark(3, -1), 3);
     }
 
     #[test]

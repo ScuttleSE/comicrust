@@ -667,6 +667,20 @@ pub fn book_path(id: &CrGuid) -> Option<String> {
         .map(|b| b.file_path.clone())
 }
 
+/// `ComicDatabase.GetRecentFiles(count)`: the books ordered by
+/// `OpenedTime` (newest first), `count` entries — the File ▸ Recent
+/// Books fill (`Settings.RecentFileCount` = 20; `OpenedTime` is
+/// NULL-ordered last in the C# LINQ — CrDateTime::min_value sorts
+/// the same way here).
+pub fn recent_books(count: usize) -> Vec<ComicBook> {
+    let lib = session();
+    let l = lib.borrow();
+    let mut books: Vec<ComicBook> = l.database().books.clone();
+    books.sort_by_key(|b| std::cmp::Reverse(b.opened_time.naive));
+    books.truncate(count);
+    books
+}
+
 /// The QuickOpen lists (`FillWithQuickOpenBooks`): the three built-in
 /// lists — Reading (ReadPercentage in 10..95), Recently Read
 /// (OpenedTime in the last 14 days), Recently Added (AddedTime in

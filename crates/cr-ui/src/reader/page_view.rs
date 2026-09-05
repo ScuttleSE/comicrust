@@ -1615,18 +1615,47 @@ impl PageView {
     /// rotation. View-side port — persistence into `ComicPageInfo`
     /// lands with the T5 write-back.
     pub fn page_rotate(&self, right: bool) {
-        let mut st = self.state.borrow_mut();
-        let page = st.page;
-        let current = st
-            .page_rotations
-            .get(&page)
-            .copied()
-            .unwrap_or(ImageRotation::None);
+        let (page, current) = {
+            let st = self.state.borrow();
+            (
+                st.page,
+                st.page_rotations
+                    .get(&st.page)
+                    .copied()
+                    .unwrap_or(ImageRotation::None),
+            )
+        };
         let next = if right {
             rotate_right(current)
         } else {
             rotate_left(current)
         };
+        self.apply_page_rotation(page, next);
+    }
+
+    /// The absolute page rotation (`GetPageEditor().Rotation` setter
+    /// — the Edit ▸ Page Rotation menu): sets the CURRENT page's
+    /// stored rotation and re-decodes (sizes change, so the
+    /// continuous strip re-derives too).
+    pub fn set_page_rotation_for(&self, page: usize, rotation: ImageRotation) {
+        let current = self
+            .state
+            .borrow()
+            .page_rotations
+            .get(&page)
+            .copied()
+            .unwrap_or(ImageRotation::None);
+        if current == rotation {
+            return;
+        }
+        self.apply_page_rotation(page, rotation);
+    }
+
+    /// The rotation write path shared by the Y commands and the
+    /// menu: store the map entry (None removes), evict the stale
+    /// decode, and requue.
+    fn apply_page_rotation(&self, page: usize, next: ImageRotation) {
+        let mut st = self.state.borrow_mut();
         if next == ImageRotation::None {
             st.page_rotations.remove(&page);
         } else {
@@ -1646,6 +1675,58 @@ impl PageView {
             self.start_pump();
         }
         self.area.queue_draw();
+    }
+
+    /// Seeds the per-page rotations from the book's stored page
+    /// entries (`ComicPageInfo.Rotation`) — DISPLAY-keyed (the
+    /// reader shell maps provider pages through the sequence). The
+    /// C# render pipeline reads the stored rotation per page; the
+    /// port's view map is the same mechanism seeded at open.
+    pub fn set_stored_page_rotations(&self, map: std::collections::HashMap<usize, ImageRotation>) {
+        self.state.borrow_mut().page_rotations = map;
+    }
+
+    /// The rotation stored for a display page (`ComicPageInfo.
+    /// Rotation` view copy — the Edit ▸ Page Rotation menu and the
+    /// Y commands read it).
+    pub fn page_rotation_of(&self, display: usize) -> ImageRotation {
+        self.state
+            .borrow()
+            .page_rotations
+            .get(&display)
+            .copied()
+            .unwrap_or(ImageRotation::None)
+    }
+
+    /// The current display page (`ComicBookNavigator.CurrentPage` is
+    /// provider space in the C#; the view tracks the DISPLAY
+    /// position — `provider_index_of` maps it).
+    pub fn current_page(&self) -> usize {
+        self.state.borrow().page
+    }
+
+    /// The provider page index behind a display position (through
+    /// the filtered sequence; `None` = no comic open or out of
+    /// range).
+    pub fn provider_index_of(&self, display: usize) -> Option<usize> {
+        let st = self.state.borrow();
+        st.provider.as_ref()?;
+        match &st.page_indexes {
+            Some(seq) => seq.get(display).copied(),
+            None => (display < st.page_count).then_some(display),
+        }
+    }
+
+    /// The display position that shows a provider page (the C#
+    /// navigates bookmarks in provider space; the display needs the
+    /// sequence position). `None` when the page is filtered out
+    /// (Deleted) or unknown.
+    pub fn display_of_provider(&self, provider: usize) -> Option<usize> {
+        let st = self.state.borrow();
+        match &st.page_indexes {
+            Some(seq) => seq.iter().position(|&i| i == provider),
+            None => (provider < st.page_count).then_some(provider),
+        }
     }
 
     pub fn set_fit_mode(&self, mode: ImageFitMode) {
@@ -2062,8 +2143,15 @@ impl PageView {
             "MoveToLastPage" => {
                 self.last_page();
             }
-            // Bookmarks need the per-book bookmark list (later phase).
-            "MoveToPrevBookmark" | "MoveToNextBookmark" => {}
+            // Bookmarks live in the shell's book copy (`Comic.Pages`);
+            // the shell seeks + navigates (the reader keys land here
+            // through the command forwarder).
+            "MoveToPrevBookmark" | "MoveToNextBookmark" => {
+                let cb = self.state.borrow().command_callback.clone();
+                if let Some(cb) = cb {
+                    cb(id);
+                }
+            }
             // Reader slots and the minimal-GUI toggle are shell
             // state — forwarded to the window.
             "PrevTab" | "NextTab" | "ToggleUndockReader" | "ToggleMenu" => {
@@ -2177,8 +2265,15 @@ impl PageView {
             // Touch-only binding in the C#; the Zoom MENU item lands
             // on `toggle_zoom()` directly.
             "ToggleZoom" => {}
-            "PageRotateC" => self.page_rotate(true),
-            "PageRotateCC" => self.page_rotate(false),
+            "PageRotateC" | "PageRotateCC" => {
+                // The rotation persists into the book (`GetPageEditor
+                // .Rotation` writes through) — the shell mirrors it
+                // into the session + library book copies.
+                let cb = self.state.borrow().command_callback.clone();
+                if let Some(cb) = cb {
+                    cb(id);
+                }
+            }
             "Exit" => {
                 let cb = self.state.borrow_mut().exit_callback.take();
                 if let Some(cb) = cb {

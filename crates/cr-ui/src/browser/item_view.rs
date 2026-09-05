@@ -403,6 +403,24 @@ impl ItemView {
         self.notify_and_redraw();
     }
 
+    /// Restores a selection after a book-set refresh (`RefreshList`
+    /// keeps the selection in the C#): intersect the ids with the
+    /// books that still exist, focus follows the first.
+    pub fn reselect(&self, ids: &[CrGuid]) {
+        let width = self.state.borrow().config.view_width;
+        {
+            let mut s = self.state.borrow_mut();
+            let keep: Vec<CrGuid> = ids
+                .iter()
+                .filter(|id| s.view.books().iter().any(|b| b.id == **id))
+                .copied()
+                .collect();
+            s.view.restore_selection(&keep);
+            s.relayout(width);
+        }
+        self.notify_and_redraw();
+    }
+
     /// The right-click context menu (`tvQueries_MouseDown` shape):
     /// (item under the cursor, x, y) — the coordinates are TOPLEVEL
     /// (window) coordinates, ready for a popover parented to the
