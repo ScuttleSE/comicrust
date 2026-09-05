@@ -71,6 +71,12 @@ Every phase ends shippable and testable. Phases 0-2 are fully headless. They de-
 
 ## 6. Backlog
 
+Deferred ideas and non-urgent findings. Anything phase-scoped lives
+in that phase's kickoff tracker instead (`phase-<N>-kickoff.md`,
+"Omitted / postponed per task"); locked scope decisions live in
+`docs/decisions.md`. An agent picking work from here should move
+the entry into the kickoff that will own it.
+
 - **Build selected bundled scripts into the app natively** (Phase 5.5
   T3 finding, 2026-09-05): some of the C#'s menu items are actually
   IronPython scripts under `ComicRack/Output/Scripts/` — e.g. File ▸

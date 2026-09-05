@@ -72,34 +72,38 @@ Update this section at the **end of every work session**. The next agent must kn
   icons through a texture column, `cr-ui/tests/icons.rs` gates all
   212 resx names, `icons_probe` proves the loads + the visible
   gallery. Release tarballs ship `assets/icons` now.
-  T3 (the menubar skeleton) IMPLEMENTED (2026-09-04), user test
-  pending. Reworked the same day as a CUSTOM menubar widget with
-  menu-item icons (user request after comparing to CR; GTK4 model
-  menus cannot show icons — the C# gives 78 items a 16 px image).
-  `cr-ui/src/browser/menubar.rs`: the pure six-menu table (the
+  T3 (the menubar) COMPLETE — USER-TESTED, ALL PASS (2026-09-05;
+  three fix rounds + two polish rounds). A CUSTOM menubar widget
+  (GTK4 model menus cannot show the C#'s 78 menu-item icons):
+  `cr-ui/src/browser/menubar.rs` — the pure six-menu table (the
   `OnGuiVisibilities` Fill-mode visibility rule ported and
   unit-tested; the T4 dynamic parents stay out; omissions asserted)
   + the Designer mi→resx icon mapping (unit-gated both directions);
-  the widget: flat MenuButton row → hand-built popovers (check
-  slot + 16 px icon + label + gray accel | submenu arrow),
-  Up/Down focus, Left/Right + hover top switching, nested
-  submenus; `sync` writes check/radio/disabled from the `win.`
-  action states after every dispatch; Alt-alone reveal unchanged.
-  `gtk4` gains `v4_6`+`v4_10` features; cr-ui mirrors the workspace
-  lints with `deprecated = allow` (the GTK3-era family the port
-  uses deprecates under those features). New: `toggle-zoom`
-  (real), `zoom-preset` 100-400 % (real), `generate-thumbnails`
-  (stub); five toggles are stateful checks; the chrome-change
-  hook re-syncs on fullscreen/MinimalGui; About.png (GIF→PNG
-  still). Probe `menubar_probe` (opens the File popover from
-  code — the model bar could not) green; `commands_probe` still
-  69/69; 294 tests. The T3 REtest (replaces the first list) is in
-  the kickoff. Round 3 (2026-09-05): Browse ▸ Library/Pages carry
-  the ACTIVE row highlight (no checkbox — C# parity), the omissions
-  tracker now lives in the kickoff (per-task omitted/postponed),
-  and the probe bug class (dropped shell = silent no-op Weak
-  handlers) is recorded. **Next: T3 user test, then T4 (the dynamic
-  menus).** Phase 6 (scripting) starts only after 5.5.
+  the widget: flat Button row → hand-built popovers (check slot +
+  16 px icon + label + gray accel | submenu arrow), ONE active
+  popover at a time (the Wayland one-grab rule — popdown-all-then-
+  popup; `GtkPopoverMenuBar.set_active_item` port), Up/Down focus,
+  Left/Right + hover top switching, nested submenus, no arrow +
+  left-edge alignment via a POP_WIDTH pointing rect, no
+  MenuButton frame on submenu rows; `sync` writes check/radio/
+  disabled/highlight from the `win.` action states after every
+  dispatch (Browse ▸ Library/Pages highlight the active panel —
+  C# has no checkbox there); Alt-alone reveal unchanged.
+  `gtk4` carries `v4_6`+`v4_10` features; cr-ui mirrors the
+  workspace lints with `deprecated = allow` (the GTK3-era family
+  the port uses deprecates under those features). Row clicks pass
+  the FULL `win.` action name (stripped names fail silently —
+  accels kept working while clicks died; round-2 lesson).
+  `menubar_probe` gates: the six menus, the visibility rule, the
+  row-click + highlight proof (real widget path via
+  `MenubarWidget::click_row`), the switching sequence;
+  `commands_probe` 69/69; 294 tests. OMISSIONS/BACKLOG TRACKING:
+  per-task "Omitted / postponed per task" section in
+  `docs/phase-5.5-kickoff.md` (keep it current; a task closes only
+  when its entries are resolved or re-homed); cross-phase ideas in
+  `docs/port-plan.md` §6 (e.g. port NewComics.py natively instead
+  of the Python host). **Next: T4 (the dynamic menus).** Phase 6
+  (scripting) starts only after 5.5.
   Phases 0-5 are complete (their gates stay green). Open Phase 1
   gaps: WebComicProvider and the PDF/DjVu writers (tracked in
   `docs/phase-1-kickoff.md`).

@@ -969,11 +969,24 @@ change; it lands after the bars so they exist in both modes.
   round 2. DEBUG-LESSON: stdout/stderr interleave UNRELIABLY when
   piped (stdout is block-buffered) — debug prints that must be
   order-compared go through println! on one stream.
+- T3 COMPLETE — USER-TESTED, ALL PASS (2026-09-05; three fix rounds
+  + two polish rounds). The user verified across the rounds: the
+  six menus with the C# icons, the Wayland grab fix (menus stay
+  clickable, hover/arrow switching), the row clicks firing (Next
+  Page, Exit, Restart, radios), the active-panel row highlight on
+  Browse ▸ Library/Pages, no arrow + left-edge alignment, submenu
+  rows without the button frame, accel display text, disabled
+  stubs grey. **Next: T4 (the dynamic menus).**
 
 ## Omitted / postponed per task (the tracker)
 
 Live tracking of everything cut, deferred, or stubbed, per task.
 New entries append here at the END of the task that owns them.
+A task may only close when its entries here are either resolved or
+re-homed (backlog / a later task / ADR-024). Cross-phase cuts and
+native-port candidates live in the BACKLOG (`docs/port-plan.md`
+§6); locked scope decisions live in `docs/decisions.md` (ADR-024
+owns the Phase 5.5 omissions).
 
 ### T1 — Command/action layer + accelerators (COMPLETE)
 - Accelerator collisions resolved by menu order (recorded): Rotate
@@ -1003,7 +1016,7 @@ New entries append here at the END of the task that owns them.
   the `type://` loader work).
 - Dark* variants bundle only what the resx references (29 names).
 
-### T3 — Menubar (IMPLEMENTED, user test in progress)
+### T3 — Menubar (COMPLETE — see the closure entry in the progress log)
 - Present-but-disabled stubs (grey): Generate Cover Thumbnails
   (thumbnail-queue work), Tasks (T13), New fileless Book Entry
   (fileless books unported), Quick Rating (T13), Set/Remove
