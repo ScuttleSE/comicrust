@@ -84,7 +84,7 @@ struct ShellState {
     random_picked: RefCell<Vec<CrGuid>>,
     /// The main-window menubar (Phase 5.5 T3; visibility is the
     /// `OnGuiVisibilities` rule).
-    menubar: gtk4::PopoverMenuBar,
+    menubar: super::menubar::MenubarWidget,
     /// The Alt-reveal override (the `AutoHideMainMenu` toggle).
     menubar_revealed: Cell<bool>,
 }
@@ -283,10 +283,11 @@ impl BrowserShell {
         stack.add_named(&reader_widgets.notebook(), Some("reader"));
 
         // The menubar (the C# `mainMenuStrip`) rides above the
-        // content — the T3 PopoverMenuBar.
-        let menubar = super::menubar::create_menubar();
+        // content — the T3 custom bar (GTK4 model menus cannot show
+        // the C# menu-item icons).
+        let menubar = super::menubar::create_menubar(&window);
         let content = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
-        content.append(&menubar);
+        content.append(menubar.widget());
         content.append(&stack);
         window.set_child(Some(&content));
 
@@ -331,9 +332,9 @@ impl BrowserShell {
         Rc::clone(&self.state.navigator)
     }
 
-    /// The main-window menubar (the T3 PopoverMenuBar; the T14
+    /// The main-window menubar (the T3 custom bar; the T14
     /// layout persistence and the probes reach it here).
-    pub fn menubar(&self) -> &gtk4::PopoverMenuBar {
+    pub fn menubar(&self) -> &super::menubar::MenubarWidget {
         &self.state.menubar
     }
 
@@ -866,6 +867,7 @@ impl ShellState {
             a.set_state(&self.reader.is_fullscreen().to_variant());
         }
         self.update_menubar();
+        self.sync_menubar();
     }
 
     /// Applies the menubar visibility rule (`OnGuiVisibilities`
@@ -890,7 +892,21 @@ impl ShellState {
             show_no_comic,
             revealed,
         );
-        self.menubar.set_visible(visible);
+        self.menubar.widget().set_visible(visible);
+    }
+
+    /// Pushes the current action states into the menubar rows
+    /// (check/radio marks + disabled graying — the custom bar has
+    /// no model-driven state rendering).
+    fn sync_menubar(&self) {
+        let actions = self.actions.borrow();
+        self.menubar.sync(&|base| {
+            let action = actions.get(base)?;
+            Some(super::menubar::ActionState {
+                enabled: action.is_enabled(),
+                state: action.state(),
+            })
+        });
     }
 
     /// `OpenNextComic(relative)`: the neighbor book in the current

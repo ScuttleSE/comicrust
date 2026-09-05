@@ -9,11 +9,21 @@ cr-core.workspace = true
 cr-io.workspace = true
 cr-image.workspace = true
 cr-engine.workspace = true
-gtk4 = "0.11"
+gtk4 = { version = "0.11", features = ["v4_6", "v4_10"] }
 chrono.workspace = true
 
 [dev-dependencies]
 zip.workspace = true
 
-[lints]
-workspace = true
+# Mirrors the workspace lints (cannot mix `workspace = true` with
+# overrides). The bindings deprecate the whole GTK3-era widget
+# family (TreeView, Dialog, FileChooserNative...) since the v4_10
+# feature — the port keeps that family deliberately (ADR-018: the
+# WinForms-shaped widgets; the CI runner ships GTK 4.14, so the
+# v4_6/v4_10 features are compile-time only).
+[lints.rust]
+unsafe_code = "deny"
+deprecated = "allow"
+
+[lints.clippy]
+all = { level = "warn", priority = -1 }

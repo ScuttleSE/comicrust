@@ -36,7 +36,7 @@ fn main() {
         // 2. The mounted menubar follows the startup rule: browser
         //    page, no book, auto-hide ON, ShowMainMenuNoComicOpen →
         //    VISIBLE.
-        let mounted = shell.menubar().is_visible();
+        let mounted = shell.menubar().widget().is_visible();
         println!("MENUBAR VISIBLE AT STARTUP: {mounted}");
         let rule =
             cr_ui::browser::menubar::menubar_visible(false, false, false, false, true, true, false);
@@ -46,6 +46,11 @@ fn main() {
         //    menubar refresh run inside the dispatch).
         let _ = gtk4::prelude::WidgetExt::activate_action(&window, "win.view-pages", None);
         println!("STATE view-pages activated");
+
+        // 4. Open the File menu for the dwell screenshot (the custom
+        //    bar CAN be opened from code — the model bar could not).
+        shell.menubar().open_top(0);
+        println!("STATE file menu open: {}", shell.menubar().top_count());
 
         glib::timeout_add_local(std::time::Duration::from_millis(1500), {
             let app = app.clone();

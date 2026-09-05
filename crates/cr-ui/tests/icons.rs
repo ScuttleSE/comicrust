@@ -222,10 +222,12 @@ const PNGS: &[(&str, &str)] = &[
     ("ZoomClear", "ZoomClear.png"),
     ("ZoomIn", "ZoomIn.png"),
     ("ZoomOut", "ZoomOut.png"),
+    // About is a GIF in the C# resx; the still frame ships as PNG
+    // (the T3 Help menu icon consumer).
+    ("About", "About.png"),
 ];
 
 const NOT_BUNDLED: &[&str] = &[
-    "About",
     "AlignBottom",
     "AlignFill",
     "AlignLeft",
@@ -247,7 +249,7 @@ const NOT_BUNDLED: &[&str] = &[
 
 #[test]
 fn every_resx_png_resolves_to_its_asset() {
-    assert_eq!(PNGS.len(), 212);
+    assert_eq!(PNGS.len(), 213);
     for (name, file) in PNGS {
         let path =
             path_for_name(name).unwrap_or_else(|| panic!("resx PNG name {name} did not resolve"));
@@ -262,7 +264,7 @@ fn every_resx_png_resolves_to_its_asset() {
 
 #[test]
 fn gif_and_ico_names_stay_unresolved() {
-    assert_eq!(NOT_BUNDLED.len(), 18);
+    assert_eq!(NOT_BUNDLED.len(), 17);
     for name in NOT_BUNDLED {
         assert!(
             path_for_name(name).is_none(),
