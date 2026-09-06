@@ -144,11 +144,17 @@ Update this section at the **end of every work session**. The next agent must kn
   verified the fix. Probes: importlist_probe, listorder_probe,
   bootreentry_probe, singleinstance_probe. 368 tests.
   PHASE 7 COMPLETE — ALL TASKS USER-TESTED (2026-09-06). NEXT:
-  Phase 8 (polish/ship) — packaging (Flatpak/.deb/AUR), docs,
-  migration tooling, perf passes. Open gaps: WebComicProvider,
-  PDF/DjVu writers, HEIF/AVIF decode, the T14 per-list sort
-  (the port resets the view sort on every list switch; the C#
-  keeps it per list — a recorded deviation).
+  Phase 8 (polish/ship + the user-reported list) — the kickoff is
+  `docs/phase-8-kickoff.md` (T1 the UI fixes batch: the & mnemonics,
+  the popover arrows, the tree-menu position; T2 the default view =
+  Library; T3/T4 the CBL-import and fileless-delete perf; T5 the
+  Details column resize; T6 the Folders tab; T7 the database-backend
+  spike → ADR-029 — the ComicDb.xml invariant requires the ADR +
+  user approval before any code; T8 packaging; T9 docs + migration;
+  T10 the perf sweep). Open gaps: WebComicProvider, PDF/DjVu
+  writers, HEIF/AVIF decode, the T14 per-list sort (the port resets
+  the view sort on every list switch; the C# keeps it per list — a
+  recorded deviation).
   INIT-GLOBAL BOOT BUG FIXED (2026-09-06, the cache-folder user
   report "the setting reverts after restart"): `init_global` used
   `OnceLock::set`, which SILENTLY FAILS when an early `global()`
