@@ -1081,43 +1081,8 @@ impl BrowserShell {
                             crate::trace::trace("is-active: re-grab reader focus");
                             sh.reader.focus_current();
                         } else {
-                            let scroll_before = sh.item_view.scroll_value();
-                            crate::trace::trace(format!(
-                                "is-active: re-grab item-view focus (scroll was {scroll_before})"
-                            ));
+                            crate::trace::trace("is-active: re-grab item-view focus");
                             sh.item_view.grab_focus();
-                            // The Wayland popover grab flaps the
-                            // window activation; the re-grab is the
-                            // dead-first-keypress fix, but grab_focus
-                            // on the virtual-size canvas makes the
-                            // ScrolledWindow's scroll-to-focus jump to
-                            // the origin (the right-click report).
-                            // That scroll runs LATER than one idle
-                            // turn (the popover map / a layout pass
-                            // can move it after the first idle — the
-                            // user trace: the one-shot restore ran
-                            // while the scroll was still 2956). Watch
-                            // a few idle turns and restore as soon as
-                            // the value moves.
-                            let view = sh.item_view.clone();
-                            let watch = std::rc::Rc::new(std::cell::Cell::new(10u32));
-                            let watch2 = watch.clone();
-                            glib::idle_add_local(move || {
-                                let left = watch2.get();
-                                if left == 0 {
-                                    return glib::ControlFlow::Break;
-                                }
-                                watch2.set(left - 1);
-                                let scroll_after = view.scroll_value();
-                                if scroll_after != scroll_before {
-                                    crate::trace::trace(format!(
-                                        "is-active: grab moved the scroll {scroll_before} -> {scroll_after}; restored"
-                                    ));
-                                    view.set_scroll_value(scroll_before);
-                                    return glib::ControlFlow::Break;
-                                }
-                                glib::ControlFlow::Continue
-                            });
                         }
                     }
                 });

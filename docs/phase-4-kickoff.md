@@ -701,3 +701,49 @@ The next phase is the dialogs (`docs/phase-5-kickoff.md`). The
 browser shell hooks this phase created (the context-menu stubs, the
 Properties placeholder, the navigator's bare entry dialogs) are the
 integration points.
+
+## Post-gate fix (2026-09-06): the right-click scroll jump
+
+The user report: right-clicking a thumbnail deep in the grid jumped
+the scroll to the top. The wrong fix went in first, and the record
+is kept here so the shape of the mistake is searchable:
+
+1. First attempt — a synchronous compare-and-restore around
+   `grab_focus` in the shell's `is-active` handler. It restored
+   nothing (the trace proved the restore line never fired), because
+   the jump had not happened yet inside the handler.
+2. Second attempt — a 10-idle-turn watcher that polled the
+   adjustment and restored the moment the value moved. It worked
+   sometimes. This was a symptom-patcher: it raced the scroll
+   instead of asking why the scroll happens. Wrong tool, wrong
+   layer, and it would have raced every future GTK layout
+   scheduling change.
+
+The actual cause, found by reading the GTK headers and the gtk4-rs
+bindings instead of guessing: the `ScrolledWindow`'s `GtkViewport`
+has **scroll-to-focus ON by default** (GTK 4.6+,
+`gtk_viewport_set_scroll_to_focus`). Every `grab_focus` on the
+canvas makes the viewport scroll the focused widget "into view".
+The canvas IS the whole 7140 px content, so its into-view position
+is y=0 — that is the entire jump. The timing confusion (sometimes
+one idle, sometimes later, behind the popover map) is just GTK
+scheduling the focus scroll; the mechanism was always the same
+boolean.
+
+The proper fix is one line in `ItemView::create`
+(`cr-ui/src/browser/item_view.rs`): reach the viewport through
+`scroller.child().and_downcast::<Viewport>()` and call
+`set_scroll_to_focus(false)`. The grid's own scrolling (keyboard
+nav, Home/End, Ctrl+wheel, probe scrolls) moves the adjustment
+directly and never relies on focus, so disabling the property is
+safe. The C# `Focus()` never scrolls, so this is parity too.
+Both watcher hacks (the sync restore and the idle watcher) are
+RIPPED OUT — the `is-active` handler is a plain `grab_focus` again.
+The same latent bug in QuickOpen's shared `ItemView::create` path
+is fixed for free.
+
+Lesson for the lesson list: when a symptom only appears at
+"some later time", find the GTK mechanism that schedules work
+later — do not chase the schedule with watchers. The fix was one
+boolean and it was findable in the headers on day one; the two
+hack rounds were spent before the first header read.

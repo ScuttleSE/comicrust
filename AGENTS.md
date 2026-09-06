@@ -1423,6 +1423,18 @@ Re-bless the `db-large.xml` snapshot after a deliberate model change: `CR_BLESS=
 
 ### Lessons from Phase 5.5 (do not re-learn these)
 
+- When a UI symptom appears at "some later time", find the GTK
+  mechanism that SCHEDULES work later — before writing any
+  watcher. The right-click scroll jump (2026-09-06) took two hack
+  rounds (a synchronous compare-and-restore, then a 10-idle-turn
+  poll) before the header read: the `ScrolledWindow`'s
+  `GtkViewport` has scroll-to-focus ON by default (GTK 4.6+,
+  `gtk_viewport_set_scroll_to_focus`), so every `grab_focus` on a
+  full-content canvas scrolls to y=0. The proper fix was ONE
+  boolean in `ItemView::create` (`set_scroll_to_focus(false)`;
+  the grid's own scrolling moves the adjustment directly and never
+  relies on focus). Both watcher hacks are ripped out; the full
+  mistake record lives at the end of `docs/phase-4-kickoff.md`.
 - A window-parented CONTEXT popover on Wayland must be a PLAIN
   `gtk4::Popover` (the book-context-menu shape), NOT a
   `build_dropdown` one. The `build_dropdown` popover (has_arrow

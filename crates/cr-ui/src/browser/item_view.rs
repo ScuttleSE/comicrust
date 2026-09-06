@@ -235,6 +235,16 @@ impl ItemView {
             .hexpand(true)
             .vexpand(true)
             .build();
+        // The viewport's scroll-to-focus (GTK 4.6+, default ON) is the
+        // right-click jump: grab_focus on the full-content canvas makes
+        // the viewport scroll its "into view" position — y=0 (the C#
+        // `Focus()` never scrolls). The in-grid scroll paths (keyboard
+        // nav, Home/End, Ctrl+wheel) move the adjustment directly and
+        // never rely on focus, so disabling this is safe. The C#
+        // ItemView draws into one canvas the same way.
+        if let Some(viewport) = scroller.child().and_downcast::<gtk4::Viewport>() {
+            viewport.set_scroll_to_focus(false);
+        }
 
         let (tx, rx) = std::sync::mpsc::channel::<ThumbDone>();
         let thumb_tx = ThumbTx(Arc::new(Mutex::new(tx)));
