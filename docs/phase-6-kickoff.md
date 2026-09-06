@@ -17,6 +17,22 @@ round-trip stays byte-stable.
 Target crates: `cr-ui` (dialogs, shell), `cr-engine` (matchers), the
 workspace root (crate removal).
 
+## Status
+
+ALL TASKS IMPLEMENTED + PROBE/TEST-GATED (2026-09-06). T2/T3/T6 are
+UI-shaped and await the user test; T1/T4/T5 are headless-complete.
+
+- T1 DONE (the ADR-027 commit).
+- T2 DONE — implemented + gated (`newbook_probe` A/F), user test
+  pending.
+- T3 DONE — implemented + gated (`newbook_probe` B/C/D), user test
+  pending.
+- T4 DONE — headless: query round-trip + eval tests, the golden
+  byte-identity fixture for the PluginKey attribute; 356 tests.
+- T5 DONE — `cr-script` removed; 356 tests green.
+- T6 DONE — implemented + gated (`exportpage_probe`), user test
+  pending (the clipboard itself needs the user's Wayland/X11 check).
+
 ## Task list
 
 ### T1. The decision record (this commit)
@@ -115,10 +131,52 @@ cargo run -p cr-ui --example newbook_probe        # T2/T3
 cargo run -p cr-ui --example exportpage_probe     # T6 (dialog gates)
 ```
 
-Headless probes: Xvfb + an isolated XDG pair (the standing lesson).
-The user-test protocol stays mandatory per task
+Headless probes: Xvfb + an isolated XDG pair (the standing
+lesson). The user-test protocol stays mandatory per task
 (`cargo run -p cr-app --release --`, then PAUSE with the written
 test).
+
+## User test (write at the phase close — T2/T3/T6)
+
+Build: `cargo run -p cr-app --release --` (release matters).
+
+1. **New fileless Book Entry:** File ▸ "New fileless Book Entry..."
+   (Ctrl+Shift+N) opens the book editor over an untitled book. Type a
+   series/number, OK. The book appears in the Library list, carries
+   the fileless marker on its cover, and survives a restart.
+   Cancel adds nothing.
+2. **New fileless Book Series:** File ▸ "New fileless Book
+   Series..." — OK stays disabled until the series is non-empty and
+   the range is valid. A 5..7 range creates 3 books, selected in the
+   grid. A range over 100 (e.g. 1..150) silently adds nothing.
+3. **Fileless browsing:** the comic-type filter "Show only fileless
+   Entries" shows exactly the created books. Double-click on a
+   fileless book opens nothing (no error dialog) — the C#
+   `IsLinked` gate.
+4. **Copy Page:** open a real comic, Edit ▸ Copy Page, paste into
+   another app — the composed page image lands (check both layouts:
+   single and double — double copies the whole spread).
+5. **Export Page:** Edit ▸ Export Page — "Save Page as" dialog, the
+   name is "{Caption} - Page {N}", the format dropdown carries
+   JPEG/BMP/PNG/GIF/TIFF and the chosen format persists across
+   invocations; the written file opens.
+
+## Deviations recorded
+
+- The book editor's window title falls back to "Book" when the
+  caption is empty (the C# shows the bare empty caption).
+- The `lblPages` label follows the C# `PagesAsText` rule
+  ("Unknown" for 0 pages, the "N/" prefix only when LastPageRead >
+  0) — this replaces the port's earlier "Page N/M Page(s)." shape.
+- The fileless marker reuses the port's bottom-left state-strip
+  shape (the C# centers a state-image row — the missing-marker
+  deviation, now shared).
+- Copy Page writes a PNG to the clipboard (the C# writes a DIB
+  bitmap); Export Page uses `FileChooserNative` with the C#'s
+  5-format filter table.
+- A double-page export copies the whole composed spread (the C#
+  `CreatePageImage` renders the whole virtual image — same
+  behavior).
 
 ---
 

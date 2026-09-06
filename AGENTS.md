@@ -55,6 +55,31 @@ Update this section at the **end of every work session**. The next agent must kn
   user-tested, all pass (2026-09-06)**; the close-out record lives
   at the end of `docs/phase-5.5-kickoff.md`. The per-task records
   below stay for the fix-round facts.
+  **PHASE 6 RE-SCOPED + IMPLEMENTED (2026-09-06, ADR-027): the
+  scripting host is DROPPED** — no PyO3/CPython, no plugin hooks,
+  no `.crplugin`; the used-script set ports natively instead (the
+  decision + the feasibility evidence live in ADR-027 and the
+  superseded record in `docs/phase-6-kickoff.md`). Landed: the
+  native "New Comic…" fileless flow (`library::insert_new_book` +
+  the editor; the C# `MainForm.AddNewBook` parity, idempotent per
+  id because editor commits fire per save point), the "New fileless
+  Book Series…" dialog (the NewComics.py port: series/volume/range,
+  the OK-enable rule, the >100 silent abort, books created +
+  selected), the FilelessMarker state icon on fileless covers, the
+  reader-open gate for empty-path books (the C# `NavigatorManager
+  .Open` `IsLinked` rule — fileless books never open a slot), the
+  `Expression`/`User Scripts` matchers registered as
+  `MatcherKind::Script` (parse + render byte-stably, evaluate to
+  no-match; the `PluginKey` XML attribute round-trips — golden
+  fixture), `cr-script` deleted from the workspace, Copy Page
+  (`create_page_image` → clipboard PNG) and Export Page (the
+  "Save Page as" chooser: the C# 5-format filter, the persisted
+  `LastExportPageFilterIndex`, `AddExtension` parity). Probes:
+  `newbook_probe` (insert idempotence, the series dialog flow, the
+  abort, the editor cancel, the marker icon, the open gate),
+  `exportpage_probe` (enable gates, the page image, the chooser
+  name). 356 tests. **NEXT: the user test (the 5 steps at the end
+  of `docs/phase-6-kickoff.md`), then Phase 7 (platform).**
   INIT-GLOBAL BOOT BUG FIXED (2026-09-06, the cache-folder user
   report "the setting reverts after restart"): `init_global` used
   `OnceLock::set`, which SILENTLY FAILS when an early `global()`
@@ -120,10 +145,8 @@ Update this section at the **end of every work session**. The next agent must kn
   UI for it): Change…/Reset write the ini key + the global (the
   theme-persistence pattern); takes effect on the next start.
   `cache_probe` gates F/G cover the override + reset; 350 tests.
-  **NEXT: Phase 6 (scripting) —
-  start from `docs/phase-6-kickoff.md`** (the C# spec map, the task
-  list, and the gates live there; `cr-script` is the empty target
-  crate).
+  (Phase 6 note: the scripting host was DROPPED with ADR-027 on the
+  same day — see the Phase bullet above; `cr-script` is deleted.)
   T1 (the command/action layer +
   accelerators) COMPLETE — USER-TESTED, ALL PASS (2026-09-04, one
   fix round). `cr-ui/src/commands.rs` holds the pure table (69
@@ -588,7 +611,7 @@ Update this section at the **end of every work session**. The next agent must kn
   Phases 0-5 are complete (their gates stay green). Open Phase 1
   gaps: WebComicProvider and the PDF/DjVu writers (tracked in
   `docs/phase-1-kickoff.md`).
-- **State:** `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` are green. 350 tests. CI runs on the `docker-runner-amd64` container runner (ADR-020). The release tracks are `release.yaml` (rolling prerelease per push) and `tagged-release.yaml` (manual dispatch, stable release for an existing tag — ADR-021, 2026-09-03). Until the runner is registered and `comicrust-ci:latest` is built on the runner host, pushed and dispatched workflows sit queued on that label.
+- **State:** `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` are green. 356 tests. CI runs on the `docker-runner-amd64` container runner (ADR-020). The release tracks are `release.yaml` (rolling prerelease per push) and `tagged-release.yaml` (manual dispatch, stable release for an existing tag — ADR-021, 2026-09-03). Until the runner is registered and `comicrust-ci:latest` is built on the runner host, pushed and dispatched workflows sit queued on that label.
 - **Phase 0 gate status:** byte-stable ComicDb.xml round-trip proven on all three synthetic fixtures AND the real-world database `tests/realworld/ComicDb.xml` (255 books, 584 KB, 2026-09-02, user-approved commit).
 - **Phase 2 gate status:** every saved smart list in the real-world DB (a) binds to the matcher registry, (b) renders to a `Match` query string that re-parses and re-renders byte-identically, and (c) evaluates to the SAME book sets the C# cached in `CacheStorage` (Never Read = all 255, Files to update = the 3 dirty books, Reading/Read = empty). Evidence: `crates/cr-engine/tests/realworld_query.rs`.
 - **Phase 3 gate status (COMPLETE):** a real comic (`tests/testfiles/`, git-ignored, user-supplied) opens in a GTK4 window and reads comfortably: single/double/adaptive/continuous layouts, spread composition with cover-right + binding-edge rules, fit modes with anamorphic tolerance, zoom/pan/rotation, RTL, continuous scroll with anchor-stable layout rebuilds, fade/slide transitions, paper texture, Auto/Color/Texture backgrounds, the real `MainForm` input map, session tabs with undock, fullscreen chrome with cursor auto-hide, reading-state tracking, the magnifier, error pages, and pool-queue page loads. User-verified after each task; UI smoke tests on this machine run headless under Xvfb + screenshots (see the probe lessons below — the key-injection tools are unreliable; only user tests decide input behavior).
