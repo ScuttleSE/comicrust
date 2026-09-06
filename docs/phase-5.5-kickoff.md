@@ -2544,3 +2544,82 @@ Omissions/discoveries during the phase and their homes:
   §6 (Phase 6 reviews them).
 
 The C# reference remains the spec for anything Phase 6+ touches.
+
+## Inter-phase task: the image-cache wiring (2026-09-06)
+
+Ran before Phase 6 at the user's request (the covers were never
+cached — "thumbnails are never cached, either on disk or in ram").
+The whole Phase 1/2 cache machinery (five queues, LRU memory
+pools, the fresh-format DiskCache) existed but was inert:
+`ImagePool::new(None)` built no disk caches, the thumb memory pool
+was write-only, and covers re-decoded from the comic file on every
+startup and list swap.
+
+Shipped (commit 5575808, user test pending):
+
+- `ImagePool::with_config(&ImagePoolConfig)` — the `CacheManager`
+  ctor parity (disk caches from `Paths::{thumbnail,image}_cache_path`
+  with `Settings` budgets + enable flags; thumb memory = 8192
+  items × `MemoryThumbCacheSizeMB`, page memory =
+  `MemoryPageCacheCount`). Wired in `cr-ui/src/library.rs` (the
+  `CacheManager` equivalent). The Preferences Advanced cache spins
+  now consume — resolves the Phase 5 T1 disk-cache deferral.
+- `render_thumbnail` reads the thumb memory pool first
+  (`get_thumb_memory`) — the browser grid, QuickOpen, the tab
+  strip, and the book editor share one decode; the book editor
+  lost its private pool.
+- `DiskCache` grew `CacheSizeMB` (mtime-LRU pruning,
+  stride-throttled), `Enabled`, and a header-only `is_available`
+  (no JPEG body read).
+- T4a: `front_cover_thumbnail_key` (the
+  `GetFrontCoverThumbnailKey` port) is THE cover key for ItemView
+  and the tab strip (`TabInfo.cover_key`); File ▸ "Generate Cover
+  Thumbnails" (`win.generate-thumbnails`, was a disabled stub)
+  queues one unlimited-queue warm-up job per book.
+- T4b: `ComicInfo::update_page_size` (+ `get_page_mut_or_add` —
+  the `GetPage(page, add:true)` port) + `PageCached`/
+  `ThumbnailCached` events + `library::install_cache_events` (a
+  500 ms drain writes the decoded pixel sizes into the DB books,
+  the `UpdateComicBookPageData` parity; temp books skip).
+- FIXED on the way: `render_page` inserted into the page memory
+  pool under the base key hash but read it under the tiered hash —
+  the page memory pool could never hit its own entries.
+
+Deviations (user decisions): the C# default 500 MB disk budgets
+kept — the user raises them in Preferences for large libraries (no
+auto-scaling by book count); sizes persist only after a decode
+(the C# fills them the same lazy way).
+
+## Inter-phase task: the cache-folder override + the boot bug (2026-09-06)
+
+- The cache-root override (commit 2751357): the C# boots the cache
+  root from `ExtendedSettings.CachePath` (the `-cp` switch / the
+  ini key, SystemPaths.cs:47-50) — the port carried the setting
+  but never consumed it. `Paths::new_default()` reads it now (a
+  non-empty override replaces the whole cache root; the database +
+  config trees are unaffected). Preferences ▸ Advanced gained a
+  Cache Folder row (a recorded ADDITION — the C# has no UI):
+  Change…/Reset write the ini key + the global (the
+  theme-persistence pattern); Cancel restores the opened value;
+  takes effect on the next start (the pool reads the paths once at
+  boot).
+- The init-global BOOT BUG (commit 3650a1e, found through the
+  cache-folder user report "the setting reverts after restart"):
+  `init_global` used `OnceLock::set`, which SILENTLY FAILS when an
+  early `global()` reader froze the defaults — and
+  `library::initialize()` opens the database (→
+  `Paths::new_default()` → the ExtendedSettings global) BEFORE
+  `initialize_settings` loads the ini. Every boot ini/argv value
+  (CachePath, Theme, quick-open size…) was dropped at startup;
+  only runtime writes ever landed. The ADR-025 observation "the
+  app starts light on an existing config" was THIS bug, not C#
+  parity (corrected in `docs/decisions.md`): with the write-through
+  fix an existing `Theme=Dark` boots dark. `EngineConfiguration::
+  init_global` had the same pattern (the DB load reads it before
+  init) — now a write-through RwLock guard
+  (`EngineConfigurationGuard`).
+
+Gate for both: `cache_probe` (isolated XDG; the gates: cache files
+while browsing, sized books, warm-up idempotent, a second pool
+reuses the disk cache, ImageWidth persisted, the override + reset)
++ 350 tests + all other probes green.

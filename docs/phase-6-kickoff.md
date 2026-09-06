@@ -1,5 +1,11 @@
 # Phase 6 Kickoff — Scripting (the PyO3 plugin host)
 
+Note (2026-09-06): before this phase, an inter-phase task ran — the
+image-cache wiring (the `CacheManager` port) + the cache-folder
+override + the `init_global` boot bug. The record lives at the end
+of `docs/phase-5.5-kickoff.md`; the per-file map is current
+(`ImagePool::with_config`, the write-through settings globals).
+
 Goal: the IronPython scripting host from `ComicRack.Plugins` ported
 to a PyO3/CPython 3 host — the `#@Directive` script model, the hook
 wiring (the Automation menus, ParseComicPath, Startup/Shutdown,
