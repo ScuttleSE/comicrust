@@ -53,7 +53,7 @@ Every phase ends shippable and testable. Phases 0-2 are fully headless. They de-
 | 4 | Browser | ItemView port (thumbnail/tile/detail, grouping, stacking, columns, sort, rubber-band, drag-drop), library tree, search popover, QuickOpen, PagesView | Library browse/manage replaces C# browser for common flows | 10-12 wk |
 | 5 | Dialogs | All ~50: book editor, bulk edit, preferences (+ serde-driven options builder), smart-list/matcher editors, export, devices, workspace save/switch | Feature-complete for local-library workflows | 12-14 wk |
 | 5.5 | UI chrome parity | Menubar, toolbars (reader/browser/navigator/pages), multi-panel status bar, book tabs + context menu, Book Display Settings, About/Zoom/QuickRating/Tasks, bundled CR icons, layout persistence — see `phase-5.5-kickoff.md` (ADR-024; dock modes stay Fill-only per ADR-026) — **COMPLETE, all tasks user-tested (2026-09-06)** | Chrome close to original CR with locked omissions; every task user-tested | 8-10 wk |
-| 6 | Native features + de-scripting | Native "New Comic…" fileless flow + "New fileless Book Series…" dialog (the NewComics.py port, ADR-027), `Expression`/plugin matcher parse-compat (not-supported evaluation), Copy Page/Export Page, `cr-script` removal | Feature checklist complete with no scripting surface; matcher round-trip stable | 2-3 wk |
+| 6 | Native features + de-scripting | Native "New Comic…" fileless flow + "New fileless Book Series…" dialog (the NewComics.py port, ADR-027), `Expression`/plugin matcher parse-compat (not-supported evaluation), Copy Page/Export Page, `cr-script` removal — **COMPLETE, all tasks user-tested (2026-09-06)** | Feature checklist complete with no scripting surface; matcher round-trip stable | 2-3 wk |
 | 7 | Platform | D-Bus single instance, MTP/wireless sync, HTTP remote server, full i18n wiring (the dark/light toggle + theme-following views + the automatic layout persistence landed in 5.5 — ADR-025, T14) | Feature checklist from C# complete | 8-10 wk |
 | 8 | Polish/ship | Flatpak/.deb/AUR packaging, CI, docs, migration tooling, perf passes | 1.0 | 4-6 wk |
 
@@ -76,53 +76,12 @@ in that phase's kickoff tracker instead (`phase-<N>-kickoff.md`,
 `docs/decisions.md`. An agent picking work from here should move
 the entry into the kickoff that will own it.
 
-- **Browser dock modes (Fill + Bottom)** (Phase 5.5 T10, moved out
-  2026-09-05, user decision — ADR-026): the reader area fills the
-  window and the browser docks to the Bottom inside a resizable,
-  collapsible container (F3 toggles; the docking-mode button on the
-  tab strip; PanelSize persistence). C# spec: `MainForm.cs:679-701`
-  (BrowserDock), `MainForm.cs:3629-3716` (dock changed + grip),
-  `Views/MainView.cs:199-221` (the alignment button),
-  `Config/DisplayWorkspace.cs` (PanelSize). Left/Right stay dropped
-  (ADR-024). Pick up when the tab-strip layout work resumes; T14
-  persistence carries the mode + panel size once it lands.
-- **Sidebar preview pane (SmallComicPreview)** (Phase 5.5 T11, moved
-  out 2026-09-05, user decision — ADR-026): a collapsible pane below
-  the navigator showing the first selected book's cover + caption
-  with the mini toolbar (Open / First/Prev/Next/Last / Two Pages /
-  Refresh / Close); Browse ▸ Small Preview (Shift+F7) toggles it;
-  500 ms selection debounce. C# spec: `Views/SmallComicPreview.cs` +
-  Designer, `ComicExplorerView.cs:294-307`. The Browse ▸ Small
-  Preview menu item stays a disabled stub until picked up.
-- **New fileless Book Series dialog** (the NewComics.py port): RESOLVED 2026-09-06 — moved into the Phase 6 re-scope (`phase-6-kickoff.md`, ADR-027) together with the native "New Comic…" flow.
-- **WikiSearch editor context links** (moved to the backlog 2026-09-06, user decision): the C# `SearchEngines.cs` built-in — a Wikipedia `INetSearch` engine registered into the book editor's text-box context menus (`ComicBookDialog.cs:137` `TextBoxContextMenu.AddSearchLinks`) and the ListSelectorControls. The scripting NetSearch providers that appended to this table die with ADR-027; the native single-engine surface is small and optional. Pick up with any book-editor polish work.
-- **Copy Page / Export Page (Edit menu)** (Phase 5.5 T13 re-home,
-  2026-09-06): `CopyPage` copies the CURRENT page image to the
-  clipboard and `ExportCurrentImage` writes it through the
-  export-image dialog (`MainForm.cs:2326-2339` —
-  `ComicDisplay.CreatePageImage`). Not part of the T13 dialog scope;
-  needs a page-surface → clipboard path (a GTK clipboard image
-  provider) and the ExportImage file dialog. The two menu items stay
-  disabled stubs until picked up.
-- **The remaining `DisplayWorkspace` persistence keys** (Phase 5.5
-  T14 leftover, 2026-09-06): the workspace save carries the browser
-  view + reader layout + display family; these wait on their owner
-  features — `PanelSize`/`PanelDock` (the dock-modes backlog item
-  above), `FileView` (the Files browser is unported),
-  `PagesViewConfig` (the Pages panel keeps its defaults),
-  `ComicBookDialogPagesConfig` (the editor pages list keeps its
-  defaults), `ScriptOutputBounds`/`PreferencesOutputSize`/
-  `ComicBookDialogOutputSize` (the dialog geometry — low value; pick
-  up with any dialog-resize need), `UndockedReaderBounds`/
-  `UndockedReaderState` (the undock session state — the C# also
-  treats it as transient; revisit only if users ask). The T14
-  element names are already reserved in
-  `cr-core/src/settings/workspace.rs` (the reader is order-tolerant,
-  so adding keys is a write-side change only).
-
-Phase task breakdowns with acceptance criteria:
+The collected backlog now lives in **`docs/backlog.md`** (the open
+Phase 1 items + the former entries of this section). Phase task
+breakdowns with acceptance criteria:
 
 - Phase 0: `phase-0-kickoff.md` — built and validated (see `AGENTS.md` status).
 - Phase 1: `phase-1-kickoff.md`.
 - Phase 5.5: `phase-5.5-kickoff.md` — the UI-parity phase (ADR-024), inserted between 5 and 6. COMPLETE (2026-09-06).
-- Phase 6: `phase-6-kickoff.md` — the re-scoped native-features phase (ADR-027); the active phase. The original scripting kickoff survives as a superseded record inside that file.
+- Phase 6: `phase-6-kickoff.md` — the re-scoped native-features phase (ADR-027). COMPLETE (2026-09-06, user-tested). The original scripting kickoff survives as a superseded record inside that file.
+- Phase 7: `phase-7-kickoff.md` — not written yet; the next phase (platform work).

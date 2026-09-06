@@ -59,10 +59,12 @@ Update this section at the **end of every work session**. The next agent must kn
 
 ### State summary
 
-- **Phase:** 5.5 (UI chrome parity) **COMPLETE — all tasks T0-T14
-  user-tested, all pass (2026-09-06)**; the close-out record lives
-  at the end of `docs/phase-5.5-kickoff.md`. The per-task records
-  below stay for the fix-round facts.
+- **Phase:** 6 (native features + de-scripting) **COMPLETE — all
+  tasks user-tested, all pass (2026-09-06)**; Phase 5.5 (UI chrome
+  parity) also COMPLETE — all tasks T0-T14 user-tested (2026-09-06),
+  the close-out record lives at the end of
+  `docs/phase-5.5-kickoff.md`. The per-task records below stay for
+  the fix-round facts.
   **PHASE 6 RE-SCOPED + IMPLEMENTED (2026-09-06, ADR-027): the
   scripting host is DROPPED** — no PyO3/CPython, no plugin hooks,
   no `.crplugin`; the used-script set ports natively instead (the
@@ -86,8 +88,9 @@ Update this section at the **end of every work session**. The next agent must kn
   `newbook_probe` (insert idempotence, the series dialog flow, the
   abort, the editor cancel, the marker icon, the open gate),
   `exportpage_probe` (enable gates, the page image, the chooser
-  name). 356 tests. **NEXT: the user test (the 5 steps at the end
-  of `docs/phase-6-kickoff.md`), then Phase 7 (platform).**
+  name). 356 tests. **PHASE 6 COMPLETE — user-tested, all pass
+  (2026-09-06; the 5 user-test steps at the end of
+  `docs/phase-6-kickoff.md`). NEXT: Phase 7 (platform).**
   INIT-GLOBAL BOOT BUG FIXED (2026-09-06, the cache-folder user
   report "the setting reverts after restart"): `init_global` used
   `OnceLock::set`, which SILENTLY FAILS when an early `global()`
@@ -205,8 +208,7 @@ Update this section at the **end of every work session**. The next agent must kn
   per-task "Omitted / postponed per task" section in
   `docs/phase-5.5-kickoff.md` (keep it current; a task closes only
   when its entries are resolved or re-homed); cross-phase ideas in
-  `docs/port-plan.md` §6 (e.g. port NewComics.py natively instead
-  of the Python host).
+  `docs/backlog.md`.
   T4 (the dynamic menus) COMPLETE — USER-TESTED, ALL PASS
   (2026-09-05; one fix round: the dynamic submenus re-fill on
   their OWN popover open — the top-menu funnel missed revisits
@@ -484,7 +486,7 @@ Update this section at the **end of every work session**. The next agent must kn
   the lamp flags, the MinimalGui action), all other probes green.
   **Next: T12 (the Book Display Settings dialog, F9).** T10 (dock
   modes) and T11 (the sidebar preview) moved to the BACKLOG
-  (2026-09-05, user decision, ADR-026 — `docs/port-plan.md` §6);
+  (2026-09-05, user decision, ADR-026 — now `docs/backlog.md`);
   the port stays Fill-only and the Small Preview stub stays
   disabled. After T12: T13 (small dialogs), T14 (persistence,
   now carrying the display-options persistence). Phase 6

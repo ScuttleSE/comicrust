@@ -19,19 +19,17 @@ workspace root (crate removal).
 
 ## Status
 
-ALL TASKS IMPLEMENTED + PROBE/TEST-GATED (2026-09-06). T2/T3/T6 are
-UI-shaped and await the user test; T1/T4/T5 are headless-complete.
+COMPLETE — ALL TASKS USER-TESTED, ALL PASS (2026-09-06). The user ran
+the five steps in the "User test" section below on their machine.
 
 - T1 DONE (the ADR-027 commit).
-- T2 DONE — implemented + gated (`newbook_probe` A/F), user test
-  pending.
-- T3 DONE — implemented + gated (`newbook_probe` B/C/D), user test
-  pending.
+- T2 DONE — `newbook_probe` A/F; user-tested.
+- T3 DONE — `newbook_probe` B/C/D; user-tested.
 - T4 DONE — headless: query round-trip + eval tests, the golden
   byte-identity fixture for the PluginKey attribute; 356 tests.
 - T5 DONE — `cr-script` removed; 356 tests green.
-- T6 DONE — implemented + gated (`exportpage_probe`), user test
-  pending (the clipboard itself needs the user's Wayland/X11 check).
+- T6 DONE — `exportpage_probe`; user-tested (the clipboard paste on
+  the user's Wayland/X11 session).
 
 ## Task list
 

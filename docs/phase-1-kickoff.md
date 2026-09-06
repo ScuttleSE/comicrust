@@ -6,7 +6,10 @@ Phase 0 remains the reference for doc style: see `phase-0-kickoff.md`. The Phase
 
 ## Status (2026-09-02, end of phase work)
 
-T1-T6 are built and verified; 92 tests green. Two open items: the WebComicProvider (`.cbw`, T1 dynamic-images tail) and the PDF/DjVu *writers* (T5 tail, lowest use). HEIF/AVIF/J2K decode needs system libs (packaging-time decision). Details in the task list below and in `AGENTS.md`.
+T1-T6 are built and verified; 92 tests green. The open items (the
+WebComicProvider `.cbw` tail, the PDF/DjVu writers, the HEIF/AVIF/J2K
+decode decision) moved to `docs/backlog.md`. Details in the task list
+below and in `AGENTS.md`.
 
 ## Scope from the roadmap
 
@@ -25,7 +28,8 @@ The C# spec lives in `ComicRack.Engine/IO/Provider/` (`Readers/`, `ProviderFacto
 - [x] PDF provider via `pdfium-render`; `CalculateSize` port verified (612x792pt page renders 1920x2484)
 - [x] Dynamic-image providers: DjVu (djvulibre subprocess, PPM instead of TIFF intermediate); WebP/JXL decode in `cr-image` — HEIF/AVIF/J2K report UnsupportedFormat (need libheif/openjpeg, decide at packaging time)
 - [x] `cr-cli` extraction smoke fixtures per format — synthetic (zip/tar built in tests), `7z`-created CB7, hand-built PDF fixture; gated behind `CR_FORMAT_TESTS`/`CR_PDFIUM`/djvulibre-on-PATH
-- [ ] WebComicProvider (`.cbw`) — the one open reader. Needs the 853-LOC `WebComic.cs` (URL template + regex PagePart engine over fetched HTML), compositing, HTTP fetch, `FileCache` interplay. Port as a standalone task with a local fixture HTTP server (std `TcpListener`).
+- [ ] WebComicProvider (`.cbw`) — the one open reader. Moved to
+  `docs/backlog.md` (the port recipe travels with the entry).
 
 ### T2. In-archive metadata (`cr-io` + `cr-core`) — done
 
@@ -62,7 +66,7 @@ The C# spec lives in `IO/Cache/` (`ImagePool.cs`, `ImageManager.cs`, `ThumbnailM
 The C# spec lives in `IO/Provider/Writers/` (`CbzStorageProvider.cs`, `CbtStorageProvider.cs`, `Cb7StorageProvider.cs`, `FolderStorageProvider.cs`, `XmlInfoStorageProvider.cs`) and `IStorageProvider.cs`.
 
 - [x] Zip write-back (CBZ): native full rewrite — same entry order, page content byte-identical, only metadata entries change; temp file + atomic rename. (Note: the C# CE shells out to `7z u` even for zip/tar; we preserve the behavior, not the mechanism.)
-- [x] Tar/7z/folder write-back (CB7 via `7z u`, per `UpdateComicInfos`; folder writes plain files). **PDF and DjVu writers remain open** (lowest use, as this doc predicted)
+- [x] Tar/7z/folder write-back (CB7 via `7z u`, per `UpdateComicInfos`; folder writes plain files). **PDF and DjVu writers remain open — moved to `docs/backlog.md`**
 - [x] Failure semantics: errors surface to the caller (no silent `false`); `cr-cli rewrite` never writes when no metadata was found (writing defaults would destroy file metadata)
 - [x] Export pipeline skeleton (`export.rs`: `ExportImageContainer`, compression levels, page-order CBZ packing) — the parallel/spill/progress parts wait for the Phase 5 dialogs
 
