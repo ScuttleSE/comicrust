@@ -52,7 +52,7 @@ const FOCUS_UNFOCUSED: (f64, f64, f64) = (0.5, 0.5, 0.55);
 const THUMB_WHEEL_STEP: f64 = 16.0;
 
 type ActivateFn = Box<dyn Fn(&CrGuid)>;
-type SelectionFn = Box<dyn Fn(usize)>;
+type SelectionFn = Rc<dyn Fn(usize)>;
 type HeaderContextFn = Rc<dyn Fn(f64, f64)>;
 type BookContextFn = Rc<dyn Fn(Option<CrGuid>, f64, f64)>;
 
@@ -140,8 +140,12 @@ impl ItemViewState {
     }
 
     fn notify_selection(&self) {
-        if let Some(f) = self.on_selection_changed.as_ref() {
-            f(self.view.selection().len());
+        let notify = self
+            .on_selection_changed
+            .as_ref()
+            .map(|f| (Rc::clone(f), self.view.selection().len()));
+        if let Some((f, count)) = notify {
+            f(count);
         }
     }
 
@@ -402,7 +406,7 @@ impl ItemView {
     }
 
     pub fn connect_selection_changed<F: Fn(usize) + 'static>(&self, f: F) {
-        self.state.borrow_mut().on_selection_changed = Some(Box::new(f));
+        self.state.borrow_mut().on_selection_changed = Some(Rc::new(f));
         self.notify_and_redraw();
     }
 
@@ -817,7 +821,20 @@ impl ItemView {
     }
 
     fn notify_and_redraw(&self) {
-        self.state.borrow().notify_selection();
+        // Lift the hook + payload OUT of the state borrow and fire
+        // AFTER it drops — the hook chain reaches sync_enabled →
+        // the status-bar slider → `set_item_size`, which borrows
+        // again (the Phase 3 re-entrancy lesson; the slider fires
+        // whenever the configured value actually changes).
+        let notify = {
+            let s = self.state.borrow();
+            s.on_selection_changed
+                .as_ref()
+                .map(|f| (f.clone(), s.view.selection().len()))
+        };
+        if let Some((f, count)) = notify {
+            f(count);
+        }
         self.canvas.queue_draw();
     }
 

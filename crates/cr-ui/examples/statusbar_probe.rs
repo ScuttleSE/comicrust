@@ -236,6 +236,35 @@ let _shell = shell.clone();
             }
         });
 
+        // I. The boot-configure re-entrancy gate (the 2026-09-06
+        //    boot crash): a persisted workspace size applied, then
+        //    a list selection — the selection notify syncs the
+        //    slider to the new size, the value_changed handler
+        //    re-enters set_item_size. Before the notify-borrow fix
+        //    that was a RefCell double-borrow abort.
+        glib::timeout_add_local(std::time::Duration::from_millis(8000), {
+            let shell = shell.clone();
+            move || {
+                let mut ws = shell.state_collect_workspace();
+                ws.view.mode = cr_core::model::enums::ItemViewMode::Detail;
+                ws.view.row_height = 32;
+                shell.state_apply_workspace(&ws);
+                shell.navigator().select_list(
+                    &cr_ui::library::comic_lists_snapshot()[0].base().id,
+                );
+                glib::timeout_add_local(std::time::Duration::from_millis(500), {
+                    let shell = shell.clone();
+                    move || {
+                        let size = shell.state_grid_item_size();
+                        let mode = shell.state_grid_mode();
+                        println!("I boot-configure mode={mode} size={size:?} (expect Detail row 32 — no RefCell abort)");
+                        glib::ControlFlow::Break
+                    }
+                });
+                glib::ControlFlow::Break
+            }
+        });
+
         // H. MinimalGui (F10's action): the menubar hides; the tab
         //    strip + the status bar ride the C# `flag4` formula —
         //    on the BROWSER workspace they stay visible even in

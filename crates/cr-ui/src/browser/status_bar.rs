@@ -338,8 +338,11 @@ impl StatusBar {
         let Some((min, max, value)) = size else {
             return;
         };
-        self.inner.slider.set_range(min, max);
+        // The guard covers the RANGE set too: a range that clamps
+        // the current value (per-mode ranges differ) emits
+        // value_changed, and the handler re-enters the ItemView.
         self.inner.slider_syncing.set(true);
+        self.inner.slider.set_range(min, max);
         self.inner.slider.set_value(value);
         self.inner.slider_syncing.set(false);
     }

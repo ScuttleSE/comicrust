@@ -209,6 +209,32 @@ Probe lessons (do not re-learn):
   GRID order — the gate the importlist probe lacked: it checked
   the evaluation, not the display). 368 tests.
 
+- BOOT-CRASH FIX (user report: instant SIGABRT at startup,
+  `item_view.rs:465 RefCell already borrowed`). Mechanism (proven
+  by reproducing with the user's real Config.xml + DB copy in an
+  isolated XDG): the user's persisted workspace mode is Detail →
+  the status-bar slider's first `sync_slider` during the boot list
+  selection clamps its fresh value (96) into the Detail range
+  (12..48) — `gtk_range_set_range` emits `value_changed` when it
+  clamps, and `sync_slider` set the sync guard only AFTER the range
+  set → the slider handler re-entered `set_item_size` (borrow_mut)
+  while the selection notify (`notify_and_redraw`) still held a
+  shared ItemView borrow. Two fixes:
+  (1) `notify_and_redraw` lifts the hook out of the state borrow
+  and fires after it drops (the Phase 3 re-entrancy lesson;
+  `SelectionFn` is now `Rc<dyn Fn>` so the payload can be cloned
+  out);
+  (2) `sync_slider` guards the RANGE set too (the guard moves
+  before `set_range`).
+  Gate: `cr-ui/examples/bootreentry_probe.rs` — a persisted
+  Detail-mode Config.xml + seeded books, the real boot; aborts on
+  the old code at the exact line, passes with the fix. The
+  statusbar probe gained the re-entrancy gate I (workspace-applied
+  mode + list selection — passes either way, kept as a regression
+  check; apply_workspace pre-syncs the slider so it cannot catch
+  the first-configure clamp — the lesson: the faithful repro needs
+  the config-file boot path).
+
 ## Incident record (2026-09-06, T2 user test)
 
 The user imported a real `.cbl` ("Add missing Books to Library"),

@@ -160,7 +160,21 @@ Update this section at the **end of every work session**. The next agent must kn
   (input order = display order; the Guid tiebreak only under an
   active sort), unit test + the `listorder_probe` end-to-end grid
   gate (the importlist probe checked the evaluation, NOT the
-  display — a lesson: gate the layer the user sees). 368 tests. Phase 7 (T1 + T2) is IMPLEMENTED — T2 user test
+  display — a lesson: gate the layer the user sees). 368 tests.
+  BOOT-CRASH FIX (user report: instant SIGABRT at startup,
+  "RefCell already borrowed" at item_view.rs:465): the persisted
+  Detail workspace made the status-bar slider's first sync clamp
+  its fresh value (96→48) — set_range emits value_changed OUTSIDE
+  the sync guard, the handler re-entered set_item_size while the
+  selection notify held the ItemView borrow. Fixes:
+  notify_and_redraw lifts the hook out of the state borrow
+  (SelectionFn = Rc<dyn Fn>), and sync_slider guards the range set
+  too. Gate: bootreentry_probe (a Detail-mode Config.xml + the real
+  boot — aborts on the old code at the exact line). Lesson: a
+  value-changing configure inside a notify chain is the
+  re-entrancy trap; the faithful repro needs the CONFIG-FILE boot
+  path (apply_workspace pre-syncs the slider, so programmatic
+  gates can miss it). Phase 7 (T1 + T2) is IMPLEMENTED — T2 user test
   pending; Phase 8 (packaging) follows.
   INIT-GLOBAL BOOT BUG FIXED (2026-09-06, the cache-folder user
   report "the setting reverts after restart"): `init_global` used
