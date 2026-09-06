@@ -75,6 +75,12 @@ fn initialize_settings() {
 
     let mut extended = cr_core::settings::ExtendedSettings::default();
     extended.load(&ini, &argv);
+    if std::env::var("CR_DEBUG_SL").is_ok() {
+        eprintln!(
+            "[cache-ov] chain={chain} ini-cache-path={:?} argv={argv:?}",
+            ini.get("CachePath")
+        );
+    }
     cr_core::settings::ExtendedSettings::init_global(extended);
 
     SETTINGS.with(|cell| {

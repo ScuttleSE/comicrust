@@ -367,19 +367,41 @@ fn parse_color(text: &str) -> Option<Rgb> {
     })
 }
 
-/// The `EngineConfiguration.Default` singleton (a `OnceLock` reader;
-/// the C# static). `EngineConfiguration::init_global` installs a
-/// configuration loaded from the ini chain; before that the defaults
-/// apply.
-static GLOBAL: std::sync::OnceLock<EngineConfiguration> = std::sync::OnceLock::new();
+/// The `EngineConfiguration.Default` singleton (a write-through
+/// global; the C# static). `EngineConfiguration::init_global`
+/// installs a configuration loaded from the ini chain; before that
+/// the defaults apply.
+static GLOBAL: std::sync::OnceLock<std::sync::RwLock<EngineConfiguration>> =
+    std::sync::OnceLock::new();
 
 impl EngineConfiguration {
     pub fn init_global(config: EngineConfiguration) {
-        let _ = GLOBAL.set(config);
+        // WRITE-THROUGH (the ExtendedSettings boot bug): an early
+        // `global()` reader must not freeze the defaults over the
+        // parsed ini.
+        let lock = GLOBAL.get_or_init(|| std::sync::RwLock::new(config.clone()));
+        *lock
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = config;
     }
 
-    pub fn global() -> &'static EngineConfiguration {
-        GLOBAL.get_or_init(EngineConfiguration::default)
+    pub fn global() -> EngineConfigurationGuard<'static> {
+        let lock = GLOBAL.get_or_init(|| std::sync::RwLock::new(EngineConfiguration::default()));
+        let guard = lock
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        EngineConfigurationGuard(guard)
+    }
+}
+
+/// The read guard for the [`EngineConfiguration`] global (the
+/// `RwLock` snapshot — callers used the `&'static` view before).
+pub struct EngineConfigurationGuard<'a>(std::sync::RwLockReadGuard<'a, EngineConfiguration>);
+
+impl std::ops::Deref for EngineConfigurationGuard<'_> {
+    type Target = EngineConfiguration;
+    fn deref(&self) -> &EngineConfiguration {
+        &self.0
     }
 }
 

@@ -343,7 +343,15 @@ static EXTENDED_GLOBAL: std::sync::OnceLock<std::sync::RwLock<ExtendedSettings>>
 
 impl ExtendedSettings {
     pub fn init_global(config: ExtendedSettings) {
-        let _ = EXTENDED_GLOBAL.set(std::sync::RwLock::new(config));
+        // WRITE-THROUGH, not `OnceLock::set`: the global may already
+        // be initialized by an early `global()` reader (the library
+        // open calls `Paths::new_default()` BEFORE
+        // `initialize_settings` — a plain `set` would silently drop
+        // the parsed ini/argv configuration; the dark-mode boot bug).
+        let lock = EXTENDED_GLOBAL.get_or_init(|| std::sync::RwLock::new(config.clone()));
+        *lock
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = config;
     }
 
     pub fn global() -> std::sync::RwLockReadGuard<'static, ExtendedSettings> {

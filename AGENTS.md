@@ -55,6 +55,23 @@ Update this section at the **end of every work session**. The next agent must kn
   user-tested, all pass (2026-09-06)**; the close-out record lives
   at the end of `docs/phase-5.5-kickoff.md`. The per-task records
   below stay for the fix-round facts.
+  INIT-GLOBAL BOOT BUG FIXED (2026-09-06, the cache-folder user
+  report "the setting reverts after restart"): `init_global` used
+  `OnceLock::set`, which SILENTLY FAILS when an early `global()`
+  reader already froze the defaults — and `library::initialize()`
+  opens the database (→ `Paths::new_default()` → the
+  ExtendedSettings global) BEFORE `initialize_settings` loads the
+  ini. Every boot ini/argv value (CachePath, Theme, quick-open
+  size…) was dropped at startup; only runtime writes (the dark-mode
+  toggle) ever landed, and the ADR-025 "the app starts light on an
+  existing config" observation was THIS bug, not C# parity — with
+  the write-through fix an existing `Theme=Dark` boots dark (the
+  C# behavior). `EngineConfiguration::init_global` had the same
+  pattern (the DB load reads it before init) — now a write-through
+  RwLock guard (`EngineConfigurationGuard`). Evidence: the CR_DEBUG_SL
+  boot trace showed `ini-cache-path=Some(...)` while the app built
+  its pool with the default paths; after the fix the override dirs
+  appear at boot. 350 tests + all probes green.
   CACHE WIRING (the C# `CacheManager`) COMPLETE — IMPLEMENTED +
   PROBE-PROVEN (2026-09-06), user test pending. The whole cache
   machinery existed but was inert: `ImagePool::new(None)` built no
@@ -353,9 +370,10 @@ Update this section at the **end of every work session**. The next agent must kn
   `theme::set_dark` (instant re-style), and persists `Theme` +
   `UseDarkMode=False` through `library::save_ini_keys` (a new ini
   merge-writer into the LAST chain file). `Themes::Default` =
-  LIGHT (C# parity) — the app STARTS LIGHT on an existing config;
-  `-dark`/`-theme Dark` still work. `.placeholder-label` mid-gray
-  (both-theme readable).
+  LIGHT (C# parity) — `-dark`/`-theme Dark` still work.
+  (CORRECTED above: "starts light on an existing Dark config" was
+  the init-global boot bug, not C# parity.) `.placeholder-label`
+  mid-gray (both-theme readable).
   FIX ROUND 1 (user report: the ItemView grid + the Pages panel
   stayed dark in light mode): the two views drew hardcoded dark
   palettes. `theme::Palette` resolves the GTK named colors
