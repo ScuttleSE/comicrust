@@ -54,7 +54,46 @@ Update this section at the **end of every work session**. The next agent must kn
 - **Phase:** 5.5 (UI chrome parity) **COMPLETE — all tasks T0-T14
   user-tested, all pass (2026-09-06)**; the close-out record lives
   at the end of `docs/phase-5.5-kickoff.md`. The per-task records
-  below stay for the fix-round facts. **NEXT: Phase 6 (scripting) —
+  below stay for the fix-round facts.
+  CACHE WIRING (the C# `CacheManager`) COMPLETE — IMPLEMENTED +
+  PROBE-PROVEN (2026-09-06), user test pending. The whole cache
+  machinery existed but was inert: `ImagePool::new(None)` built no
+  disk caches, the thumb memory pool was write-only, and covers
+  re-decoded from the comic file on every startup/list swap. Now:
+  (1) `ImagePool::with_config(&ImagePoolConfig)` (the CacheManager
+  ctor parity) — disk caches from `Paths::{thumbnail,image}_cache_path`
+  with budgets + enable flags from Settings (the Preferences
+  Advanced page spins now consume — resolves the Phase 5 T1
+  deferral), thumb memory = `MEMORY_THUMBNAIL_CACHE_SIZE` (8192
+  items) × `MemoryThumbCacheSizeMB`, page memory =
+  `MemoryPageCacheCount`; (2) `render_thumbnail` is memory-first
+  (`get_thumb_memory`) so the grid/QuickOpen/tabstrip/editor share
+  one decode; (3) `DiskCache` gained `CacheSizeMB` pruning (mtime
+  LRU, stride-throttled) + `Enabled` + a header-only
+  `is_available` (no JPEG body read); (4) T4a:
+  `front_cover_thumbnail_key` (the `GetFrontCoverThumbnailKey`
+  port) is THE cover key for ItemView, the tab strip (TabInfo
+  gained `cover_key`), and the warm-up — `generate-front-cover-thumbnail`
+  now renders through the chain and File ▸ "Generate Cover
+  Thumbnails" (`win.generate-thumbnails`, was a disabled stub)
+  queues one unlimited-queue job per book; (5) T4b:
+  `ComicInfo::update_page_size` (+ `get_page_mut_or_add` — the
+  `GetPage(page, add:true)` port with sequential-index growth and
+  short truncation) + `CacheEventTx` (`PageCached`/`ThumbnailCached`
+  on the memory-cache inserts) + `library::install_cache_events`
+  (a 500 ms drain writes the decoded pixel sizes into the DB books,
+  `TranslateImageIndexToPage` parity; temp books skip). FIXED on
+  the way: `render_page` inserted into the page memory pool under
+  the BASE key hash but read it under the TIERED hash — the page
+  memory pool could never hit its own entries. Gate:
+  `cache_probe` (isolated XDG; the 5 gates: 2 cache files while
+  browsing, sized-books=2, warm-up idempotent, second-pool-reuses,
+  ImageWidth persisted) + 349 tests + fmt/clippy + all other
+  probes green. Deviations: the C# default 500 MB budgets kept
+  (user raises them in Preferences for large libraries —
+  user decision, no auto-scaling); the writer emits sizes only
+  after a decode (the C# fills them the same lazy way).
+  **NEXT: Phase 6 (scripting) —
   start from `docs/phase-6-kickoff.md`** (the C# spec map, the task
   list, and the gates live there; `cr-script` is the empty target
   crate).
@@ -521,7 +560,7 @@ Update this section at the **end of every work session**. The next agent must kn
   Phases 0-5 are complete (their gates stay green). Open Phase 1
   gaps: WebComicProvider and the PDF/DjVu writers (tracked in
   `docs/phase-1-kickoff.md`).
-- **State:** `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` are green. 341 tests. CI runs on the `docker-runner-amd64` container runner (ADR-020). The release tracks are `release.yaml` (rolling prerelease per push) and `tagged-release.yaml` (manual dispatch, stable release for an existing tag — ADR-021, 2026-09-03). Until the runner is registered and `comicrust-ci:latest` is built on the runner host, pushed and dispatched workflows sit queued on that label.
+- **State:** `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` are green. 349 tests. CI runs on the `docker-runner-amd64` container runner (ADR-020). The release tracks are `release.yaml` (rolling prerelease per push) and `tagged-release.yaml` (manual dispatch, stable release for an existing tag — ADR-021, 2026-09-03). Until the runner is registered and `comicrust-ci:latest` is built on the runner host, pushed and dispatched workflows sit queued on that label.
 - **Phase 0 gate status:** byte-stable ComicDb.xml round-trip proven on all three synthetic fixtures AND the real-world database `tests/realworld/ComicDb.xml` (255 books, 584 KB, 2026-09-02, user-approved commit).
 - **Phase 2 gate status:** every saved smart list in the real-world DB (a) binds to the matcher registry, (b) renders to a `Match` query string that re-parses and re-renders byte-identically, and (c) evaluates to the SAME book sets the C# cached in `CacheStorage` (Never Read = all 255, Files to update = the 3 dirty books, Reading/Read = empty). Evidence: `crates/cr-engine/tests/realworld_query.rs`.
 - **Phase 3 gate status (COMPLETE):** a real comic (`tests/testfiles/`, git-ignored, user-supplied) opens in a GTK4 window and reads comfortably: single/double/adaptive/continuous layouts, spread composition with cover-right + binding-edge rules, fit modes with anamorphic tolerance, zoom/pan/rotation, RTL, continuous scroll with anchor-stable layout rebuilds, fade/slide transitions, paper texture, Auto/Color/Texture backgrounds, the real `MainForm` input map, session tabs with undock, fullscreen chrome with cursor auto-hide, reading-state tracking, the magnifier, error pages, and pool-queue page loads. User-verified after each task; UI smoke tests on this machine run headless under Xvfb + screenshots (see the probe lessons below — the key-injection tools are unreliable; only user tests decide input behavior).

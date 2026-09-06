@@ -118,6 +118,96 @@ fn open_message(status: OpenStatus) -> Option<String> {
     status.message().map(str::to_string)
 }
 
+// ---------- The image caches (the C# `CacheManager`) ----------
+
+/// The `ImagePool` construction from the session (`CacheManager`
+/// ctor parity): the `SystemPaths` cache folders and the caching
+/// settings (`ThumbCacheEnabled/PageCacheEnabled/...MB`,
+/// `MemoryThumbCacheSizeMB`, `MemoryPageCacheCount`). The pools get
+/// the defaults where the C# uses its own constants (thumb memory
+/// item cap 8192 in the engine's `MEMORY_THUMBNAIL_CACHE_SIZE`).
+pub fn image_pool_config() -> cr_engine::image_pool::ImagePoolConfig {
+    use cr_engine::image_pool::ImagePoolConfig;
+    let paths = cr_core::paths::Paths::new_default();
+    let s = settings();
+    let s = s.borrow();
+    let clamp_page = s.memory_page_cache_count.clamp(1, 100) as usize;
+    ImagePoolConfig {
+        page_cache_dir: Some(paths.image_cache_path),
+        thumb_cache_dir: Some(paths.thumbnail_cache_path),
+        page_cache_size_mb: s.page_cache_size_mb.max(0) as u64,
+        thumb_cache_size_mb: s.thumb_cache_size_mb.max(0) as u64,
+        page_cache_enabled: s.page_cache_enabled,
+        thumb_cache_enabled: s.thumb_cache_enabled,
+        page_memory_count: clamp_page,
+        thumb_memory_bytes: s.memory_thumb_cache_size_mb.max(0) as usize * 1024 * 1024,
+    }
+}
+
+/// Wires `PageCached`/`ThumbnailCached` into the pool and drains the
+/// event queue onto the UI thread (the C# `CacheManager` handlers
+/// fire inline; the port bridges the worker completion over mpsc —
+/// the ADR-019 shape). Every event writes the decoded pixel size
+/// into the book with that location (`UpdateComicBookPageData`:
+/// `TranslateImageIndexToPage(key.Index)` then `UpdatePageSize`),
+/// marking the library dirty only on an actual change.
+pub fn install_cache_events(pool: &std::sync::Arc<cr_engine::image_pool::ImagePool>) {
+    let (tx, rx) = std::sync::mpsc::channel::<cr_engine::image_pool::CacheEvent>();
+    pool.set_event_tx(cr_engine::image_pool::CacheEventTx::new(tx));
+    let library = session();
+    glib::timeout_add_local(std::time::Duration::from_millis(500), move || {
+        // Drain every pending event per tick (the warm-up emits
+        // thousands; one per tick would lag the write-back behind
+        // for hours).
+        loop {
+            let received = rx.try_recv();
+            let Ok(event) = received else {
+                break;
+            };
+            let (location, index, w, h) = match event {
+                cr_engine::image_pool::CacheEvent::PageCached {
+                    location,
+                    index,
+                    width,
+                    height,
+                } => (location, index, width, height),
+                cr_engine::image_pool::CacheEvent::ThumbnailCached {
+                    location,
+                    index,
+                    width,
+                    height,
+                } => (location, index, width, height),
+            };
+            let mut l = library.borrow_mut();
+            let Some(book) = l
+                .database_mut()
+                .books
+                .iter_mut()
+                .find(|b| b.file_path == location)
+            else {
+                continue;
+            };
+            let page = book.info.translate_image_index_to_page(index as i32);
+            if book.info.update_page_size(page, w as i32, h as i32) {
+                l.mark_dirty();
+            }
+        }
+        ControlFlow::Continue
+    });
+}
+
+/// `MainForm.GenerateFrontCoverCache` — the "Generate Cover
+/// Thumbnails" command: one unlimited-queue warm-up job per library
+/// book. The worker skips entries already in the thumbnail disk
+/// cache, so a repeated command is cheap.
+pub fn cache_thumbnails(pool: &std::sync::Arc<cr_engine::image_pool::ImagePool>) {
+    let books: Vec<ComicBook> = session().borrow().database().books.clone();
+    for book in &books {
+        let key = cr_engine::image_pool::front_cover_thumbnail_key(book);
+        pool.generate_front_cover_thumbnail(key);
+    }
+}
+
 /// The session (`Program.DatabaseManager`). Panics before
 /// [`initialize`] — the C# static would NRE the same way.
 pub fn session() -> Rc<RefCell<Library>> {

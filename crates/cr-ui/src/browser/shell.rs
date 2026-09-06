@@ -383,8 +383,11 @@ impl BrowserShell {
         window.set_handle_menubar_accel(false);
 
         // One pool for the whole app (the C# `Program.ImagePool` is
-        // global).
-        let pool = Arc::new(ImagePool::new(None));
+        // global). The `CacheManager` construction: disk caches +
+        // memory capacities from the settings, and the cache-event
+        // sink that writes decoded page sizes back into the books.
+        let pool = Arc::new(ImagePool::with_config(&library::image_pool_config()));
+        library::install_cache_events(&pool);
         let (reader, reader_widgets) = ReaderShell::new(app, Arc::clone(&pool));
         let navigator = Navigator::new();
         let super::item_view::ItemViewWidgets {
@@ -1973,7 +1976,9 @@ impl ShellState {
 
     fn open_editor(self: &Rc<ShellState>, books: Vec<ComicBook>) {
         let commit = self.editor_commit();
-        crate::dialogs::book_editor::show(&self.window, books, commit);
+        // The editor shares the app pool (the C# `Program.ImagePool`
+        // is global — a private pool would re-decode every cover).
+        crate::dialogs::book_editor::show(&self.window, books, commit, Arc::clone(&self.pool));
     }
 
     fn open_bulk_editor(self: &Rc<ShellState>, books: Vec<ComicBook>) {
@@ -3011,8 +3016,13 @@ impl ShellState {
         // the menu open the same single instance).
         self.add_simple(&group, "tasks", ShellState::show_tasks);
         // generate-thumbnails — the C# `CacheThumbnails` queue
-        // command; the thumbnail-queue work owns it.
-        self.add_disabled(&group, "generate-thumbnails");
+        // command: one unlimited-queue warm-up job per library book
+        // (the worker skips covers already in the thumbnail disk
+        // cache).
+        self.add_simple(&group, "generate-thumbnails", |_sh| {
+            let pool = Arc::clone(&_sh.pool);
+            library::cache_thumbnails(&pool);
+        });
         // new-book-entry — fileless books are unported.
         self.add_disabled(&group, "new-book-entry");
         self.add_simple(&group, "restart", |sh| {

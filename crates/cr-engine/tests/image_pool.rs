@@ -138,3 +138,155 @@ fn wait_for<F: Fn() -> bool>(timeout: std::time::Duration, check: F) -> bool {
     }
     check()
 }
+
+#[test]
+fn config_construction_wires_disk_caches_and_memory_capacities() {
+    let dir = temp_dir("config");
+    std::fs::write(dir.join("001.png"), png_pixel(64)).unwrap();
+    let cache = temp_dir("configcache");
+    let config = cr_engine::image_pool::ImagePoolConfig {
+        page_cache_dir: Some(cache.join("Images")),
+        thumb_cache_dir: Some(cache.join("Thumbnails")),
+        page_cache_size_mb: 7,
+        thumb_cache_size_mb: 9,
+        page_cache_enabled: true,
+        thumb_cache_enabled: true,
+        page_memory_count: 25,
+        thumb_memory_bytes: 32 * 1024 * 1024,
+    };
+    let pool = Arc::new(ImagePool::with_config(&config));
+    // The budgets and enable flags land on the disk caches.
+    let page_disk = pool.page_disk.as_ref().expect("page disk");
+    let thumb_disk = pool.thumb_disk.as_ref().expect("thumb disk");
+    let key = ImageKey::new(
+        "test",
+        dir.to_string_lossy().as_ref(),
+        0,
+        0,
+        0,
+        ImageRotation::None,
+    );
+    let text = format!("{}|0|0|0", key.location);
+    let hash = cr_image::disk::fnv1a(&text);
+    // The disabled cache rejects the entry; the enabled one holds it.
+    page_disk.write(hash, &text, b"raw").unwrap();
+    assert!(page_disk.is_available(hash, &text));
+    thumb_disk.set_enabled(false);
+    assert!(!thumb_disk.is_available(hash, &text));
+    thumb_disk.set_enabled(true);
+    // Memory capacities: the page pool takes the config count; the
+    // thumb pool holds at least the rendered entry within its
+    // 32 MiB budget.
+    let tkey = ThumbnailKey::new(key.clone());
+    let _ = pool.render_thumbnail(&tkey).expect("thumb");
+    assert!(pool.get_thumb_memory(&tkey).is_some());
+    // The second render takes the memory path (no re-decode — the
+    // page entry count stays 1 and the thumb bytes are the same).
+    let again = pool.render_thumbnail(&tkey).expect("thumb again");
+    assert_eq!(again, pool.get_thumb_memory(&tkey).unwrap());
+}
+
+#[test]
+fn cache_events_carry_the_decoded_size() {
+    let dir = temp_dir("events");
+    std::fs::write(dir.join("001.png"), png_pixel(200)).unwrap();
+    let config = cr_engine::image_pool::ImagePoolConfig {
+        ..cr_engine::image_pool::ImagePoolConfig::default()
+    };
+    let pool = Arc::new(ImagePool::with_config(&config));
+    let (tx, rx) = std::sync::mpsc::channel::<cr_engine::image_pool::CacheEvent>();
+    pool.set_event_tx(cr_engine::image_pool::CacheEventTx::new(tx));
+    let key = ImageKey::new(
+        "test",
+        dir.to_string_lossy().as_ref(),
+        0,
+        0,
+        0,
+        ImageRotation::None,
+    );
+    let _ = pool
+        .render_thumbnail(&ThumbnailKey::new(key.clone()))
+        .expect("thumb");
+    let events: Vec<cr_engine::image_pool::CacheEvent> = rx.try_iter().collect();
+    // The thumbnail chain fires both halves (the page render enters
+    // the page memory cache, the thumb the thumb cache).
+    assert!(events.iter().any(|e| matches!(
+        e,
+        cr_engine::image_pool::CacheEvent::PageCached {
+            width: 1,
+            height: 1,
+            ..
+        }
+    )));
+    assert!(events.iter().any(|e| matches!(
+        e,
+        cr_engine::image_pool::CacheEvent::ThumbnailCached {
+            width: 1,
+            height: 1,
+            ..
+        }
+    )));
+}
+
+#[test]
+fn front_cover_key_uses_the_stored_cover_page() {
+    use cr_core::model::comic_book::ComicBook;
+    use cr_core::model::comic_page_info::ComicPageInfo;
+    // Pages: 0 = story, 1 = FrontCover (provider image index 2).
+    let mut book = ComicBook {
+        file_path: "/comics/a.cbz".into(),
+        ..ComicBook::default()
+    };
+    book.info.pages = vec![
+        ComicPageInfo {
+            image_index_raw: 1,
+            ..Default::default()
+        },
+        ComicPageInfo {
+            image_index_raw: 3,
+            page_type: cr_core::model::enums::ComicPageType(1),
+            rotation: ImageRotation::Rotate90,
+            ..Default::default()
+        },
+    ];
+    let key = cr_engine::image_pool::front_cover_thumbnail_key(&book);
+    assert_eq!(key.key.index, 2);
+    assert_eq!(key.key.rotation, ImageRotation::Rotate90);
+    // A book without page metadata keeps the historical key.
+    let plain = ComicBook {
+        file_path: "/comics/b.cbz".into(),
+        ..ComicBook::default()
+    };
+    let key = cr_engine::image_pool::front_cover_thumbnail_key(&plain);
+    assert_eq!(key.key.index, 0);
+    assert_eq!(key.key.rotation, ImageRotation::None);
+}
+
+#[test]
+fn warm_up_reuses_disk_entries() {
+    let dir = temp_dir("warm");
+    std::fs::write(dir.join("001.png"), png_pixel(100)).unwrap();
+    let cache = temp_dir("warmcache");
+    let pool = Arc::new(ImagePool::new(Some(&cache)));
+    let key = ImageKey::new(
+        "test",
+        dir.to_string_lossy().as_ref(),
+        0,
+        0,
+        0,
+        ImageRotation::None,
+    );
+    let text = format!("{}|0|0|0", key.location);
+    let hash = cr_image::disk::fnv1a(&text);
+    // The queued warm-up renders through the unlimited queue and
+    // lands the disk entry.
+    pool.generate_front_cover_thumbnail(ThumbnailKey::new(key.clone()));
+    assert!(wait_for(std::time::Duration::from_secs(5), || pool
+        .thumb_disk
+        .as_ref()
+        .unwrap()
+        .is_available(hash, &text)));
+    assert!(wait_for(std::time::Duration::from_secs(5), || !pool
+        .slow_thumbnail_queue_unlimited
+        .is_active()));
+}

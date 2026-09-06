@@ -426,7 +426,12 @@ type FieldsRef = Rc<RefCell<Fields>>;
 
 /// Opens the editor for `books` (clones of the library books; the
 /// commit callback runs per save point).
-pub fn show(parent: &impl IsA<gtk4::Window>, books: Vec<ComicBook>, on_commit: CommitFn) {
+pub fn show(
+    parent: &impl IsA<gtk4::Window>,
+    books: Vec<ComicBook>,
+    on_commit: CommitFn,
+    pool: Arc<ImagePool>,
+) {
     if books.is_empty() {
         return;
     }
@@ -436,7 +441,7 @@ pub fn show(parent: &impl IsA<gtk4::Window>, books: Vec<ComicBook>, on_commit: C
         page_view_page: 0,
         books,
         current: 0,
-        pool: Arc::new(ImagePool::new(None)),
+        pool,
         preview: None,
         pending_preview: None,
         cover: None,

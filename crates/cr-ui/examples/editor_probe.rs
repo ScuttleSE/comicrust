@@ -59,7 +59,12 @@ fn main() {
 
     let commit: book_editor::CommitFn = std::rc::Rc::new(|_edited| {});
     win.present();
-    book_editor::show(&win, books, commit);
+    book_editor::show(
+        &win,
+        books,
+        commit,
+        std::sync::Arc::new(cr_engine::image_pool::ImagePool::new(None)),
+    );
     gtk4::glib::MainLoop::new(None, false).run();
 }
 /// Builds one editor book from a real comic (the probe's preview +

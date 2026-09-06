@@ -83,6 +83,10 @@ pub struct TabInfo {
     pub slot: usize,
     pub caption: String,
     pub source: Option<String>,
+    /// The front-cover thumbnail key (the C#
+    /// `GetFrontCoverThumbnailKey` parity — one shared cache slot
+    /// with the browser covers instead of a second decode).
+    pub cover_key: Option<cr_image::keys::ThumbnailKey>,
     pub has_book: bool,
     pub current: bool,
 }
@@ -409,6 +413,10 @@ impl ReaderShell {
                     caption,
                     source: (!t.path.as_os_str().is_empty())
                         .then(|| t.path.to_string_lossy().into_owned()),
+                    cover_key: book.and_then(|b| {
+                        (!b.file_path.is_empty())
+                            .then(|| cr_engine::image_pool::front_cover_thumbnail_key(b))
+                    }),
                     has_book,
                     current: current == Some(t.slot),
                 }

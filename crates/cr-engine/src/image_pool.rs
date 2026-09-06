@@ -23,6 +23,7 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use cr_core::model::bitmap_adjustment::BitmapAdjustment;
+use cr_core::model::comic_book::ComicBook;
 use cr_core::model::enums::ImageRotation;
 use cr_image::disk::{fnv1a, DiskCache};
 use cr_image::keys::{ImageKey, PageKey, ThumbnailKey};
@@ -37,6 +38,86 @@ use crate::queue::{AddMode, ProcessingQueue, ThreadPriority};
 pub const DEFAULT_THUMB_COUNT: usize = 20;
 pub const DEFAULT_THUMB_SIZE: usize = 5_242_880;
 pub const DEFAULT_PAGE_COUNT: usize = 5;
+
+/// `CacheManager.MemoryThumbnailCacheSize` — the ITEM capacity of
+/// the thumbnail memory cache (the C# CacheManager constructs
+/// `new ImagePool(8192, settings.MemoryThumbCacheSizeMB,
+/// settings.MemoryPageCacheCount)`).
+pub const MEMORY_THUMBNAIL_CACHE_SIZE: usize = 8192;
+
+/// One cache event (`ImagePool.PageCached`/`ThumbnailCached` — the
+/// C# fires them when an item enters the MEMORY cache; the
+/// `CacheManager` handler writes the decoded pixel size into the
+/// book's `ComicPageInfo`).
+#[derive(Clone, Debug, PartialEq)]
+pub enum CacheEvent {
+    PageCached {
+        location: String,
+        index: usize,
+        width: u32,
+        height: u32,
+    },
+    ThumbnailCached {
+        location: String,
+        index: usize,
+        width: u32,
+        height: u32,
+    },
+}
+
+/// `std::mpsc::Sender` is not `Sync`; the queue workers need
+/// `Send + Sync` callbacks (the ADR-019 `PageTx` shape).
+#[derive(Clone)]
+pub struct CacheEventTx(Arc<Mutex<std::sync::mpsc::Sender<CacheEvent>>>);
+
+impl CacheEventTx {
+    /// Wraps a channel sender (the worker sink).
+    pub fn new(tx: std::sync::mpsc::Sender<CacheEvent>) -> CacheEventTx {
+        CacheEventTx(Arc::new(Mutex::new(tx)))
+    }
+
+    pub fn send(&self, event: CacheEvent) {
+        if let Ok(tx) = self.0.lock() {
+            let _ = tx.send(event);
+        }
+    }
+}
+
+/// The cache construction (`CacheManager` ctor parity): the two
+/// disk caches with budgets + enable flags, and the memory pool
+/// capacities from the settings.
+pub struct ImagePoolConfig {
+    pub page_cache_dir: Option<PathBuf>,
+    pub thumb_cache_dir: Option<PathBuf>,
+    /// `Settings.PageCacheSizeMB`.
+    pub page_cache_size_mb: u64,
+    /// `Settings.ThumbCacheSizeMB`.
+    pub thumb_cache_size_mb: u64,
+    /// `Settings.PageCacheEnabled`.
+    pub page_cache_enabled: bool,
+    /// `Settings.ThumbCacheEnabled`.
+    pub thumb_cache_enabled: bool,
+    /// `Settings.MemoryPageCacheCount` (C# default 25, 20..100).
+    pub page_memory_count: usize,
+    /// `Settings.MemoryThumbCacheSizeMB` bytes; items capped at
+    /// `MEMORY_THUMBNAIL_CACHE_SIZE` (8192).
+    pub thumb_memory_bytes: usize,
+}
+
+impl Default for ImagePoolConfig {
+    fn default() -> Self {
+        ImagePoolConfig {
+            page_cache_dir: None,
+            thumb_cache_dir: None,
+            page_cache_size_mb: 0,
+            thumb_cache_size_mb: 0,
+            page_cache_enabled: true,
+            thumb_cache_enabled: true,
+            page_memory_count: DEFAULT_PAGE_COUNT,
+            thumb_memory_bytes: DEFAULT_THUMB_SIZE,
+        }
+    }
+}
 
 /// The five queues of the C# `ImagePool`.
 pub struct ImagePool {
@@ -53,24 +134,52 @@ pub struct ImagePool {
     pub page_disk: Option<Arc<DiskCache>>,
     /// Thumbnail disk cache (`thumbs.DiskCache`).
     pub thumb_disk: Option<Arc<DiskCache>>,
+    /// `PageCached`/`ThumbnailCached` sink (`set_event_tx`).
+    event_tx: Mutex<Option<CacheEventTx>>,
 }
 
 impl ImagePool {
-    /// The default construction; disk caches are created under `cache_dir`
-    /// when given (`pages`/`thumbs` subfolders, fresh-format Phase 1
-    /// caches).
+    /// The historical construction (tests/probes): disk caches under
+    /// `pages`/`thumbs` subfolders of `cache_dir`, defaults for the
+    /// memory pools.
     pub fn new(cache_dir: Option<&Path>) -> Self {
+        let config = match cache_dir {
+            Some(dir) => ImagePoolConfig {
+                page_cache_dir: Some(dir.join("pages")),
+                thumb_cache_dir: Some(dir.join("thumbs")),
+                ..ImagePoolConfig::default()
+            },
+            None => ImagePoolConfig::default(),
+        };
+        Self::with_config(&config)
+    }
+
+    /// The `CacheManager` construction: budgets + capacities from
+    /// the config.
+    pub fn with_config(config: &ImagePoolConfig) -> Self {
         let thread_count = std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(1)
             .clamp(1, 4);
         let page_cap = DEFAULT_PAGE_COUNT * 2;
-        let (page_disk, thumb_disk) = match cache_dir {
-            Some(dir) => (
-                DiskCache::open(&dir.join("pages")).ok().map(Arc::new),
-                DiskCache::open(&dir.join("thumbs")).ok().map(Arc::new),
-            ),
-            None => (None, None),
+        let (page_disk, thumb_disk) = {
+            let open = |dir: &Option<PathBuf>, mb: u64, enabled: bool| {
+                dir.as_ref()
+                    .and_then(|d| DiskCache::open_with(d, mb, enabled).ok())
+                    .map(Arc::new)
+            };
+            (
+                open(
+                    &config.page_cache_dir,
+                    config.page_cache_size_mb,
+                    config.page_cache_enabled,
+                ),
+                open(
+                    &config.thumb_cache_dir,
+                    config.thumb_cache_size_mb,
+                    config.thumb_cache_enabled,
+                ),
+            )
         };
         let mut fast_page_queue = ProcessingQueue::new_single(
             "Background Fast Page Queue",
@@ -112,13 +221,28 @@ impl ImagePool {
             fast_thumbnail_queue,
             slow_thumbnail_queue,
             slow_thumbnail_queue_unlimited,
-            pages: Arc::new(Mutex::new(cr_image::memory::page_pool())),
+            pages: Arc::new(Mutex::new(cr_image::memory::MemoryPool::new(
+                config.page_memory_count,
+                0,
+            ))),
             thumbs: Arc::new(Mutex::new(cr_image::memory::MemoryPool::new(
-                DEFAULT_THUMB_COUNT,
-                DEFAULT_THUMB_SIZE,
+                MEMORY_THUMBNAIL_CACHE_SIZE,
+                config.thumb_memory_bytes,
             ))),
             page_disk,
             thumb_disk,
+            event_tx: Mutex::new(None),
+        }
+    }
+
+    /// `ImagePool.PageCached`/`ThumbnailCached` wiring: the sink the
+    /// UI thread drains (the C# `CacheManager` handlers ride the
+    /// cache events directly; the port bridges over mpsc — the
+    /// worker closures are `Send + Sync`). Takes `&self`: the pool
+    /// is shared through an `Arc`.
+    pub fn set_event_tx(&self, tx: CacheEventTx) {
+        if let Ok(mut slot) = self.event_tx.lock() {
+            *slot = Some(tx);
         }
     }
 
@@ -186,13 +310,20 @@ impl ImagePool {
         }
     }
 
-    /// `GenerateFrontCoverThumbnail` — the unlimited queue.
-    pub fn generate_front_cover_thumbnail(&self, key: ThumbnailKey) {
-        self.slow_thumbnail_queue_unlimited.add_item(key, |k| {
-            // The render chain runs in the worker; nothing else to do —
-            // the C# callback checks the disk cache and renders.
-            let _ = k;
-        });
+    /// `GenerateFrontCoverThumbnail` — the unlimited queue; the
+    /// worker skips entries already on disk and renders through the
+    /// standard chain otherwise (the C# `IsAvailable`-then-`GetThumbnail`
+    /// shape).
+    pub fn generate_front_cover_thumbnail(self: &Arc<Self>, key: ThumbnailKey) {
+        let pool = Arc::clone(self);
+        let _ = self.slow_thumbnail_queue_unlimited.add_item_with_key(
+            key,
+            None,
+            move |k| {
+                let _ = pool.render_thumbnail(k);
+            },
+            AddMode::AddToTop,
+        );
     }
 
     /// `AreImagesPending(filePath)`.
@@ -223,7 +354,10 @@ impl ImagePool {
         let provider = ComicProvider::open(Path::new(&key.key.location)).ok()?;
         let bytes = provider.read_page(key.key.index)?;
         let key_text = base_key_text(&key.key);
-        let hash = fnv1a(&key_text);
+        // The RAW page slot hash (the disk tier stores the
+        // unprocessed page); the memory slot uses the tiered
+        // `page_hash` above.
+        let raw_hash = fnv1a(&key_text);
 
         // Partial disk-cache tiers: (rotation, adjustment) from the
         // most-processed to the least (`GetPartialDiskPage` chain).
@@ -256,7 +390,7 @@ impl ImagePool {
                 if is_slow(&provider) {
                     if let Some(disk) = &self.page_disk {
                         if let Some(jpeg) = decode::normalize_to_jpeg(&bytes) {
-                            let _ = disk.write(hash, &key_text, &jpeg);
+                            let _ = disk.write(raw_hash, &key_text, &jpeg);
                         }
                     }
                 }
@@ -270,10 +404,23 @@ impl ImagePool {
             img = rotate(&img, rotation).ok()?;
         }
 
-        // Cache the final result in memory.
+        // Cache the final result in memory under the tiered hash
+        // (the get above and every `get_page_memory` poll use the
+        // same slot — the base-text hash never matched them).
         let size = img.rgba.len();
         if let Ok(mut pool) = self.pages.lock() {
             let _ = pool.lock_item(hash, || Ok((img.clone(), size)));
+        }
+        // `PageCached` (the memory-cache ItemAdded event): the
+        // write-back consumes the decoded pixel size.
+        let tx = self.event_tx.lock().ok().and_then(|s| s.clone());
+        if let Some(tx) = tx {
+            tx.send(CacheEvent::PageCached {
+                location: key.key.location.clone(),
+                index: key.key.index,
+                width: img.width,
+                height: img.height,
+            });
         }
         Some(img)
     }
@@ -297,11 +444,28 @@ impl ImagePool {
             .any(|k| k == key)
     }
 
+    /// `thumbs.MemoryCache.Get` — the memory hit for an already
+    /// rendered thumbnail (the UI's cache-first check; the C#
+    /// `GetThumbnail` reads the memory cache before any queue work).
+    pub fn get_thumb_memory(&self, key: &ThumbnailKey) -> Option<Vec<u8>> {
+        let hash = fnv1a(&base_key_text(&key.key));
+        let mut pool = self.thumbs.lock().ok()?;
+        pool.get(hash).cloned()
+    }
+
     /// The worker render chain for a thumbnail: render the page, build
     /// the 512px JPEG q60 thumbnail, cache to disk and memory.
     pub fn render_thumbnail(&self, key: &ThumbnailKey) -> Option<Vec<u8>> {
         let text = base_key_text(&key.key);
         let hash = fnv1a(&text);
+        // Memory first (the C# cache-first `GetThumbnail` ordering —
+        // without this the pool re-decodes the same cover for every
+        // view that asks).
+        if let Ok(mut pool) = self.thumbs.lock() {
+            if let Some(cached) = pool.get(hash) {
+                return Some(cached.clone());
+            }
+        }
         if let Some(disk) = &self.thumb_disk {
             if let Some(bytes) = disk.read(hash, &text) {
                 return Some(bytes);
@@ -317,6 +481,16 @@ impl ImagePool {
         }
         if let Ok(mut pool) = self.thumbs.lock() {
             let _ = pool.lock_item(hash, || Ok((bytes.clone(), bytes.len())));
+        }
+        // `ThumbnailCached` (the memory-cache ItemAdded event).
+        let tx = self.event_tx.lock().ok().and_then(|s| s.clone());
+        if let Some(tx) = tx {
+            tx.send(CacheEvent::ThumbnailCached {
+                location: key.key.location.clone(),
+                index: key.key.index,
+                width: original.0,
+                height: original.1,
+            });
         }
         Some(bytes)
     }
@@ -423,4 +597,33 @@ fn is_slow(provider: &ComicProvider) -> bool {
 /// Extra disk path helper for tests.
 pub fn disk_cache_dir(dir: &Path) -> PathBuf {
     dir.to_path_buf()
+}
+
+/// `ComicBook.GetFrontCoverThumbnailKey` — the thumbnail key for the
+/// book's front cover: the cover PAGE index translates back to its
+/// PROVIDER image index (`TranslatePageToImageIndex`), and the
+/// stored page rotation rides along (`GetThumbnailKey` parity).
+/// Books without page metadata keep the historical key (index 0,
+/// no rotation) — `FrontCoverPageIndex` defaults to 0.
+pub fn front_cover_thumbnail_key(book: &ComicBook) -> ThumbnailKey {
+    let page = book.info.front_cover_page_index().max(0) as usize;
+    let image_index = book
+        .info
+        .pages
+        .get(page)
+        .map(|p| p.image_index().max(0) as usize)
+        .unwrap_or(page);
+    let rotation = book
+        .info
+        .pages
+        .get(page)
+        .map(|p| p.rotation)
+        .unwrap_or(ImageRotation::None);
+    let path = std::path::Path::new(&book.file_path);
+    ThumbnailKey::new(ImageKey::from_file(
+        book.file_path.clone(),
+        path,
+        image_index,
+        rotation,
+    ))
 }

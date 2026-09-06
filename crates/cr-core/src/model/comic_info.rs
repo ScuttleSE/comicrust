@@ -431,6 +431,44 @@ impl ComicInfo {
         }
     }
 
+    /// `GetPage(page, add: true)`: the entry at the list position,
+    /// growing the list with sequential-index defaults (`new
+    /// ComicPageInfo(Pages.Count)` parity) when out of range.
+    /// Returns `None` for negative pages (the C# `Empty` page).
+    pub fn get_page_mut_or_add(&mut self, page: i32) -> Option<&mut ComicPageInfo> {
+        if page < 0 {
+            return None;
+        }
+        let page = page as usize;
+        while self.pages.len() <= page {
+            let mut p = ComicPageInfo::default();
+            p.set_image_index(self.pages.len() as i32);
+            self.pages.push(p);
+        }
+        self.pages.get_mut(page)
+    }
+
+    /// `UpdatePageSize(page, width, height)`: the decoded pixel size
+    /// into the page entry (short-truncating like the C# backing
+    /// fields). Returns whether anything changed (the C# fires
+    /// `PageChanged` only on a change).
+    pub fn update_page_size(&mut self, page: i32, width: i32, height: i32) -> bool {
+        let Some(p) = self.get_page_mut_or_add(page) else {
+            return false;
+        };
+        // The C# `ImageWidth`/`ImageHeight` are `short` — the int
+        // arguments truncate on assignment.
+        let w = width as i16;
+        let h = height as i16;
+        if p.image_width != w || p.image_height != h {
+            p.image_width = w;
+            p.image_height = h;
+            true
+        } else {
+            false
+        }
+    }
+
     /// `TranslateImageIndexToPage(imageIndex)`: the list position of
     /// the entry with that ImageIndex, else the index itself.
     pub fn translate_image_index_to_page(&self, image_index: i32) -> i32 {
@@ -683,5 +721,28 @@ mod page_op_tests {
         info.sort_pages_by_key(|a, b| a.cmp(b));
         let keys: Vec<String> = info.pages.iter().map(|p| p.key.clone().unwrap()).collect();
         assert_eq!(keys, vec!["0001.jpg", "002.jpg", "003.jpg"]);
+    }
+
+    #[test]
+    fn update_page_size_writes_and_grows() {
+        // The C# `UpdatePageSize` on a book with no page list grows
+        // the list with sequential-index defaults (`GetPage(page,
+        // add: true)`), then writes the short-truncating size.
+        let mut info = ComicInfo::default();
+        assert!(info.update_page_size(2, 800, 600));
+        assert_eq!(info.pages.len(), 3);
+        assert_eq!(info.pages[2].image_index(), 2);
+        assert_eq!(
+            (info.pages[2].image_width, info.pages[2].image_height),
+            (800, 600)
+        );
+        // No change → false (the C# fires PageChanged only on a
+        // change).
+        assert!(!info.update_page_size(2, 800, 600));
+        // Short truncation (the C# `short` backing fields).
+        assert!(info.update_page_size(2, 70000, 600));
+        assert_eq!(info.pages[2].image_width, 4464);
+        // Negative pages are the C# `Empty` page — a no-op.
+        assert!(!info.update_page_size(-1, 10, 10));
     }
 }

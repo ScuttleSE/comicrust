@@ -319,17 +319,13 @@ impl TabStrip {
             });
         }
         // The async cover (`Create tab thumbnails`): one request per
-        // slot; the result lands whenever the tab still exists.
-        if let Some(source) = info.source.clone() {
+        // slot; the result lands whenever the tab still exists. The
+        // FRONT-COVER key (the shell's shared cover slot) — a plain
+        // index-0 key would decode a second entry for every tab.
+        if let Some(key) = info.cover_key.clone() {
             let mut queued = self.inner.queued.borrow_mut();
             if queued.insert(slot) {
                 self.inner.pending.set(self.inner.pending.get() + 1);
-                let key = cr_image::keys::ThumbnailKey::new(cr_image::keys::ImageKey::from_file(
-                    source.clone(),
-                    std::path::Path::new(&source),
-                    0,
-                    cr_core::model::enums::ImageRotation::None,
-                ));
                 let pool = Arc::clone(&self.inner.pool);
                 let tx = self.inner.thumb_tx.clone();
                 self.inner
