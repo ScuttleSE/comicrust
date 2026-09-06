@@ -10,6 +10,14 @@ Read this file first. Then read `docs/port-plan.md` (architecture and roadmap), 
 
 These rules are absolute. Break none of them. If you break them, you waste the user's time and tokens.
 
+### Rule 0: Limited speculation — then ask (THE MOST IMPORTANT RULE)
+- This rule MUST NEVER BE BROKEN.
+- If you do not know something, you get ONE speculation, tops TWO.
+- After that, ask the user for clarification. Any random guessing is strictly forbidden.
+- If you do not have enough data, ask for it or suggest adding logging.
+- Do not "hold on, actually" yourself a dozen times and then come up with something anyway. That wastes time and tokens.
+- This ban includes do-then-fantasize cycles: do something, fantasize a cause, do something else, fantasize again. Two speculations total, then stop and ask.
+
 ### Rule 1: No loops
 - Do not guess in a loop. Do not repeat actions that give no new information.
 - If the cause of a problem is not clear after two or three file reads, stop.
