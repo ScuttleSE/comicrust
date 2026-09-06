@@ -2286,7 +2286,7 @@ T12 (the Book Display Settings dialog, F9).**
 - T12 COMPLETE — USER-TESTED, ALL PASS (2026-09-05). **Next: T13
   (the small chrome dialogs: Zoom, Quick Rating, Tasks, About).**
 
-### T13 — Small chrome dialogs (IMPLEMENTED 2026-09-06, user test pending)
+### T13 — Small chrome dialogs (COMPLETE — USER-TESTED, ALL PASS)
 
 - Zoom (`Dialogs/ZoomDialog.cs`): `cr-ui/src/dialogs/zoom.rs` —
   "Custom Zoom", "Percentage zoom:" + a 100..800 step-10 SpinButton
@@ -2403,3 +2403,12 @@ T12 (the Book Display Settings dialog, F9).**
     (`docs/port-plan.md` §6; the T13 scope never carried them; the
     T1 tracker entry is resolved for the four dialogs it listed as
     T13).
+- T13 COMPLETE — USER-TESTED, ALL PASS (2026-09-06, "all OK"; no
+  fix round). The user verified all six acceptance steps: the About
+  splash box, the Tasks window (groups, counter, one instance), the
+  Quick Rating flow (cover, rating + review commit, the checkbox
+  persists), the first-book-only quirk, Custom Zoom (250 % applies,
+  Cancel keeps), and the auto Quick Review on a read unrated close.
+  **Next: T14 (persistence — carrying the display-options
+  persistence from T12).** Phase 6 (scripting) starts only after
+  5.5.

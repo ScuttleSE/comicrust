@@ -421,8 +421,9 @@ Update this section at the **end of every work session**. The next agent must kn
   `displaysettings_probe` (5 gates), all probes green.
   T12 COMPLETE — USER-TESTED, ALL PASS (2026-09-05, "all OK"; the
   full 10-item acceptance record lives in the kickoff T12 entry).
-  T13 IMPLEMENTED (2026-09-06), user test pending. The four small
-  chrome dialogs:
+  T13 COMPLETE — USER-TESTED, ALL PASS (2026-09-06, "all OK"; no
+  fix round; the acceptance record lives in the kickoff T13
+  entry).
   - Zoom (`Dialogs/ZoomDialog.cs` port,
     `cr-ui/src/dialogs/zoom.rs`): "Custom Zoom", a 100..800 step-10
     SpinButton, OK applies through `ReaderShell::zoom_current`; the
@@ -1423,6 +1424,20 @@ Re-bless the `db-large.xml` snapshot after a deliberate model change: `CR_BLESS=
   `theme::redraw_on_theme_change` on every drawn canvas. Any new
   DrawingArea that paints colors needs both, or it keeps the old
   theme's look until the next unrelated redraw.
+- A headless probe drives MODAL dialogs programmatically: find the
+  toplevel by a TITLE PREFIX (`find_toplevel` — the Quick Rating
+  title carries the caption, so exact titles never match), walk the
+  widget tree (`first_child`/`next_sibling` — no container-type
+  assumptions) to reach the SpinButton/Scale, then `Dialog::
+  response(Ok)` walks the real response path. The dialog classes
+  are gate-free (pure helpers carry the unit tests): the Tasks
+  snapshot (`pending_tasks`) and the zoom clamp (`clamp_percent`)
+  test without GTK; the queue workers drain a no-op callback
+  instantly in tests — `queue.stop(true)` first, then add items.
+- `ProcessingQueue::stop(true)` also works as a TEST tool (the
+  workers exit; items stay queued for a snapshot) — after a stop,
+  every state reads Waiting (the Running rule needs an active
+  queue; test it as a pure function instead).
 
 ### Blockers / open questions
 
