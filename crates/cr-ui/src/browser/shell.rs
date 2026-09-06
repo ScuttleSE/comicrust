@@ -129,6 +129,9 @@ struct ShellState {
     /// The single Tasks dialog instance (`ShowPendingTasks`
     /// re-presents it).
     tasks_window: RefCell<Option<gtk4::Window>>,
+    /// The navigator/item split (the `BrowserSplit` persistence
+    /// reads the position, the restore sets it).
+    paned: Paned,
 }
 
 impl ShellState {
@@ -537,12 +540,19 @@ impl BrowserShell {
             columns_drop: RefCell::new(None),
             pool,
             tasks_window: RefCell::new(None),
+            paned: paned.clone(),
         });
         let shell = BrowserShell {
             window: window.clone(),
             state: Rc::clone(&state),
         };
         shell.wire(&search);
+        // The persisted workspace restores (the C# `MainForm.Load`
+        // applies `Settings.CurrentWorkspace` before the first
+        // show). A missing element keeps the defaults.
+        if let Some(ws) = cr_ui_settings().borrow().current_workspace.clone() {
+            shell.state.apply_workspace(&ws);
+        }
         (window, shell)
     }
 
@@ -572,6 +582,45 @@ impl BrowserShell {
     /// gate).
     pub fn state_grid_thumb_height(&self) -> f64 {
         self.state.item_view.thumb_height()
+    }
+
+    /// Probe: the browser view mode (the T14 restore gate).
+    pub fn state_grid_mode(&self) -> &'static str {
+        match self.state.item_view.mode() {
+            ItemViewMode::Thumbnail => "thumbnail",
+            ItemViewMode::Tile => "tile",
+            ItemViewMode::Detail => "detail",
+        }
+    }
+
+    /// Probe: the navigator pane visibility + split (the T14 restore
+    /// gate).
+    pub fn state_sidebar(&self) -> (bool, i32) {
+        (self.state.nav_box.is_visible(), self.state.paned.position())
+    }
+
+    /// Probe: the T14 exit snapshot (the collect against the live
+    /// widgets; the reader family falls back to the saved one).
+    pub fn state_collect_workspace(&self) -> cr_core::settings::workspace::WorkspaceState {
+        let prev = cr_ui_settings().borrow().current_workspace.clone();
+        self.state.collect_workspace(prev.as_ref())
+    }
+
+    /// Probe: the T14 startup restore.
+    pub fn state_apply_workspace(&self, ws: &cr_core::settings::workspace::WorkspaceState) {
+        self.state.apply_workspace(ws);
+    }
+
+    /// Probe: moves the navigator/item split (the T14 collect gate
+    /// needs a non-default position to prove the persistence).
+    pub fn state_set_paned(&self, position: i32) {
+        self.state.paned.set_position(position);
+    }
+
+    /// Probe: the Detail column set (id, name, visible) — the T14
+    /// restore gate.
+    pub fn state_detail_columns(&self) -> Vec<(i32, String, bool)> {
+        self.state.item_view.detail_columns_snapshot()
     }
 
     /// The browser grid's item-size triple (the slider sync gate).
@@ -1039,6 +1088,15 @@ impl BrowserShell {
                     sh.reader.shutdown();
                     // `Program.Settings.QuickOpenThumbnailSize = quickOpenView.ThumbnailSize`.
                     let size = sh.quick_view.thumb_height() as i32;
+                    {
+                        // The workspace snapshot lands BEFORE the
+                        // save (the C# `CleanUp` copy). The reader
+                        // keeps the layout family from the previous
+                        // save — shutdown closed the views.
+                        let prev = cr_ui_settings().borrow().current_workspace.clone();
+                        let ws = sh.collect_workspace(prev.as_ref());
+                        cr_ui_settings().borrow_mut().current_workspace = Some(ws);
+                    }
                     cr_ui_settings().borrow_mut().quick_open_thumbnail_size = size;
                 }
                 if let Err(err) = library::save() {
@@ -2438,6 +2496,140 @@ impl ShellState {
         }
     }
 
+    /// Builds the persisted workspace from the live widgets (the
+    /// exit path; the C# `MainForm.CleanUp` copies the layout into
+    /// `Settings.CurrentWorkspace`). `prev` keeps the reader layout
+    /// when no view is open at exit (the display family always reads
+    /// the live session copy).
+    fn collect_workspace(
+        &self,
+        prev: Option<&cr_core::settings::workspace::WorkspaceState>,
+    ) -> cr_core::settings::workspace::WorkspaceState {
+        use crate::workspace::{browser_view_state, display_to_state, fit_name, layout_name};
+        let (w, h) = (self.window.width(), self.window.height());
+        let (sort_key, descending, grouper) = self.item_view.sort_group_summary();
+        // The C# reader layout lives on the workspace whether or not
+        // a book is open; without a view the previous save (or the
+        // defaults) carries over.
+        let prev_reader = prev.map(|p| p.reader.clone());
+        let reader = cr_core::settings::workspace::ReaderLayoutState {
+            fit: self
+                .reader
+                .current_fit_mode()
+                .map(fit_name)
+                .map(|s| s.to_string())
+                .or_else(|| prev_reader.as_ref().map(|r| r.fit.clone()))
+                .unwrap_or_else(|| "FitWidth".to_string()),
+            layout: self
+                .reader
+                .current_page_layout()
+                .map(layout_name)
+                .map(|s| s.to_string())
+                .or_else(|| prev_reader.as_ref().map(|r| r.layout.clone()))
+                .unwrap_or_else(|| "Single".to_string()),
+            rotation: self
+                .reader
+                .current_rotation()
+                .or_else(|| prev_reader.as_ref().map(|r| r.rotation))
+                .unwrap_or_default(),
+            zoom: self
+                .reader
+                .current_zoom()
+                .or_else(|| prev_reader.as_ref().map(|r| r.zoom))
+                .unwrap_or(1.0),
+            rtl: self
+                .reader
+                .current_rtl()
+                .or_else(|| prev_reader.as_ref().map(|r| r.rtl))
+                .unwrap_or(false),
+        };
+        cr_core::settings::workspace::WorkspaceState {
+            width: w,
+            height: h,
+            maximized: self.window.is_maximized(),
+            view: browser_view_state(
+                self.nav_box.is_visible(),
+                self.paned.position(),
+                crate::workspace::BrowserReadouts {
+                    mode: self.item_view.mode(),
+                    sort_key,
+                    descending,
+                    grouper,
+                    thumb_height: self.item_view.thumb_height(),
+                    tile_height: self.item_view.tile_height(),
+                    row_height: self.item_view.row_height(),
+                    columns: self.item_view.detail_columns_state(),
+                },
+            ),
+            reader,
+            display: display_to_state(&crate::reader::page_view::session_display_options()),
+        }
+    }
+
+    /// Restores the persisted workspace into the widgets (the
+    /// startup path; the C# `MainForm.Load` applies
+    /// `Settings.CurrentWorkspace`).
+    fn apply_workspace(&self, ws: &cr_core::settings::workspace::WorkspaceState) {
+        use crate::workspace::{
+            display_from_state, fit_from_name, layout_from_name, mode_from_xml, sort_descending,
+        };
+        self.paned.set_position(ws.view.browser_split);
+        self.nav_box.set_visible(ws.view.show_browser);
+        if let Some(a) = self.action("sidebar") {
+            a.set_state(&ws.view.show_browser.to_variant());
+        }
+        // Mode first (the item sizes clamp per mode), then the sizes.
+        self.item_view
+            .configure(|c| c.mode = mode_from_xml(ws.view.mode));
+        self.item_view.configure(|c| {
+            c.thumb_height = f64::from(ws.view.thumb_height);
+            c.tile_size = (
+                f64::from(ws.view.tile_height * 2),
+                f64::from(ws.view.tile_height),
+            );
+            c.row_height = f64::from(ws.view.row_height);
+        });
+        if let Some(key) = &ws.view.sort_key {
+            self.item_view.set_sort_column(key);
+        }
+        self.item_view
+            .set_sort_direction(sort_descending(ws.view.sort_order));
+        if let Some(g) = &ws.view.grouper {
+            // The registry owns the 'static keys — a stored key only
+            // applies when it still exists.
+            if let Some((key, _)) = cr_engine::group::groupers()
+                .iter()
+                .find(|(k, _)| k == &g.as_str())
+            {
+                self.item_view.set_grouper(Some(key));
+            }
+        }
+        let cols: Vec<(i32, bool, i32)> = ws
+            .view
+            .columns
+            .iter()
+            .map(|c| (c.id, c.visible, c.width))
+            .collect();
+        self.item_view.set_detail_columns_state(&cols);
+        if ws.width > 0 && ws.height > 0 {
+            self.window.set_default_size(ws.width, ws.height);
+        }
+        if ws.maximized {
+            self.window.maximize();
+        }
+        // The display family rides the session copy: new views seed
+        // from it (the T12 shape).
+        crate::reader::page_view::set_session_display_options(display_from_state(&ws.display));
+        self.reader
+            .set_reader_seed(crate::reader_shell::ReaderSeed {
+                fit: Some(fit_from_name(&ws.reader.fit)),
+                layout: Some(layout_from_name(&ws.reader.layout)),
+                rtl: Some(ws.reader.rtl),
+                zoom: Some(ws.reader.zoom),
+                rotation: Some(ws.reader.rotation),
+            });
+    }
+
     /// The shell command registry (`CommandMapper` parity): every
     /// command a `win.` action, accelerators on the application.
     /// Stub actions stay DISABLED until their feature lands — the
@@ -2825,7 +3017,14 @@ impl ShellState {
         self.add_disabled(&group, "new-book-entry");
         self.add_simple(&group, "restart", |sh| {
             // `MenuRestart`: save, then re-launch the binary (the C#
-            // `Program.Restart` + `Application.Restart`).
+            // `Program.Restart` + `Application.Restart`). The
+            // workspace snapshot lands first (the restart keeps the
+            // layout).
+            {
+                let prev = cr_ui_settings().borrow().current_workspace.clone();
+                let ws = sh.collect_workspace(prev.as_ref());
+                cr_ui_settings().borrow_mut().current_workspace = Some(ws);
+            }
             if let Err(err) = library::save() {
                 eprintln!("library save failed: {err}");
             }

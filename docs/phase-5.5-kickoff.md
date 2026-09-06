@@ -1534,6 +1534,65 @@ selection debounce, "Nothing Selected" placeholder).
        bookmark lines only when present (set a bookmark, rotate a
        page — reopen the Pages panel).
 
+- T14 IMPLEMENTED (2026-09-06), user test pending. The layout
+  persistence (`Settings.CurrentWorkspace` — the `<CurrentWorkspace>`
+  element in Config.xml, written LAST after
+  `AutoShowQuickReview`). `cr-core/src/settings/workspace.rs`: the
+  `WorkspaceState` port of the `DisplayWorkspace` T14 slice — the
+  C# element/attribute names verbatim (DatabaseView =
+  ComicExplorerViewSettings attributes + the ItemViewConfig child
+  with the Columns/ThumbnailSize/TileSize/ItemRowHeight; the reader
+  layout family = the `LandscapeLayout` BookPageLayout element; the
+  display family = the T12 fields as elements) + round-trip + shape
+  unit tests (4). The cr-ui enums the workspace stores as member-name
+  strings (cr-core cannot see cr-ui); `cr-ui/src/workspace.rs` holds
+  the pure conversions (enum names, DisplayOptions ↔ DisplayState
+  with the picked color as `#rrggbb`, the browser readouts mapping;
+  4 tests). The shell: `collect_workspace` (the exit snapshot —
+  sidebar visibility + split, view mode, sort key + direction,
+  grouper, the three mode sizes, the Detail column set, the window
+  size + maximized, the reader fit/layout/rotation/zoom/RTL from the
+  live view with the PREVIOUS save as fallback when no view is open,
+  the display family from the session copy) + `apply_workspace` (the
+  startup restore — sizes clamp per mode, the grouper resolves
+  through the registry's 'static keys, the display options seed the
+  session copy, the reader layout seeds every NEW view through
+  `ReaderShell::set_reader_seed` + the `ReaderSeed` applied in both
+  PageView creation paths). Save points: the close-request handler
+  (`MainFormFormClosed` → `CleanUp` parity) and the restart action;
+  restore in `BrowserShell::create` after the wire (the
+  `MainForm.Load` parity). New ItemView accessors: tile/row height
+  reads, `set_sort_direction`, `set_detail_columns_state` (the
+  chooser already carried the rest). Probe `workspace_probe`: A
+  mutates (Detail, sort Writer, sidebar hidden, split 340, thumb
+  steps, hidden column 5) → B collects + asserts + saves + gates the
+  Config.xml shape → C builds a SECOND shell and gates the restore →
+  D closes the window and gates the close-path save surviving the
+  re-read. T14 scope deviations (recorded): ONE implicit workspace —
+  the per-list view state stays out (the C# persists one
+  DatabaseView too; per-LIST setups are the LocalQuickSearch family,
+  unported); ONE reader layout family — the C# picks
+  Landscape/Portrait per screen orientation at runtime, the port
+  keeps the single `LandscapeLayout`; FormBounds X/Y are written 0
+  and never restored (Wayland forbids client positioning) — size +
+  Maximized only; PanelSize/PagesViewConfig/FileView/
+  ComicBookDialogPagesConfig/ScriptOutputBounds wait on their
+  backlog tasks (the dock keys on T10, the preview keys on T11,
+  ADR-026); `PageMarginPercentWidth`/`PaperTextureStrength` clamp on
+  restore. The T12 deviation "persistence lands with T14" is
+  RESOLVED — the display family persists; the Display Settings
+  dialog survives restarts. T13 TEST CORRECTIONS found during the
+  gate (both failed at the T13 HEAD baseline — verified with git
+  stash): the Tasks tests contradicted the C#-parity queues (the
+  five pools default AddToTop → the page rows read DESCENDING; the
+  slow page queue Trims at `pageCount*2` = 10 → a 12-item add keeps
+  10 with `more` 0) — the cap/more gate moved to the UNLIMITED cover
+  queue (the C# `int.MaxValue`), the order gate fixed, plus a
+  capped-queue trim assertion. Gate: 341 tests (+13), fmt + clippy
+  clean, workspace_probe ALL PASS, all other probes stay green.
+  **Next: user test, then Phase 6 (scripting) — Phase 5.5 tasks are
+  all implemented after T14 acceptance.**
+
 ## Omitted / postponed per task (the tracker)
 
 Live tracking of everything cut, deferred, or stubbed, per task.
@@ -2242,7 +2301,7 @@ T12 (the Book Display Settings dialog, F9).**
   defaults, the visibility rules, apply + session copy, the view
   seed + apply + toggle, OK closes / Cancel discards); all other
   probes green; fmt/clippy clean.
-- Omissions/deviations: persistence lands with T14 (the C#
+- Omissions/deviations: persistence RESOLVED in T14 (the C#
   persists through the workspace save on exit); the combo swatch
   previews, the known-colors picker list and the tooltips are
   reduced (labels); the Effects group shows unconditionally; the
@@ -2412,3 +2471,31 @@ T12 (the Book Display Settings dialog, F9).**
   **Next: T14 (persistence — carrying the display-options
   persistence from T12).** Phase 6 (scripting) starts only after
   5.5.
+
+### T14 — Layout persistence (IMPLEMENTED, user test pending)
+
+- ONE implicit workspace (no named presets, no workspace UI — the
+  locked scope). The per-LIST view state stays out (the C# persists
+  one DatabaseView per browser; the port has one browser).
+- ONE reader layout family: the C# `LandscapeLayout`/
+  `PortraitLayout` pair resolves per screen orientation at runtime;
+  the port persists the single `LandscapeLayout` element with the
+  same child names.
+- FormBounds X/Y are written 0 and never restored — Wayland forbids
+  client positioning; only the size + Maximized restore.
+- NOT persisted (their owners): `PanelSize`/`PanelDock` (the
+  Fill-only shape, T10 holds the dock keys), `FileView`
+  (the Files browser is unported), `PagesViewConfig` (the Pages
+  panel keeps its defaults; re-home if the Pages view-state work
+  lands), `ComicBookDialogPagesConfig` (the editor pages list keeps
+  its defaults), `ScriptOutputBounds`/`PreferencesOutputSize`/
+  `ComicBookDialogOutputSize` (the dialogs are Phase 5/6 shapes),
+  `MinimalGui`/`FullScreen`/`ReaderUndocked`/`UndockedReaderBounds`
+  (session chrome, not persisted — the C# also treats them as
+  transient), `PreviousFormState`/`UndockedReaderState`.
+- The `BackgroundColor` display field stores `#rrggbb` (the C#
+  stores a WinForms color name; the port never hands this file to
+  the C# app).
+- The reader seed applies to NEW views only (an already-open reader
+  keeps its live layout — the C# `ComicDisplayControl` copies the
+  workspace values at construction too).

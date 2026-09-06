@@ -406,6 +406,16 @@ impl ItemView {
         self.state.borrow().config.thumb_height
     }
 
+    /// The Tile cell height (the T14 persistence reads it).
+    pub fn tile_height(&self) -> f64 {
+        self.state.borrow().config.tile_size.1
+    }
+
+    /// The Detail row height (the T14 persistence reads it).
+    pub fn row_height(&self) -> f64 {
+        self.state.borrow().config.row_height
+    }
+
     /// `ComicBrowserControl.GetItemSize` — the status-bar slider's
     /// (min, max, value) triple for the current mode.
     pub fn item_size(&self) -> Option<(f64, f64, f64)> {
@@ -629,6 +639,18 @@ impl ItemView {
         self.canvas.queue_draw();
     }
 
+    /// The sort direction setter (the T14 restore — the chain's
+    /// first key flips, the rest stays).
+    pub fn set_sort_direction(&self, descending: bool) {
+        let width = self.state.borrow().config.view_width;
+        {
+            let mut s = self.state.borrow_mut();
+            s.view.set_direction(descending);
+            s.relayout(width);
+        }
+        self.canvas.queue_draw();
+    }
+
     pub fn set_grouper(&self, grouper: Option<&'static str>) {
         let width = self.state.borrow().config.view_width;
         {
@@ -665,6 +687,37 @@ impl ItemView {
             .iter()
             .map(|c| (c.id, c.name.to_string(), c.visible))
             .collect()
+    }
+
+    /// The persisted Detail column state (id, visible, width) — the
+    /// T14 save.
+    pub fn detail_columns_state(&self) -> Vec<(i32, bool, i32)> {
+        self.state
+            .borrow()
+            .detail_columns
+            .iter()
+            .map(|c| (c.id, c.visible, c.width as i32))
+            .collect()
+    }
+
+    /// Restores the Detail column visibility + widths (the T14
+    /// load; unknown ids ignore).
+    pub fn set_detail_columns_state(&self, cols: &[(i32, bool, i32)]) {
+        let width = self.state.borrow().config.view_width;
+        {
+            let mut s = self.state.borrow_mut();
+            for (id, visible, w) in cols {
+                if let Some(c) = s.detail_columns.iter_mut().find(|c| c.id == *id) {
+                    c.visible = *visible;
+                    if *w > 0 {
+                        c.width = f64::from(*w);
+                    }
+                }
+            }
+            s.relayout(width);
+        }
+        self.update_size_request();
+        self.canvas.queue_draw();
     }
 
     /// The current sort/group labels (the toolbar button texts —

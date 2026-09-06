@@ -14,8 +14,11 @@ pub mod registry;
 // The C# Settings object (the module name mirrors the type).
 #[allow(clippy::module_inception)]
 pub mod settings;
+// The persisted workspace (`Settings.CurrentWorkspace`).
+pub mod workspace;
 
 pub use engine_config::EngineConfiguration;
 pub use extended::ExtendedSettings;
 pub use ini::IniValues;
 pub use settings::Settings;
+pub use workspace::WorkspaceState;

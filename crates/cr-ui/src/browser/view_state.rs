@@ -190,6 +190,12 @@ impl ViewState {
         self.rebuild();
     }
 
+    /// Sets the first sort key's direction (the T14 restore).
+    pub fn set_direction(&mut self, descending: bool) {
+        self.sort.set_direction(descending);
+        self.rebuild();
+    }
+
     pub fn set_grouper(&mut self, grouper: Option<&'static str>) {
         self.grouper = grouper;
         self.rebuild();

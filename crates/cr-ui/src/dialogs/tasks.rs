@@ -511,12 +511,14 @@ mod tests {
             ]
         );
         // The page rows carry the 1-based index and the file name.
+        // The pools default to AddToTop (the C# parity) — the LAST
+        // added item reads first.
         let load = &blocks[4];
         assert_eq!(load.tasks.len(), 3);
-        assert_eq!(load.tasks[0].text, "Get page 1 in file 'a.cbz'");
+        assert_eq!(load.tasks[0].text, "Get page 3 in file 'a.cbz'");
         assert_eq!(load.tasks[0].state, WAITING);
         assert_eq!(load.tasks[1].text, "Get page 2 in file 'a.cbz'");
-        assert_eq!(load.tasks[1].state, WAITING);
+        assert_eq!(load.tasks[2].text, "Get page 1 in file 'a.cbz'");
         // The cover row is abortable.
         assert_eq!(blocks[2].abort, Some(ABORT_COVER));
         assert_eq!(
@@ -542,13 +544,16 @@ mod tests {
         let pool = Arc::new(ImagePool::new(None));
         let queues = QueueManager::new();
         // The workers stay out (the snapshot races them otherwise).
-        pool.slow_page_queue.stop(true);
+        // The UNLIMITED cover queue is the only one whose size never
+        // trims (the C# `int.MaxValue`; the page queues cap at
+        // `pageCount * 2` = 10 and would drop the excess).
+        pool.slow_thumbnail_queue_unlimited.stop(true);
         for i in 0..12 {
-            pool.slow_page_queue.add_item_with_key(
-                page_key("/books/a.cbz", i),
+            pool.slow_thumbnail_queue_unlimited.add_item_with_key(
+                thumb_key("/books/cover.cbz", i),
                 None,
                 |_| {},
-                AddMode::AddToBottom,
+                AddMode::AddToTop,
             );
         }
         let snapshot = TaskSnapshot {
@@ -558,10 +563,29 @@ mod tests {
             scan_location: None,
         };
         let blocks = pending_tasks(&snapshot);
-        let create = blocks.iter().find(|b| b.group == "Create Pages").unwrap();
+        let create = blocks
+            .iter()
+            .find(|b| b.group == "Create Thumbnails" && b.abort.is_some())
+            .unwrap();
         assert_eq!(create.tasks.len(), MAX_ROWS_PER_QUEUE);
         assert_eq!(create.more, 2);
         assert_eq!(create.pending_count(), 12);
+        // The capped page queues hold their size only: 12 adds keep
+        // 10 (the C# `AddItem` Trim parity), so `more` stays 0.
+        pool.slow_page_queue.stop(true);
+        for i in 0..12 {
+            pool.slow_page_queue.add_item_with_key(
+                page_key("/books/a.cbz", i),
+                None,
+                |_| {},
+                AddMode::AddToBottom,
+            );
+        }
+        let blocks = pending_tasks(&snapshot);
+        let create = blocks.iter().find(|b| b.group == "Create Pages").unwrap();
+        assert_eq!(create.tasks.len(), 10);
+        assert_eq!(create.more, 0);
+        assert_eq!(create.pending_count(), 10);
     }
 
     #[test]

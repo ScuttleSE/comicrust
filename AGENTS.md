@@ -466,13 +466,53 @@ Update this section at the **end of every work session**. The next agent must kn
   actions; all other probes green; 328 tests. Copy Page / Export
   Page re-homed to the BACKLOG (`docs/port-plan.md` §6). The
   tracker + the 6-step user test live in the kickoff T13 entry.
-  **Next: T14 (persistence — carrying the display-options
-  persistence from T12).** Phase 6 (scripting) starts only after
-  5.5.
+  T14 IMPLEMENTED (2026-09-06), user test pending. The layout
+  persistence (`Settings.CurrentWorkspace` — the
+  `<CurrentWorkspace>` element written into Config.xml after
+  `AutoShowQuickReview`). `cr-core/src/settings/workspace.rs`: the
+  `WorkspaceState` port of the `DisplayWorkspace` T14 slice with
+  the C# element/attribute names verbatim (DatabaseView =
+  ComicExplorerViewSettings attributes + the ItemViewConfig child
+  carrying Columns/ThumbnailSize/TileSize/ItemRowHeight; the reader
+  layout family = the `LandscapeLayout` BookPageLayout element; the
+  display family = the T12 fields; 4 unit tests) + `cr-ui/src/
+  workspace.rs` (the pure conversions: the C# member-name strings
+  for the cr-ui enums, `DisplayOptions` ↔ `DisplayState` with the
+  picked color as `#rrggbb`, the browser-readouts mapping; 4
+  tests). The shell: `collect_workspace` (the exit snapshot:
+  sidebar visibility + split, view mode, sort key + direction,
+  grouper, the three mode sizes, the Detail column set, the window
+  size + maximized, the reader fit/layout/rotation/zoom/RTL with
+  the PREVIOUS save as fallback when no view is open, the display
+  family from the session copy) + `apply_workspace` (the startup
+  restore; the display options seed the session copy; the reader
+  layout seeds every NEW view through `ReaderShell::set_reader_seed`
+  — the `ReaderSeed` applies in both PageView creation paths).
+  Save points: the close-request handler (`MainFormFormClosed` →
+  `CleanUp` parity) and the restart action; restore in
+  `BrowserShell::create` after the wire (the `MainForm.Load`
+  parity). New ItemView accessors: tile/row-height reads,
+  `set_sort_direction`, `set_detail_columns_state`. Probe
+  `workspace_probe` gates: the mutate → collect → Config.xml shape
+  → a SECOND shell restores → the close-path save survives the
+  re-read. Deviations recorded in the kickoff tracker (ONE
+  implicit workspace; ONE reader layout family — the C# resolves
+  Landscape/Portrait per screen orientation; FormBounds X/Y never
+  restored, Wayland; `PagesViewConfig`/`FileView`/
+  `ComicBookDialogPagesConfig`/the dock + undock keys wait on
+  their tasks). The T12 deviation "persistence lands with T14" is
+  RESOLVED. T13 TEST CORRECTIONS during the gate: the two Tasks
+  tests failed at the T13 HEAD baseline (verified with git stash) —
+  they contradicted the C#-parity queues (the five pools default
+  AddToTop → page rows read DESCENDING; the page queues Trim at
+  `pageCount*2` = 10) — fixed against the UNLIMITED cover queue
+  for the cap/more gate.
+  **Phase 5.5 tasks are all implemented — T14 user test, then
+  Phase 6 (scripting) starts.**
   Phases 0-5 are complete (their gates stay green). Open Phase 1
   gaps: WebComicProvider and the PDF/DjVu writers (tracked in
   `docs/phase-1-kickoff.md`).
-- **State:** `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` are green. 328 tests. CI runs on the `docker-runner-amd64` container runner (ADR-020). The release tracks are `release.yaml` (rolling prerelease per push) and `tagged-release.yaml` (manual dispatch, stable release for an existing tag — ADR-021, 2026-09-03). Until the runner is registered and `comicrust-ci:latest` is built on the runner host, pushed and dispatched workflows sit queued on that label.
+- **State:** `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` are green. 341 tests. CI runs on the `docker-runner-amd64` container runner (ADR-020). The release tracks are `release.yaml` (rolling prerelease per push) and `tagged-release.yaml` (manual dispatch, stable release for an existing tag — ADR-021, 2026-09-03). Until the runner is registered and `comicrust-ci:latest` is built on the runner host, pushed and dispatched workflows sit queued on that label.
 - **Phase 0 gate status:** byte-stable ComicDb.xml round-trip proven on all three synthetic fixtures AND the real-world database `tests/realworld/ComicDb.xml` (255 books, 584 KB, 2026-09-02, user-approved commit).
 - **Phase 2 gate status:** every saved smart list in the real-world DB (a) binds to the matcher registry, (b) renders to a `Match` query string that re-parses and re-renders byte-identically, and (c) evaluates to the SAME book sets the C# cached in `CacheStorage` (Never Read = all 255, Files to update = the 3 dirty books, Reading/Read = empty). Evidence: `crates/cr-engine/tests/realworld_query.rs`.
 - **Phase 3 gate status (COMPLETE):** a real comic (`tests/testfiles/`, git-ignored, user-supplied) opens in a GTK4 window and reads comfortably: single/double/adaptive/continuous layouts, spread composition with cover-right + binding-edge rules, fit modes with anamorphic tolerance, zoom/pan/rotation, RTL, continuous scroll with anchor-stable layout rebuilds, fade/slide transitions, paper texture, Auto/Color/Texture backgrounds, the real `MainForm` input map, session tabs with undock, fullscreen chrome with cursor auto-hide, reading-state tracking, the magnifier, error pages, and pool-queue page loads. User-verified after each task; UI smoke tests on this machine run headless under Xvfb + screenshots (see the probe lessons below — the key-injection tools are unreliable; only user tests decide input behavior).
@@ -984,7 +1024,7 @@ Do not edit or reformat that fixture; byte identity is the test.
 | `crates/cr-engine/src/queue.rs`, `queue_manager.rs`, `image_pool.rs` | ProcessingQueue port, ComicBook queues, the five ImagePool queues + render chain. |
 | `crates/cr-engine/src/scanner.rs`, `watch.rs` | Library scanner (add/move/remove parity) + notify watch folders. |
 | `crates/cr-engine/src/backup.rs` | Backup zip create/restore + the `.restore` flow. |
-| `crates/cr-core/src/settings/` | The settings layer: `ini.rs` (IniFile), `registry.rs` (typed field tables + `settings_fields!`), `engine_config.rs` (EngineConfiguration), `extended.rs` (ExtendedSettings, the argv switches), `enums.rs` (the C# settings enums), `settings.rs` (the ~120-field Settings + the Config.xml Emitter/reader). |
+| `crates/cr-core/src/settings/` | The settings layer: `ini.rs` (IniFile), `registry.rs` (typed field tables + `settings_fields!`), `engine_config.rs` (EngineConfiguration), `extended.rs` (ExtendedSettings, the argv switches), `enums.rs` (the C# settings enums), `settings.rs` (the ~120-field Settings + the Config.xml Emitter/reader), `workspace.rs` (the T14 `WorkspaceState` — the `<CurrentWorkspace>` element). |
 | `crates/cr-cli/src/main.rs` | `info`, `db-dump`, `db-roundtrip`, `pages`, `extract`, `thumb`, `rewrite`, `metron`, `lists`. |
 
 The UI crate (Phase 3):
@@ -1017,8 +1057,9 @@ The UI crate (Phase 3):
 | `crates/cr-ui/src/dialogs/smart_list.rs` | The smart-list editor: Designer (matcher rows/groups with the type/operator/value/not combos + the structure menu) | Query (the rendered query text round-trip). |
 | `crates/cr-ui/src/dialogs/list_editor.rs` | The list editor for folders (name/notes/combine) and reading lists (name/notes/quick-open). |
 | `crates/cr-ui/src/dialogs/export.rs` | The export dialog: target/folder/format/compression/naming/page-format/quality + the flags, the inline progress, the session-persisted last settings. |
-| `crates/cr-ui/examples/` | The headless probes: `commands_probe` (69 actions + accels), `menubar_probe` (the T3 bar), `dynmenus_probe` (the T4 fills), `toolbar_probe` (the T5 strip + the dropdown OPEN gate), `browserbar_probe` (the T6 browser toolbar: OPEN gates, the read/scope filters, the column chooser open/height/toggle, the duplicate landing), `navpages_probe` (the T7 navigator/Pages toolbars: the dispatch, the search filter, the expand flip, the Views OPEN + radio), `tabstrip_probe` (the T9 workspace strip: open/close/+/select flows, the Pages visibility, the bold slot, the comic-tab re-click, the reader-click MinimalGui gate), `statusbar_probe` (the T8 bar: defaults, the info line, the slider resize/sync, the page click, the lamp flags, the MinimalGui action; REFUSES a non-isolated XDG), `menubarvis_probe` (the visibility evidence), `icons_probe`, `editor_probe`, `writeback_probe`. |
+| `crates/cr-ui/examples/` | The headless probes: `commands_probe` (69 actions + accels), `menubar_probe` (the T3 bar), `dynmenus_probe` (the T4 fills), `toolbar_probe` (the T5 strip + the dropdown OPEN gate), `browserbar_probe` (the T6 browser toolbar: OPEN gates, the read/scope filters, the column chooser open/height/toggle, the duplicate landing), `navpages_probe` (the T7 navigator/Pages toolbars: the dispatch, the search filter, the expand flip, the Views OPEN + radio), `tabstrip_probe` (the T9 workspace strip: open/close/+/select flows, the Pages visibility, the bold slot, the comic-tab re-click, the reader-click MinimalGui gate), `statusbar_probe` (the T8 bar: defaults, the info line, the slider resize/sync, the page click, the lamp flags, the MinimalGui action; REFUSES a non-isolated XDG), `workspace_probe` (the T14 persistence: the mutate → collect → Config.xml shape → the second-shell restore → the close-path save; REFUSES a non-isolated XDG pair), `menubarvis_probe` (the visibility evidence), `displaysettings_probe`, `smalldialogs_probe`, `icons_probe`, `editor_probe`, `writeback_probe`. |
 | `crates/cr-ui/src/settings/` | The Preferences dialog (`preferences.rs`) + the options builder (`options.rs`, the `FillPanelWithOptions` parity). |
+| `crates/cr-ui/src/workspace.rs` | The T14 persistence conversions: the C# member-name strings for the cr-ui display enums, `DisplayOptions` ↔ `DisplayState` (the picked color as `#rrggbb`), the `browser_view_state` readouts mapping. Unit-tested. |
 | `crates/cr-ui/src/pages.rs` | The page-entry merge (`merged_page_entries`): the provider count + the stored overlay — the reader and the editor both use it. |
 | `crates/cr-ui/src/bitmap.rs` | The cairo surface helpers (RGBA→premultiplied ARGB, the thumbnail-blob split). |
 

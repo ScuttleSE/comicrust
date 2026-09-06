@@ -43,6 +43,7 @@ fn cr_ui_settings() -> std::rc::Rc<std::cell::RefCell<cr_core::settings::Setting
 }
 use crate::reader::display::ImageFitMode;
 use crate::reader::page_view::{DisplayOptions, PageLayoutMode, PageView};
+use cr_core::model::enums::ImageRotation;
 
 /// Default reader window size (the C# persists its own window layout;
 /// workspace persistence arrives in Phase 7).
@@ -136,6 +137,22 @@ struct ShellState {
     /// proposed-name fallback parses file names with regexes and the
     /// strip sync runs on every shell action.
     captions: RefCell<HashMap<usize, String>>,
+    /// The persisted reader layout (`DisplayWorkspace.Layout` — the
+    /// T14 restore seeds every new view with it; the C# keeps the
+    /// values on the workspace and each new `ComicDisplayControl`
+    /// copies them).
+    seed: RefCell<ReaderSeed>,
+}
+
+/// One persisted reader layout family (the cr-ui types behind
+/// `ReaderLayoutState`).
+#[derive(Clone, Copy, Default)]
+pub struct ReaderSeed {
+    pub fit: Option<ImageFitMode>,
+    pub layout: Option<PageLayoutMode>,
+    pub rtl: Option<bool>,
+    pub zoom: Option<f32>,
+    pub rotation: Option<ImageRotation>,
 }
 
 impl ShellState {
@@ -224,6 +241,7 @@ impl ReaderShell {
                 on_tabs_changed: None,
                 on_book_closing: None,
                 captions: RefCell::new(HashMap::new()),
+                seed: RefCell::new(ReaderSeed::default()),
             })),
         };
 
@@ -479,6 +497,10 @@ impl ReaderShell {
                 };
                 drop(s);
                 view.apply_display_settings(wheel, browse, wall);
+                // The persisted layout seeds the fresh view (the T14
+                // `DisplayWorkspace.Layout` copy).
+                let seed = *st.seed.borrow();
+                Self::apply_seed(&view, &seed);
             }
             slot = st.next_slot;
             st.next_slot += 1;
@@ -822,6 +844,36 @@ impl ReaderShell {
         }
     }
 
+    /// Stores the persisted reader layout (the T14 restore; every
+    /// view created AFTER this seeds with it — the C# workspace
+    /// `BookPageLayout` shape).
+    pub fn set_reader_seed(&self, seed: ReaderSeed) {
+        self.state.borrow_mut().seed.replace(seed);
+    }
+
+    /// Applies the seed to a fresh view (both creation paths call
+    /// this right after `apply_display_settings`).
+    fn apply_seed(view: &PageView, seed: &ReaderSeed) {
+        if let Some(fit) = seed.fit {
+            view.set_fit_mode(fit);
+        }
+        if let Some(layout) = seed.layout {
+            view.set_page_layout(layout);
+        }
+        if let Some(rtl) = seed.rtl {
+            view.set_rtl(rtl);
+        }
+        if let Some(zoom) = seed.zoom {
+            view.zoom_to(zoom.clamp(
+                crate::reader::page_view::MINIMUM_ZOOM,
+                crate::reader::page_view::MAXIMUM_ZOOM,
+            ));
+        }
+        if let Some(rotation) = seed.rotation {
+            view.set_rotation(rotation);
+        }
+    }
+
     /// The currently visible reader book: (file path, page count).
     /// The Pages panel binds this (the C# `ComicDisplay.Book`).
     pub fn current_book(&self) -> Option<(String, usize)> {
@@ -1019,6 +1071,10 @@ impl ReaderShell {
                 // The book's color adjustment rides the page keys
                 // (`ComicDisplay` renders with `book.ColorAdjustment`).
                 view.set_base_adjustment(book.color_adjustment);
+                // The persisted layout seeds the fresh view (the T14
+                // `DisplayWorkspace.Layout` copy).
+                let seed = *st.seed.borrow();
+                Self::apply_seed(&view, &seed);
             }
 
             // Reading-state write-back: every logical page change

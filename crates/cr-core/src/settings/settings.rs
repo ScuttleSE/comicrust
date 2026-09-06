@@ -167,6 +167,9 @@ pub struct Settings {
     pub open_remote_filter: Option<String>,
     pub open_remote_password: Option<String>,
     pub auto_show_quick_review: bool,
+    /// `Settings.CurrentWorkspace` (the T14 persisted layout; None =
+    /// never saved — the defaults apply).
+    pub current_workspace: Option<super::workspace::WorkspaceState>,
 }
 
 impl Default for Settings {
@@ -292,6 +295,7 @@ impl Default for Settings {
             open_remote_filter: None,
             open_remote_password: None,
             auto_show_quick_review: false,
+            current_workspace: None,
         }
     }
 }
@@ -560,6 +564,12 @@ impl Settings {
         w_opt(e, "OpenRemoteFilter", &self.open_remote_filter)?;
         w_opt(e, "OpenRemotePassword", &self.open_remote_password)?;
         w_bool(e, "AutoShowQuickReview", self.auto_show_quick_review)?;
+        // The persisted workspace rides last (the reader is
+        // order-tolerant; the C# writes it at its own property
+        // position).
+        if let Some(ws) = &self.current_workspace {
+            ws.write_xml(e)?;
+        }
         e.end()
     }
 }
@@ -906,6 +916,9 @@ fn read_elem(r: &mut XmlReader<'_>, s: &Start, x: &mut Settings) -> XmlResult<bo
         "OpenRemoteFilter" => x.open_remote_filter = r_opt(r, "OpenRemoteFilter")?,
         "OpenRemotePassword" => x.open_remote_password = r_opt(r, "OpenRemotePassword")?,
         "AutoShowQuickReview" => x.auto_show_quick_review = r_bool(r, "AutoShowQuickReview")?,
+        "CurrentWorkspace" => {
+            x.current_workspace = Some(super::workspace::WorkspaceState::parse(r)?)
+        }
         _ => return Ok(false),
     }
     Ok(true)
@@ -1026,11 +1039,28 @@ mod tests {
     #[test]
     fn unknown_elements_are_skipped() {
         // A Windows Config.xml carries members this port drops; the
-        // read must skip them and keep the known ones.
-        let xml = b"<?xml version=\"1.0\"?>\r\n<Settings xmlns:xsd=\"x\" xmlns:xsi=\"y\">\r\n  <UnknownThing><a /></UnknownThing>\r\n  <TrackCurrentPage>false</TrackCurrentPage>\r\n  <CurrentWorkspace><Name>w</Name></CurrentWorkspace>\r\n  <QuickOpenThumbnailSize>256</QuickOpenThumbnailSize>\r\n</Settings>";
+        // read must skip them and keep the known ones. The C#
+        // Workspaces LIST (named presets) is one of the dropped
+        // members — the port persists only the implicit
+        // CurrentWorkspace.
+        let xml = b"<?xml version=\"1.0\"?>\r\n<Settings xmlns:xsd=\"x\" xmlns:xsi=\"y\">\r\n  <UnknownThing><a /></UnknownThing>\r\n  <TrackCurrentPage>false</TrackCurrentPage>\r\n  <Workspaces><DisplayWorkspace><Name>w</Name></DisplayWorkspace></Workspaces>\r\n  <QuickOpenThumbnailSize>256</QuickOpenThumbnailSize>\r\n</Settings>";
         let s = from_bytes(xml);
         assert!(!s.track_current_page);
         assert_eq!(s.quick_open_thumbnail_size, 256);
+    }
+
+    #[test]
+    fn current_workspace_round_trips() {
+        let mut s = Settings::default();
+        let mut ws = crate::settings::workspace::WorkspaceState::default();
+        ws.view.mode = crate::model::enums::ItemViewMode::Detail;
+        ws.view.sort_key = Some("ShadowSeries".to_string());
+        ws.reader.rtl = true;
+        ws.display.transition = "TopDown".to_string();
+        s.current_workspace = Some(ws.clone());
+        let bytes = to_bytes(&s);
+        assert_eq!(from_bytes(&bytes), s);
+        assert_eq!(to_bytes(&from_bytes(&bytes)), bytes);
     }
 
     #[test]

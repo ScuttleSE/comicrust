@@ -15,6 +15,7 @@ pub mod reader;
 pub mod reader_shell;
 pub mod settings;
 pub mod theme;
+pub mod workspace;
 
 /// Boots the GTK application. `args` are the command-line arguments
 /// after the program name; `args[0]` may name a comic file to open
