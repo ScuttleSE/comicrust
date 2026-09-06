@@ -31,13 +31,13 @@ The crate split mirrors the C# project boundaries. Porting stays mechanically tr
 | `ProcessingQueue` / ThreadPool | crossbeam channels + scoped worker threads |
 | WCF net.tcp remote + UDP broadcast | **not protocol-compatible** (ADR-005), future HTTP/JSON API + mDNS if wanted |
 | NTFS ADS metadata (`NtfsInfoStorage`) | xattrs `user.comicrack.*` + sidecar fallback |
-| WPD/MTP sync | libmtp, USB copy via std, wireless TCP protocol portable as-is |
+| WPD/MTP sync | **deferred to backlog (ADR-028)** — GVFS-mounted MTP volumes collapse the 3,748-LOC Windows WPD interop to a ~150-LOC provider; wireless TCP protocol portable as-is |
 | Registry associations / SHFileOperation / recycle | xdg-mime, GIO trash |
-| Single instance (WCF named pipe) | zbus / D-Bus |
+| Single instance (WCF named pipe) | GApplication unique mode (D-Bus underneath) |
 | uxtheme dark mode, theme color tables | GTK CSS providers + native dark preference |
 | IronPython 2.7.4 host | **dropped (ADR-027)** — native modules replace scripts; no Python runtime |
 | MSHTML `ObjectForScripting` panels | **dropped (ADR-027)** — the plugin HTML panels die with the scripting host (the News dialog is an ADR-024 omission) |
-| `TR.Load()["key"]` XML localization (19 langs) | same XMLs loaded by a Rust `TR` port — reused as-is |
+| `TR.Load()["key"]` XML localization (19 langs) | same XMLs loaded by a Rust `TR` port — reused as-is (**deferred to backlog, ADR-028**) |
 | BinaryFormatter `cache.idx` | fresh format (caches are disposable, no compat) |
 
 ## 3. Roadmap
@@ -54,7 +54,7 @@ Every phase ends shippable and testable. Phases 0-2 are fully headless. They de-
 | 5 | Dialogs | All ~50: book editor, bulk edit, preferences (+ serde-driven options builder), smart-list/matcher editors, export, devices, workspace save/switch | Feature-complete for local-library workflows | 12-14 wk |
 | 5.5 | UI chrome parity | Menubar, toolbars (reader/browser/navigator/pages), multi-panel status bar, book tabs + context menu, Book Display Settings, About/Zoom/QuickRating/Tasks, bundled CR icons, layout persistence — see `phase-5.5-kickoff.md` (ADR-024; dock modes stay Fill-only per ADR-026) — **COMPLETE, all tasks user-tested (2026-09-06)** | Chrome close to original CR with locked omissions; every task user-tested | 8-10 wk |
 | 6 | Native features + de-scripting | Native "New Comic…" fileless flow + "New fileless Book Series…" dialog (the NewComics.py port, ADR-027), `Expression`/plugin matcher parse-compat (not-supported evaluation), Copy Page/Export Page, `cr-script` removal — **COMPLETE, all tasks user-tested (2026-09-06)** | Feature checklist complete with no scripting surface; matcher round-trip stable | 2-3 wk |
-| 7 | Platform | D-Bus single instance, MTP/wireless sync, HTTP remote server, full i18n wiring (the dark/light toggle + theme-following views + the automatic layout persistence landed in 5.5 — ADR-025, T14) | Feature checklist from C# complete | 8-10 wk |
+| 7 | Platform | D-Bus single instance + the startup file pipeline (re-scoped 2026-09-06, ADR-028: sync, remote, tray, i18n → `docs/backlog.md` with research records) | Second-launch handoff parity: focus, files (`newSlot`/`-p`/hide-browser), restart handshake | 1 wk |
 | 8 | Polish/ship | Flatpak/.deb/AUR packaging, CI, docs, migration tooling, perf passes | 1.0 | 4-6 wk |
 
 **Total: ~75-90 weeks (~18-22 months) solo.** Longest-lead items: ItemView behavior parity and dialog volume.
@@ -64,7 +64,7 @@ Every phase ends shippable and testable. Phases 0-2 are fully headless. They de-
 1. **Data compat first (0-2):** the database is the only unlosable artifact. Proving a byte-stable round-trip before UI means the riskiest compat work happens while the codebase is small.
 2. **Reader before browser (3 before 4):** the reader is the emotional core. It validates the GL/cairo rendering strategy. The browser widget is the single largest custom build. It benefits from the reader's widget infrastructure.
 3. **Native features at 6 (ADR-027):** the scripting host is dropped; the phase delivers the C#'s native features that the scripts obscured (fileless books) plus the de-scripting cleanup, before platform work (7).
-4. **Platform integration last (7):** sync and remote are isolated modules. Deferring them avoids coupling their APIs to an unstable engine.
+4. **Platform integration last (7):** the single-instance/startup plumbing is isolated and small. Sync and remote defer to the backlog (ADR-028) — sync is an isolated module, and the remote needs a new wire API plus a client before it has any user.
 
 ## 5. Kickoff
 

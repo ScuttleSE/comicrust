@@ -78,3 +78,179 @@ omissions stay in that phase's kickoff tracker.
   The T14 element names are already reserved in
   `cr-core/src/settings/workspace.rs`. The reader is order-tolerant.
   Adding keys is a write-side change only.
+
+## From Phase 7 (deferred 2026-09-06, ADR-028)
+
+The four deferred Phase 7 areas, each with its research record so a
+future agent does not re-study the C# source.
+
+### Device sync (all of it)
+
+The full sync subsystem: the engine, the disk/MTP providers, the
+wireless protocol, and the device dialogs. Research record
+(2026-09-06):
+
+- **Engine** — `ComicRack.Engine/Sync/`, 2,301 LOC / 13 files.
+  `StorageSync.Synchronize` (`StorageSync.cs:80-237`): read the
+  device's `*.cbp` books → pull back the dirty fields per the six
+  `ExtraSyncInformation` flags (reading state, rating/manga/review,
+  bookmarks, page types, checked, info) → per-list `LimitList`
+  (sort key, unread-only + the `SyncKeepReadComics` read-prolog,
+  count/MB/GB caps, round-robin interleaved across series groups,
+  the global `BookSyncLimit`) → remove + add → `sync_information.xml`
+  + the `comicrack.ini` marker rewrite. A `.cbp` book is a CBZ of
+  converted pages (JPEG; WebP only if the device advertises it) with
+  a full-`ComicBook` `<name>.cbp.xml` sidecar
+  (`SyncProviderBase.GetPortableFormat`, `:480-513`; "optimized"
+  mode: max height 1500, JPEG quality 65, optional sharpen,
+  thumbnails). The port's cr-io export engine already covers the
+  conversion/packing.
+- **Queues** — one sync job per device on `DeviceSyncQueue` (lowest
+  priority, `QueueManager.cs:344`); inside the provider a write
+  queue with back-pressure 50 (`SyncQueueLength` ini key) and a
+  device-access lock. The ProcessingQueue port exists.
+- **Providers** — `DiskDriveSyncProvider` (84 LOC, plain file IO)
+  ports as-is. The 3,748-LOC Windows WPD COM interop is NOT needed:
+  on Linux an MTP phone mounts through GVFS at
+  `/run/user/$UID/gvfs/mtp:host=...`, so the provider is "find the
+  mounted volume containing `comicrack.ini` (max 10 levels deep) +
+  POSIX IO" — ~150 LOC in the DiskDrive provider's shape. No libmtp.
+  `WirelessSyncProvider` (624 LOC) is the raw-TCP Android protocol:
+  the PC connects to the device on port 7614, 14 single-byte
+  commands, big-endian int32 framing, length-prefixed UTF-8/blobs;
+  UDP discovery group `224.34.123.90:7615` (`"ComicRack:<key>[:Sync]"`
+  messages); a TCP control listener from port 7620; pairing-key
+  validation (`AndroidKey`/`AndroidDebugKey`). Fully portable, but
+  only useful against the old ComicRack Android app.
+- **UI** — `DevicesEditDialog` (210 + 217 Designer), the per-device
+  `DeviceEditControl` (490 + 328: the shared-lists checkbox tree +
+  per-list options group), `DeviceSelectDialog` (71 + 118: the
+  discovery list); the navigator "Sync with {device}…" context item;
+  the status-bar sync lamp; Preferences: the extra Wi-Fi addresses +
+  Test (`PreferencesDialog.cs:215-225`).
+- **Settings** — `Settings.Devices` (the `DeviceSyncSettings` list,
+  a Config.xml element) + `ExtraWifiDeviceAddresses`; ini keys
+  `Sync*`/`WifiSync*`/`FreeDeviceMemoryMB`
+  (`EngineConfiguration.cs:462-592` — none in the C# Preferences UI).
+- **Port path** — a `cr-engine` sync module (~2,200 LOC portable) +
+  a `cr-ui` device dialog set; own kickoff when picked up.
+
+### HTTP remote library
+
+ADR-005 stands: the WCF net.tcp wire protocol (net.tcp framing,
+message security, embedded X509, `DataContract object` payloads) is
+not preserved — any port is a NEW API with NEW clients. Research
+record (2026-09-06):
+
+- **Live surface** (`ComicLibraryServer.cs`, 571 LOC): 5 read + 1
+  write operations — `GetLibraryData` (the whole filtered
+  `ComicLibrary` as BZip2'd .NET XmlSerializer bytes — the cr-core
+  model + Emitter can produce it byte-stably), `GetImageCount`,
+  `GetImage` (JPEG bytes, quality scales q75), `GetThumbnailImage`
+  (the already-ported `ThumbnailImage` serialization), `UpdateComic`
+  (a reflection property-setter through the registry — the port has
+  the registry), `IsValid`; plus the unsecured `Info` endpoint
+  (Id/Name/Description/Options). Default port 7612 (`-isp`/`-psp`
+  already parsed in the port's ExtendedSettings), path `/Share`,
+  `/Share2`… per share. One shared password per share (the username
+  is the constant `"ComicRack"`); no password = open. A
+  private-network guard (`OnlyPrivateConnections`).
+- **Discovery** — UDP broadcast port 7613 (`cYo.Common/Net/
+  Broadcaster.cs`, 188 LOC): BZip2-compressed XML
+  `{BroadcastType, ServerName, ServerPort}`, types
+  Client/Server × Started/Stopped; servers re-ping every 10 s;
+  clients resolve the answer through the Info endpoint. Linux
+  replacement: mDNS (AVahi) or keep the broadcast format.
+- **Client** — `ComicLibraryClient` (234 LOC) +
+  `RemoteComicBookProvider` (74) + the UI (`RemoteConnectionView`
+  255, `OpenRemoteDialog` 207, the Preferences `ServerEditControl`
+  123, the Tasks-dialog Network stats tab — an ADR-024 omission).
+  Remote books carry `FileLocation = "REMOTE:{libId}\\{path}"` and a
+  provider that fetches pages over the connection.
+- **Dead weight** — the entire public-internet listing
+  (`ServerRegistration.cs`, the `IsInternet` flag) is commented out
+  or hard-disabled in CE.
+- **Port path** — a small HTTP/JSON server in `cr-engine` (library
+  XML + page/thumb bytes), share config in `Settings.Shares`, mDNS
+  discovery; a client (mobile/web) is the actual product question —
+  without one there is nothing to talk to.
+
+### Tray icon
+
+- C# (`MainForm.cs:4057-4127` + `-hidden`, `MinimizeToTray`,
+  `CloseMinimizesToTray`): a NotifyIcon with a context menu,
+  left-click restore. `ExtendedSettings.start_hidden` is already
+  parsed in the port (inert today — recorded in the T1 deviations).
+- Linux: a StatusNotifierItem implementation (`ksni` or
+  `tray-item`); GNOME shows SNI icons only with an extension — gate
+  the feature on availability. Pick up with any platform task.
+
+### i18n — the TR port (machine + the string sweep)
+
+The Preferences language page (the Phase 5 T1 deferral) and the
+localized operator lists (`cr-engine/src/matcher/spec.rs` note) wait
+on this. Research record (2026-09-06):
+
+- **Machinery** (`cYo.Common/Localize/`, ~700 LOC across 5 files):
+  a TR context is one named string map; `TR.Load(name)` caches by
+  name process-wide (first load wins — language change is
+  restart-only, port the same); lookup `tr["key", "default"]` —
+  missing or EMPTY text → the inline English default. Well-known
+  contexts: `Default` and `Messages`.
+- **Files** — `<ResourceFolder>/<CultureName>/<ContextName>.xml`:
+  root `<TR Name CultureName>`, one `<Texts>` wrapper of
+  `<Text Key Text Comment/>` (Comment carries the English source for
+  completion tooling). Two-level culture merge: the BASE culture
+  loads first (`pt-BR` → `pt`), the specific overrides by key.
+  Escape decode at load: `\n` → `\r\n`, `\r` deleted, `\t` → tab.
+  Parse failures degrade to English (never crash). Entries sort by
+  Key on save. No plurals (manual `ComicSingle`/`ComicMulti` pairs);
+  `GetStrings(key, array, sep)` pipe lists with a count guard.
+  Optional zip-pack overlay (`PackedLocalize`) over the loose files.
+- **Metadata** — per-language `LanguageInfo.xml` (`TRInfo`):
+  Author/Notes/Language/RightToLeft. `InstalledLanguages` scans
+  `Languages/*/LanguageInfo.xml` and computes completion % against
+  the FRENCH pack (the C# quirk — port as-is).
+- **Key conventions** (`LocalizeUtility.cs:50-112`): control-tree
+  localization by widget Name (`.Tooltip` suffix when the designer
+  tooltip differed; ListView columns key `"col" + header text`;
+  combo items `Name + ".Item" + i`; UserControl children skip — they
+  self-localize). Enum translation: key = member name, default =
+  the Description attribute `PascalToSpaced` (contexts
+  `ComicPageType`, `ItemViewMode`, `ImageRotation`,
+  `ComicPagePosition`…). ~430 manual lookup sites + 42 forms in the
+  C#; the port's options builder already mirrors
+  `FillPanelWithOptions` (`tr[p.Name, p.Description]`).
+- **Selection** — `Settings.CultureName` (Config.xml) overridden by
+  `ExtendedSettings.Language` (`-l`; ini:false). Applied at boot;
+  restart-only.
+- **Packs** — 19 languages ship in `ComicRack/Output/Languages/`
+  (cs-CZ, de, el-GR, es, fi, fr, hr, hu, it, ja, nl-BE, pl, pt-BR,
+  ru, sk-SK, tr, zh, zh-CN, zh-Hans), ~70 contexts, 37-85 XML files
+  each. Reused AS-IS: bundle as `cr-ui/assets/languages/` and add
+  the folder to both release workflows (the papers pattern).
+- **Port path** — the load/merge/escape core (cr-core or
+  `cr-ui/src/tr.rs`), then the sweep: (a) shell chrome (menubar
+  table, toolbars, status bar, dialogs, context menus), (b) engine
+  captions (columns, groupers, matchers, page types, Messages).
+
+### Auto-update check + news feed
+
+- C# startup: `CheckForUpdateAsync` (`MainForm.cs:4530-4574`) —
+  GitHub compare API `repos/maforget/ComicRackCE/compare/<sha>...nightly`,
+  status `ahead` → the Download/Zip/No prompt + never-again; skipped
+  for dirty builds. The `NewsFeeds.xml` feed + `Settings.NewsStartup`
+  → the News dialog (an MSHTML panel — dead with ADR-024/027; a
+  native feed reader would replace it). The "Check For Update…"
+  menu item is an ADR-024 omission.
+- Linux packaging handles updates; port only if the user asks.
+
+### Crash watchdog dialog
+
+- C# (`CrashWatchDog.cs` + `CrashDialog.cs`): unhandled-exception →
+  a report dialog (program info + all thread stacks) with
+  Retry/Restart/Quit; Retry breaks a UI-freeze watchdog the port
+  does not have.
+- Rust: `std::panic::set_hook` → log + a best-effort report dialog
+  (a panicked GTK main loop usually cannot recover — exit is
+  acceptable). Pick up with Phase 8 polish if wanted.
