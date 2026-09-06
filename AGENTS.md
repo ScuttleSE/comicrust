@@ -1602,7 +1602,7 @@ the server-side GC.
 
 ## This repo
 
-Crate layout (all eight crates exist. `cr-script` is the only empty stub — it is the Phase 6 target; `cr-engine`, `cr-ui`, and `cr-app` are active):
+Crate layout (seven crates; `cr-script` was removed with ADR-027 — the scripting host is dropped; `cr-engine`, `cr-ui`, and `cr-app` are active):
 
 | Crate | Contents |
 |---|---|
@@ -1610,7 +1610,6 @@ Crate layout (all eight crates exist. `cr-script` is the only empty stub — it 
 | `crates/cr-io` | Comic providers (zip/tar/7z/rar/pdf/folder/web), ComicInfo.xml read/write-back, archives |
 | `crates/cr-image` | Image currency type, decode/encode pipeline, resize/adjust filters, page/thumbnail caches |
 | `crates/cr-engine` | Smart-list parser + matchers, queue manager, scanner, watch folders, backup, sync, remote server |
-| `crates/cr-script` | PyO3 plugin host, `#@Directive` loader, `.crplugin` packages |
 | `crates/cr-ui` | GTK4: reader (GtkGLArea), ItemView browser, shell, dialogs, theming, i18n |
 | `crates/cr-cli` | Headless verification tooling (`info`, `db-dump`, round-trip) |
 | `crates/cr-app` | Main binary: D-Bus single instance, app wiring, packaging |
@@ -1621,16 +1620,15 @@ Crate layout (all eight crates exist. `cr-script` is the only empty stub — it 
 
 1. **ComicDb.xml read/write.** Element and attribute names, casing, and structure must match the C# `XmlSerializer` output exactly (the ComicLists tree, the custom values store). Golden-file round-trip tests verify this. The database is the one artifact users cannot lose.
 2. **Metadata schema compat:** `ComicInfo.xml` (Anansi standard), ComicRack's `ComicBook.xml`, and `MetronInfo.xml` — read AND write in-archive.
-3. **Plugin file formats:** `.py` scripts with `#@Name/#@Hook/#@Key/#@Description/#@PCount/#@Enabled/#@Image` comment directives + one command per `def` (see `PythonPluginInitializer.cs`), XML manifests, `.crplugin` = zip with `package.ini`.
-4. **Smart-list query language** must parse and match identically (saved lists contain these queries — see `ComicSmartListItem.cs` and `ComicBookGroupMatcher.cs`).
-5. **Caches are disposable. The database is not.** Thumbnail/image caches (`DiskCache` `cache.idx`, BinaryFormatter-serialized) have NO compat requirement. Design fresh formats freely.
+3. **Smart-list query language** must parse and match identically (saved lists contain these queries — see `ComicSmartListItem.cs` and `ComicBookGroupMatcher.cs`). The `Expression`/plugin-list matchers parse and render byte-stably; they evaluate to an explicit not-supported result (ADR-027 — no scripting host).
+4. **Caches are disposable. The database is not.** Thumbnail/image caches (`DiskCache` `cache.idx`, BinaryFormatter-serialized) have NO compat requirement. Design fresh formats freely.
 
 ---
 
 ## Critical gotchas
 
-- **IronPython 2.7 = Python 2 semantics** (scripts use `print '...'` statements). We target PyO3/CPython 3, so existing ecosystem scripts need a 2to3 pass. The host API (`IPluginEnvironment`, ~40 methods) is the shim surface.
 - **unrar license is GPL-incompatible.** Use subprocess/7z or libarchive for RAR. Never static-link unrar.
+- **No scripting host (ADR-027).** The IronPython plugin ecosystem is not ported; scripts hit the WinForms/clr wall on CPython, and the used-script set ports natively instead. Saved queries carrying `Expression`/plugin matchers parse and render byte-stably but evaluate to an explicit not-supported result.
 - **The WCF net.tcp remote protocol is NOT preserved** (see `docs/decisions.md`). Android app protocol compat was explicitly dropped.
 - **NTFS ADS metadata → Linux xattrs** (`user.comicrack.*`) with sidecar fallback.
 - **Reflection-based property access by string name** is load-bearing in the C# (matchers, columns, remote `UpdateComic`, `FormUtility` options panels). Rust needs an explicit property registry for this. Plan for it early in `cr-core`.

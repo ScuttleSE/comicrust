@@ -20,7 +20,7 @@ Append new ADRs at the end. Never rewrite the decision content of an existing en
 
 ## ADR-003: Preserve the Python plugin ecosystem via PyO3/CPython 3
 
-- **Status:** accepted (2026-09-02)
+- **Status:** superseded by ADR-027 (2026-09-06)
 - **Context:** The plugin ecosystem (ComicVine Scraper, FromDucks, Library Organizer…) is IronPython 2.7 (Python 2 semantics) with `#@Directive` headers and `.crplugin` packages. Dropping it orphans the community. IronPython itself is not embeddable from Rust.
 - **Decision:** Embed CPython 3 via PyO3, expose a `ComicRack`/`ComicBook` shim mirroring `IPluginEnvironment` (~40 methods). Keep `#@Directive`, manifest, and `.crplugin` formats unchanged. Ship a 2to3 migration guide. The top-5 community plugins are acceptance tests.
 - **Consequences:** Python 2 plugins need migration. Scripts that build WinForms UI (`ComicInfoUI`/`QuickOpenUI` returning controls) are unportable. An HTML/WebKitGTK or GTK panel API replaces them (breaking change, documented).
@@ -190,3 +190,17 @@ Append new ADRs at the end. Never rewrite the decision content of an existing en
 - **Context:** Phase 5.5 carried T10 (browser dock modes Fill + Bottom) and T11 (the SmallComicPreview sidebar pane) as tasks. With the tab strip (T9) landed, the user judged the second dock mode and the preview pane low-value next to the remaining chrome tasks and moved both out of the phase.
 - **Decision:** T10 and T11 are BACKLOG items (`docs/port-plan.md` §6, with the C# refs); they are no longer Phase 5.5 tasks and do not block Phase 6. The port stays Fill-only (the C# default); F3 keeps toggling the browser within the Fill stack; the Browse ▸ Small Preview menu item stays a disabled stub. The T14 persistence scope drops the dock-mode and preview-pane keys until the backlog items land; it gains the T12 display-options persistence instead (the C# `DisplayWorkspace` display family).
 - **Consequences:** The ADR-024 scope line ("Fill + Bottom only") stays for the eventual pickup — Left/Right remain dropped. The kickoff's T10/T11 sections record the move and keep the C# specs for whoever picks the work up.
+
+## ADR-027: No scripting host — native modules replace the Python plugin ecosystem
+
+- **Status:** accepted (2026-09-06, user directive). Supersedes ADR-003.
+- **Context:** Phase 6 planned a PyO3/CPython 3 port of the IronPython host (ADR-003). A feasibility review (2026-09-06) tested that plan against the real plugin surface:
+  - The flagship plugin (Comic Vine Scraper, ~12k lines IronPython) fails at `import clr` on CPython. Its hook use (`ConfigScript` + `Books, Editor`) maps 1:1 to the planned host, and its engine layer (~55% of the code) migrates after a 2to3 pass. Its UI layer (~40%) is WinForms: no shim of acceptable size maps Form/DataGridView/GDI+ onto GTK.
+  - The bundled sample scripts split the same way: pure-logic hooks port after 2to3; every script that builds a dialog (NewComics.py, Autonumber.py, SearchAndReplace.py) hits the WinForms wall.
+  - The user community is small, and the scripts people actually use are a handful. The C# features behind them are small native tasks: fileless book creation is a NATIVE C# command (`MainForm.AddNewBook`, MainForm.cs:1879), not a script; the built-in NetSearch table (`SearchEngines.cs`) holds one Wikipedia search source.
+  - The only scripting surface inside user data — the smartlist `Expression` and plugin-list matchers — shows zero use in the real-world database fixture.
+- **Decision:** Drop the scripting host. No PyO3/CPython dependency, no `#@Directive` loader, no `.crplugin` packages, no Automation menu, no plugin hooks, no 2to3 guide. The `cr-script` crate is removed from the workspace. Extensibility is native features added release by release. From the old Phase 6 scope the port keeps:
+  - The native "New Comic…" fileless-book flow (`MainForm.cs:1879` parity) and a native "New fileless Book Series…" dialog (the NewComics.py port).
+  - Smartlist `Expression` and plugin-list matchers keep parsing and rendering byte-stably; evaluation returns an explicit not-supported result (never a crash).
+  - The settings parser keeps accepting the `Scripting` and `PluginsStates` keys from existing Config.xml files (they are ignored).
+- **Consequences:** Users with script workflows migrate to built-in features; new requests land as native work ("small features as we go along" is the maintenance model). The compat invariant on plugin file formats is retired. A future scripting host stays possible — a new ADR would revive it, and the C# hook-table record at the end of `phase-6-kickoff.md` remains the reference.

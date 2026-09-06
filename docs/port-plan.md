@@ -11,7 +11,6 @@ comicrust/
 │   ├── cr-io        # Comic providers (zip/tar/7z/rar/pdf/folder/web), ComicInfo write-back
 │   ├── cr-image     # Image currency type, codecs, resize/adjust filters, page/thumb caches
 │   ├── cr-engine    # Smart-list parser + matchers, queue manager, scanner, watch folders, backup, sync, remote
-│   ├── cr-script    # PyO3 plugin host, #@Directive loader, .crplugin packages, host API shim
 │   ├── cr-ui        # GTK4: reader (GtkGLArea), ItemView browser, shell, dialogs, theming, i18n
 │   ├── cr-cli       # Headless verification binary (info, db-dump, scan) — the port's test harness
 │   └── cr-app       # Main binary: D-Bus single instance, i18n wiring, packaging
@@ -36,8 +35,8 @@ The crate split mirrors the C# project boundaries. Porting stays mechanically tr
 | Registry associations / SHFileOperation / recycle | xdg-mime, GIO trash |
 | Single instance (WCF named pipe) | zbus / D-Bus |
 | uxtheme dark mode, theme color tables | GTK CSS providers + native dark preference |
-| IronPython 2.7.4 host | PyO3 + CPython 3, `ComicRack`/`ComicBook` shim, same `#@Directive` + `.crplugin` formats |
-| MSHTML `ObjectForScripting` panels | WebKitGTK `messageHandlers` |
+| IronPython 2.7.4 host | **dropped (ADR-027)** — native modules replace scripts; no Python runtime |
+| MSHTML `ObjectForScripting` panels | **dropped (ADR-027)** — the plugin HTML panels die with the scripting host (the News dialog is an ADR-024 omission) |
 | `TR.Load()["key"]` XML localization (19 langs) | same XMLs loaded by a Rust `TR` port — reused as-is |
 | BinaryFormatter `cache.idx` | fresh format (caches are disposable, no compat) |
 
@@ -54,7 +53,7 @@ Every phase ends shippable and testable. Phases 0-2 are fully headless. They de-
 | 4 | Browser | ItemView port (thumbnail/tile/detail, grouping, stacking, columns, sort, rubber-band, drag-drop), library tree, search popover, QuickOpen, PagesView | Library browse/manage replaces C# browser for common flows | 10-12 wk |
 | 5 | Dialogs | All ~50: book editor, bulk edit, preferences (+ serde-driven options builder), smart-list/matcher editors, export, devices, workspace save/switch | Feature-complete for local-library workflows | 12-14 wk |
 | 5.5 | UI chrome parity | Menubar, toolbars (reader/browser/navigator/pages), multi-panel status bar, book tabs + context menu, Book Display Settings, About/Zoom/QuickRating/Tasks, bundled CR icons, layout persistence — see `phase-5.5-kickoff.md` (ADR-024; dock modes stay Fill-only per ADR-026) — **COMPLETE, all tasks user-tested (2026-09-06)** | Chrome close to original CR with locked omissions; every task user-tested | 8-10 wk |
-| 6 | Scripting | PyO3 host, hook wiring (Automation menus, NetSearch, overlays, info panels), package manager, WebKitGTK panel bridge, 2to3 migration guide + top-5 plugin acceptance tests | Shipped sample scripts + ComicVine-class plugin operational | 6-8 wk |
+| 6 | Native features + de-scripting | Native "New Comic…" fileless flow + "New fileless Book Series…" dialog (the NewComics.py port, ADR-027), `Expression`/plugin matcher parse-compat (not-supported evaluation), Copy Page/Export Page, `cr-script` removal | Feature checklist complete with no scripting surface; matcher round-trip stable | 2-3 wk |
 | 7 | Platform | D-Bus single instance, MTP/wireless sync, HTTP remote server, full i18n wiring (the dark/light toggle + theme-following views + the automatic layout persistence landed in 5.5 — ADR-025, T14) | Feature checklist from C# complete | 8-10 wk |
 | 8 | Polish/ship | Flatpak/.deb/AUR packaging, CI, docs, migration tooling, perf passes | 1.0 | 4-6 wk |
 
@@ -64,7 +63,7 @@ Every phase ends shippable and testable. Phases 0-2 are fully headless. They de-
 
 1. **Data compat first (0-2):** the database is the only unlosable artifact. Proving a byte-stable round-trip before UI means the riskiest compat work happens while the codebase is small.
 2. **Reader before browser (3 before 4):** the reader is the emotional core. It validates the GL/cairo rendering strategy. The browser widget is the single largest custom build. It benefits from the reader's widget infrastructure.
-3. **Scripting late but before polish (6):** the plugin API shape stabilizes only after the app surface exists. It precedes polish because ecosystem compat may force host-API changes.
+3. **Native features at 6 (ADR-027):** the scripting host is dropped; the phase delivers the C#'s native features that the scripts obscured (fileless books) plus the de-scripting cleanup, before platform work (7).
 4. **Platform integration last (7):** sync and remote are isolated modules. Deferring them avoids coupling their APIs to an unstable engine.
 
 ## 5. Kickoff
@@ -95,14 +94,8 @@ the entry into the kickoff that will own it.
   500 ms selection debounce. C# spec: `Views/SmallComicPreview.cs` +
   Designer, `ComicExplorerView.cs:294-307`. The Browse ▸ Small
   Preview menu item stays a disabled stub until picked up.
-- **Build selected bundled scripts into the app natively** (Phase 5.5
-  T3 finding, 2026-09-05): some of the C#'s menu items are actually
-  IronPython scripts under `ComicRack/Output/Scripts/` — e.g. File ▸
-  Automation ▸ "New fileless Book Series..." is `NewComics.py`
-  (`#@Hook NewBooks`). Candidates worth a native Rust port instead of
-  Python-plugin machinery: NewComics.py (fileless series/entries),
-  and any other high-traffic sample scripts reviewed at Phase 6. The
-  rest keep the Phase 6 plugin host.
+- **New fileless Book Series dialog** (the NewComics.py port): RESOLVED 2026-09-06 — moved into the Phase 6 re-scope (`phase-6-kickoff.md`, ADR-027) together with the native "New Comic…" flow.
+- **WikiSearch editor context links** (moved to the backlog 2026-09-06, user decision): the C# `SearchEngines.cs` built-in — a Wikipedia `INetSearch` engine registered into the book editor's text-box context menus (`ComicBookDialog.cs:137` `TextBoxContextMenu.AddSearchLinks`) and the ListSelectorControls. The scripting NetSearch providers that appended to this table die with ADR-027; the native single-engine surface is small and optional. Pick up with any book-editor polish work.
 - **Copy Page / Export Page (Edit menu)** (Phase 5.5 T13 re-home,
   2026-09-06): `CopyPage` copies the CURRENT page image to the
   clipboard and `ExportCurrentImage` writes it through the
@@ -132,4 +125,4 @@ Phase task breakdowns with acceptance criteria:
 - Phase 0: `phase-0-kickoff.md` — built and validated (see `AGENTS.md` status).
 - Phase 1: `phase-1-kickoff.md`.
 - Phase 5.5: `phase-5.5-kickoff.md` — the UI-parity phase (ADR-024), inserted between 5 and 6. COMPLETE (2026-09-06).
-- Phase 6: `phase-6-kickoff.md` — the scripting phase (the PyO3 plugin host); the active phase.
+- Phase 6: `phase-6-kickoff.md` — the re-scoped native-features phase (ADR-027); the active phase. The original scripting kickoff survives as a superseded record inside that file.
