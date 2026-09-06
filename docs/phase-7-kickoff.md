@@ -176,8 +176,6 @@ Probe lessons (do not re-learn):
 
 ## Status
 
-- T1 IMPLEMENTED + PROBE-PROVEN (2026-09-06), user test pending.
-  357 tests; fmt + clippy green. The real-app handoff (second
-  launch → focus + new-tab open, `-p` passthrough) verified under
-  Xvfb with an isolated XDG.
-- T2 pending.
+- T1 COMPLETE — USER-TESTED, ALL PASS (2026-09-06; the 5 steps in
+  the User test section above). 357 tests; fmt + clippy green.
+  T2 (the `.cbl` import) is the remaining Phase 7 task.

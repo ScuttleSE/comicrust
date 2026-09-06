@@ -114,7 +114,10 @@ Update this section at the **end of every work session**. The next agent must kn
   `Child::try_wait`); the primary must stay ~500 ms after the
   handoff for the client's reply. Probe:
   `cr-ui/examples/singleinstance_probe.rs` (A/B/C gates; no XDG
-  isolation needed). 357 tests. Phase 8 (packaging) follows.
+  isolation needed). 357 tests. T1 USER-TESTED, ALL PASS
+  (2026-09-06). Remaining Phase 7 work: T2 (the `.cbl` reading-list
+  import — the `ImportComicList` port; spec in the kickoff). Phase
+  8 (packaging) follows.
   INIT-GLOBAL BOOT BUG FIXED (2026-09-06, the cache-folder user
   report "the setting reverts after restart"): `init_global` used
   `OnceLock::set`, which SILENTLY FAILS when an early `global()`
