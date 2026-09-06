@@ -1092,20 +1092,31 @@ impl BrowserShell {
                             // on the virtual-size canvas makes the
                             // ScrolledWindow's scroll-to-focus jump to
                             // the origin (the right-click report).
-                            // That scroll runs in an IDLE — a
-                            // synchronous compare here reads the old
-                            // value and misses it (the user trace: the
-                            // restore line never fired, the jump
-                            // happened anyway). Restore on an idle.
+                            // That scroll runs LATER than one idle
+                            // turn (the popover map / a layout pass
+                            // can move it after the first idle — the
+                            // user trace: the one-shot restore ran
+                            // while the scroll was still 2956). Watch
+                            // a few idle turns and restore as soon as
+                            // the value moves.
                             let view = sh.item_view.clone();
-                            glib::idle_add_local_once(move || {
+                            let watch = std::rc::Rc::new(std::cell::Cell::new(10u32));
+                            let watch2 = watch.clone();
+                            glib::idle_add_local(move || {
+                                let left = watch2.get();
+                                if left == 0 {
+                                    return glib::ControlFlow::Break;
+                                }
+                                watch2.set(left - 1);
                                 let scroll_after = view.scroll_value();
                                 if scroll_after != scroll_before {
                                     crate::trace::trace(format!(
                                         "is-active: grab moved the scroll {scroll_before} -> {scroll_after}; restored"
                                     ));
                                     view.set_scroll_value(scroll_before);
+                                    return glib::ControlFlow::Break;
                                 }
+                                glib::ControlFlow::Continue
                             });
                         }
                     }
