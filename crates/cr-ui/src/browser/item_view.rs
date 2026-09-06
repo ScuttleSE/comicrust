@@ -54,6 +54,7 @@ const THUMB_WHEEL_STEP: f64 = 16.0;
 type ActivateFn = Box<dyn Fn(&CrGuid)>;
 type SelectionFn = Box<dyn Fn(usize)>;
 type HeaderContextFn = Rc<dyn Fn(f64, f64)>;
+type BookContextFn = Rc<dyn Fn(Option<CrGuid>, f64, f64)>;
 
 struct ThumbDone {
     book_id: CrGuid,
@@ -115,6 +116,8 @@ pub struct ItemViewState {
     on_selection_changed: Option<SelectionFn>,
     /// The Detail header right-click (the T6 column chooser).
     on_header_context: Option<HeaderContextFn>,
+    /// The book right-click (the context menu).
+    on_book_context: Option<BookContextFn>,
     type_ahead: String,
     type_ahead_source: Option<glib::SourceId>,
     canvas: DrawingArea,
@@ -259,6 +262,7 @@ impl ItemView {
             on_activate: None,
             on_selection_changed: None,
             on_header_context: None,
+            on_book_context: None,
             type_ahead: String::new(),
             type_ahead_source: None,
             canvas: canvas.clone(),
@@ -551,54 +555,97 @@ impl ItemView {
     /// window. A click inside the Detail header strip routes to the
     /// column-chooser hook (`autoHeaderContextMenuStrip`) instead.
     pub fn connect_context<F: Fn(Option<CrGuid>, f64, f64) + 'static>(&self, f: F) {
+        self.state.borrow_mut().on_book_context = Some(Rc::new(f));
         let state = Rc::downgrade(&self.state);
         let canvas = self.canvas.clone();
         let gesture = GestureClick::new();
         gesture.set_button(3);
         gesture.connect_pressed(move |gesture, _n, x, y| {
-            let Some(state) = state.upgrade() else {
-                return;
-            };
             gesture.set_state(gtk4::EventSequenceState::Claimed);
-            // The header hit test needs the config — read it BEFORE
-            // the branch (the if-condition temporaries lesson).
-            let header_hit = {
-                let s = state.borrow();
-                layout::header_visible(&s.config) && y <= s.config.header_height
-            };
-            if header_hit {
-                let hook = state.borrow().on_header_context.clone();
-                if let Some(f) = hook {
-                    // Translate to the toplevel like the book menu.
-                    let (wx, wy) = canvas
-                        .ancestor(gtk4::Window::static_type())
-                        .and_then(|w| w.downcast::<gtk4::Window>().ok())
-                        .and_then(|win| canvas.translate_coordinates(&win, x, y))
-                        .unwrap_or((x, y));
-                    f(wx, wy);
-                    return;
-                }
+            if let Some(state) = state.upgrade() {
+                Self::emit_context(&state, &canvas, x, y);
             }
-            let s = state.borrow();
-            let hit = hit_test(&s.layout, x, y).map(|d| s.view.book_id(d));
-            drop(s);
-            // The canvas lives inside the pane — translate to the
-            // toplevel so a window-parented popover lands under the
-            // cursor.
-            let (wx, wy) = canvas
-                .ancestor(gtk4::Window::static_type())
-                .and_then(|w| w.downcast::<gtk4::Window>().ok())
-                .and_then(|win| canvas.translate_coordinates(&win, x, y))
-                .unwrap_or((x, y));
-            f(hit, wx, wy);
         });
         self.canvas.add_controller(gesture);
+    }
+
+    /// The right-click body (shared by the gesture and the probe):
+    /// the header hit routes to the column chooser, otherwise the hit
+    /// id + TOPLEVEL coordinates reach the hook (a window-parented
+    /// popover lands under the cursor).
+    pub fn emit_context(state: &Rc<RefCell<ItemViewState>>, canvas: &DrawingArea, x: f64, y: f64) {
+        crate::trace::trace(format!("context: press at ({x}, {y})"));
+        // The header hit test needs the config — read it BEFORE
+        // the branch (the if-condition temporaries lesson).
+        let header_hit = {
+            let s = state.borrow();
+            layout::header_visible(&s.config) && y <= s.config.header_height
+        };
+        if header_hit {
+            let hook = state.borrow().on_header_context.clone();
+            if let Some(f) = hook {
+                // Translate to the toplevel like the book menu.
+                let (wx, wy) = Self::toplevel_xy(canvas, x, y);
+                crate::trace::trace(format!("context: header hit, toplevel ({wx}, {wy})"));
+                f(wx, wy);
+                return;
+            }
+        }
+        let s = state.borrow();
+        let hit = hit_test(&s.layout, x, y).map(|d| s.view.book_id(d));
+        drop(s);
+        let (wx, wy) = Self::toplevel_xy(canvas, x, y);
+        crate::trace::trace(format!(
+            "context: hit {} toplevel ({wx}, {wy}) — firing menu",
+            hit.is_some()
+        ));
+        if let Some(f) = state.borrow().on_book_context.clone() {
+            f(hit, wx, wy);
+        } else {
+            crate::trace::trace("context: no menu hook registered");
+        }
+    }
+
+    fn toplevel_xy(canvas: &DrawingArea, x: f64, y: f64) -> (f64, f64) {
+        canvas
+            .ancestor(gtk4::Window::static_type())
+            .and_then(|w| w.downcast::<gtk4::Window>().ok())
+            .and_then(|win| canvas.translate_coordinates(&win, x, y))
+            .unwrap_or((x, y))
     }
 
     /// The Detail header right-click (the column chooser; the C#
     /// `autoHeaderContextMenuStrip_Opening`).
     pub fn connect_header_context<F: Fn(f64, f64) + 'static>(&self, f: F) {
         self.state.borrow_mut().on_header_context = Some(Rc::new(f));
+    }
+
+    /// Scrolls the grid and reports the resulting vadjustment value
+    /// (the context-menu probe).
+    pub fn probe_scroll_to(&self, y: f64) -> f64 {
+        let scroller = self
+            .canvas
+            .ancestor(gtk4::ScrolledWindow::static_type())
+            .and_then(|w| w.downcast::<ScrolledWindow>().ok())
+            .expect("ItemView canvas must live in a ScrolledWindow");
+        let adj = scroller.vadjustment();
+        adj.set_value(y);
+        adj.value()
+    }
+
+    /// The live vadjustment value (the context-menu probe).
+    pub fn probe_scroll_value(&self) -> f64 {
+        self.canvas
+            .ancestor(gtk4::ScrolledWindow::static_type())
+            .and_then(|w| w.downcast::<ScrolledWindow>().ok())
+            .map(|s| s.vadjustment().value())
+            .unwrap_or(-1.0)
+    }
+
+    /// Fires the right-click hook through the shared gesture body
+    /// (the context-menu probe).
+    pub fn probe_context(&self, x: f64, y: f64) {
+        Self::emit_context(&self.state, &self.canvas, x, y);
     }
 
     /// Takes the keyboard focus onto the grid (the window-activation

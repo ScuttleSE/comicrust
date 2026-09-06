@@ -1078,8 +1078,13 @@ impl BrowserShell {
                     }
                     if let Some(sh) = state.upgrade() {
                         if sh.stack.visible_child_name().as_deref() == Some("reader") {
+                            crate::trace::trace("is-active: re-grab reader focus");
                             sh.reader.focus_current();
                         } else {
+                            crate::trace::trace(format!(
+                                "is-active: re-grab item-view focus (scroll was {})",
+                                sh.item_view.probe_scroll_value()
+                            ));
                             sh.item_view.grab_focus();
                         }
                     }
@@ -1307,6 +1312,22 @@ impl BrowserShell {
             .current_view()
             .and_then(|v| v.create_page_image())
             .map(|s| (s.width(), s.height()))
+    }
+
+    /// Scrolls the book grid (the context-menu probe).
+    pub fn state_item_scroll_to(&self, y: f64) -> f64 {
+        self.state.item_view.probe_scroll_to(y)
+    }
+
+    /// The book grid's live scroll value (the context-menu probe).
+    pub fn state_item_scroll_value(&self) -> f64 {
+        self.state.item_view.probe_scroll_value()
+    }
+
+    /// Fires the right-click hook through the shared gesture body
+    /// (the context-menu probe).
+    pub fn state_trigger_context(&self, x: f64, y: f64) {
+        self.state.item_view.probe_context(x, y);
     }
 
     /// The selected book's rating in the library (the probe).
@@ -1573,12 +1594,15 @@ impl ShellState {
         let action = gio::SimpleAction::new(name, None);
         let state = Rc::downgrade(self);
         action.connect_activate(move |_, _| {
+            crate::trace::trace(format!("action {name} activated"));
             if let Some(sh) = state.upgrade() {
                 f(&sh);
                 // The C# re-syncs the command enable/check states on
                 // every menu operation (`CommandMapper` idle update);
                 // every action dispatch refreshes ours.
                 sh.sync_enabled();
+            } else {
+                crate::trace::trace(format!("action {name}: shell gone — silent no-op"));
             }
         });
         group.add_action(&action);
@@ -3242,7 +3266,11 @@ impl ShellState {
         // (ComicDisplay.cs:1441): the current composed page image onto
         // the clipboard (errors are swallowed in the C# too).
         self.add_simple(&group, "copy-page", |sh| {
-            let Some(surface) = sh.reader.current_view().and_then(|v| v.create_page_image()) else {
+            crate::trace::trace("copy-page: handler entered");
+            let view = sh.reader.current_view();
+            let surface = view.and_then(|v| v.create_page_image());
+            crate::trace::trace(format!("copy-page: view+surface ok={}", surface.is_some()));
+            let Some(surface) = surface else {
                 return;
             };
             copy_surface_to_clipboard(&surface);
@@ -3252,6 +3280,7 @@ impl ShellState {
         // "{Caption} - Page {N}", the 5-format filter, the filter
         // index persisted (`LastExportPageFilterIndex`).
         self.add_simple(&group, "export-page", |sh| {
+            crate::trace::trace("export-page: handler entered");
             let view = sh.reader.current_view();
             let caption = sh
                 .reader
@@ -3259,12 +3288,12 @@ impl ShellState {
                 .map(|b| cr_engine::display_text::caption(&b))
                 .unwrap_or_default();
             let page = sh.reader.current_display_page().map_or(1, |p| p + 1);
-            export_page_dialog(
-                &sh.window,
-                &caption,
-                page,
-                view.and_then(|v| v.create_page_image()),
-            );
+            let surface = view.and_then(|v| v.create_page_image());
+            crate::trace::trace(format!(
+                "export-page: caption={caption:?} page={page} surface={}",
+                surface.is_some()
+            ));
+            export_page_dialog(&sh.window, &caption, page, surface);
         });
         self.add_simple(&group, "refresh", |sh| sh.refresh_view());
         self.add_simple(&group, "preferences", ShellState::show_preferences);
@@ -4140,6 +4169,13 @@ fn show_context_menu(state: &std::rc::Weak<ShellState>, target: Option<CrGuid>, 
     popover.connect_closed(|p| p.unparent());
     let rect = gtk4::gdk::Rectangle::new(x as i32, y as i32 + 8, 1, 1);
     popover.set_pointing_to(Some(&rect));
+    crate::trace::trace(format!(
+        "context: popup at ({x}, {y}) — scroll before popup {}",
+        state
+            .upgrade()
+            .map(|sh| sh.item_view.probe_scroll_value())
+            .unwrap_or(-1.0)
+    ));
     popover.popup();
 }
 
@@ -4353,26 +4389,34 @@ const PAGE_EXPORT_FILTERS: &[(&str, &[&str], cr_image::decode::ImageFormat)] = &
 
 /// ARGB (premultiplied, cairo stride) → the RGBA currency
 /// (`Bitmap.SaveImage` consumes the un-premultiplied form).
+/// ARGB (premultiplied, cairo stride) → the RGBA currency
+/// (`Bitmap.SaveImage` consumes the un-premultiplied form). Reads via
+/// `with_data` — `data()` demands exclusive access (surface refcount
+/// 1) and always fails while the caller holds a reference.
 fn surface_to_image(surface: &gtk4::cairo::ImageSurface) -> Option<cr_image::Image> {
-    let mut surface = surface.clone();
     surface.flush();
     let width = surface.width() as u32;
     let height = surface.height() as u32;
     let stride = surface.stride() as usize;
-    let data = surface.data().ok()?;
     let mut rgba = Vec::with_capacity((width * height * 4) as usize);
-    for y in 0..height as usize {
-        let row = &data[y * stride..y * stride + width as usize * 4];
-        for px in row.as_chunks::<4>().0 {
-            let a = u32::from(px[3]);
-            if a == 0 {
-                rgba.extend_from_slice(&[0, 0, 0, 0]);
-            } else {
-                // Un-premultiply (identity for opaque pages).
-                let un = |v: u8| ((u32::from(v) * 255) / a) as u8;
-                rgba.extend_from_slice(&[un(px[2]), un(px[1]), un(px[0]), px[3]]);
+    let read = surface.with_data(|data| {
+        for y in 0..height as usize {
+            let row = &data[y * stride..y * stride + width as usize * 4];
+            for px in row.as_chunks::<4>().0 {
+                let a = u32::from(px[3]);
+                if a == 0 {
+                    rgba.extend_from_slice(&[0, 0, 0, 0]);
+                } else {
+                    // Un-premultiply (identity for opaque pages).
+                    let un = |v: u8| ((u32::from(v) * 255) / a) as u8;
+                    rgba.extend_from_slice(&[un(px[2]), un(px[1]), un(px[0]), px[3]]);
+                }
             }
         }
+    });
+    if let Err(err) = read {
+        crate::trace::trace(format!("surface_to_image: with_data failed: {err}"));
+        return None;
     }
     Some(cr_image::Image {
         width,
@@ -4385,15 +4429,26 @@ fn surface_to_image(surface: &gtk4::cairo::ImageSurface) -> Option<cr_image::Ima
 /// image as a texture on the default clipboard.
 fn copy_surface_to_clipboard(surface: &gtk4::cairo::ImageSurface) {
     let Some(image) = surface_to_image(surface) else {
+        crate::trace::trace("copy-page: surface_to_image returned None");
         return;
     };
+    crate::trace::trace(format!(
+        "copy-page: page image {}x{}",
+        image.width, image.height
+    ));
     let Ok(png) = cr_image::decode::encode_image(&image, cr_image::decode::ImageFormat::Png) else {
+        crate::trace::trace("copy-page: png encode failed");
         return;
     };
-    if let Some(display) = gdk::Display::default() {
-        let provider =
-            gdk::ContentProvider::for_bytes("image/png", &gdk::glib::Bytes::from_owned(png));
-        let _ = display.clipboard().set_content(Some(&provider));
+    crate::trace::trace(format!("copy-page: png {} bytes", png.len()));
+    let Some(display) = gdk::Display::default() else {
+        crate::trace::trace("copy-page: no default display");
+        return;
+    };
+    let provider = gdk::ContentProvider::for_bytes("image/png", &gdk::glib::Bytes::from_owned(png));
+    match display.clipboard().set_content(Some(&provider)) {
+        Ok(()) => crate::trace::trace("copy-page: clipboard set_content OK"),
+        Err(err) => crate::trace::trace(format!("copy-page: set_content failed: {err}")),
     }
 }
 
@@ -4409,6 +4464,7 @@ fn export_page_dialog(
     surface: Option<gtk4::cairo::ImageSurface>,
 ) {
     let Some(surface) = surface else {
+        crate::trace::trace("export-page: no page image, dialog skipped");
         return;
     };
     let chooser = gtk4::FileChooserNative::builder()
@@ -4439,13 +4495,19 @@ fn export_page_dialog(
         initial_exts[0]
     );
     chooser.set_current_name(&name);
+    crate::trace::trace(format!("export-page: chooser shown, initial name {name:?}"));
     let app = window.application();
     chooser.connect_response(move |chooser, response| {
+        crate::trace::trace(format!(
+            "export-page: response {response:?} (accept={:?})",
+            gtk4::ResponseType::Accept
+        ));
         let _ = &filter_handles;
         if response != gtk4::ResponseType::Accept {
             return;
         }
         let Some(path) = chooser.file().and_then(|f| f.path()) else {
+            crate::trace::trace("export-page: response carried no file path");
             return;
         };
         // The chosen filter: position in the kept handle list.
@@ -4460,20 +4522,27 @@ fn export_page_dialog(
         if path.extension().is_none() {
             path.set_extension(exts[0]);
         }
+        crate::trace::trace(format!("export-page: writing {path:?} (format {chosen})"));
         cr_ui_settings().borrow_mut().last_export_page_filter_index = chosen as i32;
         let Some(image) = surface_to_image(&surface) else {
+            crate::trace::trace("export-page: surface_to_image returned None");
             return;
         };
         match cr_image::decode::encode_image(&image, format) {
             Ok(bytes) => {
+                crate::trace::trace(format!("export-page: encoded {} bytes", bytes.len()));
                 if let Err(err) = std::fs::write(&path, bytes) {
                     // `CouldNotSaveImage` parity — an error dialog.
+                    crate::trace::trace(format!("export-page: write failed: {err}"));
                     if let Some(app) = &app {
                         show_error_dialog(app, &path.to_string_lossy(), &err.to_string());
                     }
+                } else {
+                    crate::trace::trace("export-page: file written");
                 }
             }
             Err(err) => {
+                crate::trace::trace(format!("export-page: encode failed: {err}"));
                 if let Some(app) = &app {
                     show_error_dialog(app, &path.to_string_lossy(), &err.to_string());
                 }
