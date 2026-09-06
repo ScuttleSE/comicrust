@@ -386,6 +386,18 @@ impl ReaderShell {
             .count()
     }
 
+    /// The open books' file paths (`books.OpenFiles` — the exit-time
+    /// `Settings.LastOpenFiles` source). Empty slots are skipped.
+    pub fn open_files(&self) -> Vec<String> {
+        self.state
+            .borrow()
+            .tabs
+            .iter()
+            .filter(|t| !t.path.as_os_str().is_empty())
+            .map(|t| t.path.to_string_lossy().into_owned())
+            .collect()
+    }
+
     /// One strip row per open slot (the workspace tab strip's comic
     /// tabs): caption, cover source, bold rule.
     pub fn tab_infos(&self) -> Vec<TabInfo> {
@@ -951,16 +963,26 @@ impl ReaderShell {
     /// slot). A comic already open in another tab is focused instead
     /// (the C# `NavigatorManager.Open` finds the existing slot).
     pub fn open_comic(&self, path: &Path) -> anyhow::Result<()> {
+        self.open_comic_at(path, false, 0)
+    }
+
+    /// The `books.Open(file, newSlot, page)` knobs: `new_slot` skips
+    /// the same-path slot focus and always opens a fresh tab (the
+    /// second-instance handoff `newSlot: true`), and a positive
+    /// `page` (0-based) opens there instead of the resume position.
+    pub fn open_comic_at(&self, path: &Path, new_slot: bool, page: i32) -> anyhow::Result<()> {
         // Same-path open → switch to the existing slot (the C# `Open`
         // slot lookup by book identity).
-        let existing = {
-            let st = self.state.borrow();
-            st.tabs.iter().position(|t| t.path == path)
-        };
-        if let Some(pos) = existing {
-            let notebook = self.state.borrow().notebook.clone();
-            notebook.set_current_page(Some(pos as u32));
-            return Ok(());
+        if !new_slot {
+            let existing = {
+                let st = self.state.borrow();
+                st.tabs.iter().position(|t| t.path == path)
+            };
+            if let Some(pos) = existing {
+                let notebook = self.state.borrow().notebook.clone();
+                notebook.set_current_page(Some(pos as u32));
+                return Ok(());
+            }
         }
 
         let provider = cr_io::ComicProvider::open(path)
@@ -1031,9 +1053,16 @@ impl ReaderShell {
         let display_count = sequence.as_ref().map_or(page_count, |s| s.len());
         // Resume position and read-progress clamp to the DISPLAY
         // count. An empty page list (a broken archive) must not
-        // panic — the display shows the error page instead.
+        // panic — the display shows the error page instead. The
+        // `books.Open` page parameter replaces the resume position
+        // (the C# passes `Math.Max(0, page - 1)` from the `-p`
+        // switch).
         let max_page = (display_count as i32 - 1).max(0);
-        let resume = book.current_page.clamp(0, max_page).max(0) as usize;
+        let resume = if page > 0 {
+            page.clamp(0, max_page) as usize
+        } else {
+            book.current_page.clamp(0, max_page).max(0) as usize
+        };
         book.last_page_read = book.last_page_read.clamp(0, max_page);
         let last_read = book.last_page_read.max(0) as usize;
 

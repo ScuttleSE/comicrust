@@ -75,6 +75,14 @@ fn initialize_settings() {
 
     let mut extended = cr_core::settings::ExtendedSettings::default();
     extended.load(&ini, &argv);
+    // The C# `Program.ExtendedSettings` getter (Program.cs:160-165):
+    // a `-restart` boot clears the one-shot arguments so the
+    // restarted instance opens nothing.
+    if extended.restart {
+        extended.files.clear();
+        extended.import_list = None;
+        extended.install_plugin = None;
+    }
     if std::env::var("CR_DEBUG_SL").is_ok() {
         eprintln!(
             "[cache-ov] chain={chain} ini-cache-path={:?} argv={argv:?}",

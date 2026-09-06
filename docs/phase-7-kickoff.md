@@ -141,10 +141,43 @@ user test.
    duplicate).
 4. File ▸ Restart → the app exits and comes back fresh (no comics
    reopened), layout kept.
-5. Start with no arguments → the startup behavior is unchanged (the
-   QuickOpen page; `OpenLastFile` reopens the last session's comic).
+5. Close the app normally (the window X) with a comic open, then
+   start with no arguments → the session comic reopens
+   (`OpenLastFile`); with no comic it shows the QuickOpen as before.
+
+## Probe (T1)
+
+`cr-ui/examples/singleinstance_probe.rs` — the probe binary spawns
+itself as the second instance against its own unique-mode primary
+and gates: (A) the primary's boot arrives as `command-line` and
+carries ONLY argv[0]; (B) the handoff delivers the client's argv and
+`ExtendedSettings::from_argv` parses the files + `-p 7`; (C) the
+client process exits (reaped via the kept Child handle). Run:
+`GDK_BACKEND=x11 DISPLAY=:99 cargo run -p cr-ui --example
+singleinstance_probe` (no library touched — no XDG isolation
+needed). The REAL app was verified headless too: a second
+`cr-app <comic>` exits 0 in ~0.1 s while the primary's window
+switches to the new comic; `-p 5` flips the current tab.
+
+Probe lessons (do not re-learn):
+
+- With `HANDLES_COMMAND_LINE`, the gio primary emits
+  `command-line` for its own argv and NEVER `activate` — the boot
+  work lives in the command-line handler (the old
+  `connect_activate(show_shell)` path is dead code under this flag).
+- argv[0] rides BOTH deliveries (the primary's own boot AND the
+  remote handoff) — the handler strips element 0 or the binary path
+  lands in `files` and the app tries to open ITSELF as a comic.
+- A second process that exits after forwarding stays a ZOMBIE until
+  the parent reaps — `/proc/<pid>` exists for zombies; gate "the
+  client exited" through `Child::try_wait` on the kept handle.
+- The primary must stay alive ~500 ms after the handoff before it
+  quits: the client's forward call needs the reply.
 
 ## Status
 
-- T1 IN PROGRESS (2026-09-06).
+- T1 IMPLEMENTED + PROBE-PROVEN (2026-09-06), user test pending.
+  357 tests; fmt + clippy green. The real-app handoff (second
+  launch → focus + new-tab open, `-p` passthrough) verified under
+  Xvfb with an isolated XDG.
 - T2 pending.

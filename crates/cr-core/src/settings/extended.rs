@@ -327,6 +327,18 @@ impl ExtendedSettings {
         self.files = files;
     }
 
+    /// The handoff re-parse (the C# `StartLast`, `Program.cs:1072`):
+    /// a FRESH default plus the argv switches. The ini merge is
+    /// irrelevant here — `Files`, `Page` and `ImportList` are
+    /// command-line-only fields, so the C# fresh parse reads the
+    /// same values for everything `StartLast` consumes.
+    pub fn from_argv(argv: &[String]) -> ExtendedSettings {
+        let mut s = ExtendedSettings::default();
+        s.parse_argv(argv);
+        s.normalize();
+        s
+    }
+
     /// The C# `ComicCountAlpha` setter clamp.
     pub fn normalize(&mut self) {
         self.comic_count_alpha = self.comic_count_alpha.clamp(0, 255);
@@ -436,6 +448,24 @@ mod tests {
         let mut s = ExtendedSettings::default();
         s.parse_argv(&["a.cbz".into(), "b.cbz".into()]);
         assert_eq!(s.files.len(), 2);
+    }
+
+    #[test]
+    fn handoff_parse_reads_files_page_and_import_list() {
+        // The `StartLast` re-parse (`Program.cs:1072`): a fresh
+        // default plus the argv; unknown switches do not consume
+        // their value.
+        let s = ExtendedSettings::from_argv(&[
+            "--client".to_string(),
+            "/tmp/a.cbz".to_string(),
+            "-p".to_string(),
+            "7".to_string(),
+            "-il".to_string(),
+            "/tmp/list.cbl".to_string(),
+        ]);
+        assert_eq!(s.files, vec!["/tmp/a.cbz".to_string()]);
+        assert_eq!(s.page, 7);
+        assert_eq!(s.import_list.as_deref(), Some("/tmp/list.cbl"));
     }
 
     #[test]

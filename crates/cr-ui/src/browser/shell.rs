@@ -139,12 +139,20 @@ impl ShellState {
     /// Opens a comic into the docked reader and shows it (the C#
     /// `OpenComic`; the reader tab selects and the workspace swaps).
     fn open_comic(&self, path: &Path) {
+        self.open_comic_at(path, false, 0);
+    }
+
+    /// The `OpenSupportedFile` open path: `new_slot` forces a fresh
+    /// reader tab (the second-instance handoff), `page` (0-based)
+    /// opens there instead of the resume position (`books.Open(file,
+    /// newSlot, page)`).
+    fn open_comic_at(&self, path: &Path, new_slot: bool, page: i32) {
         // The C# `Open(ComicBook)` gate (NavigatorManager.cs): a
         // fileless book (`!IsLinked`) never opens a reader slot.
         if path.as_os_str().is_empty() {
             return;
         }
-        match self.reader.open_comic(path) {
+        match self.reader.open_comic_at(path, new_slot, page) {
             Ok(()) => {
                 self.stack.set_visible_child_name("reader");
                 self.window.present();
@@ -1096,6 +1104,10 @@ impl BrowserShell {
             let state = Rc::downgrade(state);
             self.window.connect_close_request(move |_| {
                 if let Some(sh) = state.upgrade() {
+                    // `Settings.LastOpenFiles = books.OpenFiles`
+                    // (MainForm.cs:1125) — captured while the books
+                    // are still open (shutdown closes the views).
+                    let open_files = sh.reader.open_files();
                     sh.reader.shutdown();
                     // `Program.Settings.QuickOpenThumbnailSize = quickOpenView.ThumbnailSize`.
                     let size = sh.quick_view.thumb_height() as i32;
@@ -1108,7 +1120,12 @@ impl BrowserShell {
                         let ws = sh.collect_workspace(prev.as_ref());
                         cr_ui_settings().borrow_mut().current_workspace = Some(ws);
                     }
-                    cr_ui_settings().borrow_mut().quick_open_thumbnail_size = size;
+                    {
+                        let s = cr_ui_settings();
+                        let mut s = s.borrow_mut();
+                        s.quick_open_thumbnail_size = size;
+                        s.last_open_files = open_files;
+                    }
                 }
                 if let Err(err) = library::save() {
                     eprintln!("library save failed: {err}");
@@ -1214,6 +1231,25 @@ impl BrowserShell {
     /// path).
     pub fn open_comic(&self, path: &Path) {
         self.state.open_comic(path);
+    }
+
+    /// The command-line/open-signal open (`OpenSupportedFile`):
+    /// `new_slot` forces a fresh reader tab, `page` (0-based) opens
+    /// there instead of the resume position.
+    pub fn open_comic_page(&self, path: &Path, new_slot: bool, page: i32) {
+        self.state.open_comic_at(path, new_slot, page);
+    }
+
+    /// The open books' file paths (`books.OpenFiles` — the exit-time
+    /// `Settings.LastOpenFiles` source).
+    pub fn reader_open_files(&self) -> Vec<String> {
+        self.state.reader.open_files()
+    }
+
+    /// The open book count (`books.OpenCount` — the reopen-last
+    /// gate).
+    pub fn reader_open_book_count(&self) -> usize {
+        self.state.reader.open_book_count()
     }
 
     pub fn present(&self) {
@@ -3148,7 +3184,14 @@ impl ShellState {
             }
             library::save_settings();
             if let Ok(exe) = std::env::current_exe() {
-                let _ = std::process::Command::new(exe).spawn();
+                // The C# restart handshake (Program.cs:1151-1155):
+                // the new process waits for THIS pid to exit before
+                // it starts — with unique mode a bare spawn would
+                // forward to the dying instance instead of replacing
+                // it. `-restart` clears the one-shot file arguments.
+                let _ = std::process::Command::new(exe)
+                    .args(["-restart", "-waitpid", &std::process::id().to_string()])
+                    .spawn();
             }
             sh.app.quit();
         });

@@ -1,10 +1,9 @@
-//! The GTK application shell. Phase 3 keeps this minimal: an
-//! application window with an Open dialog (or a comic path from the
-//! command line) that opens a reader window. D-Bus single instance
-//! and the full browser shell arrive in later phases; the app runs
-//! `NON_UNIQUE` until then.
+//! The GTK application shell: a UNIQUE GApplication — a second
+//! launch forwards its argv to the running instance (focus + file
+//! opens, the C# `SingleInstance` handoff) — with the browser shell
+//! as the main window.
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::path::Path;
 use std::rc::Rc;
 
@@ -30,6 +29,11 @@ pub const OPEN_FILTER_EXTS: &[&str] = &[
 ];
 
 pub fn run(args: Vec<String>) {
+    // The `-waitpid` restart handshake (the C# `Program.Main`
+    // waiting step): a freshly spawned binary waits for the dying
+    // instance BEFORE it touches GTK or the database.
+    wait_for_restart_pid(&args);
+
     // gtk4-rs requires explicit init before any object construction
     // (the C# calls Application.EnableVisualStyles at the same point).
     gtk4::init().expect("GTK initialization failed");
@@ -38,56 +42,83 @@ pub fn run(args: Vec<String>) {
     crate::trace::trace(format!("startup build {}", env!("COMICRUST_VERSION")));
     let app = Application::builder()
         .application_id(APP_ID)
-        // NON_UNIQUE: D-Bus single instance is a Phase 7 item.
-        // HANDLES_OPEN: GApplication routes positional file arguments
-        // to the `open` signal — the C# exe-association behavior.
-        .flags(gio::ApplicationFlags::NON_UNIQUE | gio::ApplicationFlags::HANDLES_OPEN)
+        // UNIQUE (the default — NON_UNIQUE is gone): a second launch
+        // registers as a remote instance, forwards its argv to the
+        // primary's `command-line` handler and exits (the C#
+        // `SingleInstance` named-pipe handoff). HANDLES_COMMAND_LINE:
+        // the primary's own argv AND every handoff arrive through
+        // `command-line` (the C# `StartNew`/`StartLast` pair).
+        // HANDLES_OPEN stays for explicit `g_application_open`
+        // senders (the file-manager D-Bus route).
+        .flags(gio::ApplicationFlags::HANDLES_OPEN | gio::ApplicationFlags::HANDLES_COMMAND_LINE)
         .build();
-    let _ = args;
 
-    // The library session (`Program.DatabaseManager.Open` at startup).
-    match library::initialize() {
-        Ok(message) => set_open_message(message),
-        Err(err) => set_open_message(Some(format!(
-            "There was an error opening the Database:\n{err}"
-        ))),
+    // Register before any startup work: a remote (second) instance
+    // must NOT open the database — `run` forwards its argv and the
+    // process exits (the C# second launch never reaches StartNew).
+    if let Err(err) = app.register(None::<&gio::Cancellable>) {
+        eprintln!("application registration failed: {err}");
+        return;
     }
 
-    // The theme from the extended settings (`ThemeManager.Initialize(
-    // ExtendedSettings.Theme)` parity — the C# `Theme` getter resolves
-    // `UseDarkMode` → Dark, `Default` renders light).
-    theme::set_dark(
-        cr_core::settings::ExtendedSettings::global().effective_theme()
-            == cr_core::settings::enums::Themes::Dark,
-    );
+    if !app.is_remote() {
+        // The library session (`Program.DatabaseManager.Open` at
+        // startup) — the primary only.
+        match library::initialize() {
+            Ok(message) => set_open_message(message),
+            Err(err) => set_open_message(Some(format!(
+                "There was an error opening the Database:\n{err}"
+            ))),
+        }
 
-    // `DatabaseBackgroundSaving` (default 600 s): the periodic save
-    // while the library is dirty.
-    glib::timeout_add_local(
-        std::time::Duration::from_secs(cr_engine::library::BACKGROUND_SAVE_INTERVAL_SECS),
-        || {
-            if let Err(err) = library::save_if_dirty() {
-                eprintln!("background save failed: {err}");
+        // The theme from the extended settings (`ThemeManager.Initialize(
+        // ExtendedSettings.Theme)` parity — the C# `Theme` getter resolves
+        // `UseDarkMode` → Dark, `Default` renders light).
+        theme::set_dark(
+            cr_core::settings::ExtendedSettings::global().effective_theme()
+                == cr_core::settings::enums::Themes::Dark,
+        );
+
+        // `DatabaseBackgroundSaving` (default 600 s): the periodic save
+        // while the library is dirty.
+        glib::timeout_add_local(
+            std::time::Duration::from_secs(cr_engine::library::BACKGROUND_SAVE_INTERVAL_SECS),
+            || {
+                if let Err(err) = library::save_if_dirty() {
+                    eprintln!("background save failed: {err}");
+                }
+                glib::ControlFlow::Continue
+            },
+        );
+
+        // The watch-folder poll: debounced watch events map back to the
+        // stored watch roots and each root rescans on the scan worker
+        // (`remove_missing: false` — vanished files flag as missing).
+        glib::timeout_add_local(std::time::Duration::from_secs(1), || {
+            for root in library::take_watch_folder_rescans() {
+                library::add_folder_to_library(Path::new(&root), |_| {});
             }
             glib::ControlFlow::Continue
-        },
-    );
+        });
+    }
 
-    // The watch-folder poll: debounced watch events map back to the
-    // stored watch roots and each root rescans on the scan worker
-    // (`remove_missing: false` — vanished files flag as missing).
-    glib::timeout_add_local(std::time::Duration::from_secs(1), || {
-        for root in library::take_watch_folder_rescans() {
-            library::add_folder_to_library(Path::new(&root), |_| {});
-        }
-        glib::ControlFlow::Continue
+    // The command-line entry point IS the boot (the probe evidence:
+    // with HANDLES_COMMAND_LINE the gio primary emits `command-line`
+    // for its own argv and NEVER `activate`).
+    app.connect_command_line(|app, command_line| {
+        let argv: Vec<String> = command_line
+            .arguments()
+            .iter()
+            .map(|a| a.to_string_lossy().into_owned())
+            .collect();
+        handle_command_line(app, &argv);
+        glib::ExitCode::SUCCESS
     });
-
-    app.connect_activate(show_shell);
     app.connect_open(|app, files, _| {
+        let shell = ensure_shell(app);
         for file in files {
             if let Some(path) = file.path() {
-                open_reader(app, &path);
+                open_supported_file(&shell, &path, false, 0, true);
             }
         }
     });
@@ -100,26 +131,131 @@ pub fn run(args: Vec<String>) {
 // warns "New application windows must be added...").
 thread_local! {
     static OPEN_MESSAGE: RefCell<Option<String>> = const { RefCell::new(None) };
+    /// The command-line pipeline already ran (the primary's own boot
+    /// is the FIRST call; every later call is a handoff).
+    static COMMAND_LINE_SEEN: Cell<bool> = const { Cell::new(false) };
 }
 
 fn set_open_message(message: Option<String>) {
     OPEN_MESSAGE.with(|cell| *cell.borrow_mut() = message);
 }
 
-/// The app shell — the browser main window (`MainForm`): the
-/// navigator + ItemView, the quick search and view commands, the
-/// status bar, and the reader docked as a view. A bare entry dialog
-/// still serves the navigator commands (the editors are Phase 5).
-fn show_shell(app: &Application) {
+/// The `-waitpid <pid>` wait (the C# `Program.cs:1127-1136`,
+/// `WaitForExit(30000)`): poll `/proc/<pid>` every 100 ms up to 30 s
+/// (the restarted child is not ours to `waitpid`). Linux-only is
+/// fine — the port is Linux-native.
+fn wait_for_restart_pid(args: &[String]) {
+    let Some(pos) = args.iter().position(|a| a.eq_ignore_ascii_case("-waitpid")) else {
+        return;
+    };
+    let Some(pid) = args.get(pos + 1).and_then(|v| v.parse::<u32>().ok()) else {
+        return;
+    };
+    let proc_dir = std::path::PathBuf::from(format!("/proc/{pid}"));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    while proc_dir.exists() && std::time::Instant::now() < deadline {
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+}
+
+/// The `command-line` entry point: the primary's own argv (FIRST
+/// launch — the gio `StartNew` parse; the boot itself, since
+/// `activate` never fires under HANDLES_COMMAND_LINE) and every
+/// second-instance handoff (`StartLast`).
+fn handle_command_line(app: &Application, argv: &[String]) {
+    // The probe evidence: BOTH deliveries carry the program path as
+    // element 0 — the parse must never see it (a non-switch argument
+    // would land in `files` and the binary would open as a comic).
+    let argv = if argv.is_empty() { argv } else { &argv[1..] };
+    // The `StartLast` re-parse: a FRESH ExtendedSettings from the
+    // argv alone (`Files`/`Page`/`ImportList` are command-line-only).
+    let ext = cr_core::settings::ExtendedSettings::from_argv(argv);
+    let first = !COMMAND_LINE_SEEN.with(|c| c.get());
+    COMMAND_LINE_SEEN.with(|c| c.set(true));
+
+    let shell = ensure_shell(app);
+    if first {
+        // The boot (the C# `MainForm.Load`): the open message, then
+        // the file pipeline (MainForm.cs:1041-1061): EXISTING
+        // command-line files (`newSlot: false`, page 0, `fromShell:
+        // true`), then the `OpenLastFile` session reopen when
+        // nothing opened. The `-il` import waits for T2 (the `.cbl`
+        // port).
+        shell.present();
+        if let Some(message) = OPEN_MESSAGE.with(|cell| cell.take()) {
+            show_attention_dialog(&shell.window(), &message);
+        }
+        for file in &ext.files {
+            let path = Path::new(file);
+            if path.is_file() {
+                open_supported_file(&shell, path, false, 0, true);
+            }
+        }
+        if shell.reader_open_book_count() == 0 && library::settings().borrow().open_last_file {
+            for file in library::settings().borrow().last_open_files.clone() {
+                let path = Path::new(&file);
+                if path.is_file() {
+                    // The C# `AppendNewSlots | NoIncreaseOpenedCount`
+                    // reopen (each session book restores as its own
+                    // tab); the opened-count bump is not suppressed
+                    // (a recorded deviation — a stats field).
+                    open_supported_file(&shell, path, false, 0, false);
+                }
+            }
+        }
+    } else {
+        // `StartLast` (Program.cs:1063-1093): `RestoreToFront`, then
+        // the received files with `newSlot: true` and the `-p` page
+        // passthrough (1-based here, `page - 1` in the open).
+        shell.present();
+        for file in &ext.files {
+            open_supported_file(&shell, Path::new(file), true, ext.page, true);
+        }
+    }
+}
+
+/// The `MainForm.OpenSupportedFile` port minus `.cbl` (T2): the
+/// extension gate, the new-slot/page knobs, and the
+/// `HideBrowserIfShellOpen` rule (the reader workspace covers the
+/// browser — the open already switches to the reader).
+fn open_supported_file(
+    shell: &browser::shell::BrowserShell,
+    path: &Path,
+    new_slot: bool,
+    page: i32,
+    from_shell: bool,
+) {
+    let ext = path
+        .extension()
+        .and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase())
+        .unwrap_or_default();
+    match ext.as_str() {
+        // ADR-027: no plugins — the C# opens Preferences on a
+        // `.crplugin`.
+        "crplugin" => return,
+        // T2: the reading-list import.
+        "cbl" => return,
+        _ => {}
+    }
+    // `books.Open(file, newSlot, Math.Max(0, page - 1))` — the `-p`
+    // switch is 1-based; 0 keeps the resume position.
+    shell.open_comic_page(path, new_slot, page.max(0).saturating_sub(1));
+    if from_shell && cr_core::settings::ExtendedSettings::global().hide_browser_if_shell_open {
+        // The C# collapses the browser pane (`BrowserVisible =
+        // false`); the docked reader already covers it.
+    }
+}
+
+/// The shell exists (created on first need — files can arrive
+/// through `open`/`command-line` BEFORE any window, and a mapped
+/// window holds the app alive).
+fn ensure_shell(app: &Application) -> browser::shell::BrowserShell {
     let shell = BROWSER.with(|cell| cell.borrow().as_ref().map(|s| s.clone()));
-    let shell = match shell {
+    match shell {
         Some(shell) => shell,
         None => create_browser(app),
-    };
-    if let Some(message) = OPEN_MESSAGE.with(|cell| cell.borrow().clone()) {
-        show_attention_dialog(&shell.window(), &message);
     }
-    shell.present();
 }
 
 /// Creates and registers the browser shell. Files can arrive through
@@ -386,14 +522,7 @@ fn show_attention_dialog(parent: &impl IsA<Window>, message: &str) {
 /// surface as a dialog (the C# shows an error box from
 /// `MainForm.OpenComic`).
 pub fn open_reader(app: &Application, path: &Path) {
-    let shell = BROWSER.with(|cell| cell.borrow().as_ref().map(|s| s.clone()));
-    let shell = match shell {
-        Some(shell) => shell,
-        // The first file can arrive through the `open` signal BEFORE
-        // `activate` — the shell must exist (and its window map) now,
-        // or the app exits with no mapped window.
-        None => create_browser(app),
-    };
+    let shell = ensure_shell(app);
     shell.open_comic(path);
 }
 

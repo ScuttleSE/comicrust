@@ -90,7 +90,31 @@ Update this section at the **end of every work session**. The next agent must kn
   `exportpage_probe` (enable gates, the page image, the chooser
   name). 356 tests. **PHASE 6 COMPLETE — user-tested, all pass
   (2026-09-06; the 5 user-test steps at the end of
-  `docs/phase-6-kickoff.md`). NEXT: Phase 7 (platform).**
+  `docs/phase-6-kickoff.md`). NEXT: Phase 7 (platform) — RE-SCOPED
+  by ADR-028 (2026-09-06): device sync, the HTTP remote library,
+  the tray icon, and the i18n (TR) port moved to `docs/backlog.md`
+  WITH their research records; Phase 7 is now the D-Bus single
+  instance + the startup file pipeline only.
+  T1 IMPLEMENTED + PROBE-PROVEN (2026-09-06), user test pending:
+  the app runs a UNIQUE GApplication (`NON_UNIQUE` dropped;
+  `HANDLES_OPEN | HANDLES_COMMAND_LINE`) — a second launch
+  registers remote, forwards its argv and exits ~0.1 s; the primary
+  parses the handoff (`StartLast`: present-to-front, files with
+  `newSlot: true`, the `-p` 1-based page, `.cbl`/`-il` parse but
+  stay inert until T2, `.crplugin` inert per ADR-027) and boots
+  through the same handler (first-launch files `newSlot: false`,
+  the `OpenLastFile` session reopen, the exit-time
+  `Settings.LastOpenFiles` capture in the close-request handler).
+  Restart = spawn `<exe> -restart -waitpid <pid>` then quit (the
+  new process polls /proc up to 30 s before GTK). PROBE LESSONS:
+  `activate` NEVER fires with HANDLES_COMMAND_LINE (the command-line
+  handler IS the boot); argv[0] rides BOTH deliveries (strip
+  element 0 or the app opens its own binary as a comic); a forwarded
+  client is a ZOMBIE until reaped (`/proc` exists — gate exit via
+  `Child::try_wait`); the primary must stay ~500 ms after the
+  handoff for the client's reply. Probe:
+  `cr-ui/examples/singleinstance_probe.rs` (A/B/C gates; no XDG
+  isolation needed). 357 tests. Phase 8 (packaging) follows.
   INIT-GLOBAL BOOT BUG FIXED (2026-09-06, the cache-folder user
   report "the setting reverts after restart"): `init_global` used
   `OnceLock::set`, which SILENTLY FAILS when an early `global()`
