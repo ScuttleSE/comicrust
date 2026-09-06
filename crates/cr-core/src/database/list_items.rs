@@ -34,6 +34,10 @@ pub struct ValueMatcher {
     /// The C# XmlSerializer writes it on that matcher class; other
     /// matchers never carry it.
     pub option: Option<String>,
+    /// `ComicBookPluginMatcher.PluginKey` (XML attribute; the C#
+    /// `[XmlAttribute]` derived-class member — written after the base
+    /// attributes). Other matchers never carry it.
+    pub plugin_key: Option<String>,
 }
 
 impl Default for ValueMatcher {
@@ -48,6 +52,7 @@ impl Default for ValueMatcher {
             // C# ComicBookStringMatcher.IgnoreCase default.
             ignore_case: true,
             option: None,
+            plugin_key: None,
         }
     }
 }
@@ -96,6 +101,9 @@ impl ComicBookMatcher {
                 }
                 if !v.ignore_case {
                     e.attr("IgnoreCase", "false")?;
+                }
+                if let Some(pk) = &v.plugin_key {
+                    e.attr("PluginKey", pk)?;
                 }
                 e.text_elem("MatchValue", &v.match_value)?;
                 if !v.match_value_2.is_empty() {
@@ -181,6 +189,7 @@ impl ComicBookMatcher {
                 match_operator: 0,
                 ignore_case: true,
                 option: None,
+                plugin_key: None,
             };
             for (k, val) in &s.attrs {
                 match k.as_str() {
@@ -193,6 +202,7 @@ impl ComicBookMatcher {
                             .map_err(|_| XmlError(format!("bad MatchOperator: {val}")))?
                     }
                     "IgnoreCase" => v.ignore_case = !(val.trim() == "false" || val.trim() == "0"),
+                    "PluginKey" => v.plugin_key = Some(val.clone()),
                     _ => {}
                 }
             }

@@ -291,3 +291,29 @@ fn matches_convenience_applies_not() {
     }
     assert!(!matches(&b, &not_matcher, &ctx));
 }
+
+#[test]
+fn script_matchers_evaluate_to_no_match() {
+    // ADR-027: the Expression/Plugin matchers parse and render
+    // byte-stably, but evaluate to an explicit not-supported result —
+    // no-match for every book, never a panic.
+    let books = vec![book("Batman", "1", 2000), book("Superman", "2", 2001)];
+    assert!(hit(
+        &books,
+        &m("Match [Expression] is true \"__book.ShadowRating > 3\"")
+    )
+    .is_empty());
+    assert!(hit(
+        &books,
+        &m("Match [Expression] is false \"__book.ShadowYear == 2000\"")
+    )
+    .is_empty());
+    assert!(hit(&books, &m("Match [User Scripts] None")).is_empty());
+    // The full-set semantics: a set whose only matcher is not-supported
+    // filters nothing in (empty hit list), it just never matches.
+    let b = book("A", "1", 2000);
+    let refs = vec![&b];
+    let ctx = MatchContext::new(&refs);
+    let matcher = m("Match [Expression] is true \"True\"");
+    assert!(!matches(&b, &matcher, &ctx));
+}

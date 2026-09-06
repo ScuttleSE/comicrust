@@ -45,6 +45,8 @@ pub struct ValueMatcher {
     pub ignore_case: bool,
     /// `<Option>` element of the AllProperties matcher (XML-only).
     pub option: Option<String>,
+    /// `ComicBookPluginMatcher.PluginKey` (XML-only attribute).
+    pub plugin_key: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -151,6 +153,7 @@ impl Matcher {
                     name: v.name.clone(),
                     ignore_case: v.ignore_case,
                     option: v.option.clone(),
+                    plugin_key: v.plugin_key.clone(),
                 }))
             }
             raw::ComicBookMatcher::Group(g) => {
@@ -188,6 +191,7 @@ impl Matcher {
                 match_operator: v.op as i32,
                 ignore_case: v.ignore_case,
                 option: v.option.clone(),
+                plugin_key: v.plugin_key.clone(),
             }),
         }
     }

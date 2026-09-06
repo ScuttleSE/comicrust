@@ -64,6 +64,12 @@ pub const DATE_OPS: &[&str] = &[
 ];
 
 pub const YESNO_OPS: &[&str] = &["equals yes", "equals no", "equals unknown"];
+/// `ComicBookExpressionMatcher.opListNeutral` — "is true|is false".
+pub const EXPRESSION_OPS: &[&str] = &["is true", "is false"];
+/// `ComicBookPluginMatcher`: op 0 = `TR.Default["None", "None"]`; ops
+/// 1..n are the plugin command names (dynamic in C# — the list is
+/// empty without a plugin host, so "None" only).
+pub const PLUGIN_OPS: &[&str] = &["None"];
 
 pub const MANGA_OPS: &[&str] = &["equals yes", "equals ltr", "equals no", "equals unknown"];
 
@@ -88,8 +94,24 @@ pub enum MatcherKind {
     AllProperties,
     /// `ComicBookCustomValuesMatcher` (2 arguments; value 1 is the key).
     CustomValues,
+    /// The two plugin-host matchers (`ComicRack.Plugins`): the C#
+    /// compiles a Python expression or runs a plugin command. No
+    /// scripting host in the port (ADR-027) — they parse/render
+    /// byte-stably and evaluate to no-match.
+    Script(ScriptKind),
     /// `SmartListSeries*Matcher`: aggregate value over the book's series.
     Series(StatKind),
+}
+
+/// The two `MatcherKind::Script` shapes.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScriptKind {
+    /// `ComicBookExpressionMatcher` ("Expression"): a Python one-liner
+    /// over `__book` in MatchValue; ops "is true"/"is false".
+    Expression,
+    /// `ComicBookPluginMatcher` ("User Scripts"): the `PluginKey`
+    /// attribute names a `CreateBookList` command; op 0 = "None".
+    Plugin,
 }
 
 /// One registered matcher.
@@ -114,6 +136,8 @@ impl MatcherSpec {
             MatcherKind::YesNo => YESNO_OPS,
             MatcherKind::MangaYesNo => MANGA_OPS,
             MatcherKind::Duplicate => ONOFF_OPS,
+            MatcherKind::Script(ScriptKind::Expression) => EXPRESSION_OPS,
+            MatcherKind::Script(ScriptKind::Plugin) => PLUGIN_OPS,
             MatcherKind::Series(s) => match s {
                 StatKind::AllComplete | StatKind::GapStart | StatKind::GapEnd => YESNO_OPS,
                 StatKind::LastOpenedTime
@@ -133,6 +157,8 @@ impl MatcherSpec {
             MatcherKind::Numeric => 1 + usize::from(op == ops::NUM_IN_RANGE),
             MatcherKind::Date => 1 + usize::from(op == ops::DATE_IS_IN_RANGE),
             MatcherKind::YesNo | MatcherKind::MangaYesNo | MatcherKind::Duplicate => 0,
+            MatcherKind::Script(ScriptKind::Expression) => 1,
+            MatcherKind::Script(ScriptKind::Plugin) => 0,
             MatcherKind::Series(s) => match s {
                 StatKind::AllComplete | StatKind::GapStart | StatKind::GapEnd => 0,
                 StatKind::LastOpenedTime
@@ -238,6 +264,10 @@ pub fn all_specs() -> &'static [MatcherSpec] {
         "ComicBookMangaMatcher" => "Manga": K::MangaYesNo,
         // --- duplicate ---
         "ComicBookDuplicateMatcher" => "Only Duplicates": K::Duplicate,
+        // --- plugin host (ComicRack.Plugins) — no scripting host
+        // (ADR-027): parse + render byte-stably, eval to no-match ---
+        "ComicBookExpressionMatcher" => "Expression": K::Script(ScriptKind::Expression),
+        "ComicBookPluginMatcher" => "User Scripts": K::Script(ScriptKind::Plugin),
         // --- series statistics (ComicRack.Engine/Database/) ---
         "SmartListSeriesAllCompleteMatcher" => "Series: All complete": K::Series(S::AllComplete),
         "SmartListSeriesAverageCommunityRatingMatcher" => "Series: Average Community Rating": K::Series(S::AverageCommunityRating),

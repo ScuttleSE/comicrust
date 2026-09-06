@@ -399,3 +399,82 @@ fn load_real_net_reference() {
     assert_eq!(db.comic_lists.len(), 2);
     assert_eq!(db.black_list.len(), 1);
 }
+
+#[test]
+fn plugin_host_matchers_round_trip_byte_identical() {
+    // ADR-027: the ComicRack.Plugins matcher classes (Expression,
+    // User Scripts) parse and round-trip byte-stably — the saved-query
+    // compat surface — including the PluginKey XML attribute; they
+    // evaluate to no-match in the port.
+    let xml = r#"<?xml version="1.0"?>
+<ComicDatabase xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" Id="11111111-2222-3333-4444-555555555555" Name="Script">
+  <Books />
+  <ComicLists>
+    <Item xsi:type="ComicSmartListItem" Id="69212cc2-fba3-497a-94fe-dfcbe0c356f4" Name="Scripted" MatcherMode="And">
+      <Display />
+      <Matchers>
+        <ComicBookMatcher xsi:type="ComicBookExpressionMatcher" MatchOperator="1">
+          <MatchValue>__book.ShadowRating &gt; 3</MatchValue>
+        </ComicBookMatcher>
+        <ComicBookMatcher xsi:type="ComicBookPluginMatcher" PluginKey="my-list" />
+      </Matchers>
+    </Item>
+  </ComicLists>
+  <WatchFolders />
+  <BlackList />
+</ComicDatabase>"#;
+    let dir =
+        std::env::temp_dir().join(format!("comicrust-script-matchers-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let path = dir.join("script.xml");
+    std::fs::write(&path, xml).unwrap();
+
+    let db = load(&path).unwrap();
+    let out = save_bytes(&db).unwrap();
+    // The writer's canonical form is stable across reloads.
+    let path2 = dir.join("script2.xml");
+    std::fs::write(&path2, &out).unwrap();
+    let db2 = load(&path2).unwrap();
+    let out2 = save_bytes(&db2).unwrap();
+    assert_eq!(out, out2, "script matchers: second save drifted");
+
+    let text = String::from_utf8(out).unwrap();
+    assert!(
+        text.contains("xsi:type=\"ComicBookExpressionMatcher\""),
+        "expression matcher kept"
+    );
+    assert!(
+        text.contains("xsi:type=\"ComicBookPluginMatcher\""),
+        "plugin matcher kept"
+    );
+    assert!(
+        text.contains("PluginKey=\"my-list\""),
+        "PluginKey attribute round-trips"
+    );
+    assert!(
+        text.contains("__book.ShadowRating"),
+        "expression value round-trips"
+    );
+
+    // The model side: the raw nodes carry the captured fields.
+    let Some(cr_core::database::list_items::ComicListItem::Smart(smart)) = db
+        .comic_lists
+        .iter()
+        .find(|i| matches!(i, cr_core::database::list_items::ComicListItem::Smart(_)))
+    else {
+        panic!("smart list expected");
+    };
+    assert_eq!(smart.matchers.len(), 2);
+    let cr_core::database::list_items::ComicBookMatcher::Value(expr) = &smart.matchers[0] else {
+        panic!("value matcher expected");
+    };
+    assert_eq!(expr.type_name, "ComicBookExpressionMatcher");
+    assert_eq!(expr.match_value, "__book.ShadowRating > 3");
+    let cr_core::database::list_items::ComicBookMatcher::Value(plugin) = &smart.matchers[1] else {
+        panic!("value matcher expected");
+    };
+    assert_eq!(plugin.type_name, "ComicBookPluginMatcher");
+    assert_eq!(plugin.plugin_key.as_deref(), Some("my-list"));
+
+    std::fs::remove_dir_all(&dir).ok();
+}

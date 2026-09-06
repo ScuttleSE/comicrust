@@ -100,6 +100,7 @@ fn create_matcher_from_query(t: &mut Tokenizer<'_>) -> Result<Matcher, ParseErro
         name: String::new(),
         ignore_case: true,
         option: None,
+        plugin_key: None,
     };
     for i in 0..spec.argument_count(op) {
         let arg = t.take_string()?;
@@ -255,6 +256,16 @@ mod tests {
         round_trip("Match [Black and White] equals no");
         round_trip("Match [Manga] equals ltr");
         round_trip("Match [Modified Info] equals unknown");
+    }
+
+    #[test]
+    fn script_matchers_round_trip() {
+        // ADR-027: the plugin-host matchers parse and render
+        // byte-stably (the saved-query compat surface) even though
+        // they evaluate to no-match.
+        round_trip("Match [Expression] is true \"__book.ShadowRating > 3\"");
+        round_trip("Match [Expression] is false \"__book.ShadowVolume == 2016\"");
+        round_trip("Match [User Scripts] None");
     }
 
     #[test]

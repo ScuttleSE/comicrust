@@ -219,6 +219,15 @@ fn match_value(book: &ComicBook, vm: &ValueMatcher, ctx: &MatchContext<'_>) -> b
         }
         spec::MatcherKind::MangaYesNo => match_manga(vm, book_view::manga_yesno(book)),
         spec::MatcherKind::Duplicate => true, // set-based, see match_one
+        spec::MatcherKind::Script(_) => {
+            // ADR-027: no scripting host. The C# Expression matcher
+            // returns false on a compile/run error and the Plugin
+            // matcher with no matching command resolves to op 0
+            // ("None") → no-match; the port evaluates to no-match
+            // unconditionally (an explicit not-supported result —
+            // never a panic, never a silent wrong match).
+            false
+        }
         spec::MatcherKind::Series(stat) => match_series(book, vm, ctx, stat),
     }
 }

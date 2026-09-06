@@ -153,6 +153,7 @@ pub fn switch_type(current: &ComicBookMatcher, new_class: &str) -> Option<ComicB
         match_operator: operator as i32,
         ignore_case: value.ignore_case,
         option: value.option.clone(),
+        plugin_key: value.plugin_key.clone(),
     }))
 }
 
