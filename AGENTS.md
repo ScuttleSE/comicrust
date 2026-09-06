@@ -419,6 +419,14 @@ Update this section at the **end of every work session**. The next agent must kn
   C# gates it on the hardware renderer), Page Turn degrades to Fade
   (Phase 3 record). Gate: 325 tests (+4),
   `displaysettings_probe` (5 gates), all probes green.
+  T12 COMPLETE — USER-TESTED, ALL PASS (2026-09-05, "all OK"; the
+  full 10-item acceptance record lives in the kickoff T12 entry).
+  **Next: T13 (the small chrome dialogs — `Dialogs/ZoomDialog.cs`,
+  `Dialogs/QuickRatingDialog.cs`, `Dialogs/TasksDialog.cs` + the
+  activity model, the About box with version `0.0.<commits>` per
+  ADR-020).** After T13: T14 (persistence — carrying the
+  display-options persistence from T12). Phase 6 (scripting) starts
+  only after 5.5.
   Phases 0-5 are complete (their gates stay green). Open Phase 1
   gaps: WebComicProvider and the PDF/DjVu writers (tracked in
   `docs/phase-1-kickoff.md`).

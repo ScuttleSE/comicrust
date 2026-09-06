@@ -2248,7 +2248,8 @@ T12 (the Book Display Settings dialog, F9).**
   Phase 3 gap); the background layout combo keeps the STORED layout
   at open (the C# re-parses immediately — same values for the
   bundled sets).
-- **USER TEST (the T12 acceptance):**
+- **USER TEST (the T12 acceptance):** ALL 10 ITEMS PASS (2026-09-05,
+  "all OK"):
   1. `cargo run -p cr-app --release --` and open a comic — the
      reader now draws the realistic-page look by DEFAULT (the thin
      frame, the soft shadow, the edge shading — the C#
@@ -2280,3 +2281,5 @@ T12 (the Book Display Settings dialog, F9).**
      without the dialog.
   10. Cancel with changes made and NOT applied — the reader keeps
       the previous options (OK/Apply commit, Cancel discards).
+- T12 COMPLETE — USER-TESTED, ALL PASS (2026-09-05). **Next: T13
+  (the small chrome dialogs: Zoom, Quick Rating, Tasks, About).**
