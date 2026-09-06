@@ -5,6 +5,16 @@ that picks an entry moves it into the kickoff that will own it.
 Locked scope decisions stay in `docs/decisions.md`. Per-phase
 omissions stay in that phase's kickoff tracker.
 
+## Policy
+
+- **No scripting host — port natively on demand** (ADR-027,
+  recorded here 2026-09-06): comicrust ships no script or plugin
+  engine. No Python host, no plugin hooks, no `.crplugin` packages.
+  A script or plugin gets support only when a user asks for its
+  behavior. Port the behavior into the app natively. Do not add a
+  scripting surface. Example: the NewComics.py flow landed natively
+  as the "New fileless Book Series…" dialog (Phase 6).
+
 ## From Phase 1 (open items)
 
 - **WebComicProvider (`.cbw`)** — the one open reader. The C# spec is
