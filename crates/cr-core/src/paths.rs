@@ -80,18 +80,44 @@ impl Paths {
     /// `new SystemPaths(...)` with the default (non-local) locations.
     /// The directories are created on construction, like the C#
     /// `MakeApplicationPath` (`Directory.CreateDirectory`).
+    ///
+    /// The C# `Program.Paths` constructor passes
+    /// `ExtendedSettings.CachePath` (the `-cp` switch / the ini
+    /// `CachePath` key): a non-empty override replaces the whole
+    /// cache root — `Thumbnails`/`Images`/`Files`/`CustomThumbnails`
+    /// sit under it (SystemPaths.cs:47-50). The database and config
+    /// trees are NOT affected.
     pub fn new_default() -> Paths {
-        Paths::from_roots(&data_root(), &config_root())
+        let cache_root = crate::settings::ExtendedSettings::global()
+            .cache_path
+            .clone()
+            .filter(|p| !p.is_empty())
+            .map(PathBuf::from);
+        Paths::from_roots_cache_override(&data_root(), &config_root(), cache_root.as_deref())
     }
 
     /// The layout for one XDG data root plus one config root (the
     /// test seam; the C# injects the overrides through the
     /// constructor arguments).
     pub fn from_roots(data_root: &std::path::Path, config_root: &std::path::Path) -> Paths {
+        Paths::from_roots_cache_override(data_root, config_root, None)
+    }
+
+    /// `from_roots` with the `SystemPaths` cache-path override (the
+    /// `-cp` switch / `CachePath` ini key parity): a non-empty
+    /// override replaces the whole cache root.
+    pub fn from_roots_cache_override(
+        data_root: &std::path::Path,
+        config_root: &std::path::Path,
+        cache_override: Option<&std::path::Path>,
+    ) -> Paths {
         let application_data_path = data_root.join("comicrust");
         let config_path = config_root.join("comicrust");
         let database_path = application_data_path.join("ComicDb");
-        let cache = application_data_path.join("Cache");
+        let cache = match cache_override {
+            Some(p) => p.to_path_buf(),
+            None => application_data_path.join("Cache"),
+        };
         let script_path_secondary = application_data_path.join("Scripts");
         let pending_scripts_path = script_path_secondary.join(".Pending");
         let _ = std::fs::create_dir_all(&database_path);
@@ -206,5 +232,38 @@ mod tests {
         assert_eq!(locs.len(), 3);
         assert_eq!(locs[1], PathBuf::from("/etc/comicrust/comicrust.ini"));
         assert_eq!(locs[2], cfg.join("comicrust").join("comicrust.ini"));
+    }
+
+    #[test]
+    fn cache_root_override_replaces_only_the_cache_tree() {
+        // The C# `SystemPaths(useLocal, alternateConfig, databasePath,
+        // cachePath)` parity: a non-empty cache override replaces the
+        // whole cache root; the database and config trees stay.
+        let data = std::env::temp_dir().join(format!(
+            "comicrust-cachedata-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let cfg = std::env::temp_dir().join("comicrust-cacheovcfg");
+        let over = std::env::temp_dir().join(format!(
+            "comicrust-cacheov-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let paths = Paths::from_roots_cache_override(&data, &cfg, Some(&over));
+        assert_eq!(paths.thumbnail_cache_path, over.join("Thumbnails"));
+        assert_eq!(paths.image_cache_path, over.join("Images"));
+        assert_eq!(paths.file_cache_path, over.join("Files"));
+        assert_eq!(paths.custom_thumbnail_path, over.join("CustomThumbnails"));
+        // The override root itself is created (the subfolders appear
+        // when the DiskCaches open — the C# creates them the same
+        // lazy way).
+        assert!(over.is_dir());
+        // The database stays under the data root.
+        assert_eq!(paths.database_path, data.join("comicrust").join("ComicDb"));
     }
 }

@@ -130,6 +130,32 @@ fn main() {
                 ))
                 .unwrap_or_default();
                 println!("E db-image-width-persisted={}", xml.contains("ImageWidth="));
+                // F. The cache-root override (the Preferences Advanced
+                // row writes the ini key + the global): the default
+                // first, then the override moves the cache paths.
+                let default_root = {
+                    let p = cr_core::paths::Paths::new_default();
+                    p.thumbnail_cache_path.clone()
+                };
+                println!("F default-cache-root={}", default_root.display());
+                cr_ui::library::save_ini_keys(&[("CachePath", "/tmp/opencode/cache-override")]);
+                {
+                    cr_core::settings::ExtendedSettings::global_mut().cache_path =
+                        Some("/tmp/opencode/cache-override".into());
+                }
+                let overridden = cr_core::paths::Paths::new_default();
+                println!(
+                    "G override-applied={} (expect Thumbnails under the override)",
+                    overridden
+                        .thumbnail_cache_path
+                        .starts_with("/tmp/opencode/cache-override")
+                );
+                // Reset (the Reset button path) and restore the
+                // default for the rest of the run.
+                cr_ui::library::save_ini_keys(&[("CachePath", "")]);
+                {
+                    cr_core::settings::ExtendedSettings::global_mut().cache_path = None;
+                }
                 shell.window().close();
                 glib::ControlFlow::Break
             }

@@ -345,7 +345,62 @@ fn build_advanced_page(settings: &SettingsRef) -> GtkBox {
     }
     page.append(&row);
 
-    page.append(&section_label("Disk Caches (MB)"));
+    page.append(&section_label("Disk Caches"));
+    // The cache root (the C# `ExtendedSettings.CachePath` / the
+    // `-cp` switch; a recorded ADDITION puts the editor here — the
+    // C# boots it from the command line only). Takes effect on the
+    // next start (the pool reads the paths once at boot).
+    let cache_row = GtkBox::new(Orientation::Horizontal, 8);
+    let cache_label = Label::builder()
+        .label(cache_root_display())
+        .ellipsize(gtk4::pango::EllipsizeMode::Start)
+        .build();
+    let change = Button::with_label("Change…");
+    let reset = Button::with_label("Reset");
+    reset.set_sensitive(cache_root_is_custom());
+    cache_row.append(&cache_label);
+    let spacer = Label::new(None);
+    spacer.set_hexpand(true);
+    cache_row.append(&spacer);
+    cache_row.append(&change);
+    cache_row.append(&reset);
+    {
+        let cache_label = cache_label.clone();
+        let reset = reset.clone();
+        change.connect_clicked(move |_| {
+            let chooser = gtk4::FileChooserNative::new(
+                Some("Cache Folder"),
+                None::<&gtk4::Window>,
+                gtk4::FileChooserAction::SelectFolder,
+                Some("Select"),
+                Some("Cancel"),
+            );
+            let cache_label = cache_label.clone();
+            let reset = reset.clone();
+            chooser.connect_response(move |dlg, resp| {
+                if resp == gtk4::ResponseType::Accept {
+                    if let Some(path) = dlg.file().and_then(|f| f.path()) {
+                        set_cache_root(Some(&path), &cache_label, &reset);
+                    }
+                }
+            });
+            chooser.show();
+        });
+    }
+    {
+        let cache_label = cache_label.clone();
+        let reset_clicked = reset.clone();
+        let reset_target = reset.clone();
+        reset_clicked.connect_clicked(move |_| {
+            set_cache_root(None, &cache_label, &reset_target);
+        });
+    }
+    page.append(&cache_row);
+    page.append(&section_label(
+        "The cache folder change takes effect on the next start.",
+    ));
+
+    page.append(&section_label("Disk Cache Sizes (MB)"));
     let (row, spin) = {
         let s = settings.borrow();
         spin_row(
@@ -431,4 +486,39 @@ fn build_advanced_page(settings: &SettingsRef) -> GtkBox {
     page.append(&auto_check);
 
     page
+}
+
+/// The effective cache root (the override when set, the XDG data
+/// tree otherwise).
+fn cache_root_display() -> String {
+    let paths = cr_core::paths::Paths::new_default();
+    let root = paths
+        .thumbnail_cache_path
+        .parent()
+        .unwrap_or(&paths.thumbnail_cache_path);
+    root.to_string_lossy().into_owned()
+}
+
+fn cache_root_is_custom() -> bool {
+    cr_core::settings::ExtendedSettings::global()
+        .cache_path
+        .as_deref()
+        .is_some_and(|p| !p.is_empty())
+}
+
+/// Writes the cache root: `Some(path)` = the override (the global +
+/// the ini chain's last file — the theme-persistence pattern), None
+/// = back to the default. Live for `Paths::new_default()` readers
+/// (the pool consumes it on the next start).
+fn set_cache_root(path: Option<&std::path::Path>, label: &Label, reset: &Button) {
+    {
+        let mut ext = cr_core::settings::ExtendedSettings::global_mut();
+        ext.cache_path = path.map(|p| p.to_string_lossy().into_owned());
+    }
+    match path {
+        Some(p) => library::save_ini_keys(&[("CachePath", p.to_string_lossy().as_ref())]),
+        None => library::save_ini_keys(&[("CachePath", "")]),
+    }
+    label.set_text(&cache_root_display());
+    reset.set_sensitive(cache_root_is_custom());
 }
