@@ -81,7 +81,7 @@ jobs:
         env:
           # GitHub PAT with Contents read/write on the mirror repo.
           # Unset = the step skips with a notice.
-          GH_TOKEN: ${{ secrets.GITHUB_RELEASE_TOKEN }}
+          GH_TOKEN: ${{ secrets.MIRROR_RELEASE_TOKEN }}
           GH_REPO: ScuttleSE/comicrust
           SHA: ${{ github.sha }}
           VERSION: ${{ steps.version.outputs.version }}

@@ -32,7 +32,7 @@ prerelease=$3
 delete_tag=$4
 
 if [ -z "${GH_TOKEN:-}" ]; then
-    echo "GH_TOKEN not set - skipping the GitHub mirror publish (add the GITHUB_RELEASE_TOKEN secret on Gitea to enable it)"
+    echo "GH_TOKEN not set - skipping the GitHub mirror publish (add the MIRROR_RELEASE_TOKEN secret on Gitea to enable it)"
     exit 0
 fi
 for v in GH_REPO SHA; do
