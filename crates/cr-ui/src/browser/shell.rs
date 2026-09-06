@@ -138,6 +138,11 @@ impl ShellState {
     /// Opens a comic into the docked reader and shows it (the C#
     /// `OpenComic`; the reader tab selects and the workspace swaps).
     fn open_comic(&self, path: &Path) {
+        // The C# `Open(ComicBook)` gate (NavigatorManager.cs): a
+        // fileless book (`!IsLinked`) never opens a reader slot.
+        if path.as_os_str().is_empty() {
+            return;
+        }
         match self.reader.open_comic(path) {
             Ok(()) => {
                 self.stack.set_visible_child_name("reader");
@@ -1279,6 +1284,20 @@ impl BrowserShell {
         self.state.item_view.selection_len()
     }
 
+    /// The grid's selection ids (the probe).
+    pub fn state_grid_selection_ids(&self) -> Vec<CrGuid> {
+        self.state.item_view.selection_ids()
+    }
+
+    /// The visible workspace stack page name (the probe).
+    pub fn state_stack_page(&self) -> String {
+        self.state
+            .stack
+            .visible_child_name()
+            .map(|n| n.to_string())
+            .unwrap_or_default()
+    }
+
     /// The selected book's rating in the library (the probe).
     pub fn state_selected_book_rating(&self) -> f32 {
         let ids = self.state.item_view.selection_ids();
@@ -1979,6 +1998,53 @@ impl ShellState {
         // The editor shares the app pool (the C# `Program.ImagePool`
         // is global — a private pool would re-decode every cover).
         crate::dialogs::book_editor::show(&self.window, books, commit, Arc::clone(&self.pool));
+    }
+
+    /// `AddNewBook(showDialog: true)` (MainForm.cs:1879): a fresh
+    /// fileless book (no file path, `AddedTime = now`, a new id)
+    /// opens the book editor. The commit inserts it into the database
+    /// on the first save point (the C# adds after the dialog's OK;
+    /// the port inserts idempotently so later Apply commits degrade
+    /// to `apply_edited`). Cancel closes without a commit.
+    fn open_new_book_editor(self: &Rc<ShellState>) {
+        let book = crate::dialogs::new_book_series::new_fileless_book();
+        let state = Rc::downgrade(self);
+        let commit: crate::dialogs::book_editor::CommitFn = Rc::new(move |edited| {
+            let inserted = library::insert_new_book(edited);
+            if !inserted {
+                library::apply_edited(edited);
+            }
+            if let Some(sh) = state.upgrade() {
+                sh.refresh_view_from_list();
+            }
+        });
+        crate::dialogs::book_editor::show(&self.window, vec![book], commit, Arc::clone(&self.pool));
+    }
+
+    /// The NewComics.py port: the dialog creates N = to-from+1
+    /// fileless books (`Number = str(n)`, the shared series/volume)
+    /// and selects them (the script's `Browser.SelectComics`). A
+    /// range over 100 aborts silently — the script's sanity check.
+    fn new_book_series(self: &Rc<ShellState>) {
+        let state = Rc::downgrade(self);
+        crate::dialogs::new_book_series::show(&self.window, move |series, volume, first, last| {
+            if last - first > 100 {
+                return;
+            }
+            let mut ids = Vec::with_capacity((last - first + 1).max(0) as usize);
+            for n in first..=last {
+                let mut book = crate::dialogs::new_book_series::new_fileless_book();
+                book.info.series = series.clone();
+                book.info.number = n.to_string();
+                book.info.volume = volume;
+                library::insert_new_book(&book);
+                ids.push(book.id);
+            }
+            if let Some(sh) = state.upgrade() {
+                sh.refresh_view_from_list();
+                sh.item_view.reselect(&ids);
+            }
+        });
     }
 
     fn open_bulk_editor(self: &Rc<ShellState>, books: Vec<ComicBook>) {
@@ -3023,8 +3089,16 @@ impl ShellState {
             let pool = Arc::clone(&_sh.pool);
             library::cache_thumbnails(&pool);
         });
-        // new-book-entry — fileless books are unported.
-        self.add_disabled(&group, "new-book-entry");
+        // new-book-entry — the C# `AddNewBook()` (MainForm.cs:1879):
+        // a fileless book (no file path) opens the editor; OK inserts
+        // it into the database, Cancel discards.
+        self.add_simple(&group, "new-book-entry", ShellState::open_new_book_editor);
+        // new-book-series — the NewComics.py port ("New fileless Book
+        // Series..."): a dialog creates a run of fileless books and
+        // selects them (ADR-027 moved the script natively into the
+        // app; the C# inserted the script item right after
+        // `miNewComic`).
+        self.add_simple(&group, "new-book-series", ShellState::new_book_series);
         self.add_simple(&group, "restart", |sh| {
             // `MenuRestart`: save, then re-launch the binary (the C#
             // `Program.Restart` + `Application.Restart`). The

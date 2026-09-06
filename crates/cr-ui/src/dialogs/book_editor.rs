@@ -916,11 +916,22 @@ pub fn show(
             };
             dialog.set_title(Some(&book_caption(&book)));
             // The info labels (`lblPages`, `lblType`, `lblPath`).
-            lbl_pages.set_text(&format!(
-                "Page {}/{} Page(s).",
-                book.last_page_read.clamp(0, book.info.page_count - 1) + 1,
-                book.info.page_count
-            ));
+            // The `PagesAsText` rule (ComicBookDialog.SetDataToEditor
+            // + ComicBook.FormatPages): pages <= 0 → "Unknown"; the
+            // "N/" prefix only when LastPageRead > 0 (N =
+            // LastPageRead + (PageCount == 1 ? 0 : 1) — the C# HACK
+            // comment for the one-page book).
+            let pages_text = if book.info.page_count <= 0 {
+                "Unknown".to_string()
+            } else {
+                format!("{} Page(s)", book.info.page_count)
+            };
+            lbl_pages.set_text(&if book.last_page_read > 0 {
+                let n = book.last_page_read + if book.info.page_count == 1 { 0 } else { 1 };
+                format!("{n}/{pages_text}")
+            } else {
+                pages_text
+            });
             let ext = Path::new(&book.file_path)
                 .extension()
                 .map(|e| e.to_string_lossy().to_uppercase())
@@ -1158,9 +1169,13 @@ fn book_caption(book: &ComicBook) -> String {
         book.file_path
             .rsplit('/')
             .next()
+            .filter(|s| !s.is_empty())
             .unwrap_or("Book")
             .to_string()
     }
+    // The C# shows the bare `comic.Caption` — empty for a brand-new
+    // fileless book. The port falls back to "Book" so the window
+    // keeps a usable title (recorded deviation).
 }
 
 fn draw_fitted(ctx: &cairo::Context, surface: &Option<cairo::ImageSurface>, w: i32, h: i32) {
@@ -1187,9 +1202,13 @@ fn draw_fitted(ctx: &cairo::Context, surface: &Option<cairo::ImageSurface>, w: i
 
 /// `SetCoverThumbnailImage`: the front-cover thumbnail through the
 /// thumb queue (`GetThumbnail(onlyMemory)` → queue + callback, the
-/// ADR-019 pattern).
+/// ADR-019 pattern). A fileless book (no file path) has no cover —
+/// the C# shows the blank cover area, so skip the queue entirely.
 fn queue_cover(state: &StateRef, book: &ComicBook) {
     let path = book.file_path.clone();
+    if path.is_empty() {
+        return;
+    }
     let page = book
         .info
         .front_cover_page_index()

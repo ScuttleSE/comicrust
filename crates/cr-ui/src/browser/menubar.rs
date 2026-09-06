@@ -94,6 +94,14 @@ pub const FILE: &[MenuNode] = &[
         "<Control><Shift>n",
         "",
     ),
+    // The NewComics.py port (ADR-027) — the C# inserted the script's
+    // NewBooks item directly after `miNewComic` (MainForm.cs:787).
+    Item(
+        "New fileless Book _Series...",
+        "win.new-book-series",
+        "",
+        "",
+    ),
     Sep,
     // The dynamic Open Books / Recent Books submenus (`miOpenNow`/
     // `miOpenRecent`; the parents carry no C# images).

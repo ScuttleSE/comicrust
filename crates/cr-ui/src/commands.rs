@@ -53,6 +53,9 @@ pub const COMMANDS: &[CommandSpec] = &[
     cmd("generate-thumbnails", &[]),
     cmd("tasks", &["<Control><Shift>t"]),
     cmd("new-book-entry", &["<Control><Shift>n"]),
+    // The NewComics.py port (ADR-027) — the script item carried no
+    // accelerator.
+    cmd("new-book-series", &[]),
     cmd("restart", &["<Control><Shift>q"]),
     cmd("quit", &["<Control>q"]),
     // Edit

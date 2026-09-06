@@ -236,18 +236,22 @@ fn rounded_rect(ctx: &Context, x: f64, y: f64, w: f64, h: f64, r: f64) {
     ctx.close_path();
 }
 
-/// The file-missing state marker: the red cross in the bottom-left
-/// state strip (strip height = clamp(H/10,16,32)).
-pub fn draw_missing_marker(
+/// The bottom-left state marker (strip height = clamp(H/10,16,32)):
+/// the file-missing red cross, or the fileless icon (the C# state
+/// row order — `!Comic.IsLinked` → `MarkerIsFileLessImage` before
+/// the missing `DeletedStateImage`; the two never co-occur). The
+/// strip shape is the port's recorded deviation from the C#'s
+/// centered `DrawImageList` row.
+pub fn draw_state_marker(
     ctx: &Context,
     box_: (f64, f64, f64, f64),
-    cross: Option<&cairo::ImageSurface>,
+    surface: Option<&cairo::ImageSurface>,
 ) {
     let (x, y, w, h) = box_;
     let inner = (w - 8.0, h - 8.0);
     let strip = (inner.1 / 10.0).clamp(16.0, 32.0);
     let sy = y + 4.0 + inner.1 - strip;
-    if let Some(surface) = cross {
+    if let Some(surface) = surface {
         let (iw, ih) = (surface.width() as f64, surface.height() as f64);
         let scale = (strip / iw).min(strip / ih);
         let dh = ih * scale;

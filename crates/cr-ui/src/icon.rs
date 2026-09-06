@@ -29,6 +29,14 @@ thread_local! {
         RefCell::new(HashMap::new());
 }
 
+/// Reads a bundled icon as raw RGBA (a cairo-draw consumer — the
+/// `gdk::Texture` cache serves widget consumers only).
+pub fn image_for_name(name: &str) -> Option<cr_image::Image> {
+    let path = path_for_name(name)?;
+    let bytes = std::fs::read(path).ok()?;
+    cr_image::decode::decode(&bytes).ok()
+}
+
 /// Resolves a resx name to an existing asset path. Rule (verified
 /// against `Resources.resx` — see `tests/icons.rs`): the name is the
 /// file name; a `Dark` prefix maps into the `Dark/` subfolder with

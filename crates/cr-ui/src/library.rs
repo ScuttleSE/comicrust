@@ -815,6 +815,22 @@ pub fn apply_edited(edited: &ComicBook) -> bool {
     true
 }
 
+/// `Program.Database.Add` (the `MainForm.AddNewBook` insert path):
+/// pushes the new book into the books table and marks the database
+/// dirty. Returns false when a book with the id already exists — the
+/// book editor commits fire per save point (Apply/OK), so the INSERT
+/// must run once and later commits apply instead.
+pub fn insert_new_book(book: &ComicBook) -> bool {
+    let lib = session();
+    let mut l = lib.borrow_mut();
+    if l.database().books.iter().any(|b| b.id == book.id) {
+        return false;
+    }
+    l.database_mut().books.push(book.clone());
+    l.mark_dirty();
+    true
+}
+
 // ---------- The file write-back (the C# `QueueManager.AddBookToFileUpdate`) ----------
 
 thread_local! {

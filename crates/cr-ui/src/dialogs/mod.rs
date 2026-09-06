@@ -7,6 +7,7 @@ pub mod display_settings;
 pub mod export;
 pub mod list_editor;
 pub mod name_prompt;
+pub mod new_book_series;
 pub mod quick_rating;
 pub mod smart_list;
 pub mod tasks;

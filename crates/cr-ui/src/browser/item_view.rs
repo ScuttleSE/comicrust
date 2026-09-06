@@ -1293,8 +1293,18 @@ fn draw_thumbnail_item(
             book.rating,
             book.info.community_rating,
         );
+        // The state markers, the C# row order: fileless before the
+        // missing cross (`!IsLinked` vs `IsLinked && FileIsMissing` —
+        // mutually exclusive).
+        if book.file_path.is_empty() {
+            super::item::draw_state_marker(
+                ctx,
+                (image_area.x, image_area.y, image_area.w, image_area.h),
+                fileless_marker().as_ref(),
+            );
+        }
         if book.file_is_missing {
-            super::item::draw_missing_marker(
+            super::item::draw_state_marker(
                 ctx,
                 (image_area.x, image_area.y, image_area.w, image_area.h),
                 missing_cross().as_ref(),
@@ -1332,6 +1342,18 @@ fn missing_cross() -> Option<cairo::ImageSurface> {
                 .map(|img| surface_from_rgba(&img.rgba, img.width, img.height));
     }
     CROSS.with(|c| c.clone())
+}
+
+/// The fileless marker (`MarkerIsFileLessImage` — the bundled
+/// `FilelessMarker.png`), decoded once.
+fn fileless_marker() -> Option<cairo::ImageSurface> {
+    thread_local! {
+        static FILELESS: Option<cairo::ImageSurface> = crate::icon::image_for_name(
+            "FilelessMarker",
+        )
+        .map(|img| surface_from_rgba(&img.rgba, img.width, img.height));
+    }
+    FILELESS.with(|c| c.clone())
 }
 
 fn draw_tile_item(
