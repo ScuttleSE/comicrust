@@ -1089,16 +1089,24 @@ impl BrowserShell {
                             // The Wayland popover grab flaps the
                             // window activation; the re-grab is the
                             // dead-first-keypress fix, but grab_focus
-                            // on the virtual-size canvas scrolls it to
+                            // on the virtual-size canvas makes the
+                            // ScrolledWindow's scroll-to-focus jump to
                             // the origin (the right-click report).
-                            // Restore the scroll the grab moved.
-                            let scroll_after = sh.item_view.scroll_value();
-                            if scroll_after != scroll_before {
-                                crate::trace::trace(format!(
-                                    "is-active: grab moved the scroll {scroll_before} -> {scroll_after}; restored"
-                                ));
-                                sh.item_view.set_scroll_value(scroll_before);
-                            }
+                            // That scroll runs in an IDLE — a
+                            // synchronous compare here reads the old
+                            // value and misses it (the user trace: the
+                            // restore line never fired, the jump
+                            // happened anyway). Restore on an idle.
+                            let view = sh.item_view.clone();
+                            glib::idle_add_local_once(move || {
+                                let scroll_after = view.scroll_value();
+                                if scroll_after != scroll_before {
+                                    crate::trace::trace(format!(
+                                        "is-active: grab moved the scroll {scroll_before} -> {scroll_after}; restored"
+                                    ));
+                                    view.set_scroll_value(scroll_before);
+                                }
+                            });
                         }
                     }
                 });
