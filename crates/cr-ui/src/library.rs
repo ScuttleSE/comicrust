@@ -25,6 +25,9 @@ thread_local! {
     /// while the worker runs wait here, in arrival order.
     static SCAN_QUEUE: RefCell<Vec<QueuedScan>> = const { RefCell::new(Vec::new()) };
     static SCAN_IN_FLIGHT: RefCell<bool> = const { RefCell::new(false) };
+    /// The location the in-flight scan walks (`Scanner.CurrentLocation`
+    /// — the Tasks dialog's scan row).
+    static SCAN_LOCATION: RefCell<String> = const { RefCell::new(String::new()) };
     /// The user settings (`Program.Settings` static). The GTK code
     /// reaches it through [`settings`].
     static SETTINGS: RefCell<Option<Rc<RefCell<cr_core::settings::Settings>>>> =
@@ -215,6 +218,7 @@ fn start_scan_worker(location: String, done: impl FnOnce(ScanResult) + 'static) 
     let books = {
         let mut lib = library.borrow_mut();
         SCAN_IN_FLIGHT.with(|cell| *cell.borrow_mut() = true);
+        SCAN_LOCATION.with(|cell| *cell.borrow_mut() = location.clone());
         std::mem::take(&mut lib.database_mut().books)
     };
     let items = [ScanItem {
@@ -255,6 +259,7 @@ fn start_scan_worker(location: String, done: impl FnOnce(ScanResult) + 'static) 
                     }
                 }
                 SCAN_IN_FLIGHT.with(|cell| *cell.borrow_mut() = false);
+                SCAN_LOCATION.with(|cell| cell.borrow_mut().clear());
                 // The queued requests run one at a time, in arrival
                 // order (the C# scan queue).
                 let next = SCAN_QUEUE.with(|q| q.borrow_mut().pop());
@@ -268,6 +273,7 @@ fn start_scan_worker(location: String, done: impl FnOnce(ScanResult) + 'static) 
             }
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 SCAN_IN_FLIGHT.with(|cell| *cell.borrow_mut() = false);
+                SCAN_LOCATION.with(|cell| cell.borrow_mut().clear());
                 if let Some(d) = done.take() {
                     d(ScanResult::default());
                 }
@@ -317,6 +323,12 @@ pub fn is_scanning() -> bool {
     scan_in_flight()
 }
 
+/// The location the in-flight scan walks (`Scanner.CurrentLocation`;
+/// empty when idle).
+pub fn scan_location() -> String {
+    SCAN_LOCATION.with(|cell| cell.borrow().clone())
+}
+
 thread_local! {
     /// The export lamp (`QueueManager.IsInComicConversion` parity
     /// point): the C# export funnels through a background queue; the
@@ -341,6 +353,37 @@ pub fn set_export_active(active: bool) {
 /// parity point): the pending debounced write timers.
 pub fn writes_pending() -> usize {
     WRITE_TIMERS.with(|cell| cell.borrow().len())
+}
+
+/// The file paths of the books with a pending write (the Tasks
+/// dialog's "Write Info" rows — `WriteComicBookInfoFileQueue.
+/// PendingItemInfos` parity: the C# formats the book caption, the
+/// port shows the file path).
+pub fn pending_write_files() -> Vec<String> {
+    let ids: Vec<CrGuid> = WRITE_TIMERS.with(|cell| cell.borrow().keys().cloned().collect());
+    let lib = session();
+    let l = lib.borrow();
+    ids.iter()
+        .filter_map(|id| {
+            l.database()
+                .books
+                .iter()
+                .find(|b| b.id == *id)
+                .map(|b| b.file_path.clone())
+        })
+        .collect()
+}
+
+/// The Tasks dialog's "Abort all User Tasks" write half (the C#
+/// `WriteComicBookInfoFileQueue.Clear`): drops every pending debounced
+/// write. A timer that already fired is untouched (its entry left the
+/// map when the callback ran).
+pub fn clear_pending_writes() {
+    WRITE_TIMERS.with(|cell| {
+        for (_, source) in cell.borrow_mut().drain() {
+            source.remove();
+        }
+    });
 }
 
 // ---------- The list navigator (Phase 4 T2) ----------

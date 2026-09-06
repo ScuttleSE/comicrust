@@ -123,6 +123,12 @@ struct ShellState {
     /// `autoHeaderContextMenuStrip`): a FRESH plain popover per open;
     /// the last one is kept for the probe.
     columns_drop: RefCell<Option<gtk4::Popover>>,
+    /// The app image pool (the C# `Program.ImagePool`): the Tasks
+    /// dialog queue snapshot and the Quick Rating cover load.
+    pool: Arc<ImagePool>,
+    /// The single Tasks dialog instance (`ShowPendingTasks`
+    /// re-presents it).
+    tasks_window: RefCell<Option<gtk4::Window>>,
 }
 
 impl ShellState {
@@ -529,6 +535,8 @@ impl BrowserShell {
             // (the exact shape of the proven book context menu; the
             // last one stays here for the probe).
             columns_drop: RefCell::new(None),
+            pool,
+            tasks_window: RefCell::new(None),
         });
         let shell = BrowserShell {
             window: window.clone(),
@@ -626,6 +634,59 @@ impl BrowserShell {
                 .set_on_tabs_changed(move || {
                     if let Some(sh) = state.upgrade() {
                         sh.sync_enabled();
+                    }
+                });
+        }
+
+        // A tab closes → the auto Quick Review gate (the C#
+        // `OnBookClosing`: AutoShowQuickReview && HasBeenRead &&
+        // Rating == 0 — the book leaves, the dialog opens over the
+        // library entry).
+        {
+            let state = Rc::downgrade(state);
+            state
+                .upgrade()
+                .expect("state")
+                .reader
+                .set_on_book_closing(move |book| {
+                    let auto_show = cr_ui_settings().borrow().auto_show_quick_review;
+                    if !crate::dialogs::quick_rating::should_auto_show(book, auto_show) {
+                        return;
+                    }
+                    if let Some(sh) = state.upgrade() {
+                        // The rating edits the LIBRARY copy (the
+                        // session copy is gone with the closed tab).
+                        let Some(current) = library::session()
+                            .borrow()
+                            .find_book(&book.file_path)
+                            .cloned()
+                        else {
+                            return;
+                        };
+                        let show_when_read = cr_ui_settings().borrow().auto_show_quick_review;
+                        let state2 = Rc::downgrade(&sh);
+                        let pool = Arc::clone(&sh.pool);
+                        crate::dialogs::quick_rating::show_quick_rating(
+                            &sh.window,
+                            &current,
+                            show_when_read,
+                            pool,
+                            move |result| {
+                                let Some(result) = result else {
+                                    return;
+                                };
+                                cr_ui_settings().borrow_mut().auto_show_quick_review =
+                                    result.show_when_read;
+                                if let Some(sh) = state2.upgrade() {
+                                    sh.set_quick_rating_fields(
+                                        &current.id,
+                                        result.rating,
+                                        &result.review,
+                                    );
+                                    sh.sync_enabled();
+                                }
+                            },
+                        );
                     }
                 });
         }
@@ -1241,6 +1302,20 @@ impl BrowserShell {
         self.state.stack.visible_child_name().map(|s| s.to_string())
     }
 
+    /// The Tasks dialog's single-instance visibility (the probe).
+    pub fn state_tasks_window_visible(&self) -> bool {
+        self.state
+            .tasks_window
+            .borrow()
+            .as_ref()
+            .is_some_and(|w| w.is_visible())
+    }
+
+    /// The current reader zoom (the Custom Zoom gate).
+    pub fn state_current_zoom(&self) -> Option<f32> {
+        self.state.reader.current_zoom()
+    }
+
     /// Opens the column chooser through the real hook path (the
     /// probe's OPEN gate).
     pub fn state_open_column_chooser(&self, wx: f64, wy: f64) -> bool {
@@ -1463,7 +1538,14 @@ impl ShellState {
         self.set_action_enabled("next-tab", slots > 1);
         // Selection commands (`GetBookList(Selected)` non-empty).
         for name in [
-            "info", "rating-0", "rating-1", "rating-2", "rating-3", "rating-4", "rating-5",
+            "info",
+            "rating-0",
+            "rating-1",
+            "rating-2",
+            "rating-3",
+            "rating-4",
+            "rating-5",
+            "quick-rating",
         ] {
             self.set_action_enabled(name, selected > 0);
         }
@@ -2271,6 +2353,72 @@ impl ShellState {
         });
     }
 
+    /// The Tasks dialog (`ShowPendingTasks`): one instance — an open
+    /// dialog re-presents (`taskDialog.Activate()`).
+    fn show_tasks(self: &Rc<ShellState>) {
+        if let Some(window) = self.tasks_window.borrow().as_ref() {
+            window.present();
+            return;
+        }
+        let dialog = crate::dialogs::tasks::show_tasks_dialog(&self.window, Arc::clone(&self.pool));
+        *self.tasks_window.borrow_mut() = Some(dialog.window);
+    }
+
+    /// The About dialog (`ShowAboutDialog` — the splash image with
+    /// the version line).
+    fn show_about(self: &Rc<ShellState>) {
+        crate::dialogs::about::show_about(&self.window);
+    }
+
+    /// Quick Rating and Review over the FIRST selected book (the C#
+    /// `GetRatingEditor().QuickRatingAndReview()` →
+    /// `books.FirstOrDefault()`); OK applies rating + review and
+    /// stores the AutoShowQuickReview setting.
+    fn show_quick_rating(self: &Rc<ShellState>) {
+        let Some(id) = self.item_view.selection_ids().first().cloned() else {
+            return;
+        };
+        let Some(book) = Self::books_by_ids(&[id]).into_iter().next() else {
+            return;
+        };
+        let show_when_read = cr_ui_settings().borrow().auto_show_quick_review;
+        let state = Rc::downgrade(self);
+        let pool = Arc::clone(&self.pool);
+        crate::dialogs::quick_rating::show_quick_rating(
+            &self.window,
+            &book,
+            show_when_read,
+            pool,
+            move |result| {
+                let Some(result) = result else {
+                    return;
+                };
+                cr_ui_settings().borrow_mut().auto_show_quick_review = result.show_when_read;
+                if let Some(sh) = state.upgrade() {
+                    sh.set_quick_rating_fields(&book.id, result.rating, &result.review);
+                    sh.sync_enabled();
+                }
+            },
+        );
+    }
+
+    /// Applies the Quick Rating OK fields to one library book (the
+    /// C# writes rating + review inside `QuickRatingDialog.Show` on
+    /// OK). Books outside the library are skipped (the port keeps no
+    /// session store for them after the tab closes).
+    fn set_quick_rating_fields(&self, id: &CrGuid, rating: f32, review: &str) {
+        let Some(mut book) = Self::books_by_ids(std::slice::from_ref(id))
+            .into_iter()
+            .next()
+        else {
+            return;
+        };
+        book.rating = rating;
+        book.info.review = review.to_string();
+        library::apply_edited(&book);
+        self.refresh_view_from_list();
+    }
+
     /// `ToggleBrowser`: the reader and the last browser workspace
     /// flip. From the QuickOpen page the browser shows (the user
     /// report: Browse ▸ Browser did nothing there); without an open
@@ -2667,8 +2815,9 @@ impl ShellState {
         self.add_simple(&group, "update-book-files", |_| {
             library::update_all_book_files();
         });
-        // tasks — T13 lands the Tasks dialog.
-        self.add_disabled(&group, "tasks");
+        // The Tasks dialog (the C# `ShowPendingTasks`; the lamps and
+        // the menu open the same single instance).
+        self.add_simple(&group, "tasks", ShellState::show_tasks);
         // generate-thumbnails — the C# `CacheThumbnails` queue
         // command; the thumbnail-queue work owns it.
         self.add_disabled(&group, "generate-thumbnails");
@@ -2711,8 +2860,9 @@ impl ShellState {
             group.add_action(&action);
             self.actions.borrow_mut().insert(name, action);
         }
-        // quick-rating — T13 lands the dialog.
-        self.add_disabled(&group, "quick-rating");
+        // Quick Rating and Review — the FIRST selected book (the
+        // C# `QuickRatingAndReview` passes `books.FirstOrDefault()`).
+        self.add_simple(&group, "quick-rating", ShellState::show_quick_rating);
         // Set Bookmark — the name prompt over the CURRENT page
         // (`SetBookmark`: the proposal is the existing bookmark or
         // the page number; an empty entry clears the bookmark).
@@ -3091,8 +3241,19 @@ impl ShellState {
             group.add_action(&zoom);
             self.actions.borrow_mut().insert("zoom-preset", zoom);
         }
-        // zoom-custom — T13 lands the dialog.
-        self.add_disabled(&group, "zoom-custom");
+        // Custom Zoom (the C# always enables the item — the dialog
+        // opens without a book too; OK stores the zoom when a view
+        // exists).
+        self.add_simple(&group, "zoom-custom", |sh| {
+            let zoom = sh.reader.current_zoom().unwrap_or(1.0);
+            let state = Rc::downgrade(sh);
+            crate::dialogs::zoom::show_zoom_dialog(&sh.window, zoom, move |result| {
+                if let (Some(z), Some(sh)) = (result, state.upgrade()) {
+                    sh.reader.zoom_current(z);
+                    sh.sync_enabled();
+                }
+            });
+        });
         self.add_simple(&group, "rotate-left", |sh| {
             sh.reader.dispatch_current("RotateCC")
         });
@@ -3200,8 +3361,7 @@ impl ShellState {
         });
 
         // --- Help ---
-        // about — T13 lands the About dialog.
-        self.add_disabled(&group, "about");
+        self.add_simple(&group, "about", ShellState::show_about);
 
         // --- The mainKeys shell commands ---
         self.add_simple(&group, "focus-search", |sh| {

@@ -1556,9 +1556,10 @@ owns the Phase 5.5 omissions).
   Rating (T13), Copy/Export Page (T13), Small Preview (the BACKLOG
   — T11 moved there 2026-09-05, ADR-026), New Book Entry (unported
   fileless books), navigator search (T7).
-  RESOLVED in T4: Set/Remove Bookmark (the commands + the fills
-  landed). RESOLVED in T7: toggle-navigator-search (the real
-  stateful action + the navigator search box).
+  RESOLVED in T4: Set/Remove Bookmark. RESOLVED in T7:
+  toggle-navigator-search. RESOLVED in T12: Display Settings.
+  RESOLVED in T13: Tasks, Zoom Custom, About, Quick Rating. Copy /
+  Export Page re-homed to the BACKLOG (docs/port-plan.md §6).
 - Automation submenu omitted (Phase 6 scripting hooks it).
 - RESOLVED in T4: "Update all Book Files" hides when
   AutoUpdateComicsFiles is on (`ActionState.visible` + the sync).
@@ -1582,7 +1583,8 @@ owns the Phase 5.5 omissions).
   Export Page (T13), Small Preview (the BACKLOG — T11 moved there
   2026-09-05, ADR-026), Zoom Custom (T13), Book
   Display Settings (T12), About (T13). RESOLVED in T4: Set/Remove
-  Bookmark.
+  Bookmark. RESOLVED in T13: Tasks, Zoom Custom, Quick Rating,
+  About (the dialogs landed; the items enable).
 - Absent per ADR-024: Update Web Comics (WebComicProvider gap),
   Synchronize Devices, Automation (Phase 6), Open Remote Library
   (Phase 7), Undo/Redo, Devices..., Folders (F7, Phase 7), Search
@@ -2283,3 +2285,121 @@ T12 (the Book Display Settings dialog, F9).**
       the previous options (OK/Apply commit, Cancel discards).
 - T12 COMPLETE — USER-TESTED, ALL PASS (2026-09-05). **Next: T13
   (the small chrome dialogs: Zoom, Quick Rating, Tasks, About).**
+
+### T13 — Small chrome dialogs (IMPLEMENTED 2026-09-06, user test pending)
+
+- Zoom (`Dialogs/ZoomDialog.cs`): `cr-ui/src/dialogs/zoom.rs` —
+  "Custom Zoom", "Percentage zoom:" + a 100..800 step-10 SpinButton
+  (the C# NumericUpDown), OK/Cancel; the incoming value clamps like
+  the C# `Zoom` setter (`clamp_percent`, unit-tested: the integer
+  truncation + the 100/800 clamps). OK applies through
+  `ReaderShell::zoom_current` (`ImageZoom = ZoomDialog.Show(…)`
+  parity). The C# item carries NO enable lambda — the port's stays
+  always enabled (OK no-ops without a view).
+- Tasks (`Dialogs/TasksDialog.cs`): `cr-ui/src/dialogs/tasks.rs` —
+  the PURE snapshot (`pending_tasks` + `TaskSnapshot`): the ported
+  queues in the C# `GetQueues` order (Load Thumbnails / Create
+  Thumbnails ×2 / Create Pages / Load Pages / Read Info / Write Info
+  / Export Books / Scanning), the C# message texts verbatim (the
+  `StringUtility.Format` two-placeholder shape), the 10-row cap +
+  the gray "N more..." row, the Running-first rule (the port marks
+  the claim inside the queue lock — an active queue's first item is
+  the running one), "{0} Tasks are pending", the abort texts (Abort
+  Cover Generation / Abort Update / Abort Export). 4 unit tests.
+  The widget: a NON-modal single-instance window (the
+  `ShowPendingTasks` re-present), the Task|State TreeView with bold
+  group rows (the C# ListViewGroups; a markup column), the 1 s
+  refresh timer (stops on hide, restarts on re-present), the
+  Abort-all button (enabled when an abortable queue holds items;
+  clears the unlimited-thumbnail queue + the export queue + the
+  pending write timers). The write rows come from the debounced
+  write timers (new `library::pending_write_files` /
+  `clear_pending_writes`); the scan row from the new
+  `library::scan_location` tracking (`Scanner.CurrentLocation`
+  parity). No Server Statistics tab (the ADR-024 remote).
+- Quick Rating (`Dialogs/QuickRatingDialog.cs`):
+  `cr-ui/src/dialogs/quick_rating.rs` — title
+  "Quick Rating - {CaptionWithoutTitle}", the cover thumbnail (the
+  front-cover page through the thumbnail queue, async — the C#
+  `GetThumbnail` + slow-queue shape), the review TextView, the
+  rating Scale 0..5 half steps, the "Show when Book read" checkbox
+  (AutoShowQuickReview). The menu item edits the FIRST selected book
+  (the C# `books.FirstOrDefault()` quirk); OK writes rating + review
+  through `apply_edited` and stores the setting. NEW: the auto-show
+  — the `OnBookClosing` gate (`should_auto_show`, unit-tested:
+  AutoShowQuickReview && HasBeenRead && Rating == 0) opens the
+  dialog when a tab closes; a new `ReaderShell::set_on_book_closing`
+  hook fires in `close_tab` AFTER the state borrow drops (the
+  handler re-enters the shell — the RefCell lesson).
+- About: the C# About IS the Splash form (`ShowAboutDialog` shows
+  `Splash` modally); the port shows a small modal AboutDialog with
+  the bundled Splash.png (`include_bytes!` — no release-workflow
+  change, the error-assets precedent) and the ADR-020 version: a new
+  `cr-ui/build.rs` reads `VERSION` (the release workflow's env) and
+  falls back to the local git commit count (`0.0.<commits>`;
+  `0.0.dev` without git). `app_version()` + 2 tests.
+- Shell wiring: the four stub actions are real (`win.tasks` /
+  `win.about` / `win.zoom-custom` / `win.quick-rating`);
+  quick-rating joins the selection-gated sync list. The status lamps
+  already dispatch `win.tasks` (the T8 click path now opens the real
+  dialog).
+- Probe `smalldialogs_probe`: the quick-rating DISABLE without a
+  selection, the Tasks single instance (two dispatches → one
+  window), the zoom response path (spin 250 → `Some(2.5)` on the
+  reader), the quick-rating OK applying rating 4.0 to the library
+  book, the About window + the version scheme, the auto-review
+  dialog on a read unrated close with Cancel keeping 0.0. The probe
+  drives the modal dialogs programmatically (`find_toplevel` by
+  title prefix + `Dialog::response`).
+- Gate: 328 tests, fmt + clippy clean, all probes green
+  (commands_probe resolves 70/70 with the four live actions).
+- **USER TEST (the T13 acceptance):**
+  1. `cargo run -p cr-app --release --` — Help ▸ About... opens the
+     splash-image About box with the version line; Esc/Close ends
+     it.
+  2. File ▸ Tasks... (or a status-lamp click) opens the non-modal
+     Tasks window: the queue groups list (bold rows), "0 Tasks are
+     pending", Abort grey. Open a big library or run a scan — the
+     rows appear ("Scanning '…'", the page/thumb texts), the counter
+     updates every second; closing and re-opening the menu keeps ONE
+     window.
+  3. Select books, Edit ▸ Quick Rating and Review... — the dialog
+     opens with the cover (loads async), the review text, the rating
+     slider at the book's rating, the checkbox. Set 4 stars, type a
+     review, OK — the grid's rating tag updates and the Properties
+     editor shows the review; the checkbox state persists across a
+     restart.
+  4. Quick Rating with NO selection stays grey; with several
+     selected it edits the FIRST selected book only (the C#
+     behavior).
+  5. Display ▸ Zoom ▸ Custom... (Ctrl+Shift+Z) — the dialog opens at
+     the current zoom (100 % default); type 250, OK — the reader
+     shows 250 % and the toolbar's zoom text follows; Cancel keeps
+     the old zoom. Values clamp into 100..800.
+  6. Auto Quick Review: Preferences page for AutoShowQuickReview —
+     enable it, open a comic, jump to the LAST page, close the tab —
+     the Quick Rating dialog pops over the closed book (unrated
+     books only); Cancel leaves it unrated.
+- DEVIATIONS (the tracker):
+  - Tasks: the Update Web Comics / Device Sync queues are absent
+    (the ADR-024 omissions + the Phase 1 web-comic gap); the scan
+    row is NOT abortable (the port's scan worker cannot stop —
+    `Scanner.Stop` unported); the write rows show the FILE PATH (the
+    C# formats the book caption); the list scroll position is not
+    preserved across the 1 s refreshes; the empty queue groups
+    always show (the C# ListViewGroups shape); the per-queue abort
+    context menu is not ported (one Abort-all button — the C#
+    SplitButton carries both).
+  - Quick Rating: the star image control becomes a Scale (the value
+    text replaces the numeric overlay); the auto-review path applies
+    to LIBRARY books only (a temporary book has no store after its
+    tab closes); the checkbox persists at the exit settings save
+    (the C# writes Config.xml immediately — the established
+    session-settings family).
+  - About: the C# splash overlay (copyright + bitness + git info)
+    reduces to the AboutDialog version + comments lines; the
+    Help/news/update links stay out (ADR-024).
+  - Copy Page / Export Page REMAIN stubs — re-homed to the BACKLOG
+    (`docs/port-plan.md` §6; the T13 scope never carried them; the
+    T1 tracker entry is resolved for the four dialogs it listed as
+    T13).

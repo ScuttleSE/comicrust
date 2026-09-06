@@ -103,6 +103,14 @@ the entry into the kickoff that will own it.
   Python-plugin machinery: NewComics.py (fileless series/entries),
   and any other high-traffic sample scripts reviewed at Phase 6. The
   rest keep the Phase 6 plugin host.
+- **Copy Page / Export Page (Edit menu)** (Phase 5.5 T13 re-home,
+  2026-09-06): `CopyPage` copies the CURRENT page image to the
+  clipboard and `ExportCurrentImage` writes it through the
+  export-image dialog (`MainForm.cs:2326-2339` —
+  `ComicDisplay.CreatePageImage`). Not part of the T13 dialog scope;
+  needs a page-surface → clipboard path (a GTK clipboard image
+  provider) and the ExportImage file dialog. The two menu items stay
+  disabled stubs until picked up.
 
 Phase task breakdowns with acceptance criteria:
 

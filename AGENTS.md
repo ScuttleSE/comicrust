@@ -421,16 +421,57 @@ Update this section at the **end of every work session**. The next agent must kn
   `displaysettings_probe` (5 gates), all probes green.
   T12 COMPLETE — USER-TESTED, ALL PASS (2026-09-05, "all OK"; the
   full 10-item acceptance record lives in the kickoff T12 entry).
-  **Next: T13 (the small chrome dialogs — `Dialogs/ZoomDialog.cs`,
-  `Dialogs/QuickRatingDialog.cs`, `Dialogs/TasksDialog.cs` + the
-  activity model, the About box with version `0.0.<commits>` per
-  ADR-020).** After T13: T14 (persistence — carrying the
-  display-options persistence from T12). Phase 6 (scripting) starts
-  only after 5.5.
+  T13 IMPLEMENTED (2026-09-06), user test pending. The four small
+  chrome dialogs:
+  - Zoom (`Dialogs/ZoomDialog.cs` port,
+    `cr-ui/src/dialogs/zoom.rs`): "Custom Zoom", a 100..800 step-10
+    SpinButton, OK applies through `ReaderShell::zoom_current`; the
+    clamp mirrors the C# setter (`clamp_percent`, unit-tested).
+    Always enabled (the C# carries no enable lambda).
+  - Tasks (`Dialogs/TasksDialog.cs` port,
+    `cr-ui/src/dialogs/tasks.rs`): the PURE snapshot (`pending_tasks`
+    — the ported queues in the C# GetQueues order, the C# message
+    texts verbatim, the 10-row cap + the gray "N more..." row, the
+    Running-first rule, the abort texts; 4 unit tests) + a
+    NON-modal single-instance window (`ShowPendingTasks`
+    re-present; the lamps and the menu share it) with the Task|State
+    TreeView (bold group rows), the 1 s refresh, and Abort-all
+    (clears the unlimited-thumbnail queue + the export queue + the
+    pending write timers). New `library` accessors:
+    `pending_write_files`/`clear_pending_writes` (the debounced
+    write timers) + `scan_location` (the `Scanner.CurrentLocation`
+    parity). No Server Statistics tab (ADR-024); the scan row is not
+    abortable (no scan-stop port).
+  - Quick Rating (`Dialogs/QuickRatingDialog.cs` port,
+    `cr-ui/src/dialogs/quick_rating.rs`): title
+    "Quick Rating - {CaptionWithoutTitle}", async cover through the
+    thumb queue, review TextView, rating Scale 0..5 half steps (the
+    star control → a Scale), the "Show when Book read" checkbox
+    (AutoShowQuickReview). Edits the FIRST selected book (the
+    `books.FirstOrDefault()` quirk) through `apply_edited`. NEW: the
+    `OnBookClosing` auto-show (`should_auto_show`: the setting &&
+    HasBeenRead && Rating == 0) rides a new
+    `ReaderShell::set_on_book_closing` hook fired in `close_tab`
+    after the state borrow drops.
+  - About: the C# About IS the Splash form — a small modal
+    AboutDialog with the bundled Splash.png (`include_bytes!`,
+    `cr-ui/assets/splash.png`) + the ADR-020 version: a new
+    `cr-ui/build.rs` reads `VERSION` (the release env) and falls
+    back to the local git commit count (`0.0.<commits>`; `0.0.dev`
+    without git).
+  Probe `smalldialogs_probe` gates all five flows (the
+  programmatic-dialog shape: `find_toplevel` by title prefix +
+  `Dialog::response`); commands_probe 70/70 with the four live
+  actions; all other probes green; 328 tests. Copy Page / Export
+  Page re-homed to the BACKLOG (`docs/port-plan.md` §6). The
+  tracker + the 6-step user test live in the kickoff T13 entry.
+  **Next: T14 (persistence — carrying the display-options
+  persistence from T12).** Phase 6 (scripting) starts only after
+  5.5.
   Phases 0-5 are complete (their gates stay green). Open Phase 1
   gaps: WebComicProvider and the PDF/DjVu writers (tracked in
   `docs/phase-1-kickoff.md`).
-- **State:** `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` are green. 325 tests. CI runs on the `docker-runner-amd64` container runner (ADR-020). The release tracks are `release.yaml` (rolling prerelease per push) and `tagged-release.yaml` (manual dispatch, stable release for an existing tag — ADR-021, 2026-09-03). Until the runner is registered and `comicrust-ci:latest` is built on the runner host, pushed and dispatched workflows sit queued on that label.
+- **State:** `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` are green. 328 tests. CI runs on the `docker-runner-amd64` container runner (ADR-020). The release tracks are `release.yaml` (rolling prerelease per push) and `tagged-release.yaml` (manual dispatch, stable release for an existing tag — ADR-021, 2026-09-03). Until the runner is registered and `comicrust-ci:latest` is built on the runner host, pushed and dispatched workflows sit queued on that label.
 - **Phase 0 gate status:** byte-stable ComicDb.xml round-trip proven on all three synthetic fixtures AND the real-world database `tests/realworld/ComicDb.xml` (255 books, 584 KB, 2026-09-02, user-approved commit).
 - **Phase 2 gate status:** every saved smart list in the real-world DB (a) binds to the matcher registry, (b) renders to a `Match` query string that re-parses and re-renders byte-identically, and (c) evaluates to the SAME book sets the C# cached in `CacheStorage` (Never Read = all 255, Files to update = the 3 dirty books, Reading/Read = empty). Evidence: `crates/cr-engine/tests/realworld_query.rs`.
 - **Phase 3 gate status (COMPLETE):** a real comic (`tests/testfiles/`, git-ignored, user-supplied) opens in a GTK4 window and reads comfortably: single/double/adaptive/continuous layouts, spread composition with cover-right + binding-edge rules, fit modes with anamorphic tolerance, zoom/pan/rotation, RTL, continuous scroll with anchor-stable layout rebuilds, fade/slide transitions, paper texture, Auto/Color/Texture backgrounds, the real `MainForm` input map, session tabs with undock, fullscreen chrome with cursor auto-hide, reading-state tracking, the magnifier, error pages, and pool-queue page loads. User-verified after each task; UI smoke tests on this machine run headless under Xvfb + screenshots (see the probe lessons below — the key-injection tools are unreliable; only user tests decide input behavior).

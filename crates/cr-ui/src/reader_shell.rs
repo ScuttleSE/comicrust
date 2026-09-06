@@ -73,6 +73,9 @@ struct UndockedTab {
 /// The Library-group command forwarder (`Rc`: the dispatch clones it
 /// out before firing — the handler re-enters this shell).
 type LibraryCommandFn = Rc<dyn Fn(&str)>;
+/// The tab-close hook (the C# `BookClosing` — the auto Quick Review
+/// gate reads the leaving book).
+type BookClosingFn = Box<dyn Fn(&ComicBook)>;
 
 /// One open slot as the workspace tab strip renders it.
 pub struct TabInfo {
@@ -126,6 +129,9 @@ struct ShellState {
     /// The host runs this whenever the TAB SET changed (open/close/
     /// undock/re-dock/`AddSlot`) — the workspace tab strip rebuilds.
     on_tabs_changed: Option<Box<dyn Fn()>>,
+    /// The host runs this when a tab closes, with the book that
+    /// leaves (the C# `OnBookClosing` — the auto Quick Review gate).
+    on_book_closing: Option<BookClosingFn>,
     /// The tab captions (`Comic.Caption`), cached per slot — the
     /// proposed-name fallback parses file names with regexes and the
     /// strip sync runs on every shell action.
@@ -216,6 +222,7 @@ impl ReaderShell {
                 undock_chrome: None,
                 undock_chrome_docked_parent: None,
                 on_tabs_changed: None,
+                on_book_closing: None,
                 captions: RefCell::new(HashMap::new()),
             })),
         };
@@ -322,6 +329,13 @@ impl ReaderShell {
     /// C# `OpenNextComic`/`ToggleBrowserFromReader` on MainForm).
     pub fn set_on_library_command<F: Fn(&str) + 'static>(&self, f: F) {
         self.state.borrow_mut().on_library_command = Some(Rc::new(f));
+    }
+
+    /// The host hook: a tab is closing and its book leaves (the C#
+    /// `BookClosing` event; the auto Quick Review gate reads the
+    /// book).
+    pub fn set_on_book_closing<F: Fn(&ComicBook) + 'static>(&self, f: F) {
+        self.state.borrow_mut().on_book_closing = Some(Box::new(f));
     }
 
     /// The number of open reader slots (`OpenBooks.Slots.Count`).
@@ -1196,20 +1210,28 @@ impl ReaderShell {
     /// Closes one tab (`OpenBooks.Close`); the last close hands the
     /// view back to the browser (the host callback).
     fn close_tab(state: &Rc<RefCell<ShellState>>, slot: usize) {
-        let (pos, last_tab, notebook) = {
+        let (pos, last_tab, notebook, closing_book) = {
             let mut st = state.borrow_mut();
             let Some(pos) = st.position_of(slot) else {
                 return;
             };
             let _tab = st.tabs.remove(pos);
+            let closing_book = st.books.get(&slot).cloned();
             st.books.remove(&slot);
             st.captions.borrow_mut().remove(&slot);
-            (pos, st.tabs.is_empty(), st.notebook.clone())
+            (pos, st.tabs.is_empty(), st.notebook.clone(), closing_book)
         };
         // Outside the borrow: removing the current page selects a
         // neighbor synchronously and the switch-page handler borrows
         // the shell.
         notebook.remove_page(Some(pos as u32));
+        // The BookClosing hook fires after the state borrow drops
+        // (the handler may re-enter the shell — the RefCell lesson).
+        if let Some(book) = closing_book {
+            if let Some(f) = state.borrow().on_book_closing.as_ref() {
+                f(&book);
+            }
+        }
         Self::fire_tabs_changed(state);
         if last_tab {
             if let Some(f) = state.borrow().on_last_tab_closed.as_ref() {
