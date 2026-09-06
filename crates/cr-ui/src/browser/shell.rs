@@ -4019,9 +4019,15 @@ fn show_context_menu(state: &std::rc::Weak<ShellState>, target: Option<CrGuid>, 
                 "reveal" => {
                     if let Some(id) = target {
                         if let Some(path) = library::book_path(&id) {
-                            let _ = std::process::Command::new("xdg-open")
-                                .arg(Path::new(&path).parent().unwrap_or(Path::new("/")))
-                                .spawn();
+                            // The C# `IsLinked` gate: a fileless book
+                            // has no folder to reveal (an empty path
+                            // would resolve to the app's working
+                            // directory).
+                            if !path.is_empty() {
+                                let _ = std::process::Command::new("xdg-open")
+                                    .arg(Path::new(&path).parent().unwrap_or(Path::new("/")))
+                                    .spawn();
+                            }
                         }
                     }
                 }

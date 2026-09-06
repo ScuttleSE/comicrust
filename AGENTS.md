@@ -1499,6 +1499,16 @@ Re-bless the `db-large.xml` snapshot after a deliberate model change: `CR_BLESS=
   FILE (`p.is_file()`); fileless books never touch the trash. RULE:
   never hand a book-derived path to `gio trash` without the
   is-file check — fileless books carry `file_path = ""` everywhere.
+  AUDIT (the user's follow-up): the ONLY user-data deletion in the
+  app is the remove flow's `gio trash` (+ the reveal `xdg-open`,
+  now empty-guarded too). Folder comics (a directory `file_path`)
+  are SKIPPED by the port's is_file check — a recorded deviation
+  (the C# trashes the folder via ShellFile.DeleteFile). The C#
+  itself guards with `IsLinked` (ComicBook.cs:1321) — the empty
+  check is parity, is_file is defense. Every other destructive
+  operation touches only app-controlled paths (the DB's .bak/.rest-
+  ore, the `.tmp` write sibling, `*.cache` pruning, test temp dirs)
+  — the full table lives in the Phase 7 kickoff incident record.
 - The C# `OnGetBooks` for `ComicIdListItem` walks `BookIds` in LIST
   order — a reading list displays in its stored order, not the
   library order. The port's IdList evaluation must walk `book_ids`

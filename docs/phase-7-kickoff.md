@@ -212,6 +212,47 @@ flow): only trash a path that is non-empty AND `is_file()` —
 fileless books never touch the trash. The real `.cbl` exports are
 back in `tests/testfiles/` for the T2 user test.
 
+DELETE-PATH AUDIT (the user's follow-up: verify the fix, folder
+paths, other deleters). All destructive operations in the
+workspace, each verified:
+
+- The remove flow's `gio trash` (shell.rs) — FIXED (above). The C#
+  main flow guards the same way (`book2.IsLinked` →
+  ComicListLibraryBrowser.cs:147; `IsLinked =>
+  !string.IsNullOrEmpty(filePath)`, ComicBook.cs:1321) — the port's
+  empty-check is exact parity, `is_file()` is extra defense.
+- Folder comics (a comic whose `file_path` IS a directory): the C#
+  WOULD trash the folder (`ShellFile.DeleteFile` on the folder
+  path, ComicListLibraryBrowser.cs:155 + FolderComicListProvider
+  .cs:151). The port's `is_file()` skips them — a RECORDED
+  DEVIATION (safe over parity; the port has no Folders view, and a
+  mis-pathed book must never trash a whole user directory — that
+  is exactly the incident mechanism).
+- "Reveal" (`xdg-open` the parent folder) — FIXED: the empty-path
+  guard (the C# `IsLinked` shape; an empty path resolved the file
+  manager to `/`).
+- Every open path (`open_comic` consumers: the grid, Quick view,
+  the context menu, list browsing) — already gated: `open_comic_at`
+  returns early on an empty path (the Phase 6 `NavigatorManager
+  .Open` IsLinked gate).
+- The write-back temp cleanup (`cr-io/src/write.rs`) — removes only
+  the `.tmp` sibling the write itself created, from a linked book's
+  file; the write queue never runs for fileless books.
+- The DB `.bak`/`.restore` rotation (`cr-core`) — the database's
+  own app-controlled path.
+- The disk-cache pruning (`cr-image/src/disk.rs`) — only `*.cache`
+  files under the app's cache root.
+- The scanner "AutoRemove" — flags books missing, never deletes
+  files (the Phase 2 record).
+- The backup round-trip's `remove_file` (`cr-engine/src/backup.rs`)
+  — the create → destroy → restore test helper only ("future UI"
+  comment: the real backup UI must restore over the DB, not delete
+  first).
+- `remove_dir_all` in cr-io/export.rs and cr-io/write.rs —
+  `#[cfg(test)]` temp dirs only.
+
+No other user-data deletion exists in the app.
+
 ## Status
 
 - T1 COMPLETE — USER-TESTED, ALL PASS (2026-09-06; the 5 steps in
