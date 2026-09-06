@@ -578,6 +578,16 @@ impl BrowserShell {
         Rc::clone(&self.state.navigator)
     }
 
+    /// The grid's current view state (display-order checks + probes).
+    pub fn item_view_state(&self) -> super::view_state::ViewState {
+        self.state.item_view.view_state()
+    }
+
+    /// The grid's (sort column, descending, grouper).
+    pub fn item_view_sort_summary(&self) -> (Option<String>, bool, Option<&'static str>) {
+        self.state.item_view.sort_group_summary()
+    }
+
     /// The main-window menubar (the T3 custom bar; the T14
     /// layout persistence and the probes reach it here).
     pub fn menubar(&self) -> &super::menubar::MenubarWidget {

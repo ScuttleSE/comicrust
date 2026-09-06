@@ -152,7 +152,15 @@ Update this section at the **end of every work session**. The next agent must kn
   `evaluate_inner` now walks `book_ids` first-seen (the HashSet
   dedupe parity), regression test added; the browser sort applies
   on top when set. 367 tests; fmt + clippy + the T1/T2/command/
-  menubar/single-instance probes green. Phase 7 (T1 + T2) is IMPLEMENTED — T2 user test
+  menubar/single-instance probes green. DISPLAY-ORDER FIX (the
+  user report "WoSM 40 tops the list instead of ASM 296"): the
+  engine order was correct — the ItemView's `SortChain::compare`
+  fell back to guid_compare on the EMPTY chain, shuffling every
+  unsorted view by random Guid; the empty chain now returns Equal
+  (input order = display order; the Guid tiebreak only under an
+  active sort), unit test + the `listorder_probe` end-to-end grid
+  gate (the importlist probe checked the evaluation, NOT the
+  display — a lesson: gate the layer the user sees). 368 tests. Phase 7 (T1 + T2) is IMPLEMENTED — T2 user test
   pending; Phase 8 (packaging) follows.
   INIT-GLOBAL BOOT BUG FIXED (2026-09-06, the cache-folder user
   report "the setting reverts after restart"): `init_global` used

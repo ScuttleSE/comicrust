@@ -78,9 +78,14 @@ impl SortChain {
     }
 
     fn compare(&self, a: &ComicBook, b: &ComicBook) -> std::cmp::Ordering {
-        let mut ord = std::cmp::Ordering::Equal;
+        if self.keys.is_empty() {
+            // No sort: the input order IS the display order (the C#
+            // shows the enumeration order — a reading list's stored
+            // order). A Guid fallback here SHUFFLED imported lists.
+            return std::cmp::Ordering::Equal;
+        }
         for key in &self.keys {
-            ord = ord.then(compare_by_column(a, b, &key.column));
+            let mut ord = compare_by_column(a, b, &key.column);
             if ord != std::cmp::Ordering::Equal {
                 if key.descending {
                     ord = ord.reverse();
@@ -88,8 +93,7 @@ impl SortChain {
                 return ord;
             }
         }
-        // Full tie: stable by Id (the C# sorts a list; we keep a
-        // deterministic order).
+        // Full tie under an ACTIVE sort: deterministic by Id.
         cr_engine::sort::guid_compare(&a.id, &b.id)
     }
 }
@@ -483,6 +487,32 @@ mod tests {
         b.info.series = series.to_string();
         b.info.number = format!("{number}");
         b
+    }
+
+    /// An unsorted view shows the books in the INPUT order (a
+    /// reading list's stored order). The Guid tiebreak must apply
+    /// only under an ACTIVE sort — a fallback on the empty chain
+    /// shuffled imported lists into Guid order (the 2026-09-06
+    /// reading-list order bug).
+    #[test]
+    fn unsorted_view_keeps_the_input_order() {
+        // Deliberately non-alphabetical, non-Guid-ordered input.
+        let view = ViewState::new(vec![
+            book("Web of Spider-Man", 40.0, 1),
+            book("The Amazing Spider-Man", 296.0, 2),
+            book("Peter Parker, the Spectacular Spider-Man", 134.0, 3),
+        ]);
+        let series: Vec<String> = (0..view.len())
+            .map(|i| view.book(i).info.series.clone())
+            .collect();
+        assert_eq!(
+            series,
+            [
+                "Web of Spider-Man",
+                "The Amazing Spider-Man",
+                "Peter Parker, the Spectacular Spider-Man"
+            ]
+        );
     }
 
     #[test]

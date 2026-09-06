@@ -195,6 +195,20 @@ Probe lessons (do not re-learn):
 - The primary must stay alive ~500 ms after the handoff before it
   quits: the client's forward call needs the reply.
 
+- DISPLAY-ORDER FIX (the user's report: "the first comic in the
+  file is Amazing Spider-Man 296, at the top of the app is Web of
+  Spider-Man 40"): the engine order was correct (proven against the
+  real DB read-only); the SHUFFLE lived in the ItemView —
+  `SortChain::compare` fell back to `guid_compare` on the EMPTY
+  sort chain, ordering every unsorted view by random Guid. Fix:
+  the empty chain returns Equal (the input order IS the display
+  order — the C# shows the enumeration order unsorted); the Guid
+  tiebreak applies only under an ACTIVE sort. Unit test
+  (`unsorted_view_keeps_the_input_order`) + the end-to-end
+  `listorder_probe` (seeded shuffled library → import → gate the
+  GRID order — the gate the importlist probe lacked: it checked
+  the evaluation, not the display). 368 tests.
+
 ## Incident record (2026-09-06, T2 user test)
 
 The user imported a real `.cbl` ("Add missing Books to Library"),
