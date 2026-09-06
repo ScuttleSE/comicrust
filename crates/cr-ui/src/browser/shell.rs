@@ -4163,12 +4163,24 @@ fn show_context_menu(state: &std::rc::Weak<ShellState>, target: Option<CrGuid>, 
                         for id in &ids_for_ok {
                             if remove_files {
                                 if let Some(path) = library::book_path(id) {
-                                    // ADR-006: the recycle bin → GIO
-                                    // trash (the `gio` CLI; a libgio
-                                    // binding is Phase 7 polish).
-                                    let _ = std::process::Command::new("gio")
-                                        .args(["trash", &path])
-                                        .status();
+                                    // Fileless books (the reading-list
+                                    // placeholders) carry an EMPTY
+                                    // file path — gio resolves that to
+                                    // the process's current directory
+                                    // and trashes the WHOLE FOLDER.
+                                    // Only a real comic file goes to
+                                    // the trash (the C# deletes linked
+                                    // files only).
+                                    let p = Path::new(&path);
+                                    if !path.is_empty() && p.is_file() {
+                                        // ADR-006: the recycle bin →
+                                        // GIO trash (the `gio` CLI; a
+                                        // libgio binding is Phase 7
+                                        // polish).
+                                        let _ = std::process::Command::new("gio")
+                                            .args(["trash", &path])
+                                            .status();
+                                    }
                                 }
                             }
                             library::remove_book(id);

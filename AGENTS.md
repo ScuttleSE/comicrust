@@ -1486,6 +1486,30 @@ Re-bless the `db-large.xml` snapshot after a deliberate model change: `CR_BLESS=
   the single Edit menu item; the C# `ListEditorDialog` is an
   UNRELATED workspaces editor — do not port it for lists.
 
+### Lessons from Phase 7 (do not re-learn these)
+
+- INCIDENT (2026-09-06, user-reported): deleting the imported
+  fileless placeholder books with "Also delete the files" ran
+  `gio trash ""` — gio resolves an EMPTY argument to the process's
+  CURRENT WORKING DIRECTORY and trashed the whole repo checkout.
+  Everything survived in `~/.local/share/Trash/files` (one trashed
+  copy held the git-ignored test comics + the user's real `.cbl`
+  exports — restored with `cp -n` from the trash copy). The fix: the
+  remove flow only trashes a path that is non-empty AND an existing
+  FILE (`p.is_file()`); fileless books never touch the trash. RULE:
+  never hand a book-derived path to `gio trash` without the
+  is-file check — fileless books carry `file_path = ""` everywhere.
+- The C# `OnGetBooks` for `ComicIdListItem` walks `BookIds` in LIST
+  order — a reading list displays in its stored order, not the
+  library order. The port's IdList evaluation must walk `book_ids`
+  first-seen (HashSet dedupe parity).
+- The ComicNameInfo rxNumber RightToLeft emulation: the C# RTL scan
+  takes the match with the rightmost START; a left-to-right
+  find_iter + last-item is wrong when a leftmost candidate overlaps
+  the real one ("Watchmen 001" → "chmen 001"). The year/get-number
+  stages have no overlapping candidates and keep the cheap
+  emulation.
+
 ### Lessons from Phase 5.5 (do not re-learn these)
 
 - When a UI symptom appears at "some later time", find the GTK

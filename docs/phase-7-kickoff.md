@@ -195,6 +195,23 @@ Probe lessons (do not re-learn):
 - The primary must stay alive ~500 ms after the handoff before it
   quits: the client's forward call needs the reply.
 
+## Incident record (2026-09-06, T2 user test)
+
+The user imported a real `.cbl` ("Add missing Books to Library"),
+then removed the fileless placeholder books with "Also delete the
+files". `book_path` returned `Some("")` for every fileless book and
+the remove flow ran `gio trash ""` once per book — gio resolves an
+empty argument to the process's CURRENT WORKING DIRECTORY (proven
+with a /tmp experiment) and trashed the repo checkout the app was
+launched from (six trash entries, 18:19). Nothing was lost: the
+trash held a full copy including the git-ignored test comics and
+the user's two real ComicRack `.cbl` exports; all six files were
+restored with `cp -n` from the trash copy (which stays in the trash
+as a second net until the user confirms). Fix (shell.rs remove
+flow): only trash a path that is non-empty AND `is_file()` —
+fileless books never touch the trash. The real `.cbl` exports are
+back in `tests/testfiles/` for the T2 user test.
+
 ## Status
 
 - T1 COMPLETE — USER-TESTED, ALL PASS (2026-09-06; the 5 steps in
