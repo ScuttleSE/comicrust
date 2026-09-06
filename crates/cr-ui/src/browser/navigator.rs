@@ -61,6 +61,7 @@ pub enum ListCommand {
     NewFolder,
     Rename,
     Delete,
+    Import,
 }
 
 type SelectedFn = Box<dyn Fn(&CrGuid, &str)>;
@@ -659,6 +660,9 @@ impl Navigator {
         add_item(&box_, "New Folder…", ListCommand::NewFolder);
         add_item(&box_, "Rename…", ListCommand::Rename);
         add_item(&box_, "Delete", ListCommand::Delete);
+        // `miImportReadingList` (the C# menu sits between the
+        // Export/Import pair and the Open commands).
+        add_item(&box_, "Import Reading List…", ListCommand::Import);
         popover.set_child(Some(&box_));
         popover.set_parent(self.widget());
         popover.connect_closed(|p| p.unparent());
@@ -690,6 +694,8 @@ impl Navigator {
     fn icon_for(item: &ComicListItem) -> &'static str {
         match item {
             ComicListItem::Library(_) => "Library",
+            // `ComicListItemFolder.ImageKey`: Temporary → "TempFolder".
+            ComicListItem::Folder(f) if f.temporary => "TempFolder",
             ComicListItem::Folder(_) => "SearchFolder",
             ComicListItem::Smart(_) => "SearchDocument",
             ComicListItem::IdList(_) => "List",

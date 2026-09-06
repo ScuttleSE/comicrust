@@ -129,6 +129,27 @@ first launch still boots the library), then the user test below.
 Gate: unit tests on a real `.cbl` fixture (solved/missing match),
 user test.
 
+## User test (T2)
+
+1. Right-click the navigator tree → "Import Reading List…" → pick a
+   `.cbl` whose books exist in the library → the tree gains the list
+   (inside "Temporary Lists" when nothing was selected, or inside the
+   selected folder) and shows its books.
+2. Import a `.cbl` with books NOT in the library → the question
+   dialog lists the missing captions; "Add missing Books to Library"
+   imports the list AND creates the fileless books (the Fileless
+   marker shows on their covers, the open gate blocks opening them);
+   "Import" imports the list with only the solved books; Cancel
+   imports nothing.
+3. `comicrust some-list.cbl` (no instance running) → the app starts
+   and imports the list, then opens the most recently read book of
+   the list.
+4. With an instance running: `comicrust -il some-list.cbl` → the list
+   imports into Temporary Lists (no book opens, the window comes to
+   front).
+5. A `.cbl` exported by real ComicRack (matchers or id list) imports
+   and evaluates like it does in ComicRack.
+
 ## User test (T1)
 
 1. Start comicrust with a comic; from a terminal run
@@ -178,4 +199,77 @@ Probe lessons (do not re-learn):
 
 - T1 COMPLETE — USER-TESTED, ALL PASS (2026-09-06; the 5 steps in
   the User test section above). 357 tests; fmt + clippy green.
-  T2 (the `.cbl` import) is the remaining Phase 7 task.
+- T2 IMPLEMENTED (2026-09-06), user test pending. Landed:
+  - `cr-core/src/database/reading_list.rs`: the `ComicReadingListContainer`
+    port — `<ReadingList MatcherMode>` root, `<Name>`, `<Books><Book>`
+    items (Series/Number/Volume/Year/Format attrs with the C# defaults,
+    `<Id>` always, `<FileName>` when set) and `<Matchers>` (the same
+    matcher serialization the ComicLists tree uses —
+    `ComicBookMatcher::from_start` reused). Order-tolerant parse +
+    a byte-stable writer (round-trip tested against a hand-written
+    net48-shaped fixture: declaration without encoding, xsd/xsi
+    namespaces, omitted default attrs, `<Books />`/`<Matchers />`
+    empties).
+  - `cr-engine/src/reading_list.rs`: the `ComicIdListItem
+    .CreateFromReadingList` port — resolve by Guid, by file name
+    (name-without-extension, OrdinalIgnoreCase), then the
+    series/number relaxation ladder (`SeriesEquals` None →
+    IgnoreVolumeInName → +StripDown; the `rxVolume`/`rxSpecial`
+    regexes ported, the trailing empty alternative dropped as a
+    no-op) with the year ±1 / volume / format narrowings that fall
+    back to the previous candidate set. `SetFileNameInfo` parity:
+    the file-name parse OVERWRITES the stored fields for unsolved
+    items only. Unsolved items become placeholder `ComicBook`s
+    (fresh Guid, `AddedTime` now, the parsed series data) collected
+    for the missing-books question.
+  - `cr-ui/src/dialogs/import_list.rs`: the `ImportList` flow —
+    parse → smart list (matchers) or the library match → the
+    missing-books question (`Import` / `Add missing Books to
+    Library` / `Cancel`; the C# message shape with the 25-caption
+    cap + `...`) → insert → tree refill + selection.
+  - Landing: `library::import_temporary_item` (the
+    `ComicLibrary.TemporaryFolder` find-or-create — a
+    `ComicDatabase::temporary_folder` helper appending a
+    "Temporary Lists" folder at the tree end) and
+    `library::import_list_item(target)` (the
+    `GetNodeComicListCollection` shape: folder → last child, item →
+    its parent container, none/unknown → top level).
+  - Wiring: the `.cbl` branch in `OpenSupportedFile` (import, then
+    open the newest-read book of the list — ties to the later
+    entry; fileless placeholders filtered out), `-il` on both
+    boot paths (first launch: files → OpenLastFile → import,
+    `MainForm.cs:1058`; handoff: import BEFORE files, `StartLast`
+    order), and the navigator "Import Reading List…" context item
+    (`ListCommand::Import` → the multi-select `.cbl`/xml chooser
+    importing into the current selection's container). The
+    navigator gained the `TempFolder` icon for temporary folders
+    (`ComicListItemFolder.ImageKey` parity).
+- T2 PROBE: `cr-ui/examples/importlist_probe.rs` (isolated XDG
+  required). Gates: (A) the question dialog + "Add missing" adds
+  the placeholder (Watchmen/1/1986 parsed from the file name),
+  (B) the list lands in the Temporary Lists folder selected in the
+  tree, (C) solved-by-id + solved-by-file-name (3 evaluated), (D)
+  the "Import" answer keeps the library at 3 and drops the unsolved
+  id (empty list), (E) a matchers-only `.cbl` lands as a smart list
+  evaluating to the right book. All gates green under Xvfb.
+- PARSER FIX found by the T2 probe (cr-core `comic_name_info.rs`):
+  the rxNumber RightToLeft emulation used the last match of a
+  left-to-right scan; for "Watchmen 001" the `c\w*\s*` alternative
+  match "chmen 001" swallows the real number and the series came
+  out "Wat". The C# RTL scan takes the match with the rightmost
+  START ("001") — `rightmost_start_match` now serves the rxNumber
+  stage (guarded variant for the `part\s+` lookbehind); the
+  year/get-number stages keep the last-of-scan emulation (no
+  overlapping candidates there). Regression tests: the number
+  removal no longer swallows the series ("Super Comics vol 2 014…"
+  → series "Super Comics") + the Watchmen parse.
+- Recorded deviations: the `AutomaticProgressDialog` (matching
+  progress + cancel) is not ported — the in-memory match runs
+  synchronously; the question dialog is a GTK MessageDialog; the
+  newest-book open filters to linked books (the C# `books.Open`
+  would fail on a fileless book anyway — the Phase 6 open gate);
+  the list lands as the C# default names ("Temporary Lists", the
+  English TR defaults).
+- Gate: 366 tests (+9), fmt + clippy green, the T1/T2 probes and
+  the command/menubar/single-instance probes green. USER TEST
+  PENDING.

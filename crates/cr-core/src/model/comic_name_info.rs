@@ -135,6 +135,10 @@ fn rx_legacy_year() -> &'static Regex {
 }
 
 /// Last (RightToLeft) match span of `rx` in `text`.
+/// Last match of `rx` in `text` (the RightToLeft emulation for the
+/// year/get-number stages: those patterns have no overlapping
+/// start-position candidates, so the last of a left-to-right scan is
+/// the rightmost one).
 fn last_match(rx: &Regex, text: &str) -> Option<(usize, usize)> {
     let mut found = None;
     for m in rx.find_iter(text) {
@@ -146,24 +150,34 @@ fn last_match(rx: &Regex, text: &str) -> Option<(usize, usize)> {
     found
 }
 
-/// Last match of `rx` whose start position satisfies `guard(prefix)`.
-/// Emulates lookbehind/lookahead constraints fancy-regex cannot express.
+/// The rxNumber RTL scan: match attempts run from the RIGHT end
+/// leftward and the FIRST success wins — the match with the rightmost
+/// START. A left-to-right `find_iter` + last-item emulation is wrong
+/// when a leftmost match overlaps a later candidate ("Watchmen 001":
+/// the `c\w*\s*` alternative matches "chmen 001" and swallows the
+/// rightmost "001" the C# returns, leaving series "Wat").
+fn rightmost_start_match(rx: &Regex, text: &str) -> Option<(usize, usize)> {
+    let mut starts: Vec<usize> = text.char_indices().map(|(i, _)| i).collect();
+    starts.push(text.len());
+    for &p in starts.iter().rev() {
+        if let Ok(Some(m)) = rx.find_from_pos(text, p) {
+            if m.start() == p {
+                return Some((m.start(), m.end()));
+            }
+        }
+    }
+    None
+}
+
+/// Rightmost match whose start position satisfies `guard(prefix)`.
+/// Emulates lookbehind/lookahead constraints fancy-regex cannot
+/// express, on top of the rightmost-start scan.
 fn last_match_guard(
     rx: &Regex,
     text: &str,
     guard: impl Fn(&str) -> bool,
 ) -> Option<(usize, usize)> {
-    let mut found = None;
-    for m in rx.find_iter(text) {
-        let m = match m {
-            Ok(m) => m,
-            Err(_) => break,
-        };
-        if guard(&text[..m.start()]) {
-            found = Some((m.start(), m.end()));
-        }
-    }
-    found
+    rightmost_start_match(rx, text).filter(|(s, _)| guard(&text[..*s]))
 }
 
 /// Lookbehind guard for rxNumber: `(?<!part\s+)` — the prefix must NOT
@@ -444,6 +458,22 @@ mod tests {
         assert_eq!(n.volume, 2);
         assert_eq!(n.count, 20);
         assert_eq!(n.number, "14");
+        // The number removal must not swallow the series: the C#
+        // RightToLeft scan takes the rightmost "014", not the
+        // overlapping "Comics  014" candidate.
+        assert_eq!(n.series, "Super Comics");
+    }
+
+    #[test]
+    fn rtl_number_scan_does_not_overlap_the_series() {
+        // The `c\w*\s*` number alternative overlaps the series in
+        // "Watchmen 001" — the C# RTL scan returns "001" (series
+        // stays "Watchmen"); a left-to-right last-match emulation
+        // returns "chmen 001" (series "Wat").
+        let n = from_file_path("/comics/Watchmen 001 (1986).cbz");
+        assert_eq!(n.series, "Watchmen");
+        assert_eq!(n.number, "1");
+        assert_eq!(n.year, 1986);
     }
 
     #[test]

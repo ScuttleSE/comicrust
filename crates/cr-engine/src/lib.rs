@@ -10,6 +10,7 @@ pub mod lists;
 pub mod matcher;
 pub mod queue;
 pub mod queue_manager;
+pub mod reading_list;
 pub mod scanner;
 pub mod smart_list;
 pub mod sort;

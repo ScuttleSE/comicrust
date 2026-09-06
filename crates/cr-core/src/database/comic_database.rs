@@ -25,6 +25,39 @@ pub struct ComicDatabase {
 }
 
 impl ComicDatabase {
+    /// The `ComicLibrary.TemporaryFolder` find-or-create: the first
+    /// top-level folder flagged `Temporary`, else a new "Temporary
+    /// Lists" folder appended at the end of the tree.
+    pub fn temporary_folder(&mut self) -> &mut Vec<ComicListItem> {
+        let exists = self.comic_lists.iter().any(|i| match i {
+            ComicListItem::Folder(f) => f.temporary,
+            _ => false,
+        });
+        if !exists {
+            self.comic_lists.push(ComicListItem::Folder(FolderItem {
+                base: ListItemBase {
+                    id: CrGuid::new_random(),
+                    name: Some("Temporary Lists".into()),
+                    ..Default::default()
+                },
+                temporary: true,
+                ..Default::default()
+            }));
+        }
+        let pos = self
+            .comic_lists
+            .iter()
+            .position(|i| match i {
+                ComicListItem::Folder(f) => f.temporary,
+                _ => false,
+            })
+            .expect("temporary folder just checked");
+        match &mut self.comic_lists[pos] {
+            ComicListItem::Folder(f) => &mut f.items,
+            _ => unreachable!("position picked a Folder"),
+        }
+    }
+
     pub fn write_xml<W: Write>(&self, e: &mut Emitter<W>) -> std::io::Result<()> {
         e.root("ComicDatabase")?;
         e.attr("Id", &self.id.to_d_string())?;

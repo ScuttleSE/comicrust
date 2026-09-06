@@ -17,6 +17,7 @@ use gtk4::{
 use cr_core::xml::scalar::CrGuid;
 
 use crate::browser;
+use crate::dialogs;
 use crate::library;
 use crate::theme;
 
@@ -178,9 +179,8 @@ fn handle_command_line(app: &Application, argv: &[String]) {
         // The boot (the C# `MainForm.Load`): the open message, then
         // the file pipeline (MainForm.cs:1041-1061): EXISTING
         // command-line files (`newSlot: false`, page 0, `fromShell:
-        // true`), then the `OpenLastFile` session reopen when
-        // nothing opened. The `-il` import waits for T2 (the `.cbl`
-        // port).
+        // true`), the `OpenLastFile` session reopen when nothing
+        // opened, then the `-il` import (the C# order).
         shell.present();
         if let Some(message) = OPEN_MESSAGE.with(|cell| cell.take()) {
             show_attention_dialog(&shell.window(), &message);
@@ -203,19 +203,36 @@ fn handle_command_line(app: &Application, argv: &[String]) {
                 }
             }
         }
+        // `MainForm.cs:1058-1061` — the `-il` import lands in the
+        // Temporary Lists folder (no book opens).
+        import_import_list(&shell, &ext.import_list);
     } else {
-        // `StartLast` (Program.cs:1063-1093): `RestoreToFront`, then
-        // the received files with `newSlot: true` and the `-p` page
-        // passthrough (1-based here, `page - 1` in the open).
+        // `StartLast` (Program.cs:1063-1093): `RestoreToFront`, the
+        // `-il` import first, then the received files with
+        // `newSlot: true` and the `-p` page passthrough (1-based
+        // here, `page - 1` in the open).
         shell.present();
+        import_import_list(&shell, &ext.import_list);
         for file in &ext.files {
             open_supported_file(&shell, Path::new(file), true, ext.page, true);
         }
     }
 }
 
-/// The `MainForm.OpenSupportedFile` port minus `.cbl` (T2): the
-/// extension gate, the new-slot/page knobs, and the
+/// The `-il` switch (`ImportComicList`): imports the list into the
+/// Temporary Lists folder; nothing opens.
+fn import_import_list(shell: &browser::shell::BrowserShell, import_list: &Option<String>) {
+    let Some(file) = import_list else {
+        return;
+    };
+    let nav = shell.navigator();
+    let window = shell.window();
+    let path = Path::new(file);
+    dialogs::import_list::import_list_file(&window, path, None, &nav, |_| {});
+}
+
+/// The `MainForm.OpenSupportedFile` port: the extension gate, the
+/// new-slot/page knobs, the `.cbl` import branch and the
 /// `HideBrowserIfShellOpen` rule (the reader workspace covers the
 /// browser — the open already switches to the reader).
 fn open_supported_file(
@@ -234,8 +251,40 @@ fn open_supported_file(
         // ADR-027: no plugins — the C# opens Preferences on a
         // `.crplugin`.
         "crplugin" => return,
-        // T2: the reading-list import.
-        "cbl" => return,
+        // The reading-list import (MainForm.cs:2300-2312): import,
+        // then open the newest-read book of the list. The
+        // HideBrowserIfShellOpen rule does NOT apply here (it lives
+        // in the non-`.cbl` branch only).
+        "cbl" => {
+            let nav = shell.navigator();
+            let window = shell.window();
+            let shell = shell.clone();
+            dialogs::import_list::import_list_file(&window, path, None, &nav, move |id| {
+                let Some(id) = id else {
+                    return;
+                };
+                let Some((_, books)) = library::evaluate_books(&id) else {
+                    return;
+                };
+                // The newest-read linked book (`Aggregate` by
+                // OpenedTime; a fileless placeholder cannot open —
+                // the Phase 6 open gate).
+                let mut linked = books.iter().filter(|b| !b.file_path.is_empty());
+                let Some(first) = linked.next() else {
+                    return;
+                };
+                let newest = linked.fold(first, |a, b| {
+                    if a.opened_time.naive <= b.opened_time.naive {
+                        b
+                    } else {
+                        a
+                    }
+                });
+                let file_path = newest.file_path.clone();
+                shell.open_comic_page(Path::new(&file_path), new_slot, 0);
+            });
+            return;
+        }
         _ => {}
     }
     // `books.Open(file, newSlot, Math.Max(0, page - 1))` — the `-p`
@@ -399,7 +448,52 @@ fn run_list_command(
                 nav.refill(&library::comic_lists_snapshot());
             }
         }
+        ListCommand::Import => {
+            import_list_dialog(parent, nav);
+        }
     }
+}
+
+/// The `ImportLists` command (ComicListLibraryBrowser.cs:1421-1445):
+/// a multi-select `.cbl` chooser; every chosen file imports into the
+/// current selection's container (a folder takes it as a child, an
+/// item into its parent, none = the top level).
+fn import_list_dialog(parent: &ApplicationWindow, nav: &Rc<browser::navigator::Navigator>) {
+    let chooser = FileChooserNative::builder()
+        .title("Import Reading List")
+        .action(FileChooserAction::Open)
+        .transient_for(parent)
+        .modal(true)
+        .select_multiple(true)
+        .build();
+    // The C# filter: "ComicRack Reading List|*.cbl|Xml File|*.xml|
+    // All Files|*.*".
+    let cbl = FileFilter::new();
+    cbl.set_name(Some("ComicRack Reading List"));
+    cbl.add_pattern("*.cbl");
+    chooser.add_filter(&cbl);
+    let xml = FileFilter::new();
+    xml.set_name(Some("Xml File"));
+    xml.add_pattern("*.xml");
+    chooser.add_filter(&xml);
+    let nav2 = Rc::clone(nav);
+    let parent = parent.clone();
+    chooser.connect_response(move |chooser, response| {
+        if response != ResponseType::Accept {
+            return;
+        }
+        let paths: Vec<std::path::PathBuf> = chooser
+            .files()
+            .snapshot()
+            .iter()
+            .filter_map(|o| o.downcast_ref::<gio::File>().and_then(|f| f.path()))
+            .collect();
+        let target = nav2.current_selection().map(|(id, _)| id);
+        for path in paths {
+            dialogs::import_list::import_list_file(&parent, &path, target, &nav2, |_| {});
+        }
+    });
+    chooser.show();
 }
 
 pub fn open_file_dialog(parent: &impl IsA<Window>) {

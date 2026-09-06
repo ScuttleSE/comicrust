@@ -114,10 +114,42 @@ Update this section at the **end of every work session**. The next agent must kn
   `Child::try_wait`); the primary must stay ~500 ms after the
   handoff for the client's reply. Probe:
   `cr-ui/examples/singleinstance_probe.rs` (A/B/C gates; no XDG
-  isolation needed). 357 tests. T1 USER-TESTED, ALL PASS
-  (2026-09-06). Remaining Phase 7 work: T2 (the `.cbl` reading-list
-  import — the `ImportComicList` port; spec in the kickoff). Phase
-  8 (packaging) follows.
+  isolation needed). 357 tests.   T1 USER-TESTED, ALL PASS
+  (2026-09-06). T2 IMPLEMENTED (2026-09-06), user test pending: the
+  `.cbl` import (`ImportComicList` port) — the container model +
+  parse/write in `cr-core/src/database/reading_list.rs` (the net48
+  shape: `MatcherMode` attr, `<Books><Book>` attrs with C# defaults,
+  `<Matchers>` reusing the ComicLists matcher reader), the matching
+  in `cr-engine/src/reading_list.rs` (`CreateFromReadingList`:
+  Guid → file name → the series/number relaxation ladder with the
+  year ±1/volume/format narrowings; `SeriesEquals` with the
+  rxVolume/rxSpecial ports; `SetFileNameInfo` overwrites for
+  unsolved items; placeholders = fresh-Guid fileless books), the
+  flow in `cr-ui/src/dialogs/import_list.rs` (the missing-books
+  question: Import / Add missing Books to Library / Cancel, the
+  25-caption cap) landing in `ComicDatabase::temporary_folder`
+  (find-or-create "Temporary Lists") or the selection's container,
+  the navigator "Import Reading List…" item (multi-select
+  .cbl/xml chooser) + the TempFolder icon, the `.cbl` branch in
+  `OpenSupportedFile` (opens the newest-read linked book, ties to
+  the later entry) and `-il` on both boot paths (first launch:
+  files → OpenLastFile → import; handoff: import BEFORE files).
+  Probe: `cr-ui/examples/importlist_probe.rs` (isolated XDG; the
+  A-E gates: the question + the add-missing placeholder, the
+  Temporary landing + tree selection, solved-by-id/name, the
+  solved-only id drop, the matchers-only smart list). THE PROBE
+  EXPOSED A PARSER BUG (fixed): the rxNumber RTL emulation took the
+  last match of a left-to-right scan — "Watchmen 001" matched
+  "chmen 001" (the `c\w*\s*` alternative) and the series became
+  "Wat"; the C# RTL scan takes the rightmost-START match ("001") —
+  `rightmost_start_match` now serves the rxNumber stage (the
+  year/get-number stages keep the last-of-scan emulation; no
+  overlapping candidates there), regression tests added. Deviations
+  in the kickoff (no AutomaticProgressDialog — the match is
+  synchronous; the newest-book open filters to linked books). 366
+  tests; fmt + clippy + the T1/T2/command/menubar/single-instance
+  probes green. Phase 7 (T1 + T2) is IMPLEMENTED — T2 user test
+  pending; Phase 8 (packaging) follows.
   INIT-GLOBAL BOOT BUG FIXED (2026-09-06, the cache-folder user
   report "the setting reverts after restart"): `init_global` used
   `OnceLock::set`, which SILENTLY FAILS when an early `global()`

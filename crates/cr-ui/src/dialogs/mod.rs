@@ -5,6 +5,7 @@ pub mod book_editor;
 pub mod bulk_edit;
 pub mod display_settings;
 pub mod export;
+pub mod import_list;
 pub mod list_editor;
 pub mod name_prompt;
 pub mod new_book_series;

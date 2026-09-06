@@ -1224,6 +1224,60 @@ pub fn new_id_list(after: Option<&CrGuid>, name: &str) -> CrGuid {
     id
 }
 
+/// The `ImportList(fc, file)` landing for a target selection: a
+/// folder takes the item as its last child, an item appends to ITS
+/// parent container, no target appends at the top level (the C#
+/// `GetNodeComicListCollection` + `Collection.Add` shape; an unknown
+/// target falls back to the top level). Returns the item's id.
+pub fn import_list_item(
+    target: Option<&CrGuid>,
+    item: cr_core::database::list_items::ComicListItem,
+) -> CrGuid {
+    let id = item.base().id;
+    let lib = session();
+    let mut l = lib.borrow_mut();
+    let lists = &mut l.database_mut().comic_lists;
+    match target {
+        Some(id) => {
+            if let Some(folder) = find_folder_mut(lists, id) {
+                folder.items.push(item);
+            } else if let Some(container) = find_container(lists, id) {
+                container.push(item);
+            } else {
+                lists.push(item);
+            }
+        }
+        None => lists.push(item),
+    }
+    l.mark_dirty();
+    id
+}
+
+/// The `ImportList(file)` landing without a target: the
+/// `Library.TemporaryFolder.Items` (find-or-create, appended last).
+/// Returns the id of the inserted item.
+pub fn import_temporary_item(item: cr_core::database::list_items::ComicListItem) -> CrGuid {
+    let id = item.base().id;
+    let lib = session();
+    let mut l = lib.borrow_mut();
+    let temp = l.database_mut().temporary_folder();
+    temp.push(item);
+    l.mark_dirty();
+    id
+}
+
+/// The `Library.Books.AddRange(newBooks)` parity: appends the books
+/// (the imported missing placeholders) and marks the database dirty.
+pub fn add_books(books: Vec<cr_core::model::comic_book::ComicBook>) {
+    if books.is_empty() {
+        return;
+    }
+    let lib = session();
+    let mut l = lib.borrow_mut();
+    l.database_mut().books.extend(books);
+    l.mark_dirty();
+}
+
 /// `EditListDialog.Edit` result for one item: the fields the dialog
 /// edits (the rest of the item stays).
 pub struct ListEditFields {
