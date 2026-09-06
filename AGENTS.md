@@ -93,6 +93,16 @@ Update this section at the **end of every work session**. The next agent must kn
   (user raises them in Preferences for large libraries —
   user decision, no auto-scaling); the writer emits sizes only
   after a decode (the C# fills them the same lazy way).
+  CACHE-FOLDER OVERRIDE (2026-09-06, commit 2751357): the C# boots
+  the cache root from `ExtendedSettings.CachePath` (the `-cp`
+  switch / the ini key, SystemPaths.cs:47-50) — the port carried
+  the setting but never consumed it. Now `Paths::new_default()`
+  reads it (a non-empty override replaces the whole cache root;
+  database + config trees unaffected) and Preferences ▸ Advanced
+  gained a Cache Folder row (a recorded ADDITION — the C# has no
+  UI for it): Change…/Reset write the ini key + the global (the
+  theme-persistence pattern); takes effect on the next start.
+  `cache_probe` gates F/G cover the override + reset; 350 tests.
   **NEXT: Phase 6 (scripting) —
   start from `docs/phase-6-kickoff.md`** (the C# spec map, the task
   list, and the gates live there; `cr-script` is the empty target
@@ -560,7 +570,7 @@ Update this section at the **end of every work session**. The next agent must kn
   Phases 0-5 are complete (their gates stay green). Open Phase 1
   gaps: WebComicProvider and the PDF/DjVu writers (tracked in
   `docs/phase-1-kickoff.md`).
-- **State:** `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` are green. 349 tests. CI runs on the `docker-runner-amd64` container runner (ADR-020). The release tracks are `release.yaml` (rolling prerelease per push) and `tagged-release.yaml` (manual dispatch, stable release for an existing tag — ADR-021, 2026-09-03). Until the runner is registered and `comicrust-ci:latest` is built on the runner host, pushed and dispatched workflows sit queued on that label.
+- **State:** `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` are green. 350 tests. CI runs on the `docker-runner-amd64` container runner (ADR-020). The release tracks are `release.yaml` (rolling prerelease per push) and `tagged-release.yaml` (manual dispatch, stable release for an existing tag — ADR-021, 2026-09-03). Until the runner is registered and `comicrust-ci:latest` is built on the runner host, pushed and dispatched workflows sit queued on that label.
 - **Phase 0 gate status:** byte-stable ComicDb.xml round-trip proven on all three synthetic fixtures AND the real-world database `tests/realworld/ComicDb.xml` (255 books, 584 KB, 2026-09-02, user-approved commit).
 - **Phase 2 gate status:** every saved smart list in the real-world DB (a) binds to the matcher registry, (b) renders to a `Match` query string that re-parses and re-renders byte-identically, and (c) evaluates to the SAME book sets the C# cached in `CacheStorage` (Never Read = all 255, Files to update = the 3 dirty books, Reading/Read = empty). Evidence: `crates/cr-engine/tests/realworld_query.rs`.
 - **Phase 3 gate status (COMPLETE):** a real comic (`tests/testfiles/`, git-ignored, user-supplied) opens in a GTK4 window and reads comfortably: single/double/adaptive/continuous layouts, spread composition with cover-right + binding-edge rules, fit modes with anamorphic tolerance, zoom/pan/rotation, RTL, continuous scroll with anchor-stable layout rebuilds, fade/slide transitions, paper texture, Auto/Color/Texture backgrounds, the real `MainForm` input map, session tabs with undock, fullscreen chrome with cursor auto-hide, reading-state tracking, the magnifier, error pages, and pool-queue page loads. User-verified after each task; UI smoke tests on this machine run headless under Xvfb + screenshots (see the probe lessons below — the key-injection tools are unreliable; only user tests decide input behavior).
