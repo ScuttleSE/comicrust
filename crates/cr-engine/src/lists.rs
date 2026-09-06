@@ -86,11 +86,27 @@ fn evaluate_inner<'a>(
             }
             ComicFolderCombineMode::Empty => Vec::new(),
         },
-        ComicListItem::IdList(list) => db
-            .books
-            .iter()
-            .filter(|b| list.book_ids.contains(&b.id))
-            .collect(),
+        // The C# `OnGetBooks` walks `bookIds` in LIST order (the .cbl
+        // item order — the reading-list point) over a HashSet (the
+        // first-seen dedupe; stale ids evaluate to nothing). The
+        // browser shows the unsorted list in exactly this order.
+        ComicListItem::IdList(list) => {
+            let index: std::collections::HashMap<CrGuid, &ComicBook> =
+                db.books.iter().map(|b| (b.id, b)).collect();
+            let mut seen: Vec<CrGuid> = Vec::new();
+            list.book_ids
+                .iter()
+                .filter(|id| {
+                    if seen.contains(id) {
+                        false
+                    } else {
+                        seen.push(**id);
+                        true
+                    }
+                })
+                .filter_map(|id| index.get(id).copied())
+                .collect()
+        }
     };
     visiting.pop();
     result
@@ -155,6 +171,40 @@ mod tests {
             })],
             ..Default::default()
         })
+    }
+
+    /// The reading-list order: the C# `OnGetBooks` walks `bookIds`
+    /// (the .cbl item order), so an unsorted list shows the books in
+    /// exactly that order — NOT the library/DB order.
+    #[test]
+    fn id_list_evaluates_in_book_ids_order() {
+        let mut db = create_new();
+        let a = ComicBook {
+            id: CrGuid::new_random(),
+            ..Default::default()
+        };
+        let b = ComicBook {
+            id: CrGuid::new_random(),
+            ..Default::default()
+        };
+        let c = ComicBook {
+            id: CrGuid::new_random(),
+            ..Default::default()
+        };
+        // Deliberately shuffled library order: b, a, c.
+        db.books = vec![b.clone(), a.clone(), c.clone()];
+        // The list order: c, a, b (the .cbl item order).
+        let list = ComicListItem::IdList(IdListItem {
+            base: ListItemBase {
+                id: CrGuid::new_random(),
+                name: Some("Ordered".into()),
+                ..Default::default()
+            },
+            book_ids: vec![c.id, a.id, b.id],
+        });
+        let books = evaluate_list(&list, &db);
+        let ids: Vec<CrGuid> = books.iter().map(|b| b.id).collect();
+        assert_eq!(ids, vec![c.id, a.id, b.id]);
     }
 
     #[test]

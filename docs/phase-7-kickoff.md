@@ -263,6 +263,14 @@ Probe lessons (do not re-learn):
   overlapping candidates there). Regression tests: the number
   removal no longer swallows the series ("Super Comics vol 2 014…"
   → series "Super Comics") + the Watchmen parse.
+- ORDER FIX (the user asked, rightly): the C# `OnGetBooks` walks
+  `BookIds` in LIST order — an unsorted reading list shows the books
+  in the .cbl item order. The port's IdList evaluation filtered the
+  library slice (DB order) instead; `evaluate_inner` now walks
+  `book_ids` first-seen (the HashSet dedupe parity) over an id index,
+  with a shuffled-order regression test (`id_list_evaluates_in_book_
+  ids_order`). The browser sort applies on top when set, exactly
+  like the C#.
 - Recorded deviations: the `AutomaticProgressDialog` (matching
   progress + cancel) is not ported — the in-memory match runs
   synchronously; the question dialog is a GTK MessageDialog; the
@@ -270,6 +278,6 @@ Probe lessons (do not re-learn):
   would fail on a fileless book anyway — the Phase 6 open gate);
   the list lands as the C# default names ("Temporary Lists", the
   English TR defaults).
-- Gate: 366 tests (+9), fmt + clippy green, the T1/T2 probes and
+- Gate: 367 tests (+10), fmt + clippy green, the T1/T2 probes and
   the command/menubar/single-instance probes green. USER TEST
   PENDING.

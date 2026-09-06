@@ -146,9 +146,13 @@ Update this section at the **end of every work session**. The next agent must kn
   year/get-number stages keep the last-of-scan emulation; no
   overlapping candidates there), regression tests added. Deviations
   in the kickoff (no AutomaticProgressDialog — the match is
-  synchronous; the newest-book open filters to linked books). 366
-  tests; fmt + clippy + the T1/T2/command/menubar/single-instance
-  probes green. Phase 7 (T1 + T2) is IMPLEMENTED — T2 user test
+  synchronous; the newest-book open filters to linked books). ORDER
+  FIX (user question): the C# `OnGetBooks` walks BookIds in LIST
+  order — the port filtered the library slice (DB order) instead;
+  `evaluate_inner` now walks `book_ids` first-seen (the HashSet
+  dedupe parity), regression test added; the browser sort applies
+  on top when set. 367 tests; fmt + clippy + the T1/T2/command/
+  menubar/single-instance probes green. Phase 7 (T1 + T2) is IMPLEMENTED — T2 user test
   pending; Phase 8 (packaging) follows.
   INIT-GLOBAL BOOT BUG FIXED (2026-09-06, the cache-folder user
   report "the setting reverts after restart"): `init_global` used
