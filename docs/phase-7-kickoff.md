@@ -297,7 +297,14 @@ No other user-data deletion exists in the app.
 
 - T1 COMPLETE — USER-TESTED, ALL PASS (2026-09-06; the 5 steps in
   the User test section above). 357 tests; fmt + clippy green.
-- T2 IMPLEMENTED (2026-09-06), user test pending. Landed:
+- T2 IMPLEMENTED (2026-09-06). Landed:
+  the container model + parse/write in
+  `cr-core/src/database/reading_list.rs`, the matching in
+  `cr-engine/src/reading_list.rs`, the flow in
+  `cr-ui/src/dialogs/import_list.rs`, the TemporaryFolder landing,
+  the navigator "Import Reading List…" item, the `.cbl` branch in
+  `OpenSupportedFile`, `-il` on both boot paths — details in the
+  records below.
   - `cr-core/src/database/reading_list.rs`: the `ComicReadingListContainer`
     port — `<ReadingList MatcherMode>` root, `<Name>`, `<Books><Book>`
     items (Series/Number/Volume/Year/Format attrs with the C# defaults,
@@ -376,6 +383,19 @@ No other user-data deletion exists in the app.
   would fail on a fileless book anyway — the Phase 6 open gate);
   the list lands as the C# default names ("Temporary Lists", the
   English TR defaults).
-- Gate: 367 tests (+10), fmt + clippy green, the T1/T2 probes and
-  the command/menubar/single-instance probes green. USER TEST
-  PENDING.
+- Gate: 368 tests, fmt + clippy green, the T1/T2 probes and
+  the command/menubar/single-instance probes green.
+- T2 COMPLETE — USER-TESTED (2026-09-06). The user imported the
+  real ComicRack export "[Spider-Man] 08 - The Early 90s -
+  Venomous.cbl" (193 items, all solved against their 238-book
+  library), used "Add missing Books to Library" on another import
+  (the fileless placeholders appeared), and confirmed the stored
+  order after the display fix. The `.cbl`-argument and `-il`
+  handoff paths are probe-gated (the single-instance + boot
+  probes); verify opportunistically. Two user-reported fixes
+  landed during the test: the reading-list display order (the
+  Guid fallback on the unsorted chain) and the boot abort (the
+  Detail-workspace slider re-entrancy) — both above.
+- PHASE 7 COMPLETE — ALL TASKS USER-TESTED (2026-09-06). 368
+  tests; fmt + clippy + all probes green. Next: Phase 8
+  (polish/ship — packaging, docs, migration tooling, perf passes).

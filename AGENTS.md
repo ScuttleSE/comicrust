@@ -115,67 +115,40 @@ Update this section at the **end of every work session**. The next agent must kn
   handoff for the client's reply. Probe:
   `cr-ui/examples/singleinstance_probe.rs` (A/B/C gates; no XDG
   isolation needed). 357 tests.   T1 USER-TESTED, ALL PASS
-  (2026-09-06). T2 IMPLEMENTED (2026-09-06), user test pending: the
+  (2026-09-06). T2 COMPLETE — USER-TESTED (2026-09-06): the
   `.cbl` import (`ImportComicList` port) — the container model +
   parse/write in `cr-core/src/database/reading_list.rs` (the net48
-  shape: `MatcherMode` attr, `<Books><Book>` attrs with C# defaults,
-  `<Matchers>` reusing the ComicLists matcher reader), the matching
-  in `cr-engine/src/reading_list.rs` (`CreateFromReadingList`:
-  Guid → file name → the series/number relaxation ladder with the
-  year ±1/volume/format narrowings; `SeriesEquals` with the
-  rxVolume/rxSpecial ports; `SetFileNameInfo` overwrites for
-  unsolved items; placeholders = fresh-Guid fileless books), the
-  flow in `cr-ui/src/dialogs/import_list.rs` (the missing-books
-  question: Import / Add missing Books to Library / Cancel, the
-  25-caption cap) landing in `ComicDatabase::temporary_folder`
-  (find-or-create "Temporary Lists") or the selection's container,
-  the navigator "Import Reading List…" item (multi-select
-  .cbl/xml chooser) + the TempFolder icon, the `.cbl` branch in
-  `OpenSupportedFile` (opens the newest-read linked book, ties to
-  the later entry) and `-il` on both boot paths (first launch:
-  files → OpenLastFile → import; handoff: import BEFORE files).
-  Probe: `cr-ui/examples/importlist_probe.rs` (isolated XDG; the
-  A-E gates: the question + the add-missing placeholder, the
-  Temporary landing + tree selection, solved-by-id/name, the
-  solved-only id drop, the matchers-only smart list). THE PROBE
-  EXPOSED A PARSER BUG (fixed): the rxNumber RTL emulation took the
-  last match of a left-to-right scan — "Watchmen 001" matched
-  "chmen 001" (the `c\w*\s*` alternative) and the series became
-  "Wat"; the C# RTL scan takes the rightmost-START match ("001") —
-  `rightmost_start_match` now serves the rxNumber stage (the
-  year/get-number stages keep the last-of-scan emulation; no
-  overlapping candidates there), regression tests added. Deviations
-  in the kickoff (no AutomaticProgressDialog — the match is
-  synchronous; the newest-book open filters to linked books). ORDER
-  FIX (user question): the C# `OnGetBooks` walks BookIds in LIST
-  order — the port filtered the library slice (DB order) instead;
-  `evaluate_inner` now walks `book_ids` first-seen (the HashSet
-  dedupe parity), regression test added; the browser sort applies
-  on top when set. 367 tests; fmt + clippy + the T1/T2/command/
-  menubar/single-instance probes green. DISPLAY-ORDER FIX (the
-  user report "WoSM 40 tops the list instead of ASM 296"): the
-  engine order was correct — the ItemView's `SortChain::compare`
-  fell back to guid_compare on the EMPTY chain, shuffling every
-  unsorted view by random Guid; the empty chain now returns Equal
-  (input order = display order; the Guid tiebreak only under an
-  active sort), unit test + the `listorder_probe` end-to-end grid
-  gate (the importlist probe checked the evaluation, NOT the
-  display — a lesson: gate the layer the user sees). 368 tests.
-  BOOT-CRASH FIX (user report: instant SIGABRT at startup,
-  "RefCell already borrowed" at item_view.rs:465): the persisted
-  Detail workspace made the status-bar slider's first sync clamp
-  its fresh value (96→48) — set_range emits value_changed OUTSIDE
-  the sync guard, the handler re-entered set_item_size while the
-  selection notify held the ItemView borrow. Fixes:
-  notify_and_redraw lifts the hook out of the state borrow
-  (SelectionFn = Rc<dyn Fn>), and sync_slider guards the range set
-  too. Gate: bootreentry_probe (a Detail-mode Config.xml + the real
-  boot — aborts on the old code at the exact line). Lesson: a
-  value-changing configure inside a notify chain is the
-  re-entrancy trap; the faithful repro needs the CONFIG-FILE boot
-  path (apply_workspace pre-syncs the slider, so programmatic
-  gates can miss it). Phase 7 (T1 + T2) is IMPLEMENTED — T2 user test
-  pending; Phase 8 (packaging) follows.
+  shape), the matching in `cr-engine/src/reading_list.rs`
+  (Guid → file name → the series/number relaxation ladder;
+  `SeriesEquals` with the rxVolume/rxSpecial ports; placeholders =
+  fresh-Guid fileless books), the flow in
+  `cr-ui/src/dialogs/import_list.rs` (the missing-books question),
+  landing in `ComicDatabase::temporary_folder` or the selection's
+  container, the navigator "Import Reading List…" item + the
+  TempFolder icon, the `.cbl` branch in `OpenSupportedFile`, `-il`
+  on both boot paths. The user imported the real ComicRack
+  "Venomous.cbl" (193 items, all solved), used Add-missing (the
+  fileless placeholders), confirmed the stored order.
+  USER-REPORTED FIXES during the test: (1) the rxNumber RTL parser
+  emulation — rightmost-START match (`rightmost_start_match`);
+  "Watchmen 001" parsed series "Wat" before; (2) the reading-list
+  DISPLAY order — the ItemView's SortChain fell back to guid order
+  on the empty chain, shuffling every unsorted view; the empty
+  chain now returns Equal (input order = display order).
+  INCIDENT: `gio trash ""` from the fileless placeholders trashed
+  the repo CWD — recovered from the trash; the delete-path audit +
+  guards (the empty/is_file check + the reveal gate) recorded.
+  BOOT-CRASH FIX: the Detail-workspace slider re-entrancy
+  (set_range emits value_changed outside the sync guard;
+  notify_and_redraw held the borrow across the hook) — the user
+  verified the fix. Probes: importlist_probe, listorder_probe,
+  bootreentry_probe, singleinstance_probe. 368 tests.
+  PHASE 7 COMPLETE — ALL TASKS USER-TESTED (2026-09-06). NEXT:
+  Phase 8 (polish/ship) — packaging (Flatpak/.deb/AUR), docs,
+  migration tooling, perf passes. Open gaps: WebComicProvider,
+  PDF/DjVu writers, HEIF/AVIF decode, the T14 per-list sort
+  (the port resets the view sort on every list switch; the C#
+  keeps it per list — a recorded deviation).
   INIT-GLOBAL BOOT BUG FIXED (2026-09-06, the cache-folder user
   report "the setting reverts after restart"): `init_global` used
   `OnceLock::set`, which SILENTLY FAILS when an early `global()`
