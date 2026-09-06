@@ -1081,11 +1081,24 @@ impl BrowserShell {
                             crate::trace::trace("is-active: re-grab reader focus");
                             sh.reader.focus_current();
                         } else {
+                            let scroll_before = sh.item_view.scroll_value();
                             crate::trace::trace(format!(
-                                "is-active: re-grab item-view focus (scroll was {})",
-                                sh.item_view.probe_scroll_value()
+                                "is-active: re-grab item-view focus (scroll was {scroll_before})"
                             ));
                             sh.item_view.grab_focus();
+                            // The Wayland popover grab flaps the
+                            // window activation; the re-grab is the
+                            // dead-first-keypress fix, but grab_focus
+                            // on the virtual-size canvas scrolls it to
+                            // the origin (the right-click report).
+                            // Restore the scroll the grab moved.
+                            let scroll_after = sh.item_view.scroll_value();
+                            if scroll_after != scroll_before {
+                                crate::trace::trace(format!(
+                                    "is-active: grab moved the scroll {scroll_before} -> {scroll_after}; restored"
+                                ));
+                                sh.item_view.set_scroll_value(scroll_before);
+                            }
                         }
                     }
                 });

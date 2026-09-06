@@ -620,26 +620,36 @@ impl ItemView {
         self.state.borrow_mut().on_header_context = Some(Rc::new(f));
     }
 
-    /// Scrolls the grid and reports the resulting vadjustment value
-    /// (the context-menu probe).
-    pub fn probe_scroll_to(&self, y: f64) -> f64 {
-        let scroller = self
-            .canvas
-            .ancestor(gtk4::ScrolledWindow::static_type())
-            .and_then(|w| w.downcast::<ScrolledWindow>().ok())
-            .expect("ItemView canvas must live in a ScrolledWindow");
-        let adj = scroller.vadjustment();
-        adj.set_value(y);
-        adj.value()
-    }
-
-    /// The live vadjustment value (the context-menu probe).
-    pub fn probe_scroll_value(&self) -> f64 {
+    /// The live vadjustment value.
+    pub fn scroll_value(&self) -> f64 {
         self.canvas
             .ancestor(gtk4::ScrolledWindow::static_type())
             .and_then(|w| w.downcast::<ScrolledWindow>().ok())
             .map(|s| s.vadjustment().value())
             .unwrap_or(-1.0)
+    }
+
+    /// Sets the vadjustment value.
+    pub fn set_scroll_value(&self, y: f64) {
+        if let Some(scroller) = self
+            .canvas
+            .ancestor(gtk4::ScrolledWindow::static_type())
+            .and_then(|w| w.downcast::<ScrolledWindow>().ok())
+        {
+            scroller.vadjustment().set_value(y);
+        }
+    }
+
+    /// Scrolls the grid and reports the resulting vadjustment value
+    /// (the context-menu probe).
+    pub fn probe_scroll_to(&self, y: f64) -> f64 {
+        self.set_scroll_value(y);
+        self.scroll_value()
+    }
+
+    /// The live vadjustment value (the context-menu probe).
+    pub fn probe_scroll_value(&self) -> f64 {
+        self.scroll_value()
     }
 
     /// Fires the right-click hook through the shared gesture body
