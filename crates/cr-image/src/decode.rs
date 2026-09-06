@@ -188,6 +188,32 @@ pub fn encode_jpeg(image: &Image, quality: u8) -> Result<Vec<u8>> {
     Ok(out)
 }
 
+/// Encode the currency as one of the page-export formats (the C#
+/// `ExportImage` filter: JPEG/BMP/PNG/GIF/TIFF). GIF/TIFF/BMP/PNG go
+/// through the `image` crate; JPEG keeps the dedicated encoder.
+pub fn encode_image(image: &Image, format: ImageFormat) -> Result<Vec<u8>> {
+    match format {
+        ImageFormat::Jpeg => encode_jpeg(image, 75),
+        ImageFormat::Png | ImageFormat::Bmp | ImageFormat::Gif | ImageFormat::Tiff => {
+            let mut buf = Vec::with_capacity((image.width * image.height * 4) as usize);
+            let dyn_img = image::RgbaImage::from_raw(image.width, image.height, image.rgba.clone())
+                .ok_or_else(|| Error::Encode("bad image buffer".into()))?;
+            let mut cursor = std::io::Cursor::new(&mut buf);
+            let fmt = match format {
+                ImageFormat::Png => image::ImageFormat::Png,
+                ImageFormat::Bmp => image::ImageFormat::Bmp,
+                ImageFormat::Gif => image::ImageFormat::Gif,
+                _ => image::ImageFormat::Tiff,
+            };
+            dyn_img
+                .write_to(&mut cursor, fmt)
+                .map_err(|e| Error::Encode(format!("{fmt:?}: {e}")))?;
+            Ok(buf)
+        }
+        _ => Err(Error::Encode("unsupported export format".into())),
+    }
+}
+
 /// `ImageProvider.RetrieveSourceByteImage` normalize chain: formats
 /// GDI+ cannot read (WebP, JXL, HEIF/AVIF, JPEG2000, DjVu) become
 /// JPEG bytes; everything else passes through untouched.
@@ -240,5 +266,30 @@ mod tests {
         let stripped = strip_app_segments(&data).unwrap();
         assert_eq!(stripped, vec![0xff, 0xd8, 0xaa, 0xbb]);
         assert!(strip_app_segments(b"no jpeg").is_none());
+    }
+}
+
+#[cfg(test)]
+mod encode_tests {
+    use super::*;
+
+    #[test]
+    fn encode_image_detects_back() {
+        let image = Image {
+            width: 4,
+            height: 3,
+            rgba: vec![128; 4 * 3 * 4],
+        };
+        for (format, sig) in [
+            (ImageFormat::Jpeg, &[0xffu8, 0xd8u8][..]),
+            (ImageFormat::Png, &[0x89u8, b'P', b'N', b'G'][..]),
+            (ImageFormat::Gif, b"GIF8".as_slice()),
+            (ImageFormat::Bmp, b"BM".as_slice()),
+            (ImageFormat::Tiff, &[0x49u8, 0x49u8, 0x2au8, 0x00u8][..]),
+        ] {
+            let bytes = encode_image(&image, format).unwrap_or_else(|e| panic!("{format:?}: {e}"));
+            assert_eq!(&bytes[..sig.len()], sig, "{format:?} signature");
+        }
+        assert!(encode_image(&image, ImageFormat::Webp).is_err());
     }
 }

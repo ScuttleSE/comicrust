@@ -10,6 +10,7 @@ use std::path::Path;
 use std::rc::Rc;
 use std::sync::Arc;
 
+use gtk4::gdk;
 use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::{gio, Application, ApplicationWindow, Button, Entry, Label, Paned, Stack};
@@ -1298,6 +1299,16 @@ impl BrowserShell {
             .unwrap_or_default()
     }
 
+    /// The current page image's size via `create_page_image` (the
+    /// T6 probe).
+    pub fn state_page_image_size(&self) -> Option<(i32, i32)> {
+        self.state
+            .reader
+            .current_view()
+            .and_then(|v| v.create_page_image())
+            .map(|s| (s.width(), s.height()))
+    }
+
     /// The selected book's rating in the library (the probe).
     pub fn state_selected_book_rating(&self) -> f32 {
         let ids = self.state.item_view.selection_ids();
@@ -1611,6 +1622,8 @@ impl ShellState {
             "magnifier",
             "minimal-gui",
             "undock-reader",
+            "copy-page",
+            "export-page",
         ] {
             self.set_action_enabled(name, has_book);
         }
@@ -3225,9 +3238,34 @@ impl ShellState {
                 sh.reader.navigate_current(page);
             }
         });
-        // copy-page / export-page — the clipboard path is unported.
-        self.add_disabled(&group, "copy-page");
-        self.add_disabled(&group, "export-page");
+        // copy-page — `ComicDisplay.CopyPageToClipboard`
+        // (ComicDisplay.cs:1441): the current composed page image onto
+        // the clipboard (errors are swallowed in the C# too).
+        self.add_simple(&group, "copy-page", |sh| {
+            let Some(surface) = sh.reader.current_view().and_then(|v| v.create_page_image()) else {
+                return;
+            };
+            copy_surface_to_clipboard(&surface);
+        });
+        // export-page — `ExportCurrentImage` (MainForm.cs:2326 +
+        // `ExportImage` 2185): the "Save Page as" dialog, the name
+        // "{Caption} - Page {N}", the 5-format filter, the filter
+        // index persisted (`LastExportPageFilterIndex`).
+        self.add_simple(&group, "export-page", |sh| {
+            let view = sh.reader.current_view();
+            let caption = sh
+                .reader
+                .current_comic_book()
+                .map(|b| cr_engine::display_text::caption(&b))
+                .unwrap_or_default();
+            let page = sh.reader.current_display_page().map_or(1, |p| p + 1);
+            export_page_dialog(
+                &sh.window,
+                &caption,
+                page,
+                view.and_then(|v| v.create_page_image()),
+            );
+        });
         self.add_simple(&group, "refresh", |sh| sh.refresh_view());
         self.add_simple(&group, "preferences", ShellState::show_preferences);
 
@@ -4293,6 +4331,156 @@ fn compose_quick_filter(
             ..Default::default()
         })),
     }
+}
+
+/// The page-export filter table (`ExportImage`, MainForm.cs:2190):
+/// JPEG | BMP | PNG | GIF | TIFF, filter index 1-based.
+const PAGE_EXPORT_FILTERS: &[(&str, &[&str], cr_image::decode::ImageFormat)] = &[
+    (
+        "JPEG Image",
+        &["jpg", "jpeg"],
+        cr_image::decode::ImageFormat::Jpeg,
+    ),
+    (
+        "Windows Bitmap Image",
+        &["bmp"],
+        cr_image::decode::ImageFormat::Bmp,
+    ),
+    ("PNG Image", &["png"], cr_image::decode::ImageFormat::Png),
+    ("GIF Image", &["gif"], cr_image::decode::ImageFormat::Gif),
+    ("TIFF Image", &["tif"], cr_image::decode::ImageFormat::Tiff),
+];
+
+/// ARGB (premultiplied, cairo stride) → the RGBA currency
+/// (`Bitmap.SaveImage` consumes the un-premultiplied form).
+fn surface_to_image(surface: &gtk4::cairo::ImageSurface) -> Option<cr_image::Image> {
+    let mut surface = surface.clone();
+    surface.flush();
+    let width = surface.width() as u32;
+    let height = surface.height() as u32;
+    let stride = surface.stride() as usize;
+    let data = surface.data().ok()?;
+    let mut rgba = Vec::with_capacity((width * height * 4) as usize);
+    for y in 0..height as usize {
+        let row = &data[y * stride..y * stride + width as usize * 4];
+        for px in row.as_chunks::<4>().0 {
+            let a = u32::from(px[3]);
+            if a == 0 {
+                rgba.extend_from_slice(&[0, 0, 0, 0]);
+            } else {
+                // Un-premultiply (identity for opaque pages).
+                let un = |v: u8| ((u32::from(v) * 255) / a) as u8;
+                rgba.extend_from_slice(&[un(px[2]), un(px[1]), un(px[0]), px[3]]);
+            }
+        }
+    }
+    Some(cr_image::Image {
+        width,
+        height,
+        rgba,
+    })
+}
+
+/// `Clipboard.SetImage` (ComicDisplay.cs:1441): the composed page
+/// image as a texture on the default clipboard.
+fn copy_surface_to_clipboard(surface: &gtk4::cairo::ImageSurface) {
+    let Some(image) = surface_to_image(surface) else {
+        return;
+    };
+    let Ok(png) = cr_image::decode::encode_image(&image, cr_image::decode::ImageFormat::Png) else {
+        return;
+    };
+    if let Some(display) = gdk::Display::default() {
+        let provider =
+            gdk::ContentProvider::for_bytes("image/png", &gdk::glib::Bytes::from_owned(png));
+        let _ = display.clipboard().set_content(Some(&provider));
+    }
+}
+
+/// `ExportImage` (MainForm.cs:2185): the "Save Page as" native save
+/// dialog. The initial name is "{Caption} - Page {N}" with the saved
+/// filter index's extension (the C# `AddExtension`); the accepted
+/// path gets the extension when missing, and the chosen filter index
+/// persists in the settings.
+fn export_page_dialog(
+    window: &ApplicationWindow,
+    caption: &str,
+    page: usize,
+    surface: Option<gtk4::cairo::ImageSurface>,
+) {
+    let Some(surface) = surface else {
+        return;
+    };
+    let chooser = gtk4::FileChooserNative::builder()
+        .title("Save Page as")
+        .action(gtk4::FileChooserAction::Save)
+        .transient_for(window)
+        .modal(true)
+        .build();
+    let mut filter_handles: Vec<gtk4::FileFilter> = Vec::new();
+    for (name, exts, _) in PAGE_EXPORT_FILTERS {
+        let filter = gtk4::FileFilter::new();
+        filter.set_name(Some(name));
+        for ext in *exts {
+            filter.add_pattern(&format!("*.{ext}"));
+        }
+        chooser.add_filter(&filter);
+        filter_handles.push(filter);
+    }
+    let saved_index = cr_ui_settings().borrow().last_export_page_filter_index;
+    let initial = saved_index.clamp(1, PAGE_EXPORT_FILTERS.len() as i32) as usize;
+    // Select the saved one (1-based, the C# FilterIndex).
+    chooser.set_filter(&filter_handles[initial - 1]);
+    let (_, initial_exts, _) = PAGE_EXPORT_FILTERS[initial - 1];
+    let name = format!(
+        "{} - Page {}.{}",
+        cr_io::export::make_valid_filename(caption),
+        page,
+        initial_exts[0]
+    );
+    chooser.set_current_name(&name);
+    let app = window.application();
+    chooser.connect_response(move |chooser, response| {
+        let _ = &filter_handles;
+        if response != gtk4::ResponseType::Accept {
+            return;
+        }
+        let Some(path) = chooser.file().and_then(|f| f.path()) else {
+            return;
+        };
+        // The chosen filter: position in the kept handle list.
+        let selected = chooser.filter();
+        let chosen = filter_handles
+            .iter()
+            .position(|f| selected.as_ref().is_some_and(|sel| sel == f))
+            .map_or(initial, |i| i + 1);
+        let (_, exts, format) = PAGE_EXPORT_FILTERS[chosen - 1];
+        // `AddExtension`: append the filter's extension when missing.
+        let mut path = path;
+        if path.extension().is_none() {
+            path.set_extension(exts[0]);
+        }
+        cr_ui_settings().borrow_mut().last_export_page_filter_index = chosen as i32;
+        let Some(image) = surface_to_image(&surface) else {
+            return;
+        };
+        match cr_image::decode::encode_image(&image, format) {
+            Ok(bytes) => {
+                if let Err(err) = std::fs::write(&path, bytes) {
+                    // `CouldNotSaveImage` parity — an error dialog.
+                    if let Some(app) = &app {
+                        show_error_dialog(app, &path.to_string_lossy(), &err.to_string());
+                    }
+                }
+            }
+            Err(err) => {
+                if let Some(app) = &app {
+                    show_error_dialog(app, &path.to_string_lossy(), &err.to_string());
+                }
+            }
+        }
+    });
+    chooser.show();
 }
 
 fn open_file_dialog(window: &ApplicationWindow, on_open: impl Fn(&str) + 'static) {

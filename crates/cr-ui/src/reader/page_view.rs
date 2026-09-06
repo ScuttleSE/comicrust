@@ -3805,3 +3805,71 @@ mod display_options_tests {
         assert!(texture_asset_path(true, "Black [S].jpg").is_some());
     }
 }
+
+impl PageView {
+    /// `CreatePageImage` (ImageDisplayControl.cs:1649 + the
+    /// ComicDisplayControl override): the composed current image at
+    /// natural size with the ornaments temporarily off (the port
+    /// simply draws without them). Continuous mode exports the
+    /// current page's strip segment (`GetContinuousImage(CurrentPage)`
+    /// parity). Returns None with no composed image.
+    pub fn create_page_image(&self) -> Option<cairo::ImageSurface> {
+        let s = self.state.borrow();
+        let comp = s.composition.as_ref()?;
+        let continuous = s.continuous.is_some();
+        // Continuous mode: only the current page's placement.
+        let placements: Vec<&PagePlacement> = if continuous {
+            let page = s.page;
+            comp.pages.iter().filter(|p| p.page == page).collect()
+        } else {
+            comp.pages.iter().collect()
+        };
+        let size = if continuous {
+            let (w, h) = placements
+                .iter()
+                .map(|p| (p.dest.w, p.dest.h))
+                .fold((0, 0), |(aw, ah), (w, h)| (aw.max(w), ah.max(h)));
+            (w.max(1), h.max(1))
+        } else {
+            (comp.size.0.max(1), comp.size.1.max(1))
+        };
+        let surface = cairo::ImageSurface::create(cairo::Format::ARgb32, size.0, size.1).ok()?;
+        let ctx = cairo::Context::new(&surface).ok()?;
+        // The C# 24bpp bitmap starts black; DrawImage paints over it.
+        ctx.set_source_rgb(0.0, 0.0, 0.0);
+        let _ = ctx.paint();
+        let (ox, oy) = if continuous {
+            // The segment origin: the first placement's dest corner.
+            placements
+                .first()
+                .map(|p| (p.dest.x, p.dest.y))
+                .unwrap_or((0, 0))
+        } else {
+            (0, 0)
+        };
+        for placement in placements {
+            let Some(data) = s.loaded.get(&placement.page) else {
+                continue;
+            };
+            let (sx, sy, sw, sh) = placement.source;
+            if sw <= 0 || sh <= 0 || placement.dest.w <= 0 || placement.dest.h <= 0 {
+                continue;
+            }
+            ctx.save().ok();
+            ctx.translate(
+                f64::from(placement.dest.x - ox),
+                f64::from(placement.dest.y - oy),
+            );
+            ctx.scale(
+                f64::from(placement.dest.w) / f64::from(sw),
+                f64::from(placement.dest.h) / f64::from(sh),
+            );
+            ctx.set_source_surface(&data.surface, -f64::from(sx), -f64::from(sy))
+                .ok();
+            ctx.rectangle(f64::from(sx), f64::from(sy), f64::from(sw), f64::from(sh));
+            let _ = ctx.fill();
+            ctx.restore().ok();
+        }
+        Some(surface)
+    }
+}
