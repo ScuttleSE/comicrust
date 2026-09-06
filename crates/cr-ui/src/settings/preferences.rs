@@ -101,6 +101,26 @@ pub fn show_preferences(parent: &impl IsA<gtk4::Window>, on_ok: impl Fn() + 'sta
         dlg.close();
     });
 
+    // The cache-folder row writes the ini at click time (the
+    // theme-persistence pattern); CANCEL restores the value the
+    // dialog opened with (the OK-only commit parity).
+    let open_cache_path = cr_core::settings::ExtendedSettings::global()
+        .cache_path
+        .clone();
+    dialog.connect_response(move |dlg, response| {
+        if response != gtk4::ResponseType::Ok
+            && cr_core::settings::ExtendedSettings::global().cache_path != open_cache_path
+        {
+            let mut ext = cr_core::settings::ExtendedSettings::global_mut();
+            ext.cache_path = open_cache_path.clone();
+            drop(ext);
+            match open_cache_path.as_deref() {
+                Some(p) => library::save_ini_keys(&[("CachePath", p)]),
+                None => library::save_ini_keys(&[("CachePath", "")]),
+            }
+        }
+        dlg.close();
+    });
     dialog.present();
 }
 
