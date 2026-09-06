@@ -291,10 +291,23 @@ impl ItemView {
             });
         }
 
-        // Redraw on scroll.
+        // Redraw on scroll; under CR_TRACE, a jump to the top prints
+        // a backtrace — the scroll reset culprit evidence.
         for adj in [scroller.hadjustment(), scroller.vadjustment()] {
             let canvas = canvas.clone();
-            adj.connect_value_changed(move |_| canvas.queue_draw());
+            let is_v = adj == scroller.vadjustment();
+            let last = std::rc::Rc::new(std::cell::Cell::new(0.0f64));
+            adj.connect_value_changed(move |a| {
+                let new = a.value();
+                let old = last.replace(new);
+                if is_v && crate::trace::enabled() && new < 50.0 && old > 200.0 {
+                    crate::trace::trace(format!(
+                        "SCROLL JUMP {old} -> {new}; backtrace:\n{}",
+                        std::backtrace::Backtrace::force_capture()
+                    ));
+                }
+                canvas.queue_draw();
+            });
         }
 
         // The thumb pump is NOT started here: the draw path starts it
@@ -1053,6 +1066,17 @@ impl ItemView {
 
 fn update_size_request(state: &Rc<RefCell<ItemViewState>>, canvas: &DrawingArea) {
     let (w, h) = state.borrow().layout.virtual_size;
+    if crate::trace::enabled() {
+        // A collapsing content size resets the ScrolledWindow value —
+        // trace every height change.
+        thread_local! {
+            static LAST_H: std::cell::Cell<i32> = const { std::cell::Cell::new(-1) };
+        }
+        let h_i = h.min(1_000_000.0) as i32;
+        if LAST_H.with(|c| c.replace(h_i)) != h_i {
+            crate::trace::trace(format!("size request height -> {h_i}"));
+        }
+    }
     // GTK upper bounds a widget's size; the layout culls anyway.
     canvas.set_content_height(h.min(1_000_000.0) as i32);
     canvas.set_content_width(w.min(1_000_000.0) as i32);

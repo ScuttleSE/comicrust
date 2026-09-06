@@ -34,6 +34,8 @@ pub fn run(args: Vec<String>) {
     // (the C# calls Application.EnableVisualStyles at the same point).
     gtk4::init().expect("GTK initialization failed");
     theme::init();
+    // The build marker: a user trace proves WHICH binary produced it.
+    crate::trace::trace(format!("startup build {}", env!("COMICRUST_VERSION")));
     let app = Application::builder()
         .application_id(APP_ID)
         // NON_UNIQUE: D-Bus single instance is a Phase 7 item.
