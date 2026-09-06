@@ -120,3 +120,16 @@ jobs:
           # The commit the tag points at, not the dispatching branch head.
           export SHA="$(git rev-parse HEAD)"
           bash .gitea/publish_release.sh "$TAG" "$VERSION" false false
+
+      - name: Publish to GitHub mirror
+        env:
+          # GitHub PAT with Contents read/write on the mirror repo.
+          # Unset = the step skips with a notice.
+          GH_TOKEN: ${{ secrets.GITHUB_RELEASE_TOKEN }}
+          GH_REPO: ScuttleSE/comicrust
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          # The commit the tag points at, not the dispatching branch head.
+          export SHA="$(git rev-parse HEAD)"
+          bash .gitea/publish_github_release.sh "$TAG" "$VERSION" false false
