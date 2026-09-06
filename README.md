@@ -1,40 +1,131 @@
 # comicrust
 
-A from-scratch port of [ComicRack Community Edition](https://github.com/maforget/ComicRackCE) — the legendary Windows comic library manager and reader — to a **Linux-native Rust + GTK4 application**, aiming for **full 1:1 feature parity**.
+comicrust is a native Linux port of [ComicRack Community Edition](https://github.com/maforget/ComicRackCE), the Windows comic library manager and reader. It reads and writes the same library file and the same comic metadata as ComicRack CE. The goal is full feature parity with the original.
 
 ## Status
 
-**Planning phase.** Feasibility analysis and the port plan are complete; implementation has not started. See `docs/port-plan.md` for the roadmap and `AGENTS.md` for current status.
+The core application is complete and ready for daily use. Work continues on polish, packaging, and documentation. Expect occasional bugs. comicrust keeps a backup copy of the library database and can recover it. Still, make your own backups of `ComicDb.xml`.
 
-## Why
+## Features
 
-ComicRack is a legendary comic manager abandoned by its author 10+ years ago, revived as a decompiled Community Edition for Windows. Linux users currently rely on Wine. This project rebuilds it natively: Rust for the engine (memory safety, performance, packaging) and GTK4 for the UI, while staying **byte-compatible with existing ComicRack libraries** (`ComicDb.xml`) and the **Python plugin ecosystem**.
+**Library**
 
-## Scope highlights
+- Add comics from folders. The scanner finds new, moved, and removed files. Watch folders rescan automatically.
+- Browse in thumbnail, tile, or detail views. Group, sort, filter, and quick search.
+- Organize with smart lists, folders, and reading lists. Import `.cbl` reading lists made with ComicRack.
+- Find duplicate books.
+- Edit the details of a book. Bulk-edit many books at once.
+- Track reading state: current page, read percentage, open count, rating, and tags.
+- The Quick Open view shows your recent and favorite lists at startup.
 
-- Read/write existing ComicRack libraries (`ComicDb.xml`) with golden-file-verified fidelity
-- All comic formats: CBZ/CBR/CB7/CBT, PDF, DjVu, folder/web sources
-- Page formats: JPEG/PNG/GIF/TIFF/WebP/HEIF/AVIF/JPEG XL/JPEG2000
-- The full browser (thumbnail/tile/detail views, grouping, stacking) and the reader (single/double/continuous, zoom/pan/rotate, transitions, paper textures)
-- Python plugin compat via PyO3 (`.py` scripts with `#@Directive` headers, `.crplugin` packages)
-- 19 existing translation files reused as-is
-- Explicitly dropped: WCF/Android remote protocol compat (a new HTTP API may come later)
+**Reader**
 
-## Documentation
+- Single page, double page, adaptive double page, and continuous scroll layouts.
+- Manga mode (right-to-left). Page rotation, zoom, and pan.
+- Page turn transitions, paper textures, and background colors or images.
+- Bookmarks and a magnifier lens. Full screen mode. Undock the reader into its own window.
+- The full keyboard shortcut set of the original.
 
-| Doc | Contents |
+**Files and metadata**
+
+- Read and write `ComicInfo.xml`, `MetronInfo.xml`, and ComicRack `ComicBook.xml` metadata.
+- comicrust stores embedded metadata as Linux file attributes (xattrs) where ComicRack used NTFS streams.
+- Export comics to CBZ or CBT.
+- Create and restore backups of the library.
+
+## Supported formats
+
+| Comic format | Read | Write metadata back |
+|---|---|---|
+| CBZ | yes | yes |
+| CBT | yes | yes |
+| CB7 | yes (needs 7z) | yes (needs 7z) |
+| CBR, RAR | yes (needs 7z) | no |
+| PDF | yes (needs pdfium) | no |
+| DjVu | yes (needs djvulibre) | no |
+| Folders of images | yes | yes (sidecar files) |
+
+Page images: JPEG, PNG, GIF, TIFF, WebP, and JPEG XL. HEIF, AVIF, and JPEG 2000 pages do not decode yet.
+
+Export produces CBZ or CBT archives. Export to PDF, DjVu, or CB7 is not available.
+
+## Install
+
+### From a release
+
+Download `comicrust-<version>-linux-amd64.tar.gz` from the [Releases page](https://github.com/ScuttleSE/comicrust/releases). Then:
+
+```sh
+mkdir comicrust
+tar xzf comicrust-*-linux-amd64.tar.gz -C comicrust
+./comicrust/comicrust
+```
+
+Keep the `assets` folder next to the `comicrust` binary. It holds the icons, paper textures, and backgrounds.
+
+### From source
+
+You need the Rust toolchain and GTK 4.6 development packages.
+
+```sh
+git clone https://github.com/ScuttleSE/comicrust.git
+cd comicrust
+cargo run -p cr-app --release
+```
+
+Run from the repository root. The build then finds its assets in the source tree.
+
+## Requirements
+
+- Linux with GTK 4.6 or newer (`libgtk-4-1`)
+- Optional: `7z` (p7zip) for CB7, CBR, and RAR archives
+- Optional: the pdfium library (`libpdfium.so`) for PDF files
+- Optional: the djvulibre tools for DjVu files
+
+Debian or Ubuntu example:
+
+```sh
+sudo apt install libgtk-4-1 p7zip-full
+```
+
+## Command line
+
+```sh
+comicrust                  # open the library browser
+comicrust comic.cbz        # open a comic
+comicrust list.cbl         # import a reading list
+```
+
+comicrust runs as a single instance. A second start sends its files to the running app.
+
+## Your data
+
+| Path | Contents |
 |---|---|
-| [AGENTS.md](AGENTS.md) | Agent onboarding: spec location, source map, invariants, gotchas, status tracker |
-| [docs/feasibility.md](docs/feasibility.md) | Full feasibility analysis of the ~193k-LOC C# codebase |
-| [docs/port-plan.md](docs/port-plan.md) | Crate architecture, C#→Rust technology mapping, 9-phase roadmap |
-| [docs/decisions.md](docs/decisions.md) | Architecture decision records (ADR) |
-| [docs/risk-register.md](docs/risk-register.md) | Top risks with mitigations |
-| [docs/phase-0-kickoff.md](docs/phase-0-kickoff.md) | Concrete first-phase task breakdown |
+| `~/.config/comicrust/` | settings (`Config.xml`, `comicrust.ini`) |
+| `~/.local/share/comicrust/ComicDb/ComicDb.xml` | the library database |
+| `~/.local/share/comicrust/Cache/` | thumbnail and image caches. Safe to delete. |
 
-## Attribution
+comicrust also writes a `ComicDb.xml.bak` copy next to the database and can recover from it after a problem.
 
-ComicRack was created by Markus Eisenstöck (cYo) and revived as Community Edition by [maforget](https://github.com/maforget) and contributors. This port uses the CE source as its behavioral specification; all credit for the original design belongs there.
+## Migrate your library from Windows ComicRack
 
-## License
+The database format is the same. Copy `ComicDb.xml` from `%APPDATA%\cYo\ComicRack Community Edition\ComicDb\` to `~/.local/share/comicrust/ComicDb/`. Your comic files stay where they are. If their paths changed, add the comic folders to the library again. The scanner then re-links moved books by file name and size.
 
-Not yet chosen — deferred intentionally (see `docs/decisions.md`, ADR-009). The upstream CE lineage and third-party licensing constraints (unrar, plugin ecosystem) make this a decision that needs care.
+## Differences from ComicRack CE
+
+- Python plugins do not run. Some popular script features exist as built-in commands instead (for example "New Comic…" and "New fileless Book Series…").
+- No remote server and no Android app sync.
+- English only. The translation files of the original are not loaded yet.
+- Web comics (`.cbw`) are not supported yet.
+- You cannot export to PDF, DjVu, or CB7.
+
+## For developers
+
+See [AGENTS.md](AGENTS.md) for the project status and the [docs](docs/) folder for the port plan, the decision records, and the phase notes.
+
+## Credits and license
+
+ComicRack was created by Markus Eisenstöck (cYo) and continued as [Community Edition](https://github.com/maforget/ComicRackCE) by maforget and contributors. comicrust uses the CE source as its behavioral specification. All credit for the original design belongs there.
+
+The project has no license yet. The decision is deliberate and planned (see `docs/decisions.md`, ADR-009).

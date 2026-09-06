@@ -154,7 +154,13 @@ Update this section at the **end of every work session**. The next agent must kn
   T10 the perf sweep). Open gaps: WebComicProvider, PDF/DjVu
   writers, HEIF/AVIF decode, the T14 per-list sort (the port resets
   the view sort on every list switch; the C# keeps it per list — a
-  recorded deviation).
+   recorded deviation).
+  T9 FIRST SLICE (2026-09-06): README.md rewritten for END USERS
+  (status, features, format table incl. the verified no-CBR/RAR
+  write-back, install from the release tarball or source, data
+  paths from cr-core::paths, Windows migration, differences,
+  credits). Facts verified against the workflows + write.rs + the
+  paths module; no new code.
   INIT-GLOBAL BOOT BUG FIXED (2026-09-06, the cache-folder user
   report "the setting reverts after restart"): `init_global` used
   `OnceLock::set`, which SILENTLY FAILS when an early `global()`
