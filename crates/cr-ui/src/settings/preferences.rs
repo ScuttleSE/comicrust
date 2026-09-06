@@ -7,10 +7,10 @@
 //! the settings and commits on OK (the C# edits `Program.Settings`
 //! live but only persists + fires `SettingsChanged` on OK).
 //!
-//! Deviations (recorded): the Scripts page is hidden until the
-//! plugin host (Phase 6); the language list is a placeholder until
-//! the TR loader port; the backup/extension/file-association groups
-//! are Windows-shell features (the Linux equivalents come with
+//! Deviations (recorded): the Scripts page is removed permanently —
+//! no scripting host (ADR-027); the language list is a placeholder
+//! until the TR loader port; the backup/extension/file-association
+//! groups are Windows-shell features (the Linux equivalents come with
 //! packaging, Phase 8). The widgets stay on the GTK 4.0-era surface
 //! (ADR-018): SpinButton + ComboBoxText, no SpinRow/DropDown.
 

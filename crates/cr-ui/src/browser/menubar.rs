@@ -47,9 +47,12 @@ pub enum MenuNode {
 }
 
 /// The File menu (`fileMenu.DropDownItems`, Designer:451-476).
-/// Absent per ADR-024: Update Web Comics (provider gap),
-/// Synchronize Devices, Automation (Phase 6), Open Remote Library.
-/// Open Books/Recent Books carry the dynamic fills (T4).
+/// Absent per ADR-024, now permanent: Update Web Comics (provider
+/// gap), Synchronize Devices, Open Remote Library. The Automation
+/// submenu is absent permanently — no scripting host (ADR-027); the
+/// "New fileless Book Series..." item that C# sourced from the
+/// NewComics.py script is a native row below. Open Books/Recent
+/// Books carry the dynamic fills (T4).
 pub const FILE: &[MenuNode] = &[
     Item("_Open File...", "win.open-file", "<Control>o", "Open"),
     Item("_Close", "win.close", "<Control>x", ""),
@@ -1729,7 +1732,9 @@ mod tests {
 
     /// The ADR-024 omissions stay out of the skeleton. The T4
     /// dynamic parents (Open Books, Recent Books, Page Type, Page
-    /// Rotation) are PRESENT (the fill slots assert below).
+    /// Rotation) are PRESENT (the fill slots assert below). The
+    /// Automation submenu is absent permanently (ADR-027 — no
+    /// scripting host).
     #[test]
     fn omitted_items_are_absent() {
         let all_labels: Vec<String> = MENUS
