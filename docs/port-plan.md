@@ -53,9 +53,9 @@ Every phase ends shippable and testable. Phases 0-2 are fully headless. They de-
 | 3 | Reader UI | GTK4 shell skeleton, GL renderer port: single/double/adaptive/continuous layouts, fit modes, zoom/pan/rotation, transitions, magnifier, paper texture, gestures, fullscreen/undock, tabs | Comfortable daily-driver reading session | 10-12 wk |
 | 4 | Browser | ItemView port (thumbnail/tile/detail, grouping, stacking, columns, sort, rubber-band, drag-drop), library tree, search popover, QuickOpen, PagesView | Library browse/manage replaces C# browser for common flows | 10-12 wk |
 | 5 | Dialogs | All ~50: book editor, bulk edit, preferences (+ serde-driven options builder), smart-list/matcher editors, export, devices, workspace save/switch | Feature-complete for local-library workflows | 12-14 wk |
-| 5.5 | UI chrome parity | Menubar, toolbars (reader/browser/navigator/pages), multi-panel status bar, book tabs + context menu, browser dock modes (Fill/Bottom), sidebar preview, Book Display Settings, About/Zoom/QuickRating/Tasks, bundled CR icons, layout persistence — see `phase-5.5-kickoff.md` (ADR-024) | Chrome close to original CR with locked omissions; every task user-tested | 8-10 wk |
+| 5.5 | UI chrome parity | Menubar, toolbars (reader/browser/navigator/pages), multi-panel status bar, book tabs + context menu, Book Display Settings, About/Zoom/QuickRating/Tasks, bundled CR icons, layout persistence — see `phase-5.5-kickoff.md` (ADR-024; dock modes stay Fill-only per ADR-026) — **COMPLETE, all tasks user-tested (2026-09-06)** | Chrome close to original CR with locked omissions; every task user-tested | 8-10 wk |
 | 6 | Scripting | PyO3 host, hook wiring (Automation menus, NetSearch, overlays, info panels), package manager, WebKitGTK panel bridge, 2to3 migration guide + top-5 plugin acceptance tests | Shipped sample scripts + ComicVine-class plugin operational | 6-8 wk |
-| 7 | Platform | D-Bus single instance, MTP/wireless sync, HTTP remote server, full i18n wiring, workspace persistence (the dark/light toggle + theme-following views landed in 5.5 — ADR-025) | Feature checklist from C# complete | 8-10 wk |
+| 7 | Platform | D-Bus single instance, MTP/wireless sync, HTTP remote server, full i18n wiring (the dark/light toggle + theme-following views + the automatic layout persistence landed in 5.5 — ADR-025, T14) | Feature checklist from C# complete | 8-10 wk |
 | 8 | Polish/ship | Flatpak/.deb/AUR packaging, CI, docs, migration tooling, perf passes | 1.0 | 4-6 wk |
 
 **Total: ~75-90 weeks (~18-22 months) solo.** Longest-lead items: ItemView behavior parity and dialog volume.
@@ -111,9 +111,25 @@ the entry into the kickoff that will own it.
   needs a page-surface → clipboard path (a GTK clipboard image
   provider) and the ExportImage file dialog. The two menu items stay
   disabled stubs until picked up.
+- **The remaining `DisplayWorkspace` persistence keys** (Phase 5.5
+  T14 leftover, 2026-09-06): the workspace save carries the browser
+  view + reader layout + display family; these wait on their owner
+  features — `PanelSize`/`PanelDock` (the dock-modes backlog item
+  above), `FileView` (the Files browser is unported),
+  `PagesViewConfig` (the Pages panel keeps its defaults),
+  `ComicBookDialogPagesConfig` (the editor pages list keeps its
+  defaults), `ScriptOutputBounds`/`PreferencesOutputSize`/
+  `ComicBookDialogOutputSize` (the dialog geometry — low value; pick
+  up with any dialog-resize need), `UndockedReaderBounds`/
+  `UndockedReaderState` (the undock session state — the C# also
+  treats it as transient; revisit only if users ask). The T14
+  element names are already reserved in
+  `cr-core/src/settings/workspace.rs` (the reader is order-tolerant,
+  so adding keys is a write-side change only).
 
 Phase task breakdowns with acceptance criteria:
 
 - Phase 0: `phase-0-kickoff.md` — built and validated (see `AGENTS.md` status).
 - Phase 1: `phase-1-kickoff.md`.
-- Phase 5.5: `phase-5.5-kickoff.md` — the UI-parity phase (ADR-024), inserted between 5 and 6.
+- Phase 5.5: `phase-5.5-kickoff.md` — the UI-parity phase (ADR-024), inserted between 5 and 6. COMPLETE (2026-09-06).
+- Phase 6: `phase-6-kickoff.md` — the scripting phase (the PyO3 plugin host); the active phase.

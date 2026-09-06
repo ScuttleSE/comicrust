@@ -51,7 +51,14 @@ Update this section at the **end of every work session**. The next agent must kn
 
 ### State summary
 
-- **Phase:** 5.5 (UI chrome parity). T1 (the command/action layer +
+- **Phase:** 5.5 (UI chrome parity) **COMPLETE — all tasks T0-T14
+  user-tested, all pass (2026-09-06)**; the close-out record lives
+  at the end of `docs/phase-5.5-kickoff.md`. The per-task records
+  below stay for the fix-round facts. **NEXT: Phase 6 (scripting) —
+  start from `docs/phase-6-kickoff.md`** (the C# spec map, the task
+  list, and the gates live there; `cr-script` is the empty target
+  crate).
+  T1 (the command/action layer +
   accelerators) COMPLETE — USER-TESTED, ALL PASS (2026-09-04, one
   fix round). `cr-ui/src/commands.rs` holds the pure table (69
   shell actions + the C# menu accelerators; the two C# accel
@@ -466,7 +473,9 @@ Update this section at the **end of every work session**. The next agent must kn
   actions; all other probes green; 328 tests. Copy Page / Export
   Page re-homed to the BACKLOG (`docs/port-plan.md` §6). The
   tracker + the 6-step user test live in the kickoff T13 entry.
-  T14 IMPLEMENTED (2026-09-06), user test pending. The layout
+  T14 COMPLETE — USER-TESTED, ALL PASS (2026-09-06, "seems to work
+  fine"; no fix round; the acceptance record lives in the kickoff
+  T14 entry). The layout
   persistence (`Settings.CurrentWorkspace` — the
   `<CurrentWorkspace>` element written into Config.xml after
   `AutoShowQuickReview`). `cr-core/src/settings/workspace.rs`: the
@@ -507,8 +516,8 @@ Update this section at the **end of every work session**. The next agent must kn
   AddToTop → page rows read DESCENDING; the page queues Trim at
   `pageCount*2` = 10) — fixed against the UNLIMITED cover queue
   for the cap/more gate.
-  **Phase 5.5 tasks are all implemented — T14 user test, then
-  Phase 6 (scripting) starts.**
+  **Phase 5.5 is COMPLETE — every task user-tested. Phase 6
+  (scripting) starts from `docs/phase-6-kickoff.md`.**
   Phases 0-5 are complete (their gates stay green). Open Phase 1
   gaps: WebComicProvider and the PDF/DjVu writers (tracked in
   `docs/phase-1-kickoff.md`).
@@ -1526,7 +1535,7 @@ the server-side GC.
 
 ## This repo
 
-Crate layout (all eight crates exist. `cr-core`, `cr-io`, `cr-image`, and `cr-cli` are active; `cr-engine` is the Phase 2 target; `cr-script`, `cr-ui`, `cr-app` are still empty stubs — see `docs/port-plan.md`):
+Crate layout (all eight crates exist. `cr-script` is the only empty stub — it is the Phase 6 target; `cr-engine`, `cr-ui`, and `cr-app` are active):
 
 | Crate | Contents |
 |---|---|

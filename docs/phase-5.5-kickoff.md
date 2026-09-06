@@ -1534,7 +1534,14 @@ selection debounce, "Nothing Selected" placeholder).
        bookmark lines only when present (set a bookmark, rotate a
        page — reopen the Pages panel).
 
-- T14 IMPLEMENTED (2026-09-06), user test pending. The layout
+- T14 COMPLETE — USER-TESTED, ALL PASS (2026-09-06, "seems to work
+  fine"; no fix round). The user verified: the custom layout
+  (hidden sidebar, split, Detail view, Writer sort, thumb size,
+  hidden column) restores after quit; reader layout + display
+  options apply to a reopened comic; the window size/maximized
+  restore; the exit save keeps the LAST state; the Restart path
+  carries the layout.
+- T14 IMPLEMENTED (2026-09-06). The layout
   persistence (`Settings.CurrentWorkspace` — the `<CurrentWorkspace>`
   element in Config.xml, written LAST after
   `AutoShowQuickReview`). `cr-core/src/settings/workspace.rs`: the
@@ -1590,8 +1597,8 @@ selection debounce, "Nothing Selected" placeholder).
   queue (the C# `int.MaxValue`), the order gate fixed, plus a
   capped-queue trim assertion. Gate: 341 tests (+13), fmt + clippy
   clean, workspace_probe ALL PASS, all other probes stay green.
-  **Next: user test, then Phase 6 (scripting) — Phase 5.5 tasks are
-  all implemented after T14 acceptance.**
+  **Next: Phase 6 (scripting) — Phase 5.5 is COMPLETE (all tasks
+  T0-T14 user-tested, 2026-09-06).**
 
 ## Omitted / postponed per task (the tracker)
 
@@ -2472,7 +2479,7 @@ T12 (the Book Display Settings dialog, F9).**
   persistence from T12).** Phase 6 (scripting) starts only after
   5.5.
 
-### T14 — Layout persistence (IMPLEMENTED, user test pending)
+### T14 — Layout persistence (COMPLETE — USER-TESTED, ALL PASS)
 
 - ONE implicit workspace (no named presets, no workspace UI — the
   locked scope). The per-LIST view state stays out (the C# persists
@@ -2499,3 +2506,41 @@ T12 (the Book Display Settings dialog, F9).**
 - The reader seed applies to NEW views only (an already-open reader
   keeps its live layout — the C# `ComicDisplayControl` copies the
   workspace values at construction too).
+
+## Phase close-out (2026-09-06)
+
+**Phase 5.5 is COMPLETE.** Every task T0-T14 user-tested, all pass.
+The gate at close: 341 tests, fmt + clippy clean, all probes green
+(`commands_probe` 70/70, `menubar_probe`, `dynmenus_probe`,
+`toolbar_probe`, `browserbar_probe`, `navpages_probe`,
+`tabstrip_probe`, `statusbar_probe`, `workspace_probe`,
+`menubarvis_probe`, `displaysettings_probe`, `smalldialogs_probe`,
+`icons_probe`, `editor_probe`, `writeback_probe`).
+
+What shipped: the command/action layer with the C# accelerators
+(T1), the bundled 212-PNG icon set (T2), the custom icon menubar
+(T3) with the dynamic menu fills (T4), the reader toolbar (T5), the
+browser toolbar + the Detail column chooser + Quick Search scopes +
+Duplicate List (T6), the navigator/Pages panel toolbars (T7), the
+multi-panel status bar (T8), the workspace tab strip (T9), the
+dark/light theme toggle (ADR-025), the Book Display Settings dialog
+(T12), the small chrome dialogs — Zoom/Tasks/Quick Rating/About —
+(T13), and the layout persistence (T14).
+
+Omissions/discoveries during the phase and their homes:
+
+- ADR-026: dock modes (T10) + the sidebar preview (T11) moved to
+  the BACKLOG (`docs/port-plan.md` §6).
+- ADR-025: the dark/light toggle (a recorded ADDITION — the C#
+  theme is boot-time only) + the theme-following reader surround
+  (a recorded DEVIATION from the C# black).
+- Copy Page / Export Page re-homed to the BACKLOG (§6).
+- The T14 workspace keys that wait on owners (the dock keys on T10,
+  the preview keys on T11, `PagesViewConfig`/`FileView`/
+  `ComicBookDialogPagesConfig`/the dialog output sizes on their
+  future tasks) are listed in the T14 tracker entry above — picked
+  up with their features.
+- Native-port candidates for scripts (`NewComics.py` etc.) live in
+  §6 (Phase 6 reviews them).
+
+The C# reference remains the spec for anything Phase 6+ touches.
