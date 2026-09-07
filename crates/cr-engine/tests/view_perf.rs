@@ -83,8 +83,11 @@ fn dup_books(count: usize) -> Vec<ComicBook> {
 #[test]
 fn sort_5000_books_by_series_stays_scalar_fast() {
     let lib = books(5000);
-    let props = book_view::prop_table(&lib);
-    let empty = book_view::empty_prop();
+    let props = book_view::PropTable::build(&lib);
+    // Pre-warm (the gate's subject is the sort, not the lazy parse).
+    for (i, b) in lib.iter().enumerate() {
+        props.get(i, b);
+    }
     let mut order: Vec<usize> = (0..lib.len()).collect();
     let t = Instant::now();
     order.sort_by(|&x, &y| {
@@ -92,8 +95,8 @@ fn sort_5000_books_by_series_stays_scalar_fast() {
             &lib[x],
             &lib[y],
             "Series",
-            props[x].as_ref().or(Some(empty)),
-            props[y].as_ref().or(Some(empty)),
+            Some(props.get(x, &lib[x])),
+            Some(props.get(y, &lib[y])),
         )
     });
     let elapsed = t.elapsed();
@@ -104,8 +107,7 @@ fn sort_5000_books_by_series_stays_scalar_fast() {
 #[test]
 fn group_pass_5000_books_stays_scalar_fast() {
     let lib = books(5000);
-    let props = book_view::prop_table(&lib);
-    let empty = book_view::empty_prop();
+    let props = book_view::PropTable::build(&lib);
     let grouper = groupers()
         .iter()
         .find(|(k, _)| *k == "Series")
@@ -115,7 +117,7 @@ fn group_pass_5000_books_stays_scalar_fast() {
     let count = lib
         .iter()
         .enumerate()
-        .map(|(i, b)| grouper(b, props[i].as_ref().unwrap_or(empty)))
+        .map(|(i, b)| grouper(b, props.get(i, b)))
         .filter(|i| !i.caption.is_empty())
         .count();
     let elapsed = t.elapsed();

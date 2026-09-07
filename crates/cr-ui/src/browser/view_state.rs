@@ -287,10 +287,10 @@ impl ViewState {
                     buckets.len() - 1
                 })
         };
-        // The proposed parses once per rebuild (`PropTable`; the
-        // sort chain and the grouper share it — no per-comparison or
-        // per-book regex parses, the Phase 8 storm).
-        let props = book_view::prop_table(&self.books);
+        // The proposed parses once per rebuild, LAZY (the `PropTable`
+        // — the sort chain and the grouper share it; a parse runs
+        // only when a getter actually reads, the Phase 8 storm).
+        let props = book_view::PropTable::build(&self.books);
         // The quick-search filter (the C# `quickFilter` in
         // `FillBookList`).
         let allowed: Option<Vec<CrGuid>> = self.filter.as_ref().map(|m| {
@@ -308,10 +308,11 @@ impl ViewState {
                     continue;
                 }
             }
-            let empty = book_view::empty_prop();
-            let prop = props[index].as_ref().unwrap_or(empty);
             let (caption, sort_key) = match grouper_fn {
                 Some(g) => {
+                    // The parse runs on first read only (the lazy
+                    // PropTable — an ungrouped view never reads).
+                    let prop = props.get(index, book);
                     let info: GroupInfo = g(book, prop);
                     (info.caption, info.sort_key)
                 }
@@ -346,12 +347,19 @@ impl ViewState {
         for bucket in buckets {
             let mut items = bucket.items;
             items.sort_by(|&x, &y| {
-                sort.compare(
-                    &self.books[x],
-                    &self.books[y],
-                    props[x].as_ref(),
-                    props[y].as_ref(),
-                )
+                // The prop resolve stays lazy: an empty chain reads
+                // nothing (compare would early-out, but the resolve
+                // args would parse first — keep the guard here).
+                if sort.keys.is_empty() {
+                    std::cmp::Ordering::Equal
+                } else {
+                    sort.compare(
+                        &self.books[x],
+                        &self.books[y],
+                        Some(props.get(x, &self.books[x])),
+                        Some(props.get(y, &self.books[y])),
+                    )
+                }
             });
             let collapsed = previous_collapse
                 .get(&bucket.caption)
@@ -540,6 +548,48 @@ mod tests {
                 "The Amazing Spider-Man",
                 "Peter Parker, the Spectacular Spider-Man"
             ]
+        );
+    }
+
+    /// The T4 timing gate: a reading-list-scale view (books + the
+    /// CBL fileless placeholders) rebuilds in an unsorted/grouped
+    /// state WITHOUT one proposed parse per book (the lazy
+    /// `PropTable` reads nothing here). A regression to the eager
+    /// table pays ~1 ms × N in debug and blows the budget.
+    #[test]
+    fn rebuild_reading_list_scale_stays_fast() {
+        let books: Vec<ComicBook> = (0..2886)
+            .map(|i| {
+                if i % 8 == 0 {
+                    // The fileless placeholder shape (the CBL
+                    // Add-missing flow): fresh id, empty file path,
+                    // the .cbl series data.
+                    let mut b = ComicBook {
+                        id: CrGuid::new_random(),
+                        ..Default::default()
+                    };
+                    b.info.series = format!("Spider Series {}", i % 40);
+                    b.info.number = format!("{}", i);
+                    b
+                } else {
+                    let mut b = ComicBook {
+                        id: CrGuid::new_random(),
+                        file_path: format!("/comics/spider {i:05}.cbz"),
+                        ..Default::default()
+                    };
+                    b.info.series = format!("Spider Series {}", i % 40);
+                    b.info.number = format!("{}", i);
+                    b
+                }
+            })
+            .collect();
+        let t = std::time::Instant::now();
+        let view = ViewState::new(books);
+        let elapsed = t.elapsed();
+        assert_eq!(view.len(), 2886);
+        assert!(
+            elapsed < std::time::Duration::from_secs(1),
+            "rebuild regressed to the parse storm: {elapsed:?}"
         );
     }
 

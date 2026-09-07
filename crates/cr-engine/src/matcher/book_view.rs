@@ -60,23 +60,37 @@ pub fn empty_prop() -> &'static ComicNameInfo {
     E.get_or_init(ComicNameInfo::new)
 }
 
-/// The proposed parse per book of a slice, computed once per operation
-/// (the per-operation shape of the C# `ComicBook.Proposed` instance
-/// cache). `None` = the parse is dead for that book (`needs_prop`
-/// false) — resolve with `empty_prop()`.
-pub type PropTable = Vec<Option<ComicNameInfo>>;
+/// The proposed parses of a book slice, computed LAZILY — on first
+/// read, one parse per book per operation (the C# `ComicBook.Proposed`
+/// instance cache parses on first access the same way). A dead book
+/// (`needs_prop` false) resolves to the shared empty parse and never
+/// parses, so a metadata-complete library or an unsorted/grouped view
+/// (no getter ever reads) parses nothing.
+pub struct PropTable {
+    slots: Vec<std::cell::OnceCell<ComicNameInfo>>,
+    dead: Vec<bool>,
+}
 
-pub fn prop_table(books: &[ComicBook]) -> PropTable {
-    books
-        .iter()
-        .map(|b| {
-            if needs_prop(b) {
-                Some(proposed(b))
-            } else {
-                None
-            }
-        })
-        .collect()
+impl PropTable {
+    /// The table shape for `books` (no parses run here).
+    pub fn build(books: &[ComicBook]) -> Self {
+        PropTable {
+            slots: (0..books.len())
+                .map(|_| std::cell::OnceCell::new())
+                .collect(),
+            dead: books.iter().map(|b| !needs_prop(b)).collect(),
+        }
+    }
+
+    /// The proposed parse of `books[i]` — `book` MUST be the book at
+    /// index `i` of the slice the table was built from. The returned
+    /// reference borrows the table (shared; several may coexist).
+    pub fn get(&self, i: usize, book: &ComicBook) -> &ComicNameInfo {
+        if self.dead[i] {
+            return empty_prop();
+        }
+        self.slots[i].get_or_init(|| proposed(book))
+    }
 }
 
 /// `ComicBook.ShadowSeries`.

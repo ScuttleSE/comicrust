@@ -394,11 +394,16 @@ impl ItemView {
     /// Replaces the book set (a library selection change).
     pub fn set_books(&self, books: Vec<ComicBook>) {
         let width = self.state.borrow().config.view_width;
+        let t0 = std::time::Instant::now();
         {
             let mut s = self.state.borrow_mut();
             let filter = s.view.filter_clone();
+            let t1 = std::time::Instant::now();
             s.view = ViewState::new(books);
+            crate::trace::trace(format!("set_books: ViewState::new {:?}", t1.elapsed()));
+            let t2 = std::time::Instant::now();
             s.view.set_filter(filter);
+            crate::trace::trace(format!("set_books: set_filter {:?}", t2.elapsed()));
             s.thumbs.clear();
             s.queued.clear();
             s.captions.clear();
@@ -406,10 +411,18 @@ impl ItemView {
             s.tile_texts.clear();
             s.tile_render.clear();
             s.band = None;
+            let t3 = std::time::Instant::now();
             s.relayout(width);
+            crate::trace::trace(format!("set_books: relayout {:?}", t3.elapsed()));
         }
+        let t4 = std::time::Instant::now();
         // Outside the borrow (the RefCell panics on nested borrows).
         self.update_size_request();
+        crate::trace::trace(format!(
+            "set_books: size_request {:?} (total {:?})",
+            t4.elapsed(),
+            t0.elapsed()
+        ));
         self.notify_and_redraw();
     }
 

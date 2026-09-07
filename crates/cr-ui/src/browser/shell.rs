@@ -297,6 +297,7 @@ impl ShellState {
         let id = *self.current_list.borrow();
         if let Some(id) = id {
             if let Some((name, books)) = library::evaluate_books(&id) {
+                crate::trace::trace(format!("refresh: evaluate {} books", books.len()));
                 // The list name feeds the status panel (a rename
                 // shows on the next refresh without a re-select).
                 *self.current_list_name.borrow_mut() = name;
@@ -304,10 +305,14 @@ impl ShellState {
                 // selection survives (the My Rating check reads the
                 // selection right after the rating commit).
                 let selected = self.item_view.selection_ids();
+                let t_set = std::time::Instant::now();
                 self.item_view.set_books(books);
+                crate::trace::trace(format!("refresh: set_books {:?}", t_set.elapsed()));
+                let t_re = std::time::Instant::now();
                 if !selected.is_empty() {
                     self.item_view.reselect(&selected);
                 }
+                crate::trace::trace(format!("refresh: reselect {:?}", t_re.elapsed()));
             }
         }
     }
@@ -1348,6 +1353,12 @@ impl BrowserShell {
     /// The grid's selection ids (the probe).
     pub fn state_grid_selection_ids(&self) -> Vec<CrGuid> {
         self.state.item_view.selection_ids()
+    }
+
+    /// Sets the grid selection to the ids (the probe; the `reselect`
+    /// intersect path).
+    pub fn state_reselect(&self, ids: &[CrGuid]) {
+        self.state.item_view.reselect(ids);
     }
 
     /// The visible workspace stack page name (the probe).
