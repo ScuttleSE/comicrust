@@ -56,6 +56,7 @@ Every phase ends shippable and testable. Phases 0-2 are fully headless. They de-
 | 6 | Native features + de-scripting | Native "New Comic…" fileless flow + "New fileless Book Series…" dialog (the NewComics.py port, ADR-027), `Expression`/plugin matcher parse-compat (not-supported evaluation), Copy Page/Export Page, `cr-script` removal — **COMPLETE, all tasks user-tested (2026-09-06)** | Feature checklist complete with no scripting surface; matcher round-trip stable | 2-3 wk |
 | 7 | Platform | D-Bus single instance + the startup file pipeline (re-scoped 2026-09-06, ADR-028: sync, remote, tray, i18n → `docs/backlog.md` with research records) — **COMPLETE, all tasks user-tested (2026-09-06)** | Second-launch handoff parity: focus, files (`newSlot`/`-p`/hide-browser), restart handshake | 1 wk |
 | 8 | Polish/ship | Flatpak/.deb/AUR packaging, CI, docs, migration tooling, perf passes | 1.0 | 4-6 wk |
+| 9 | Database backend | SQLite canonical store (ADR-029; hot columns + per-book dirty tracking + incremental saves), XML becomes the ComicRack import/export codec, Settings migration + "Export for ComicRack…", backup swap — see `phase-9-kickoff.md` | Migration verified on the real-world fixture; WAL crash-safety + sqlite↔XML round-trip gates green | 3-5 wk |
 
 **Total: ~75-90 weeks (~18-22 months) solo.** Longest-lead items: ItemView behavior parity and dialog volume.
 
@@ -84,4 +85,9 @@ breakdowns with acceptance criteria:
 - Phase 1: `phase-1-kickoff.md`.
 - Phase 5.5: `phase-5.5-kickoff.md` — the UI-parity phase (ADR-024), inserted between 5 and 6. COMPLETE (2026-09-06).
 - Phase 6: `phase-6-kickoff.md` — the re-scoped native-features phase (ADR-027). COMPLETE (2026-09-06, user-tested). The original scripting kickoff survives as a superseded record inside that file.
-- Phase 7: `phase-7-kickoff.md` — not written yet; the next phase (platform work).
+- Phase 7: `phase-7-kickoff.md` — the platform phase (D-Bus single
+  instance + the startup file pipeline, ADR-028 re-scope). COMPLETE (2026-09-06).
+- Phase 8: `phase-8-kickoff.md` — polish/ship + the user-reported list (in progress).
+- Phase 9: `phase-9-kickoff.md` — the database-backend phase (SQLite
+  canonical, ADR-029 gate). Spun out of Phase 8 T7 (2026-09-07);
+  starts after Phase 8 closes.

@@ -4,7 +4,7 @@ Goal: ship quality — packaging, docs, migration tooling — plus the
 user-reported UX/perf items collected on 2026-09-06 after the Phase 7
 close-out.
 
-Target crates: `cr-ui` (T1-T6), `cr-core`/`cr-engine` (T3, T4, T7),
+Target crates: `cr-ui` (T1-T6), `cr-core`/`cr-engine` (T3, T4),
 new packaging files (T8).
 
 ## User-reported items (2026-09-06, verbatim scope)
@@ -16,7 +16,8 @@ new packaging files (T8).
 3. Slow operation when deleting empty books — ~200 tagged empty
    books, delete, the app hung for close to a minute.
 4. Explore moving from the XML file for the database to a
-   sqlite/postgres backend instead.
+   sqlite/postgres backend instead. (→ Phase 9,
+   `docs/phase-9-kickoff.md`)
 5. Implement the Folders tab (filesystem view) next to the Library
    tab.
 6. Manually resizing columns in the Details view.
@@ -67,8 +68,11 @@ new packaging files (T8).
   and the widths persist in the workspace (`ItemViewConfig.Columns`).
   The port's T14 workspace already stores the column list — check
   whether widths ride along; add the drag handle + the persistence.
-- Database backend: see T7 — this touches compatibility invariant 1
-  (byte-stable ComicDb.xml); an ADR is REQUIRED before any change.
+- Database backend: RE-HOMED to Phase 9
+  (`docs/phase-9-kickoff.md`) on 2026-09-07 — it touches
+  compatibility invariant 1 (byte-stable ComicDb.xml) and grew into
+  a full phase after the exploration + user decisions. ADR-029
+  remains REQUIRED before any code.
 
 ## Task list
 
@@ -157,22 +161,15 @@ new packaging files (T8).
 - Gate: a probe (the folder tree renders, selecting a folder lists
   its comics), then the user test.
 
-### T7. Database backend exploration (item 4) — RESEARCH SPIKE → ADR
+### T7. Database backend — MOVED TO PHASE 9 (2026-09-07)
 
-- CONSTRAINT (compatibility invariant 1): byte-stable ComicDb.xml
-  read/write is the ComicRack interop — the database is the one
-  artifact users cannot lose. A different canonical store breaks
-  interop with real ComicRack and the migration path.
-- Postgres: rejected for a desktop app (no server, no daemon) —
-  record the reasoning in the ADR regardless.
-- Spike deliverable (ADR-029): measure the actual save/open cost of
-  the XML on a large library (10k+ books synthetic), compare with an
-  SQLite index of the same data, and decide between:
-  (a) SQLite as a DERIVED index/cache — ComicDb.xml stays canonical
-      (safe, keeps interop; the C# itself keeps XML),
-  (b) SQLite as the canonical store — a compat BREAK requiring
-      explicit user sign-off + a lossless XML export path.
-- NO code lands from this task without the ADR + user approval.
+- The exploration session of 2026-09-07 scoped the work (SQLite
+  canonical after migration; Postgres rejected; XML becomes the
+  import/export codec; fresh installs keep the XML default). The
+  user decisions, the coupling audit, the work breakdown, and the
+  task list now live in `docs/phase-9-kickoff.md`.
+- Nothing changed for Phase 8: no code, no ADR yet. Phase 9 T1
+  (the spike) starts after Phase 8 closes and produces ADR-029.
 
 ### T8. Packaging
 
@@ -205,9 +202,11 @@ new packaging files (T8).
 ## Order
 
 T1 (quick wins) → T2 → T3 → T4 (the user pains first) → T5 → T6 →
-T7 (spike) → T8 → T9 → T10. T7's spike may run parallel to T5/T6
-(read-only work).
+T8 → T9 → T10. The database-backend item is Phase 9 now (see T7).
 
 ## Status
 
 - Kickoff written 2026-09-06. T1 is next.
+- 2026-09-07: T7 (the database-backend exploration) re-homed to the
+  new Phase 9 (`docs/phase-9-kickoff.md`) with the user decisions
+  recorded there.

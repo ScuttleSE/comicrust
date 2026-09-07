@@ -148,10 +148,15 @@ Update this section at the **end of every work session**. The next agent must kn
   `docs/phase-8-kickoff.md` (T1 the UI fixes batch: the & mnemonics,
   the popover arrows, the tree-menu position; T2 the default view =
   Library; T3/T4 the CBL-import and fileless-delete perf; T5 the
-  Details column resize; T6 the Folders tab; T7 the database-backend
-  spike → ADR-029 — the ComicDb.xml invariant requires the ADR +
-  user approval before any code; T8 packaging; T9 docs + migration;
-  T10 the perf sweep). Open gaps: WebComicProvider, PDF/DjVu
+  Details column resize; T6 the Folders tab; T8 packaging; T9 docs +
+  migration; T10 the perf sweep). The database-backend item became
+  PHASE 9 (2026-09-07, spun out of the Phase 8 T7 exploration):
+  `docs/phase-9-kickoff.md` — SQLite canonical after an explicit
+  Settings migration (Postgres rejected; XML becomes the ComicRack
+  import/export codec; fresh installs keep the XML default until
+  migrated; FULL design with hot columns + per-book dirty tracking +
+  incremental saves, ~3-5 wk), starts after Phase 8 closes, ADR-029
+  gate before any code. Open gaps: WebComicProvider, PDF/DjVu
   writers, HEIF/AVIF decode, the T14 per-list sort (the port resets
   the view sort on every list switch; the C# keeps it per list — a
    recorded deviation).
