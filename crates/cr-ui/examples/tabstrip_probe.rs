@@ -6,7 +6,9 @@
 //! renders bold, the `+` adds an EMPTY slot (no QuickOpen — the
 //! recorded deviation) and hides the Pages tab (no current book),
 //! the close buttons close slots, and the last close lands on the
-//! Library workspace with Pages hidden.
+//! QuickOpen covers with Pages hidden (the Phase 8 T2 shape: boot
+//! opens the browser, the C# `UpdateQuickList` owns the no-book
+//! state).
 //! Run: Xvfb + `cargo run -p cr-ui --example tabstrip_probe` with an
 //! isolated XDG (fresh DB → the default list tree).
 use cr_core::model::comic_book::ComicBook;
@@ -58,8 +60,8 @@ fn main() {
         let strip = shell.tabstrip();
 
         // A. Startup: Library | (+) only — no comic tabs, no Pages
-        //    (no book), Library selected, the browser not yet shown
-        //    (QuickOpen startup page).
+        //    (no book), Library selected, the browser IS the startup
+        //    view (the Phase 8 T2 decision).
         glib::timeout_add_local(std::time::Duration::from_millis(800), {
             let shell = shell.clone();
             let strip = strip.clone();
@@ -67,7 +69,7 @@ fn main() {
                 let strip_h = strip.widget().height();
                 let host_h = strip.host().height();
                 println!(
-                    "A page={:?} slots={:?} lib={} pages={} plus={} sel={:?} strip-h={strip_h} host-h={host_h} (expect quickopen/[]/true/false/true/Library, strip < 40)",
+                    "A page={:?} slots={:?} lib={} pages={} plus={} sel={:?} strip-h={strip_h} host-h={host_h} (expect browser/[]/true/false/true/Library, strip < 40)",
                     shell.state_visible_page(),
                     strip.comic_slots(),
                     strip.tab_visible(&TabId::Library),
@@ -267,16 +269,18 @@ fn main() {
             }
         });
 
-        // I. Close ALL → the Library workspace (the C# `Close` →
-        //    `ShowLibrary`), no comic tabs (slots AND widgets),
-        //    Pages hidden.
+        // I. Close ALL → the QuickOpen covers (the C#
+        //    `UpdateQuickList` shape after the last close — the T2
+        //    reachable path), no comic tabs (slots AND widgets),
+        //    Pages hidden. The strip selection falls back to
+        //    Library (no reader slot behind the covers).
         glib::timeout_add_local(std::time::Duration::from_millis(5200), {
             let shell = shell.clone();
             let strip = strip.clone();
             move || {
                 shell.state_dispatch("win.close-all");
                 println!(
-                    "I page={:?} sel={:?} slots={:?} widgets={} pages-tab={} (expect browser/Library/[]/0/false)",
+                    "I page={:?} sel={:?} slots={:?} widgets={} pages-tab={} (expect quickopen/Library/[]/0/false)",
                     shell.state_visible_page(),
                     strip.selected(),
                     strip.comic_slots(),

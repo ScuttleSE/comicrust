@@ -169,16 +169,39 @@ Update this section at the **end of every work session**. The next agent must kn
   the view sort on every list switch; the C# keeps it per list — a
    recorded deviation).
   PHASE 8 STATE (2026-09-07, the session-fresh pointer): DONE =
-  T3 (the CBL import) + T10 slice 1 (the parse storms) + T10
-  slice 2 (the scroll culling storm) — the records directly
+  T1 + T2 + T3 (the CBL import) + T10 slice 1 (the parse storms)
+  + T10 slice 2 (the scroll culling storm) — the records directly
   below. USER TESTS: T3 PASS (2026-09-07, "the cbl-lists imported
   reasonably fast now"); T10 slice 2 PASS ("works now" — the
   2875-book reading list tracks the wheel); the T10 slice 1 gate
   (sort/group column clicks + the Show Duplicates toggle feel
   instant) is still PENDING an explicit word — treat the next
-  touch of those paths as its test. NEXT IN ORDER: T1 (the UI
-  fixes batch: the `&` mnemonics, the popover arrows, the
-  tree-menu position) → T2 (the default view = Library) → T4 (the
+  touch of those paths as its test. T1 + T2 IMPLEMENTED
+  (2026-09-07), BOTH USER TESTS PENDING — see the phase-8-kickoff
+  T1/T2 sections for the full records. T1 (the UI fixes batch):
+  `&` mnemonics strip at render (`menubar::strip_amp`; tables stay
+  verbatim; the submenu-parent key strips `&`+`_` so
+  `set_sub_enabled("Recent Books"/"Page Type")` finally matches),
+  `set_has_arrow(false)` on the navigator/book/page-menu/column-
+  chooser popovers (the menubar/dropdown popovers were already
+  arrowless), and the navigator context menu parents to the
+  TREEVIEW with the raw gesture coords (was: a Box parent + cell
+  coords → GTK fell back to the top edge). Probes: menubar
+  (labels-with-amp 0 static+filled, top popovers arrowless),
+  browserbar (Views drop), navpages step F (arrow=false + the
+  pointing rect at the click point). T2 (the default view =
+  Library): boot calls `show_browser()` (the C# MainForm.cs:3140
+  shape; the navigator boot fill selects the Library root — no
+  LastLibraryItem persistence was added), and the LAST-tab-close
+  handler now calls `show_quick_open()` (the C# `UpdateQuickList`
+  shape — QuickOpen's reachable path since boot no longer shows
+  it; the browser shows when `ShowQuickOpen` is off or the DB has
+  no books). Two visible behavior changes for the UAT: boot lands
+  on the Library view; closing the last comic tab shows the
+  QuickOpen covers (was: the Library view). Gate: `bootview_probe`
+  (boot→browser+Library, open→reader, last close→quickopen,
+  toggle→browser); the `tabstrip_probe` A/I expectations moved to
+  the new shape. NEXT IN ORDER: T4 (the
   fileless-delete perf, profile first) → T5 (the Details column
   resize) → T6 (the Folders tab, Phase 4-sized) → T8 (packaging) →
   T9 (docs + migration tooling) → T11 (the Windows-path migration,

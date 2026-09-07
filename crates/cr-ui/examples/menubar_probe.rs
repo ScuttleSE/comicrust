@@ -39,6 +39,26 @@ fn main() {
             mounted == rule
         );
 
+        // 2b. The T1 gates: no `&` reaches any rendered label (the
+        //     WinForms mnemonics strip at render) and the top-menu
+        //     popovers carry no pointing arrow (the C# MenuStrip
+        //     drop shape).
+        {
+            let menubar = shell.menubar();
+            let amps: Vec<String> = menubar
+                .all_row_labels()
+                .into_iter()
+                .filter(|l| l.contains('&'))
+                .collect();
+            let arrows: Vec<bool> = menubar
+                .top_popovers()
+                .iter()
+                .map(|p| p.has_arrow())
+                .collect();
+            println!("AMP labels-with-amp {} (expect 0)", amps.len());
+            println!("ARROW top-popovers {arrows:?} (expect all false)");
+        }
+
         // 3. The proofs at 1200 ms: direct activation + a REAL row
         //    click for the stateful check, then the panel highlight
         //    via a row click on view-library.
@@ -105,6 +125,14 @@ fn main() {
             move || {
                 println!("SWITCH to Help");
                 menubar.open_top(5);
+                // The dynamic fills rebuilt: re-run the no-`&` gate
+                // over the filled rows (Page Type/Bookmarks slots).
+                let amps: Vec<String> = menubar
+                    .all_row_labels()
+                    .into_iter()
+                    .filter(|l| l.contains('&'))
+                    .collect();
+                println!("AMP-FILLED labels-with-amp {} (expect 0)", amps.len());
                 glib::ControlFlow::Break
             }
         });

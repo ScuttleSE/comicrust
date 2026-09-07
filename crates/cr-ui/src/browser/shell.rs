@@ -124,6 +124,9 @@ struct ShellState {
     /// `autoHeaderContextMenuStrip`): a FRESH plain popover per open;
     /// the last one is kept for the probe.
     columns_drop: RefCell<Option<gtk4::Popover>>,
+    /// The book context menu's last popover (the probe's arrow
+    /// gate) — the same fresh-per-open shape.
+    context_drop: RefCell<Option<gtk4::Popover>>,
     /// The app image pool (the C# `Program.ImagePool`): the Tasks
     /// dialog queue snapshot and the Quick Rating cover load.
     pool: Arc<ImagePool>,
@@ -555,6 +558,7 @@ impl BrowserShell {
             // (the exact shape of the proven book context menu; the
             // last one stays here for the probe).
             columns_drop: RefCell::new(None),
+            context_drop: RefCell::new(None),
             pool,
             tasks_window: RefCell::new(None),
             paned: paned.clone(),
@@ -693,7 +697,13 @@ impl BrowserShell {
                 .set_on_last_tab_closed(move || {
                     if let Some(sh) = state.upgrade() {
                         sh.pages.clear_book();
-                        sh.select_workspace(Workspace::Library);
+                        // The C# `UpdateQuickList` shape: no book open
+                        // → the QuickOpen covers show (when
+                        // `ShowQuickOpen` and the database has books),
+                        // the browser otherwise. This is QuickOpen's
+                        // reachable path since the boot opens on the
+                        // Library view (T2).
+                        sh.show_quick_open();
                         sh.sync_enabled();
                     }
                 });
@@ -1216,9 +1226,11 @@ impl BrowserShell {
             });
         }
 
-        // The initial fill. The startup view: the QuickOpen covers
-        // when the database has books (the C#
-        // `OpenCount == 0 && ShowQuickOpen`), the browser otherwise.
+        // The initial fill. The startup view: the BROWSER (the C#
+        // `books.OpenCount == 0 && !ShowQuickOpen` shape,
+        // MainForm.cs:3140) — the user decision 2026-09-07: the app
+        // opens on the Library view, the QuickOpen covers show only
+        // through the last-tab-close path (`UpdateQuickList`).
         state.navigator.refill(&library::comic_lists_snapshot());
         // `UpdateSettings` applies the stored QuickOpen thumbnail size.
         {
@@ -1226,7 +1238,7 @@ impl BrowserShell {
             state.quick_view.configure(|c| c.thumb_height = size);
             let _ = &size;
         }
-        state.show_quick_open();
+        state.show_browser();
         // The strip renders its startup state with the sync.
         state.sync_enabled();
     }
@@ -1480,6 +1492,19 @@ impl BrowserShell {
             .borrow()
             .as_ref()
             .is_some_and(|p| p.is_mapped())
+    }
+
+    /// The book context menu's popover (the probe's arrow gate;
+    /// fire `state_trigger_context` first).
+    pub fn state_context_popover(&self) -> Option<gtk4::Popover> {
+        self.state.context_drop.borrow().clone()
+    }
+
+    /// The book context menu OPEN gate: fires the right-click hook
+    /// and reports whether the popover mapped.
+    pub fn state_open_context(&self, x: f64, y: f64) -> bool {
+        self.state_trigger_context(x, y);
+        self.state_context_popover().is_some_and(|p| p.is_mapped())
     }
 
     /// The chooser popover's child natural height (the probe: the
@@ -2504,6 +2529,8 @@ impl ShellState {
     /// maps fine.
     fn popup_column_chooser(self: &Rc<ShellState>, wx: f64, wy: f64) {
         let popover = gtk4::Popover::new();
+        // No pointing arrow (the C# ContextMenuStrip shape).
+        popover.set_has_arrow(false);
         let list = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
         list.set_margin_top(4);
         list.set_margin_bottom(4);
@@ -3996,6 +4023,8 @@ fn selection_ids_with_target(sh: &ShellState, target: Option<CrGuid>) -> Vec<CrG
 
 fn show_context_menu(state: &std::rc::Weak<ShellState>, target: Option<CrGuid>, x: f64, y: f64) {
     let popover = gtk4::Popover::new();
+    // No pointing arrow (the C# ContextMenuStrip shape).
+    popover.set_has_arrow(false);
     let box_ = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
     box_.set_margin_top(4);
     box_.set_margin_bottom(4);
@@ -4237,6 +4266,9 @@ fn show_context_menu(state: &std::rc::Weak<ShellState>, target: Option<CrGuid>, 
     popover.connect_closed(|p| p.unparent());
     let rect = gtk4::gdk::Rectangle::new(x as i32, y as i32 + 8, 1, 1);
     popover.set_pointing_to(Some(&rect));
+    if let Some(sh) = state.upgrade() {
+        *sh.context_drop.borrow_mut() = Some(popover.clone());
+    }
     crate::trace::trace(format!(
         "context: popup at ({x}, {y}) — scroll before popup {}",
         state

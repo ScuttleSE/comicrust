@@ -93,6 +93,34 @@ T11), new packaging files (T8).
   false, the menu's pointing rect at the clicked row), then the user
   test.
 
+IMPLEMENTED 2026-09-07 (both fix sets of the batch — the `&`
+mnemonics, the popover arrows, the tree-menu position). The render
+path: `menubar::strip_amp` strips every `&` from the label at
+render in `row_content` + `dyn_row_content` (the tables stay
+verbatim — the Designer record; `_` keeps its GTK underline, the
+C# `&` renders plain). Side fix the work surfaced: the submenu
+parent registry keyed on `label.replace('_', '')`, so
+`set_sub_enabled("Recent Books")`/`("Page Type")` never matched the
+`&Recent Books`/`&Page Type` rows — the key now strips both
+mnemonic characters and the parent-enable works (C# parity). The
+arrows: `set_has_arrow(false)` (the definitive kill — `autoarrow`
+is ignored once `has_arrow` is false; the menubar/dropdown
+popovers already used it) on the navigator context menu, the book
+context menu, the column chooser, and the book editor's page menu;
+`build_dropdown`/menubar popovers were already arrowless. The
+position: `navigator.rs::open_menu` parents the popover to the
+TREEVIEW (the click coords are view-relative; the old Box parent
+misread them and GTK fell back to the top edge) and keeps the
+gesture's (x, y) — the `path_at_pos` cell coords are gone. The
+no-row-under-cursor gate stays (the prior behavior). Probes:
+`menubar_probe` gates labels-with-`&` = 0 over static + submenu +
+filled rows (re-checked after the dynamic fills) and all six top
+popovers arrowless; `browserbar_probe` gates the Views drop
+(amps=0, arrow=false); `navpages_probe` step F fires the real
+context-menu path and gates arrow=false + pointing rect exactly at
+the click point (40, 28 = y 20 + the 8 px offset). All green.
+User test pending.
+
 ### T2. Default view = Library (item 1)
 
 - Boot to the browser workspace with the Library list selected
@@ -104,6 +132,28 @@ T11), new packaging files (T8).
   the C# `ShowLast()` parity: the boot selects the last view.
 - Gate: a probe (boot → the browser workspace visible → the Library
   list is the current list), then the user test.
+
+IMPLEMENTED 2026-09-07. The boot (`shell.rs` initial fill) calls
+`show_browser()` instead of `show_quick_open()` — the C#
+MainForm.cs:3140 shape; the app opens on the Library workspace with
+the Library list selected (the navigator's boot fill selects the
+first row = Library root; no `LastLibraryItem` persistence existed
+in the port, none added — the boot is Library-root per the user's
+"Library view" request). QuickOpen stays reachable through the
+C# `UpdateQuickList` path: the LAST-tab-close handler now calls
+`show_quick_open()` (covers when `ShowQuickOpen` and the database
+has books, the browser otherwise) instead of forcing the Library
+workspace — this is the C# behavior after closing the last book and
+it replaces the port's only other QuickOpen entry point. Recorded
+behavior changes a user test will see: (1) boot lands on the
+Library view, not the QuickOpen covers; (2) closing the last comic
+tab now shows the QuickOpen covers (was: the Library view). The
+`+` empty slot still shows the blank reader (the recorded
+deviation). Gate: `bootview_probe` (boot → browser + Library
+selected; open → reader; last close → quickopen; Browse ▸ Browser →
+browser). The `tabstrip_probe` expectations A (boot page) and I
+(close-all page) moved to the new shape. All probes green.
+User test pending.
 
 ### T3. Perf: the large-CBL import (item 2)
 
@@ -375,7 +425,11 @@ T8 → T9 → T11 → T10. The database-backend item is Phase 9 now (see T7).
   backlog).
 - 2026-09-07: T3 USER-TESTED ("the cbl-lists imported reasonably
   fast now"). T10 slice 1 user test still pending.
-- Remaining order: T1 → T2 → T4 → T5 → T6 → T8 → T9 → T11 → the
-  T10 remainder (startup + scan + 10k-list sweeps, measured only).
+- 2026-09-07: T1 + T2 IMPLEMENTED (records in their task sections;
+  probes extended: menubar/browserbar/navpages gates + the new
+  bootview_probe + the tabstrip A/I expectations moved to the T2
+  shape). Both user tests pending.
+- Remaining order: T4 → T5 → T6 → T8 → T9 → T11 → the T10
+  remainder (startup + scan + 10k-list sweeps, measured only).
   One user test is pending before that: the T10 slice 1 feel
   (sort/group column clicks + Show Duplicates are instant).

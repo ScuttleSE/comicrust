@@ -83,6 +83,8 @@ pub struct Navigator {
     search_box: gtk4::Box,
     search_entry: Entry,
     search_visible: std::cell::Cell<bool>,
+    /// The last context menu (the probe's arrow/position gate).
+    last_menu: RefCell<Option<Popover>>,
     /// (name, button) — the probe's real-click path.
     buttons: Vec<(&'static str, Button)>,
 }
@@ -198,6 +200,7 @@ impl Navigator {
             search_box,
             search_entry,
             search_visible: std::cell::Cell::new(false),
+            last_menu: RefCell::new(None),
             buttons,
         });
         wire_signals(&nav);
@@ -311,12 +314,19 @@ impl Navigator {
                     return;
                 };
                 gesture.set_state(gtk4::EventSequenceState::Claimed);
-                if let Some((Some(path), _col, cx, cy)) = nav.view.path_at_pos(x as i32, y as i32) {
-                    nav.selection.select_path(&path);
-                    nav.open_menu(cx as f64, cy as f64);
-                }
+                nav.context_menu_at(x, y);
             });
             self.view.add_controller(gesture);
+        }
+    }
+
+    /// The right-click path: select the row under the cursor and
+    /// open the menu AT THE CURSOR (the probe drives the same body;
+    /// no row under the cursor keeps the prior no-menu gate).
+    fn context_menu_at(self: &Rc<Self>, x: f64, y: f64) {
+        if let Some((Some(path), ..)) = self.view.path_at_pos(x as i32, y as i32) {
+            self.selection.select_path(&path);
+            self.open_menu(x, y);
         }
     }
 
@@ -626,9 +636,14 @@ impl Navigator {
     }
 
     /// The context menu (`treeContextMenu`, the common commands only).
+    /// It parents to the TREEVIEW and points at the click point: the
+    /// coords are view-relative, so a Box parent (toolbar + search +
+    /// tree) misread them and GTK fell back to the top edge (the
+    /// Phase 8 T1 report). `ContextMenuStrip.Show(cursor)` parity.
     fn open_menu(self: &Rc<Self>, x: f64, y: f64) {
         let target = self.current_selection().map(|(id, _)| id);
         let popover = Popover::new();
+        popover.set_has_arrow(false);
         let box_ = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
         box_.set_margin_top(4);
         box_.set_margin_bottom(4);
@@ -664,11 +679,37 @@ impl Navigator {
         // Export/Import pair and the Open commands).
         add_item(&box_, "Import Reading List…", ListCommand::Import);
         popover.set_child(Some(&box_));
-        popover.set_parent(self.widget());
+        popover.set_parent(&self.view);
         popover.connect_closed(|p| p.unparent());
         let rect = gtk4::gdk::Rectangle::new(x as i32, y as i32 + 8, 1, 1);
         popover.set_pointing_to(Some(&rect));
+        *self.last_menu.borrow_mut() = Some(popover.clone());
         popover.popup();
+    }
+
+    /// The probe's right-click path (the same body the gesture
+    /// fires).
+    pub fn probe_context_menu(self: &Rc<Self>, x: f64, y: f64) {
+        self.context_menu_at(x, y);
+    }
+
+    /// The last context menu (the probe's arrow/position gate).
+    pub fn last_menu_popover(&self) -> Option<Popover> {
+        self.last_menu.borrow().clone()
+    }
+
+    /// The probe's row/grid evidence: the store count, whether the
+    /// view is mapped/realized, and hits along a column.
+    pub fn probe_grid(&self) -> String {
+        let rows = self.row_count();
+        let mapped = self.view.is_mapped();
+        let realized = self.view.is_realized();
+        let mut hits = String::new();
+        for y in [4i32, 14, 24, 34, 44, 54, 64, 74, 100, 140] {
+            let h = self.view.path_at_pos(20, y).is_some();
+            hits.push_str(&format!("{y}:{h} "));
+        }
+        format!("rows={rows} mapped={mapped} realized={realized} hits[{hits}]")
     }
 
     fn icon_column() -> TreeViewColumn {

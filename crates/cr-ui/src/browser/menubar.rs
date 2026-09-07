@@ -33,7 +33,8 @@ use MenuNode::{Dyn, Item, Sep, Sub};
 /// display comes from the action state, never from the node. The
 /// 4th field is the resx icon ("" = the C# item has no image).
 pub enum MenuNode {
-    /// Label (GTK `_` mnemonic), detailed action name, display
+    /// Label (GTK `_` mnemonic; a C# `&` renders stripped —
+    /// [`strip_amp`]), detailed action name, display
     /// accelerator ("" = the C# item has no shortcut), resx icon.
     Item(&'static str, &'static str, &'static str, &'static str),
     /// Submenu label + children.
@@ -544,6 +545,13 @@ const CSHARP_ITEM_ICONS: &[(&str, &str)] = &[
     ("_sub:bookmarks", "Bookmark"),
 ];
 
+/// The WinForms mnemonic `&` of the Designer texts, stripped for
+/// display (the C# VISIBLE text has no `&`; the port has no
+/// mnemonic-activation chain — the table keeps the texts verbatim).
+pub fn strip_amp(label: &str) -> String {
+    label.replace('&', "")
+}
+
 /// The displayed accelerator text (`ShortcutKeyDisplayString`
 /// parity): `<Control><Shift>x` → "Ctrl+Shift+X", `F5` → "F5".
 pub fn accel_display(accel: &str) -> String {
@@ -768,7 +776,7 @@ fn dyn_row_content(label: &str, accel: &str, icon: &'static str) -> gtk4::Box {
     }
     hbox.append(&icon_widget);
     let label_widget = gtk4::Label::builder()
-        .label(label)
+        .label(strip_amp(label))
         .halign(gtk4::Align::Start)
         .build();
     hbox.append(&label_widget);
@@ -799,14 +807,7 @@ fn hbox_indicator(hbox: &gtk4::Box) -> gtk4::Image {
 fn row_label(button: &gtk4::Button) -> String {
     button
         .child()
-        .and_downcast::<gtk4::Box>()
-        .and_then(|hbox| {
-            hbox.first_child()
-                .and_then(|slot| slot.next_sibling())
-                .and_then(|icon| icon.next_sibling())
-                .and_downcast::<gtk4::Label>()
-        })
-        .map(|l| l.text().to_string())
+        .and_then(|c| widget_label(&c))
         .unwrap_or_default()
 }
 
@@ -992,6 +993,41 @@ impl MenubarWidget {
         }
         out
     }
+
+    /// Every RENDERED label: static item rows, submenu parents, and
+    /// the dynamic slots (the probe's no-`&` gate).
+    pub fn all_row_labels(&self) -> Vec<String> {
+        let mut out: Vec<String> = self.rows.iter().map(|r| row_label(&r.button)).collect();
+        let subs = self.subs.borrow();
+        for (_, mb) in subs.iter() {
+            if let Some(l) = mb.child().and_then(|c| widget_label(&c)) {
+                out.push(l);
+            }
+        }
+        for slot in self.dyn_ctx.slots.borrow().iter() {
+            for row in slot.rows.borrow().iter() {
+                out.push(row_label(&row.button));
+            }
+        }
+        out
+    }
+
+    /// The six top-menu popovers (the probe's arrow gate).
+    pub fn top_popovers(&self) -> Vec<gtk4::Popover> {
+        self.tops.iter().map(|t| t.popover.clone()).collect()
+    }
+}
+
+/// The label text of a row hbox ([check slot][icon][label][...]) —
+/// shared by the Button and MenuButton row shapes.
+fn widget_label(w: &gtk4::Widget) -> Option<String> {
+    let hbox = w.downcast_ref::<gtk4::Box>()?;
+    hbox.first_child()?
+        .next_sibling()?
+        .next_sibling()?
+        .downcast::<gtk4::Label>()
+        .ok()
+        .map(|l| l.text().to_string())
 }
 
 /// A standalone dropdown menu (the T5 toolbar's split-button drops):
@@ -1104,6 +1140,18 @@ impl Dropdown {
         }
         out
     }
+
+    /// Every RENDERED label: static rows + the dynamic slots (the
+    /// probe's no-`&` gate).
+    pub fn row_labels(&self) -> Vec<String> {
+        let mut out: Vec<String> = self.rows.iter().map(|r| row_label(&r.button)).collect();
+        for slot in self.dyn_ctx.slots.borrow().iter() {
+            for row in slot.rows.borrow().iter() {
+                out.push(row_label(&row.button));
+            }
+        }
+        out
+    }
 }
 
 /// Applies the action states to ONE row (checks, radio marks,
@@ -1205,7 +1253,7 @@ fn row_content(
     }
     hbox.append(&icon_widget);
     let label_widget = gtk4::Label::builder()
-        .label(label)
+        .label(strip_amp(label))
         .use_underline(true)
         .halign(gtk4::Align::Start)
         .build();
@@ -1365,8 +1413,8 @@ fn build_menu_content(
                 content.append(&sub);
                 nav.push(sub.clone().upcast());
                 // The parent registry (set_sub_enabled keys on the
-                // label without the mnemonic).
-                subs.push((label.replace('_', ""), sub));
+                // label without the mnemonics — `_` AND the C# `&`).
+                subs.push((label.replace(['&', '_'], ""), sub));
             }
             MenuNode::Dyn(id) => {
                 // The fill container: the provider rebuilds it at

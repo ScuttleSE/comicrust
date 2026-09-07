@@ -191,7 +191,40 @@ fn main() {
             }
         });
 
+        // F. The T1 gates: the navigator context menu opens AT the
+        //    cursor (view-relative coords) and carries no pointing
+        //    arrow (the C# ContextMenuStrip shape). The browser
+        //    workspace returns first — steps D/E left the Pages tab
+        //    showing, and a hidden tree has no allocation.
+        glib::timeout_add_local(std::time::Duration::from_millis(3200), {
+            let shell = shell.clone();
+            move || {
+                shell.state_dispatch("win.view-library");
+                glib::ControlFlow::Break
+            }
+        });
         glib::timeout_add_local(std::time::Duration::from_millis(3500), {
+            let shell = shell.clone();
+            move || {
+                // Row 1 (the tree shows Library + the collapsed
+                // Smart Lists folder here).
+                let (x, y) = (40.0, 20.0);
+                shell.navigator().probe_context_menu(x, y);
+                match shell.navigator().last_menu_popover() {
+                    Some(p) => {
+                        let rect = p.pointing_to();
+                        println!(
+                            "F menu arrow={} rect={rect:?} (expect false / Some(40, 28, 1, 1))",
+                            p.has_arrow()
+                        );
+                    }
+                    None => println!("F menu MISSING (no row at {x},{y}?)"),
+                }
+                glib::ControlFlow::Break
+            }
+        });
+
+        glib::timeout_add_local(std::time::Duration::from_millis(4000), {
             let app = app.clone();
             move || {
                 println!("PROBE COMPLETE");

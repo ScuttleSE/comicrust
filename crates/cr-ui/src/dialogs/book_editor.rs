@@ -1575,6 +1575,8 @@ fn rebuild_pages_list(widgets: &PagesWidgets, state: &StateRef) {
 /// action-muxer route proved inert in the first user test).
 fn show_page_menu(state: &StateRef, widgets: &PagesWidgets, index: usize, x: f64, y: f64) {
     let popover = gtk4::Popover::new();
+    // No pointing arrow (the C# ContextMenuStrip shape).
+    popover.set_has_arrow(false);
     let outer = GtkBox::new(Orientation::Vertical, 0);
     outer.set_margin_top(4);
     outer.set_margin_bottom(4);

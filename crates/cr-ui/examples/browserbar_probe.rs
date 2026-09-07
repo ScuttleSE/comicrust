@@ -103,6 +103,17 @@ fn main() {
                 let mapped = shell.browserbar_drop_mapped("views");
                 println!("A views-drop mapped={mapped} (expect true, no segv)");
                 shell.browserbar_close_dropdown("views");
+                // The T1 gate: the drop rows render no `&` and the
+                // popover carries no pointing arrow.
+                if let Some(d) = shell.browserbar_dropdown("views") {
+                    let amps = d.row_labels().iter().filter(|l| l.contains('&')).count();
+                    println!(
+                        "A views amps={amps} arrow={} (expect 0 / false)",
+                        d.popover().has_arrow()
+                    );
+                } else {
+                    println!("A views drop MISSING");
+                }
                 // The check SYNC (the T6 round-1 report: the Views
                 // check never moved): switch to Tiles and read the
                 // action state back.
