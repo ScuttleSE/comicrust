@@ -290,10 +290,6 @@ pub fn name_group(text: &str, compress: bool) -> GroupInfo {
 
 // ---------- registry tables ----------
 
-fn prop(book: &ComicBook) -> ComicNameInfo {
-    book_view::proposed(book)
-}
-
 /// Compare two books by a registry property (numbers numerically,
 /// strings case-insensitive, dates by payload).
 pub fn compare_by_key(a: &ComicBook, b: &ComicBook, key: &str) -> Ordering {
@@ -311,23 +307,26 @@ pub fn compare_by_key(a: &ComicBook, b: &ComicBook, key: &str) -> Ordering {
     }
 }
 
-/// A book grouper: maps a book to its group bucket.
-pub type Grouper = fn(&ComicBook) -> GroupInfo;
+/// A book grouper: maps a book to its group bucket. The precomputed
+/// proposed parse rides along (`PropTable` resolution — `empty_prop()`
+/// when the book's parse is dead); a grouper pass must not parse per
+/// book (the Phase 8 storm).
+pub type Grouper = fn(&ComicBook, &ComicNameInfo) -> GroupInfo;
 
-fn group_series(book: &ComicBook) -> GroupInfo {
-    name_group(book_view::shadow_series(book, &prop(book)), false)
+fn group_series(book: &ComicBook, prop: &ComicNameInfo) -> GroupInfo {
+    name_group(book_view::shadow_series(book, prop), false)
 }
 
-fn group_title(book: &ComicBook) -> GroupInfo {
-    name_group(book_view::shadow_title(book, &prop(book)), false)
+fn group_title(book: &ComicBook, prop: &ComicNameInfo) -> GroupInfo {
+    name_group(book_view::shadow_title(book, prop), false)
 }
 
-fn group_writer(book: &ComicBook) -> GroupInfo {
+fn group_writer(book: &ComicBook, _prop: &ComicNameInfo) -> GroupInfo {
     name_group(&book.info.writer, false)
 }
 
-fn group_year(book: &ComicBook) -> GroupInfo {
-    let year = book_view::shadow_year(book, &prop(book));
+fn group_year(book: &ComicBook, prop: &ComicNameInfo) -> GroupInfo {
+    let year = book_view::shadow_year(book, prop);
     let text = if year > 0 {
         year.to_string()
     } else {
@@ -343,11 +342,11 @@ fn group_year(book: &ComicBook) -> GroupInfo {
     )
 }
 
-fn group_page_count(book: &ComicBook) -> GroupInfo {
+fn group_page_count(book: &ComicBook, _prop: &ComicNameInfo) -> GroupInfo {
     count_group(book.info.page_count)
 }
 
-fn group_checked(book: &ComicBook) -> GroupInfo {
+fn group_checked(book: &ComicBook, _prop: &ComicNameInfo) -> GroupInfo {
     if book.checked {
         GroupInfo::new("Checked", 0)
     } else {
@@ -355,16 +354,18 @@ fn group_checked(book: &ComicBook) -> GroupInfo {
     }
 }
 
-fn group_rating(book: &ComicBook) -> GroupInfo {
+fn group_rating(book: &ComicBook, _prop: &ComicNameInfo) -> GroupInfo {
     rating_group(book.rating.round() as i32)
 }
 
-fn group_community_rating(book: &ComicBook) -> GroupInfo {
+fn group_community_rating(book: &ComicBook, _prop: &ComicNameInfo) -> GroupInfo {
     rating_group(book.info.community_rating.round() as i32)
 }
 
-fn date_grouper(pick: fn(&ComicBook) -> CrDateTime) -> impl Fn(&ComicBook) -> GroupInfo {
-    move |book| {
+fn date_grouper(
+    pick: fn(&ComicBook) -> CrDateTime,
+) -> impl Fn(&ComicBook, &ComicNameInfo) -> GroupInfo {
+    move |book, _prop| {
         let now = CrDateTime {
             naive: chrono::Local::now().naive_local(),
             kind: cr_core::xml::scalar::DateKind::Unspecified,
@@ -373,26 +374,27 @@ fn date_grouper(pick: fn(&ComicBook) -> CrDateTime) -> impl Fn(&ComicBook) -> Gr
     }
 }
 
-fn group_added(book: &ComicBook) -> GroupInfo {
-    date_grouper(|b| b.added_time)(book)
+fn group_added(book: &ComicBook, prop: &ComicNameInfo) -> GroupInfo {
+    date_grouper(|b| b.added_time)(book, prop)
 }
 
-fn group_opened(book: &ComicBook) -> GroupInfo {
-    date_grouper(|b| b.opened_time)(book)
+fn group_opened(book: &ComicBook, prop: &ComicNameInfo) -> GroupInfo {
+    date_grouper(|b| b.opened_time)(book, prop)
 }
 
-fn group_published(book: &ComicBook) -> GroupInfo {
-    date_grouper(|b| {
-        let p = prop(b);
-        book_view::published(b, &p)
-    })(book)
+fn group_published(book: &ComicBook, prop: &ComicNameInfo) -> GroupInfo {
+    let now = CrDateTime {
+        naive: chrono::Local::now().naive_local(),
+        kind: cr_core::xml::scalar::DateKind::Unspecified,
+    };
+    date_group(&book_view::published(book, prop), &now)
 }
 
-fn group_released(book: &ComicBook) -> GroupInfo {
-    date_grouper(|b| b.released_time)(book)
+fn group_released(book: &ComicBook, prop: &ComicNameInfo) -> GroupInfo {
+    date_grouper(|b| b.released_time)(book, prop)
 }
 
-fn group_black_and_white(book: &ComicBook) -> GroupInfo {
+fn group_black_and_white(book: &ComicBook, _prop: &ComicNameInfo) -> GroupInfo {
     match book.info.black_and_white {
         cr_core::model::enums::YesNo::Yes => GroupInfo::new("Yes", 0),
         cr_core::model::enums::YesNo::No => GroupInfo::new("No", 1),
@@ -424,10 +426,21 @@ pub fn groupers() -> &'static [(&'static str, Grouper)] {
 
 /// The special-case sorters; everything else sorts through the
 /// property registry via `compare_by_key`. `Series` uses the series
-/// comparer (articles + number-aware), `Id` the Guid order.
-pub fn compare_by_column(a: &ComicBook, b: &ComicBook, key: &str) -> Ordering {
+/// comparer (articles + number-aware), `Id` the Guid order. The
+/// `Option` props are the `PropTable` resolution (`None` = the book's
+/// parse is dead — resolved to the never-read `empty_prop()`).
+pub fn compare_by_column(
+    a: &ComicBook,
+    b: &ComicBook,
+    key: &str,
+    pa: Option<&ComicNameInfo>,
+    pb: Option<&ComicNameInfo>,
+) -> Ordering {
     match key {
-        "Series" => compare_series(a, b),
+        "Series" => {
+            let empty = book_view::empty_prop();
+            compare_series(a, b, pa.unwrap_or(empty), pb.unwrap_or(empty))
+        }
         "Id" => guid_compare(&a.id, &b.id),
         _ => compare_by_key(a, b, key),
     }
@@ -538,20 +551,35 @@ mod tests {
             .find(|(k, _)| *k == "Series")
             .map(|(_, f)| *f)
             .unwrap();
-        assert_eq!(series_grouper(&a).caption, "The Batman");
+        assert_eq!(
+            series_grouper(&a, book_view::empty_prop()).caption,
+            "The Batman"
+        );
 
         // Series column sort is number-aware when the series text is
         // equal (2 < 10 despite strings).
         b.info.series = a.info.series.clone();
-        assert_eq!(compare_by_column(&a, &b, "Series"), Ordering::Less);
-        assert_eq!(compare_by_column(&b, &a, "Series"), Ordering::Greater);
+        assert_eq!(
+            compare_by_column(&a, &b, "Series", None, None),
+            Ordering::Less
+        );
+        assert_eq!(
+            compare_by_column(&b, &a, "Series", None, None),
+            Ordering::Greater
+        );
         // Different article prefixes compare by the article-skip
         // offsets (C# quirk): "The Batman" sorts after "Batman".
         b.info.series = "Batman".into();
-        assert_eq!(compare_by_column(&a, &b, "Series"), Ordering::Greater);
+        assert_eq!(
+            compare_by_column(&a, &b, "Series", None, None),
+            Ordering::Greater
+        );
         // Numeric registry compare.
         a.info.page_count = 10;
         b.info.page_count = 5;
-        assert_eq!(compare_by_column(&a, &b, "PageCount"), Ordering::Greater);
+        assert_eq!(
+            compare_by_column(&a, &b, "PageCount", None, None),
+            Ordering::Greater
+        );
     }
 }

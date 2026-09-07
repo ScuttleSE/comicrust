@@ -254,3 +254,33 @@ on this. Research record (2026-09-06):
 - Rust: `std::panic::set_hook` → log + a best-effort report dialog
   (a panicked GTK main loop usually cannot recover — exit is
   acceptable). Pick up with Phase 8 polish if wanted.
+
+## From Phase 8 (deferred 2026-09-07)
+
+### C#-parity per-book proposed cache (plan B)
+
+The Phase 8 perf work (T3 + the view-side sweep) computes the
+ComicNameInfo parse per OPERATION (per import, per rebuild, per
+matcher evaluation) with the `needs_prop` gate
+(`cr-engine/src/matcher/book_view.rs`). The C# caches `Proposed` on
+the ComicBook instance (`OnParseFilePath`): one parse per book per
+SESSION, reused by every consumer. Plan B would mirror that with a
+process-wide per-book cache (a `HashMap<CrGuid, ComicNameInfo>` in
+the Library session, or a serde-skipped `ComicBook` field), dropping
+the remaining per-rebuild parse cost (the `MatchContext` lazy parse
+still pays one parse per parse-needing book per evaluation — the
+10k-library quick-search keystroke case).
+
+- **Why deferred**: after the per-operation precomputes, the measured
+  hot paths are scalar (sort 5000 books 4.5 ms, group pass 78 µs,
+  duplicates 1000 books 5.9 ms, CBL import 0.069 s at 2886×255 —
+  release). No remaining user-visible wait justifies the invalidation
+  risk: a stale cached parse after a file edit/rename/scan would
+  silently break series matching and sorting. Revisit only if a
+  measured rebuild cost reappears (a 10k+ library with
+  parse-needing books).
+- **Invalidation surface if picked up**: `refresh_file_info`, the
+  scanner (add/move/recover), `apply_edited`/editor commits, the
+  write-back path, the Windows-path migration (T11), `file_path`
+  changes of any kind. The cache key must cover the file path + the
+  file modified time, or the invalidation must ride those sites.

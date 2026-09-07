@@ -36,6 +36,49 @@ pub fn proposed(book: &ComicBook) -> ComicNameInfo {
     comic_name_info::from_file_path(&book.file_path)
 }
 
+/// Whether ANY shadow field can fall through to the file-name parse
+/// (`EnableProposed` + the stored value empty). The proposed parse is
+/// skipped entirely when this is false — every shadow accessor then
+/// reads the stored info, so the parsed value is dead. The Phase 8
+/// perf work (sort keys, groupers, duplicates, the matcher context)
+/// builds parses through this gate instead of per call/comparison.
+pub fn needs_prop(book: &ComicBook) -> bool {
+    book.enable_proposed
+        && (book.info.series.is_empty()
+            || book.info.title.is_empty()
+            || book.info.number.is_empty()
+            || book.info.format.is_empty()
+            || book.info.count == -1
+            || book.info.volume == -1
+            || book.info.year == -1)
+}
+
+/// The dead parse for `needs_prop == false` books (never read — every
+/// shadow accessor returns the stored value before consulting it).
+pub fn empty_prop() -> &'static ComicNameInfo {
+    static E: std::sync::OnceLock<ComicNameInfo> = std::sync::OnceLock::new();
+    E.get_or_init(ComicNameInfo::new)
+}
+
+/// The proposed parse per book of a slice, computed once per operation
+/// (the per-operation shape of the C# `ComicBook.Proposed` instance
+/// cache). `None` = the parse is dead for that book (`needs_prop`
+/// false) — resolve with `empty_prop()`.
+pub type PropTable = Vec<Option<ComicNameInfo>>;
+
+pub fn prop_table(books: &[ComicBook]) -> PropTable {
+    books
+        .iter()
+        .map(|b| {
+            if needs_prop(b) {
+                Some(proposed(b))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
+
 /// `ComicBook.ShadowSeries`.
 pub fn shadow_series<'a>(book: &'a ComicBook, prop: &'a ComicNameInfo) -> &'a str {
     if !book.enable_proposed || !book.info.series.is_empty() {

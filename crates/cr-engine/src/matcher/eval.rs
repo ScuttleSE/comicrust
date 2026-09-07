@@ -26,7 +26,9 @@ use super::tree::{Matcher, ValueMatcher};
 pub struct MatchContext<'a> {
     /// "Now" for the date matcher's `is in last days` value conversion.
     pub now: CrDateTime,
-    props: HashMap<*const ComicBook, cr_core::model::comic_name_info::ComicNameInfo>,
+    props: std::cell::RefCell<
+        HashMap<*const ComicBook, cr_core::model::comic_name_info::ComicNameInfo>,
+    >,
     stats: HashMap<SeriesKey, SeriesStatistics>,
     _marker: PhantomData<&'a ()>,
 }
@@ -34,39 +36,47 @@ pub struct MatchContext<'a> {
 impl<'a> MatchContext<'a> {
     /// Builds the context for a book set (the full library — the series
     /// statistics are computed over it, not over the filtered subset).
+    /// The proposed parses are LAZY: a book pays one parse on first
+    /// use, and none at all when no shadow field falls through
+    /// (`book_view::needs_prop` — books with full metadata never
+    /// parse; the C# caches `Proposed` on the book instance).
     pub fn new(books: &[&'a ComicBook]) -> Self {
-        let props: HashMap<_, _> = books
-            .iter()
-            .map(|b| ((*b) as *const ComicBook, book_view::proposed(b)))
-            .collect();
-        // The statistics reuse the parsed proposed values (the parse is
-        // expensive; each book appears in one series group).
-        let stats = series::create(books, &|b| {
-            props
-                .get(&(b as *const ComicBook))
-                .cloned()
-                .unwrap_or_else(|| book_view::proposed(b))
-        });
         let now = chrono::Local::now().naive_local();
-        MatchContext {
+        let mut ctx = MatchContext {
             now: CrDateTime {
                 naive: now,
                 kind: cr_core::xml::scalar::DateKind::Unspecified,
             },
-            props,
-            stats,
+            props: std::cell::RefCell::new(HashMap::new()),
+            stats: HashMap::new(),
             _marker: PhantomData,
-        }
+        };
+        // The statistics reuse the cached parses (each book appears in
+        // one series group).
+        let stats = series::create(books, &|b| ctx.prop(b));
+        ctx.stats = stats;
+        ctx
     }
 
-    fn prop(&self, book: &ComicBook) -> &cr_core::model::comic_name_info::ComicNameInfo {
-        self.props
-            .get(&(book as *const ComicBook))
-            .expect("context built for this book set")
+    /// The proposed parse for one book — parsed on first use, cloned
+    /// after. Books whose parse is dead (`needs_prop` false) return
+    /// the never-read empty info.
+    pub fn prop(&self, book: &ComicBook) -> cr_core::model::comic_name_info::ComicNameInfo {
+        if !book_view::needs_prop(book) {
+            return cr_core::model::comic_name_info::ComicNameInfo::new();
+        }
+        let key = book as *const ComicBook;
+        if let Some(p) = self.props.borrow().get(&key) {
+            return p.clone();
+        }
+        let p = book_view::proposed(book);
+        self.props.borrow_mut().insert(key, p.clone());
+        p
     }
 
     fn stats_for(&self, book: &ComicBook) -> Option<&SeriesStatistics> {
-        self.stats.get(&SeriesKey::of(book, self.prop(book)))
+        let prop = self.prop(book);
+        self.stats.get(&SeriesKey::of(book, &prop))
     }
 }
 
@@ -142,7 +152,7 @@ fn match_one<'a>(
         }
         Matcher::Value(v) => {
             if v.spec.kind == spec::MatcherKind::Duplicate {
-                match_duplicates(items, v.op == 0)
+                match_duplicates(items, v.op == 0, ctx)
             } else {
                 items
                     .iter()
@@ -234,7 +244,7 @@ fn match_value(book: &ComicBook, vm: &ValueMatcher, ctx: &MatchContext<'_>) -> b
 
 fn match_all_properties_value(book: &ComicBook, vm: &ValueMatcher, ctx: &MatchContext<'_>) -> bool {
     let option = vm.option.as_deref().unwrap_or("All");
-    let prop = ctx.prop(book);
+    let prop = &ctx.prop(book);
     let values: Vec<String> = match option {
         "Series" => vec![
             book_view::shadow_series(book, prop).to_string(),
@@ -463,7 +473,7 @@ fn compare_text(book: &ComicBook, vm: &ValueMatcher) -> String {
 /// Resolves the concrete string matcher's property for the book. The
 /// per-class `GetValue` implementations mapped to class names.
 fn property_string_value(book: &ComicBook, vm: &ValueMatcher, ctx: &MatchContext<'_>) -> String {
-    let prop = ctx.prop(book);
+    let prop = &ctx.prop(book);
     match vm.spec.class_name {
         "ComicBookAgeRatingMatcher" => book.info.age_rating.clone(),
         "ComicBookAlternateSeriesMatcher" => book.info.alternate_series.clone(),
@@ -545,7 +555,7 @@ fn property_as_string(book: &ComicBook, prop: &str) -> String {
 
 /// The book-side value of a numeric matcher (`GetValue` overrides).
 fn numeric_value(book: &ComicBook, vm: &ValueMatcher, ctx: &MatchContext<'_>) -> f32 {
-    let prop = ctx.prop(book);
+    let prop = &ctx.prop(book);
     match vm.spec.class_name {
         "ComicBookAlternateCountMatcher" => book.info.alternate_count as f32,
         "ComicBookAlternateNumberMatcher" => {
@@ -671,7 +681,7 @@ fn compare_date_ignore_time(a: &CrDateTime, b: &CrDateTime) -> i32 {
 
 /// The book-side date value (`GetValue` overrides).
 fn date_value(book: &ComicBook, vm: &ValueMatcher, ctx: &MatchContext<'_>) -> CrDateTime {
-    let prop = ctx.prop(book);
+    let prop = &ctx.prop(book);
     match vm.spec.class_name {
         "ComicBookAddedMatcher" => book.added_time,
         "ComicBookCreationMatcher" => book.file_creation_time,
@@ -734,13 +744,13 @@ fn match_series(
     match stat {
         StatKind::AllComplete => match_yesno(vm, stats.all_complete),
         StatKind::GapStart => {
-            let prop = ctx.prop(book);
+            let prop = &ctx.prop(book);
             let (is_num, n) = book_view::compare_number(book, prop);
             let i = if is_num { n } else { -1.0 };
             stats.gaps.iter().any(|(start, _)| *start == i)
         }
         StatKind::GapEnd => {
-            let prop = ctx.prop(book);
+            let prop = &ctx.prop(book);
             let (is_num, n) = book_view::compare_number(book, prop);
             let i = if is_num { n } else { -1.0 };
             stats.gaps.iter().any(|(_, end)| *end == i)
@@ -797,7 +807,11 @@ fn match_series(
 
 /// `ComicBookDuplicateMatcher.Match`: books that are metadata duplicates
 /// or file-path duplicates (op 0); op 1 passes everything through.
-fn match_duplicates<'a>(items: &[&'a ComicBook], on: bool) -> Vec<&'a ComicBook> {
+fn match_duplicates<'a>(
+    items: &[&'a ComicBook],
+    on: bool,
+    ctx: &MatchContext<'a>,
+) -> Vec<&'a ComicBook> {
     if !on {
         return items.to_vec();
     }
@@ -819,38 +833,62 @@ fn match_duplicates<'a>(items: &[&'a ComicBook], on: bool) -> Vec<&'a ComicBook>
             parent[ra] = rb;
         }
     }
+    // The duplicate comparer's values precomputed per book (the pair
+    // loop below is O(N²) — a per-pair ComicNameInfo parse was the
+    // Phase 8 storm; the values are identical, the parses are not).
+    struct DupShadow {
+        compressed_series: String,
+        format: String,
+        volume: i32,
+        number: String,
+        year: i32,
+    }
+    let shadow: Vec<DupShadow> = items
+        .iter()
+        .map(|b| {
+            let prop = ctx.prop(b);
+            DupShadow {
+                compressed_series: compress_series(book_view::shadow_series(b, &prop)),
+                format: book_view::shadow_format(b, &prop).to_string(),
+                volume: book_view::shadow_volume(b, &prop),
+                number: book_view::shadow_number(b, &prop).to_string(),
+                year: book_view::shadow_year(b, &prop),
+            }
+        })
+        .collect();
     // Metadata duplicates (with the C# ternary-chain quirk preserved,
     // see the comment below) and path duplicates.
     for i in 0..n {
         for j in (i + 1)..n {
-            let (a, b) = (items[i], items[j]);
+            let (a, b) = (&shadow[i], &shadow[j]);
             let meta = {
                 // NOTE: the C# source chains the year/month/day checks
                 // in one ternary expression, which compiles to
                 // `yearCond ? yearEq : (monthCond ? monthEq :
                 // (dayCond ? dayEq : bwEq))` — when a year is present
                 // on either side, only the year is compared.
-                let year_cond = a_shadow_year(a) >= 0 || a_shadow_year(b) >= 0;
-                let month_cond = a.info.month >= 0 || b.info.month >= 0;
-                let day_cond = a.info.day >= 0 || b.info.day >= 0;
-                compressed_name_eq(a, b)
-                    && a_shadow_format(a) == a_shadow_format(b)
-                    && a_shadow_volume(a) == a_shadow_volume(b)
-                    && a_shadow_number(a) == a_shadow_number(b)
-                    && a.info.language_iso == b.info.language_iso
+                let year_cond = a.year >= 0 || b.year >= 0;
+                let month_cond = items[i].info.month >= 0 || items[j].info.month >= 0;
+                let day_cond = items[i].info.day >= 0 || items[j].info.day >= 0;
+                a.compressed_series
+                    .eq_ignore_ascii_case(&b.compressed_series)
+                    && a.format == b.format
+                    && a.volume == b.volume
+                    && a.number == b.number
+                    && items[i].info.language_iso == items[j].info.language_iso
                     && if year_cond {
-                        a_shadow_year(a) == a_shadow_year(b)
+                        a.year == b.year
                     } else if month_cond {
-                        a.info.month == b.info.month
+                        items[i].info.month == items[j].info.month
                     } else if day_cond {
-                        a.info.day == b.info.day
+                        items[i].info.day == items[j].info.day
                     } else {
-                        a.info.black_and_white == b.info.black_and_white
+                        items[i].info.black_and_white == items[j].info.black_and_white
                     }
             };
-            let path = book_view::is_linked(a)
-                && book_view::is_linked(b)
-                && a.file_path.eq_ignore_ascii_case(&b.file_path);
+            let path = book_view::is_linked(items[i])
+                && book_view::is_linked(items[j])
+                && items[i].file_path.eq_ignore_ascii_case(&items[j].file_path);
             if meta || path {
                 union(&mut parent, i, j);
             }
@@ -869,35 +907,15 @@ fn match_duplicates<'a>(items: &[&'a ComicBook], on: bool) -> Vec<&'a ComicBook>
         .collect()
 }
 
-// Shadow helpers taking the default proposed parse (the duplicate
-// comparer reads Shadow* with EnableProposed as stored).
-fn a_shadow_year(b: &ComicBook) -> i32 {
-    book_view::shadow_year(b, &book_view::proposed(b))
-}
-fn a_shadow_volume(b: &ComicBook) -> i32 {
-    book_view::shadow_volume(b, &book_view::proposed(b))
-}
-fn a_shadow_format(b: &ComicBook) -> String {
-    book_view::shadow_format(b, &book_view::proposed(b)).to_string()
-}
-fn a_shadow_number(b: &ComicBook) -> String {
-    book_view::shadow_number(b, &book_view::proposed(b)).to_string()
-}
-
 /// `GroupInfo.CompressedName`: drop separator-delimited articles,
 /// concatenate. The C# uses the (ini-configured) article list; the
 /// default here is the list shipped in ComicRack.ini.
-fn compressed_name_eq(a: &ComicBook, b: &ComicBook) -> bool {
+fn compress_series(text: &str) -> String {
     const SEPARATORS: [char; 15] = [
         ' ', '\t', '\n', '\r', '-', '~', ',', '.', ';', ':', '/', '\\', '\'', '\u{b4}', '`',
     ];
     const ARTICLES: [&str; 8] = ["the", "der", "die", "das", "le", "la", "les", "l'"];
-    let compress = |text: &str| -> String {
-        text.split(SEPARATORS)
-            .filter(|t| !t.is_empty() && !ARTICLES.iter().any(|a| t.eq_ignore_ascii_case(a)))
-            .collect()
-    };
-    compress(book_view::shadow_series(a, &book_view::proposed(a))).eq_ignore_ascii_case(&compress(
-        book_view::shadow_series(b, &book_view::proposed(b)),
-    ))
+    text.split(SEPARATORS)
+        .filter(|t| !t.is_empty() && !ARTICLES.iter().any(|a| t.eq_ignore_ascii_case(a)))
+        .collect()
 }

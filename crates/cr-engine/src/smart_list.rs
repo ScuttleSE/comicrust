@@ -10,7 +10,7 @@ use cr_core::model::enums::{
 
 use crate::matcher::eval::{match_set, MatchContext};
 use crate::matcher::tree::Matcher;
-use crate::sort::{compare_series, randomize};
+use crate::sort::randomize;
 
 /// Binds one raw XML matcher tree node. Unknown class names return
 /// `None` (the C# would not load such a file at all).
@@ -59,7 +59,10 @@ pub fn evaluate_smart_list<'a>(
         match list.limit_selection_type {
             ComicSmartListLimitSelectionType::SortedBySeries => {
                 let mut sorted: Vec<&ComicBook> = result;
-                sorted.sort_by(|a, b| compare_series(a, b));
+                // The sort keys come from the context's cached parses
+                // (no per-comparison ComicNameInfo regex parses).
+                sorted
+                    .sort_by(|a, b| crate::sort::compare_series(a, b, &ctx.prop(a), &ctx.prop(b)));
                 result = sorted;
             }
             ComicSmartListLimitSelectionType::Random => {

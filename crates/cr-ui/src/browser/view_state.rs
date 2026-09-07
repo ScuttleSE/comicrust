@@ -11,8 +11,10 @@
 use std::collections::HashSet;
 
 use cr_core::model::comic_book::ComicBook;
+use cr_core::model::comic_name_info::ComicNameInfo;
 use cr_core::xml::scalar::CrGuid;
 use cr_engine::group::{compare_by_column, groupers, GroupInfo, Grouper, UNSPECIFIED};
+use cr_engine::matcher::book_view;
 use cr_engine::matcher::eval::{match_set, MatchContext};
 use cr_engine::matcher::tree::Matcher;
 use cr_io::extended_compare::extended_compare_ignore_articles_case;
@@ -77,7 +79,13 @@ impl SortChain {
         }
     }
 
-    fn compare(&self, a: &ComicBook, b: &ComicBook) -> std::cmp::Ordering {
+    fn compare(
+        &self,
+        a: &ComicBook,
+        b: &ComicBook,
+        pa: Option<&ComicNameInfo>,
+        pb: Option<&ComicNameInfo>,
+    ) -> std::cmp::Ordering {
         if self.keys.is_empty() {
             // No sort: the input order IS the display order (the C#
             // shows the enumeration order — a reading list's stored
@@ -85,7 +93,7 @@ impl SortChain {
             return std::cmp::Ordering::Equal;
         }
         for key in &self.keys {
-            let mut ord = compare_by_column(a, b, &key.column);
+            let mut ord = compare_by_column(a, b, &key.column, pa, pb);
             if ord != std::cmp::Ordering::Equal {
                 if key.descending {
                     ord = ord.reverse();
@@ -259,11 +267,18 @@ impl ViewState {
             items: Vec<usize>,
         }
         let mut buckets: Vec<Bucket> = Vec::new();
-        let bucket_of = |caption: &str, sort_key: i32, buckets: &mut Vec<Bucket>| {
-            buckets
-                .iter()
-                .position(|b| b.sort_key == sort_key && b.caption == caption)
-                .unwrap_or_else(|| {
+        // (sort_key, caption) → bucket index (a HashMap; the linear
+        // `position` scan was O(N×G) per rebuild).
+        let mut bucket_index: std::collections::HashMap<(i32, String), usize> =
+            std::collections::HashMap::new();
+        let bucket_of = |caption: &str,
+                         sort_key: i32,
+                         buckets: &mut Vec<Bucket>,
+                         index: &mut std::collections::HashMap<(i32, String), usize>|
+         -> usize {
+            *index
+                .entry((sort_key, caption.to_string()))
+                .or_insert_with(|| {
                     buckets.push(Bucket {
                         caption: caption.to_string(),
                         sort_key,
@@ -272,6 +287,10 @@ impl ViewState {
                     buckets.len() - 1
                 })
         };
+        // The proposed parses once per rebuild (`PropTable`; the
+        // sort chain and the grouper share it — no per-comparison or
+        // per-book regex parses, the Phase 8 storm).
+        let props = book_view::prop_table(&self.books);
         // The quick-search filter (the C# `quickFilter` in
         // `FillBookList`).
         let allowed: Option<Vec<CrGuid>> = self.filter.as_ref().map(|m| {
@@ -289,14 +308,16 @@ impl ViewState {
                     continue;
                 }
             }
+            let empty = book_view::empty_prop();
+            let prop = props[index].as_ref().unwrap_or(empty);
             let (caption, sort_key) = match grouper_fn {
                 Some(g) => {
-                    let info: GroupInfo = g(book);
+                    let info: GroupInfo = g(book, prop);
                     (info.caption, info.sort_key)
                 }
                 None => (String::new(), 0),
             };
-            let bucket = bucket_of(&caption, sort_key, &mut buckets);
+            let bucket = bucket_of(&caption, sort_key, &mut buckets, &mut bucket_index);
             buckets[bucket].items.push(index);
         }
         buckets.sort_by(|a, b| {
@@ -324,7 +345,14 @@ impl ViewState {
         self.groups.clear();
         for bucket in buckets {
             let mut items = bucket.items;
-            items.sort_by(|&x, &y| sort.compare(&self.books[x], &self.books[y]));
+            items.sort_by(|&x, &y| {
+                sort.compare(
+                    &self.books[x],
+                    &self.books[y],
+                    props[x].as_ref(),
+                    props[y].as_ref(),
+                )
+            });
             let collapsed = previous_collapse
                 .get(&bucket.caption)
                 .copied()

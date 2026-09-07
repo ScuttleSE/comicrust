@@ -134,31 +134,48 @@ pub fn guid_compare(
     x[8..16].cmp(&y[8..16])
 }
 
-fn prop(book: &ComicBook) -> ComicNameInfo {
-    book_view::proposed(book)
-}
+// The comparers take the precomputed proposed parses (the
+// `PropTable` resolution — callers pass `empty_prop()` for books
+// whose parse is dead). No comparer parses here: a sort does
+// O(N log N) comparisons and a per-comparison ComicNameInfo regex
+// parse was the Phase 8 storm.
 
 /// `ComicBookFormatComparer` (ShadowFormat, ignore case).
-pub fn compare_format(x: &ComicBook, y: &ComicBook) -> Ordering {
-    book_view::shadow_format(x, &prop(x))
+pub fn compare_format(
+    x: &ComicBook,
+    y: &ComicBook,
+    px: &ComicNameInfo,
+    py: &ComicNameInfo,
+) -> Ordering {
+    book_view::shadow_format(x, px)
         .to_lowercase()
-        .cmp(&book_view::shadow_format(y, &prop(y)).to_lowercase())
+        .cmp(&book_view::shadow_format(y, py).to_lowercase())
 }
 
 /// `ComicBookVolumeComparer` (ShadowVolume).
-pub fn compare_volume(x: &ComicBook, y: &ComicBook) -> Ordering {
-    book_view::shadow_volume(x, &prop(x)).cmp(&book_view::shadow_volume(y, &prop(y)))
+pub fn compare_volume(
+    x: &ComicBook,
+    y: &ComicBook,
+    px: &ComicNameInfo,
+    py: &ComicNameInfo,
+) -> Ordering {
+    book_view::shadow_volume(x, px).cmp(&book_view::shadow_volume(y, py))
 }
 
 /// `ComicBookNumberComparer` (ComicTextNumberFloat of ShadowNumber).
-pub fn compare_number(x: &ComicBook, y: &ComicBook) -> Ordering {
-    let (ix, nx) = book_view::compare_number(x, &prop(x));
-    let (iy, ny) = book_view::compare_number(y, &prop(y));
+pub fn compare_number(
+    x: &ComicBook,
+    y: &ComicBook,
+    px: &ComicNameInfo,
+    py: &ComicNameInfo,
+) -> Ordering {
+    let (ix, nx) = book_view::compare_number(x, px);
+    let (iy, ny) = book_view::compare_number(y, py);
     let ord = (ix, nx).partial_cmp(&(iy, ny)).unwrap_or(Ordering::Equal);
     // TextNumberFloat.CompareTo falls back to an ordinal text compare
     // when both are "equal" numerically or neither is a number.
     if ord == Ordering::Equal {
-        book_view::shadow_number(x, &prop(x)).cmp(book_view::shadow_number(y, &prop(y)))
+        book_view::shadow_number(x, px).cmp(book_view::shadow_number(y, py))
     } else {
         ord
     }
@@ -166,31 +183,41 @@ pub fn compare_number(x: &ComicBook, y: &ComicBook) -> Ordering {
 
 /// `ComicBookSeriesComparer`: series (IgnoreArticles | IgnoreCase),
 /// then format, volume, number.
-pub fn compare_series(x: &ComicBook, y: &ComicBook) -> Ordering {
+pub fn compare_series(
+    x: &ComicBook,
+    y: &ComicBook,
+    px: &ComicNameInfo,
+    py: &ComicNameInfo,
+) -> Ordering {
     let ord = extended_compare_ignore_articles_case(
-        book_view::shadow_series(x, &prop(x)),
-        book_view::shadow_series(y, &prop(y)),
+        book_view::shadow_series(x, px),
+        book_view::shadow_series(y, py),
     );
     if ord != Ordering::Equal {
         return ord;
     }
-    let ord = compare_format(x, y);
+    let ord = compare_format(x, y, px, py);
     if ord != Ordering::Equal {
         return ord;
     }
-    let ord = compare_volume(x, y);
+    let ord = compare_volume(x, y, px, py);
     if ord != Ordering::Equal {
         return ord;
     }
-    compare_number(x, y)
+    compare_number(x, y, px, py)
 }
 
 /// `ComicBookComparer` used by the duplicate/series paths in the
 /// browser: series (IgnoreArticles | IgnoreCase) only.
-pub fn compare_series_name_only(x: &ComicBook, y: &ComicBook) -> Ordering {
+pub fn compare_series_name_only(
+    x: &ComicBook,
+    y: &ComicBook,
+    px: &ComicNameInfo,
+    py: &ComicNameInfo,
+) -> Ordering {
     extended_compare_ignore_articles_case(
-        book_view::shadow_series(x, &prop(x)),
-        book_view::shadow_series(y, &prop(y)),
+        book_view::shadow_series(x, px),
+        book_view::shadow_series(y, py),
     )
 }
 
@@ -248,7 +275,12 @@ mod tests {
         b.info.number = "2".into();
         b.enable_proposed = false;
         // Articles are ignored for the series, numbers compare
-        // numerically: "The Batman" #10 sorts after #2.
-        assert_eq!(compare_series(&b, &a), Ordering::Less);
+        // numerically: "The Batman" #10 sorts after #2. The stored
+        // info is complete, so the proposed parse is dead
+        // (`empty_prop()`).
+        assert_eq!(
+            compare_series(&b, &a, book_view::empty_prop(), book_view::empty_prop()),
+            Ordering::Less
+        );
     }
 }

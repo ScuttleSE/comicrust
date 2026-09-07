@@ -176,9 +176,34 @@ Update this section at the **end of every work session**. The next agent must kn
   (2886 items × 255 books) 413.5 s → 0.069 s; the 2500×2500 storm
   > 15 min (unfinished) → 0.47 s; debug 7.3 s / 0.9 s, the 30 s
   budget holds in both profiles; the placeholder count is asserted
-  (matching semantics guarded). No progress dialog (no real wait
+  (matching semantics guarded).   No progress dialog (no real wait
   remains). Probes importlist_probe + listorder_probe green.
   370 tests.
+  PHASE 8 T10 FIRST SLICE IMPLEMENTED (2026-09-07), user test
+  pending: the view-side proposed-parse storms (the T3 audit's
+  remaining sites) — `book_view::needs_prop` (the shared
+  parse-dead gate) + `prop_table` (one parse per book per operation)
+  + `empty_prop` (the never-read dead value) in
+  `cr-engine/src/matcher/book_view.rs`. Sites: (1) the sort
+  comparers take precomputed props — `sort.rs` signatures,
+  `group.rs::compare_by_column` (+2 Option args), the
+  `view_state.rs::SortChain::compare` chain; `rebuild` builds the
+  table once per rebuild and sorts bucket indexes; (2) `Grouper`
+  gained the prop arg (`group.rs`; the `groupers()` table shape
+  unchanged) + the `bucket_of` HashMap rider; (3) `match_duplicates`
+  precomputes the five comparer values per book before the O(N²)
+  pair loop (the loop's shape/short-circuits/ternary quirk
+  unchanged; `compress_series` extracted) and takes the ctx now;
+  (4) the smart-list SortedBySeries sort reads `ctx.prop`; (5)
+  MatchContext props are LAZY (RefCell parse-on-first-use; the
+  series stats build reuses the cache) — a metadata-complete
+  library parses nothing per evaluation. Timing gate
+  `cr-engine/tests/view_perf.rs`: sort 5000 by Series 25.3 s →
+  4.4 ms, group pass 5000 0.84 s → 78 µs, duplicates 1000 ~268 s →
+  5.8 ms (release; debug 27 ms / 0.44 ms / 125 ms; budgets
+  15/15/30 s). Plan B (the C#-parity per-book session cache) is in
+  `docs/backlog.md` with the invalidation surface. 373 tests;
+  fmt/clippy green; listorder/browserbar/commands probes green.
   T9 FIRST SLICE (2026-09-06): README.md rewritten for END USERS
   (status, features, format table incl. the verified no-CBR/RAR
   write-back, install from the release tarball or source, data

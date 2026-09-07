@@ -223,6 +223,49 @@ fmt/clippy/`cargo test --workspace` green, `importlist_probe` +
   this task sweeps the rest only with measurements (no speculative
   tuning).
 
+FIRST SLICE IMPLEMENTED 2026-09-07 (the view-side proposed-parse
+storms — the same pattern the T3 audit found in the sort, group,
+duplicate, and matcher-context paths; no fix round). The shared
+primitive: `book_view::needs_prop` (the parse is dead unless
+`EnableProposed` and a shadow field falls through) +
+`book_view::prop_table` (one parse per book per operation, `None` =
+dead) + `book_view::empty_prop` (the never-read dead value). Sites:
+
+1. **Sort** (`sort.rs` + `group.rs::compare_by_column` +
+   `view_state.rs::SortChain::compare`): every comparer takes the
+   precomputed props; `rebuild` builds the table once per rebuild
+   and sorts bucket indexes through it. Was: a full ComicNameInfo
+   regex parse per side per comparison, on every view rebuild.
+2. **Groupers** (`group.rs`): `Grouper = fn(&ComicBook,
+   &ComicNameInfo) -> GroupInfo`; the table shape is unchanged; the
+   five prop-consuming groupers read the passed parse. Rider: the
+   `bucket_of` linear scan became a `(sort_key, caption)` HashMap.
+3. **Duplicate matcher** (`eval.rs::match_duplicates`): the five
+   duplicate-comparer values precomputed per book before the O(N²)
+   pair loop (which keeps its exact C# shape and short-circuit
+   chain, including the ternary quirk); `compress_series` extracted
+   from the old per-pair `compressed_name_eq`.
+4. **Smart-list SortedBySeries** (`smart_list.rs`): sorts through
+   `ctx.prop` (the context cache) instead of fresh parses.
+5. **MatchContext** (`eval.rs`) — found during the work, same storm
+   family: the props map is now LAZY (parse on first use per book
+   via RefCell; books with full metadata never parse). The series
+   statistics build reuses the same cache, so a filter rebuild over
+   a metadata-complete library parses nothing.
+
+Timing gate `cr-engine/tests/view_perf.rs` (sort 5000 by Series /
+group pass 5000 / duplicate matcher 1000; budgets 15/15/30 s).
+MEASURED (release): sort 5000 books **25.3 s → 4.4 ms**; group pass
+5000 **0.84 s → 78 µs**; duplicates 1000 books **~268 s → 5.8 ms**
+(the pre-fix number at the user's 255-book scale ≈ 17 s per Show
+Duplicates toggle). Debug: 27 ms / 0.44 ms / 125 ms — all budgets
+hold. Gates: 373 tests green (sort/group/matcher semantics
+untouched), fmt + clippy clean, `listorder_probe` +
+`browserbar_probe` + `commands_probe` green. User test pending.
+Deferred to the backlog: plan B (the C#-parity per-book session
+cache) with the full rationale + invalidation surface
+(`docs/backlog.md`, "C#-parity per-book proposed cache").
+
 ### T11. Windows-path migration (first run from a ComicRack CE database)
 
 Added 2026-09-07 (user request). A migrated ComicRack CE
@@ -288,3 +331,7 @@ T8 → T9 → T11 → T10. The database-backend item is Phase 9 now (see T7).
 - 2026-09-07: T3 implemented (the CBL-import perf — 413.5 s →
   0.069 s on the user scenario; record in the T3 section). User
   test pending. T1/T2/T4+ not started.
+- 2026-09-07: T10 first slice implemented (the view-side
+  proposed-parse storms: sort 25.3 s → 4.4 ms, duplicates ~268 s →
+  5.8 ms, group 0.84 s → 78 µs at gate scale; record in the T10
+  section; plan B deferred to the backlog). User test pending.
