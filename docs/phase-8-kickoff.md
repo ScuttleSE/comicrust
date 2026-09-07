@@ -121,6 +121,30 @@ T11), new packaging files (T8).
 - Gate: the timing test + `importlist_probe`/`listorder_probe`
   stay green.
 
+IMPLEMENTED 2026-09-07 (no fix round). `reading_list.rs` builds a
+`LibraryIndex` per `create_from_reading_list` call: a Guid map and a
+file-name map (first-book-wins = the `find` parity; OrdinalIgnoreCase
+via `to_ascii_lowercase`) plus a `BookShadow` row per book — the five
+shadow values with ONE lazy `proposed()` parse per book (only when
+`EnableProposed` and a field actually falls through) and the two
+transformed series forms (`series_iv` = rxVolume strip + trim,
+`series_sd` = the IV→rxSpecial chain — byte-exact with the C#
+`SeriesEquals` option ladder; the item side computes its two forms
+once per item). The ladder, the year/volume/format narrowings and the
+placeholder flow are unchanged; `series_equals` stays public for
+parity/tests. Timing gate `cr-engine/tests/reading_list_perf.rs`
+(synthetic 2000 metadata + 500 proposed books × 1600 + 400 + 500
+items; the real chronology `.cbl` × the real-world 255-book library
+is the second test, skipped when the git-ignored `.cbl` is absent).
+MEASURED (release): the user scenario (2886-item chronology × 255
+books) was **413.5 s**, now **0.069 s** (~6000×); the 2500×2500
+synthetic storm (> 15 min, unfinished pre-fix) is 0.47 s; debug
+7.3 s / 0.9 s — the 30 s budget holds in both profiles. Placeholders
+count asserted unchanged (matching semantics guarded). The
+automatic-progress-dialog stays out (no real wait remains). Gates:
+fmt/clippy/`cargo test --workspace` green, `importlist_probe` +
+`listorder_probe` green. User test pending.
+
 ### T4. Perf: the fileless-book delete hang (item 3)
 
 - Symptom: ~200 tagged empty books, delete → the app hangs ~1 min.
@@ -261,3 +285,6 @@ T8 → T9 → T11 → T10. The database-backend item is Phase 9 now (see T7).
   request). Scope + the four user decisions (collapsed roots,
   not-found → fileless, re-prompt each boot, the File menu re-run)
   are recorded in the T11 section. Not started.
+- 2026-09-07: T3 implemented (the CBL-import perf — 413.5 s →
+  0.069 s on the user scenario; record in the T3 section). User
+  test pending. T1/T2/T4+ not started.

@@ -162,6 +162,23 @@ Update this section at the **end of every work session**. The next agent must kn
   writers, HEIF/AVIF decode, the T14 per-list sort (the port resets
   the view sort on every list switch; the C# keeps it per list — a
    recorded deviation).
+  PHASE 8 T3 IMPLEMENTED (2026-09-07), user test pending: the
+  CBL-import perf — `reading_list.rs` builds a `LibraryIndex` per
+  `create_from_reading_list` call (Guid + file-name HashMaps,
+  first-wins `find` parity) with a `BookShadow` row per book (the
+  five shadow values from ONE lazy `proposed()` parse — only when
+  `EnableProposed` and a field falls through — plus the
+  series_iv/series_sd forms matching the C# `SeriesEquals` option
+  chain); the ladder/narrowings/placeholders unchanged. Timing gate
+  `cr-engine/tests/reading_list_perf.rs` (synthetic 2500×2500 + the
+  real chronology `.cbl` × the real-world library, skipped without
+  the git-ignored fixture). MEASURED (release): the user scenario
+  (2886 items × 255 books) 413.5 s → 0.069 s; the 2500×2500 storm
+  > 15 min (unfinished) → 0.47 s; debug 7.3 s / 0.9 s, the 30 s
+  budget holds in both profiles; the placeholder count is asserted
+  (matching semantics guarded). No progress dialog (no real wait
+  remains). Probes importlist_probe + listorder_probe green.
+  370 tests.
   T9 FIRST SLICE (2026-09-06): README.md rewritten for END USERS
   (status, features, format table incl. the verified no-CBR/RAR
   write-back, install from the release tarball or source, data

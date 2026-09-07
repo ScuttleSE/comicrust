@@ -136,6 +136,85 @@ fn shadow_parts<'a>(
     )
 }
 
+/// The per-book row of the precomputed shadow table: the five shadow
+/// values the series ladder reads, plus the two transformed series
+/// forms `series_equals` would recompute per call (the
+/// IGNORE_VOLUME_IN_NAME form, and the IV|StripDown form — the exact
+/// `rxVolume` → trim → `rxSpecial` chain of the C# helper).
+struct BookShadow {
+    series: String,
+    series_iv: String,
+    series_sd: String,
+    number: String,
+    year: i32,
+    volume: i32,
+    format: String,
+}
+
+impl BookShadow {
+    fn new(book: &ComicBook) -> Self {
+        // The proposed values are read only where a shadow field
+        // falls through to the file-name parse (`EnableProposed` +
+        // an empty stored value). One parse per book, not per match.
+        let needs_prop = book.enable_proposed
+            && (book.info.series.is_empty()
+                || book.info.number.is_empty()
+                || book.info.format.is_empty()
+                || book.info.volume == -1
+                || book.info.year == -1);
+        let prop = if needs_prop {
+            book_view::proposed(book)
+        } else {
+            name_info::ComicNameInfo::new()
+        };
+        let (series, number, year, volume, format) = shadow_parts(book, &prop);
+        let series = series.to_string();
+        let series_iv = strip_all(&series, rx_volume()).trim().to_string();
+        let series_sd = strip_all(&series_iv, rx_special());
+        BookShadow {
+            series,
+            series_iv,
+            series_sd,
+            number: number.to_string(),
+            year,
+            volume,
+            format: format.to_string(),
+        }
+    }
+}
+
+/// The per-call precompute: book id / file-name indexes (first book
+/// wins, `find` parity) plus the shadow table.
+struct LibraryIndex {
+    by_id: std::collections::HashMap<CrGuid, usize>,
+    by_file: std::collections::HashMap<String, usize>,
+    rows: Vec<BookShadow>,
+}
+
+impl LibraryIndex {
+    fn new(library: &[ComicBook]) -> Self {
+        let mut by_id: std::collections::HashMap<CrGuid, usize> =
+            std::collections::HashMap::with_capacity(library.len());
+        let mut by_file: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::with_capacity(library.len());
+        for (i, b) in library.iter().enumerate() {
+            by_id.entry(b.id).or_insert(i);
+            if !b.file_path.is_empty() {
+                by_file
+                    .entry(
+                        name_info::file_name_without_extension(&b.file_path).to_ascii_lowercase(),
+                    )
+                    .or_insert(i);
+            }
+        }
+        LibraryIndex {
+            by_id,
+            by_file,
+            rows: library.iter().map(BookShadow::new).collect(),
+        }
+    }
+}
+
 /// The `ComicIdListItem.CreateFromReadingList` port over a library
 /// book slice (the C# runs it against `Library.Books`).
 pub fn create_from_reading_list(
@@ -146,54 +225,56 @@ pub fn create_from_reading_list(
         book_ids: Vec::new(),
         new_books: Vec::new(),
     };
+    let index = LibraryIndex::new(library);
     for crli in reading_items {
         let mut crli = crli.clone();
         // 1. By book Guid (`library[crli.Id]`).
         let mut book = if crli.id.is_empty() {
             None
         } else {
-            library.iter().find(|b| b.id == crli.id)
+            index.by_id.get(&crli.id).copied().map(|i| &library[i])
         };
         // 2. By file name (`FindItemByFileName` — OrdinalIgnoreCase
         // against the book's name-without-extension; the `.cbl`
         // stores exactly that).
         if book.is_none() && !crli.file_name.is_empty() {
-            book = library.iter().find(|b| {
-                name_info::file_name_without_extension(&b.file_path)
-                    .eq_ignore_ascii_case(&crli.file_name)
-            });
+            book = index
+                .by_file
+                .get(&crli.file_name.to_ascii_lowercase())
+                .copied()
+                .map(|i| &library[i]);
         }
         // 3. Series/number matching over the file-name-parsed values.
         if book.is_none() {
             set_file_name_info(&mut crli);
-            let series_match = |opts: CompareSeriesOptions| -> Vec<&ComicBook> {
-                library
+            // The item-side series forms (`series_equals` transforms
+            // both sides; the book side lives in the shadow table).
+            let item_series_iv = strip_all(&crli.series, rx_volume()).trim().to_string();
+            let item_series_sd = strip_all(&item_series_iv, rx_special());
+            let series_match = |key: fn(&BookShadow) -> &str, item_series: &str| -> Vec<usize> {
+                index
+                    .rows
                     .iter()
-                    .filter(|b| {
-                        let prop = book_view::proposed(b);
-                        let (series, number, ..) = shadow_parts(b, &prop);
-                        *number == crli.number && series_equals(series, &crli.series, opts)
+                    .enumerate()
+                    .filter(|(_, r)| {
+                        r.number == crli.number && key(r).eq_ignore_ascii_case(item_series)
                     })
+                    .map(|(i, _)| i)
                     .collect()
             };
-            let mut candidates = series_match(CompareSeriesOptions::NONE);
+            let mut candidates = series_match(|r| &r.series, &crli.series);
             if candidates.is_empty() {
-                candidates = series_match(CompareSeriesOptions::IGNORE_VOLUME_IN_NAME);
+                candidates = series_match(|r| &r.series_iv, &item_series_iv);
             }
             if candidates.is_empty() {
-                candidates = series_match(
-                    CompareSeriesOptions::IGNORE_VOLUME_IN_NAME | CompareSeriesOptions::STRIP_DOWN,
-                );
+                candidates = series_match(|r| &r.series_sd, &item_series_sd);
             }
             // Year ±1 narrowing, fall-back to the previous set.
             if candidates.len() > 1 {
                 let narrowed: Vec<_> = candidates
                     .iter()
                     .copied()
-                    .filter(|b| {
-                        let prop = book_view::proposed(b);
-                        (book_view::shadow_year(b, &prop) - crli.year).abs() <= 1
-                    })
+                    .filter(|&i| (index.rows[i].year - crli.year).abs() <= 1)
                     .collect();
                 if !narrowed.is_empty() {
                     candidates = narrowed;
@@ -204,10 +285,7 @@ pub fn create_from_reading_list(
                 let narrowed: Vec<_> = candidates
                     .iter()
                     .copied()
-                    .filter(|b| {
-                        let prop = book_view::proposed(b);
-                        book_view::shadow_volume(b, &prop) == crli.volume
-                    })
+                    .filter(|&i| index.rows[i].volume == crli.volume)
                     .collect();
                 if !narrowed.is_empty() {
                     candidates = narrowed;
@@ -218,16 +296,13 @@ pub fn create_from_reading_list(
                 let narrowed: Vec<_> = candidates
                     .iter()
                     .copied()
-                    .filter(|b| {
-                        let prop = book_view::proposed(b);
-                        book_view::shadow_format(b, &prop).eq_ignore_ascii_case(&crli.format)
-                    })
+                    .filter(|&i| index.rows[i].format.eq_ignore_ascii_case(&crli.format))
                     .collect();
                 if !narrowed.is_empty() {
                     candidates = narrowed;
                 }
             }
-            book = candidates.first().copied();
+            book = candidates.first().map(|&i| &library[i]);
             // 4. Unsolved: a placeholder book (fresh Guid, AddedTime
             // now, the parsed series data).
             if book.is_none() {
