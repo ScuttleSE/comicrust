@@ -119,7 +119,7 @@ popovers arrowless; `browserbar_probe` gates the Views drop
 (amps=0, arrow=false); `navpages_probe` step F fires the real
 context-menu path and gates arrow=false + pointing rect exactly at
 the click point (40, 28 = y 20 + the 8 px offset). All green.
-User test pending.
+USER-TESTED, ALL PASS (2026-09-07, "works now").
 
 ### T2. Default view = Library (item 1)
 
@@ -153,7 +153,7 @@ deviation). Gate: `bootview_probe` (boot → browser + Library
 selected; open → reader; last close → quickopen; Browse ▸ Browser →
 browser). The `tabstrip_probe` expectations A (boot page) and I
 (close-all page) moved to the new shape. All probes green.
-User test pending.
+USER-TESTED, ALL PASS (2026-09-07, "works now").
 
 ### T3. Perf: the large-CBL import (item 2)
 
@@ -428,7 +428,7 @@ T8 → T9 → T11 → T10. The database-backend item is Phase 9 now (see T7).
 - 2026-09-07: T1 + T2 IMPLEMENTED (records in their task sections;
   probes extended: menubar/browserbar/navpages gates + the new
   bootview_probe + the tabstrip A/I expectations moved to the T2
-  shape). Both user tests pending.
+  shape). T1 + T2 USER-TESTED, ALL PASS ("works now").
 - Remaining order: T4 → T5 → T6 → T8 → T9 → T11 → the T10
   remainder (startup + scan + 10k-list sweeps, measured only).
   One user test is pending before that: the T10 slice 1 feel
