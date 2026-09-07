@@ -261,10 +261,37 @@ MEASURED (release): sort 5000 books **25.3 s → 4.4 ms**; group pass
 Duplicates toggle). Debug: 27 ms / 0.44 ms / 125 ms — all budgets
 hold. Gates: 373 tests green (sort/group/matcher semantics
 untouched), fmt + clippy clean, `listorder_probe` +
-`browserbar_probe` + `commands_probe` green. User test pending.
-Deferred to the backlog: plan B (the C#-parity per-book session
-cache) with the full rationale + invalidation surface
-(`docs/backlog.md`, "C#-parity per-book proposed cache").
+`browserbar_probe` + `commands_probe` green. User test pending
+(sort/group clicks + Show Duplicates feel instant). Deferred to the
+backlog: plan B (the C#-parity per-book session cache) with the
+full rationale + invalidation surface (`docs/backlog.md`,
+"C#-parity per-book proposed cache").
+
+SECOND SLICE — USER-TESTED, ALL PASS 2026-09-07 ("works now"): the
+ItemView scroll storm behind the "the 2875-book reading list is
+unusable to scroll" report. Cause (measured): the draw func built
+its culling window as `max(viewport_page_size, draw_size)`, but the
+draw size IS the canvas's full virtual allocation
+(`set_content_height`), so `visible_items` culled only items ABOVE
+the scroll position and every frame drew every item BELOW it
+(probe evidence at scroll y=4000: 2589 items drawn per frame,
+960 ms/frame; ~35 actually visible — GTK clipped the rest), and the
+first frame queued ~2875 thumb loads at once. Fix: cull against the
+adjustment page size (the true viewport; draw-size fallback only
+pre-allocation) in `item_view.rs` set_draw_func. Side fixes:
+`config.view_height` now gets the real viewport height, so
+PageUp/PageDown step ONE page (was the whole list —
+`page_step_display` divides by it); `error_surface()` is a
+thread-local cache (it decoded a PNG per failed-thumb item per
+frame). Gate: `cr-ui/examples/scrollperf_probe.rs` (2875 synthetic
+books; `CR_TRACE=1` prints per-frame win/items/pending/ms lines).
+Measured (release): 2589 → 78 items/frame, 960 → 1.5 ms steady
+frames. Residual (accepted): a ~110 ms hitch on the first paint of
+a fresh viewport = the one-time per-book caption compute
+(`caption_value` resolves up to 9 placeholders, each can trigger an
+uncached `book_view::proposed()` filename parse; cached per book in
+the `captions` map) — the C# pays the same one-time class; the user
+test passed without a hitch report, so plan B stays unpicked.
 
 ### T11. Windows-path migration (first run from a ComicRack CE database)
 
@@ -335,8 +362,20 @@ T8 → T9 → T11 → T10. The database-backend item is Phase 9 now (see T7).
   proposed-parse storms: sort 25.3 s → 4.4 ms, duplicates ~268 s →
   5.8 ms, group 0.84 s → 78 µs at gate scale; record in the T10
   section; plan B deferred to the backlog). User test pending.
+- 2026-09-07: T10 second slice implemented + USER-TESTED ("works
+  now"): the ItemView scroll storm — the draw culled against the
+  full virtual canvas, so every frame drew every item below the
+  scroll (2589 items / 960 ms at y=4000 on the 2875-book list);
+  the draw now culls against the viewport (78 items / 1.5 ms
+  steady; gate `scrollperf_probe`, record in the T10 section).
+  Side fixes: PageUp/PageDown step one page (was the whole list);
+  the failed-cover error surface is decoded once, not per item per
+  frame. The residual one-time caption parse per fresh book was
+  accepted (the C# pays the same class; plan B stays in the
+  backlog).
+- 2026-09-07: T3 USER-TESTED ("the cbl-lists imported reasonably
+  fast now"). T10 slice 1 user test still pending.
 - Remaining order: T1 → T2 → T4 → T5 → T6 → T8 → T9 → T11 → the
   T10 remainder (startup + scan + 10k-list sweeps, measured only).
-  Two user tests are pending before that: the T3 import (the big
-  chronology `.cbl` lands instantly) and the T10 feel (sort/group
-  column clicks + Show Duplicates are instant).
+  One user test is pending before that: the T10 slice 1 feel
+  (sort/group column clicks + Show Duplicates are instant).

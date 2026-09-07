@@ -171,13 +171,14 @@ Update this section at the **end of every work session**. The next agent must kn
   PHASE 8 STATE (2026-09-07, the session-fresh pointer): DONE =
   T3 (the CBL import) + T10 slice 1 (the parse storms) + T10
   slice 2 (the scroll culling storm) — the records directly
-  below; USER TESTS PENDING (the T3 test = import the big
-  chronology `.cbl` in the app, it lands instantly; the T10 test =
-  sort/group column clicks + the Show Duplicates toggle feel
-  instant; the T10 scroll test = scroll the big 2875-book reading
-  list, it must track the wheel). NEXT IN ORDER: T1 (the UI fixes
-  batch: the `&` mnemonics, the popover arrows, the tree-menu
-  position) → T2 (the default view = Library) → T4 (the
+  below. USER TESTS: T3 PASS (2026-09-07, "the cbl-lists imported
+  reasonably fast now"); T10 slice 2 PASS ("works now" — the
+  2875-book reading list tracks the wheel); the T10 slice 1 gate
+  (sort/group column clicks + the Show Duplicates toggle feel
+  instant) is still PENDING an explicit word — treat the next
+  touch of those paths as its test. NEXT IN ORDER: T1 (the UI
+  fixes batch: the `&` mnemonics, the popover arrows, the
+  tree-menu position) → T2 (the default view = Library) → T4 (the
   fileless-delete perf, profile first) → T5 (the Details column
   resize) → T6 (the Folders tab, Phase 4-sized) → T8 (packaging) →
   T9 (docs + migration tooling) → T11 (the Windows-path migration,
@@ -187,9 +188,10 @@ Update this section at the **end of every work session**. The next agent must kn
   C# algorithm shapes intact (kill only the redundant parses), and
   reuse `book_view::needs_prop`/`prop_table` for any new per-book
   proposed-parse need.
-  PHASE 8 T10 SLICE 2 IMPLEMENTED (2026-09-07), user test pending:
-  the ItemView SCROLL storm behind the "the 2875-book reading list
-  is unusable to scroll" report. CAUSE (measured, not read off):
+  PHASE 8 T10 SLICE 2 COMPLETE — USER-TESTED, ALL PASS (2026-09-07,
+  "works now"): the ItemView SCROLL storm behind the "the
+  2875-book reading list is unusable to scroll" report. CAUSE
+  (measured, not read off):
   the draw func built its culling window as
   `max(viewport_page_size, draw_size)` — but the draw size IS the
   canvas's FULL virtual allocation (`set_content_height`), so
@@ -213,15 +215,16 @@ Update this section at the **end of every work session**. The next agent must kn
   (`caption_value` resolves up to 9 placeholders, each can trigger
   an uncached `book_view::proposed()` full filename parse; the
   result is cached per book in the `captions` map) — the C# pays
-  the same one-time class; if the user still feels hitches, the
-  follow-up is the parked Plan B per-book NameInfo cache
-  (docs/backlog.md, the invalidation surface note). 373 tests;
+  the same one-time class; the user test passed without a hitch
+  report, so Plan B (the parked per-book NameInfo cache,
+  docs/backlog.md) stays unpicked. 373 tests;
   fmt/clippy green; listorder/contextmenu/commands/browserbar/
   statusbar/tabstrip/navpages probes green (the contextmenu Gtk-
   CRITICAL + commands GLib-GIO-CRITICAL verified pre-existing on
   the base HEAD).
-  PHASE 8 T3 IMPLEMENTED (2026-09-07), user test pending: the
-  CBL-import perf — `reading_list.rs` builds a `LibraryIndex` per
+  PHASE 8 T3 COMPLETE — USER-TESTED, ALL PASS (2026-09-07, "the
+  cbl-lists imported reasonably fast now"): the CBL-import perf —
+  `reading_list.rs` builds a `LibraryIndex` per
   `create_from_reading_list` call (Guid + file-name HashMaps,
   first-wins `find` parity) with a `BookShadow` row per book (the
   five shadow values from ONE lazy `proposed()` parse — only when
