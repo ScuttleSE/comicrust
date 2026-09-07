@@ -335,3 +335,8 @@ T8 → T9 → T11 → T10. The database-backend item is Phase 9 now (see T7).
   proposed-parse storms: sort 25.3 s → 4.4 ms, duplicates ~268 s →
   5.8 ms, group 0.84 s → 78 µs at gate scale; record in the T10
   section; plan B deferred to the backlog). User test pending.
+- Remaining order: T1 → T2 → T4 → T5 → T6 → T8 → T9 → T11 → the
+  T10 remainder (startup + scan + 10k-list sweeps, measured only).
+  Two user tests are pending before that: the T3 import (the big
+  chronology `.cbl` lands instantly) and the T10 feel (sort/group
+  column clicks + Show Duplicates are instant).

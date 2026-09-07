@@ -59,8 +59,14 @@ Update this section at the **end of every work session**. The next agent must kn
 
 ### State summary
 
-- **Phase:** 6 (native features + de-scripting) **COMPLETE — all
-  tasks user-tested, all pass (2026-09-06)**; Phase 5.5 (UI chrome
+- **Phase:** 8 (polish/ship + the user-reported list) IN PROGRESS —
+  the kickoff is `docs/phase-8-kickoff.md`; done so far: T3 (the
+  CBL-import perf) + T10 first slice (the view-side proposed-parse
+  storms), both records in the paragraphs below, both user tests
+  PENDING; next in the task order: T1 → T2 → T4 → T5 → T6 → T8 →
+  T9 → T11 → the T10 remainder. Phases 0-7 are COMPLETE — all their
+  tasks user-tested (the trail below): 6 (native features +
+  de-scripting) COMPLETE (2026-09-06); Phase 5.5 (UI chrome
   parity) also COMPLETE — all tasks T0-T14 user-tested (2026-09-06),
   the close-out record lives at the end of
   `docs/phase-5.5-kickoff.md`. The per-task records below stay for
@@ -162,6 +168,23 @@ Update this section at the **end of every work session**. The next agent must kn
   writers, HEIF/AVIF decode, the T14 per-list sort (the port resets
   the view sort on every list switch; the C# keeps it per list — a
    recorded deviation).
+  PHASE 8 STATE (2026-09-07, the session-fresh pointer): DONE =
+  T3 (the CBL import) + T10 slice 1 (the parse storms) — the two
+  records directly below; both USER TESTS PENDING (the T3 test =
+  import the big chronology `.cbl` in the app, it lands instantly;
+  the T10 test = sort/group column clicks + the Show Duplicates
+  toggle feel instant). NEXT IN ORDER: T1 (the UI fixes batch:
+  the `&` mnemonics, the popover arrows, the tree-menu position) →
+  T2 (the default view = Library) → T4 (the fileless-delete perf,
+  profile first) → T5 (the Details column resize) → T6 (the
+  Folders tab, Phase 4-sized) → T8 (packaging) → T9 (docs +
+  migration tooling) → T11 (the Windows-path migration, scope in
+  the kickoff) → the T10 remainder (startup + scan + 10k-list
+  sweeps, measured only). Work rules that paid off in T3/T10:
+  MEASURE the before with a committed timing gate, keep the C#
+  algorithm shapes intact (kill only the redundant parses), and
+  reuse `book_view::needs_prop`/`prop_table` for any new per-book
+  proposed-parse need.
   PHASE 8 T3 IMPLEMENTED (2026-09-07), user test pending: the
   CBL-import perf — `reading_list.rs` builds a `LibraryIndex` per
   `create_from_reading_list` call (Guid + file-name HashMaps,
@@ -740,7 +763,7 @@ Update this section at the **end of every work session**. The next agent must kn
   Phases 0-5 are complete (their gates stay green). Open Phase 1
   gaps: WebComicProvider and the PDF/DjVu writers (tracked in
   `docs/phase-1-kickoff.md`).
-- **State:** `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` are green. 356 tests. CI runs on the `docker-runner-amd64` container runner (ADR-020). The release tracks are `release.yaml` (rolling prerelease per push) and `tagged-release.yaml` (manual dispatch, stable release for an existing tag — ADR-021, 2026-09-03). Until the runner is registered and `comicrust-ci:latest` is built on the runner host, pushed and dispatched workflows sit queued on that label.
+- **State:** `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` are green. 373 tests (the two Phase 8 perf gates live in `cr-engine/tests/reading_list_perf.rs` + `cr-engine/tests/view_perf.rs`; the real-fixture parts skip in CI without the git-ignored `tests/testfiles/` files). CI runs on the `docker-runner-amd64` container runner (ADR-020). The release tracks are `release.yaml` (rolling prerelease per push) and `tagged-release.yaml` (manual dispatch, stable release for an existing tag — ADR-021, 2026-09-03). Until the runner is registered and `comicrust-ci:latest` is built on the runner host, pushed and dispatched workflows sit queued on that label.
 - **GitHub mirror (2026-09-06):** remote `github` = `git@github.com:ScuttleSE/comicrust.git` — a TRUE mirror (identical SHAs; `.gitea/` rides along but is inert there, GitHub Actions only reads `.github/workflows/`). After every origin push also `git push github main`; stable tags get pushed manually once; the `rolling` tag is CI-managed on BOTH sides (each release run deletes/recreates it) — never push it by hand. Both release workflows also publish the built tarball + sha256 to GitHub Releases through `.gitea/publish_github_release.sh` (build once on Gitea, assets on both); it needs the Gitea secret `MIRROR_RELEASE_TOKEN` (GitHub PAT with Contents read/write on ScuttleSE/comicrust; Gitea forbids a `GITHUB_` prefix) — unset secret = the step skips with a notice.
 - **Phase 0 gate status:** byte-stable ComicDb.xml round-trip proven on all three synthetic fixtures AND the real-world database `tests/realworld/ComicDb.xml` (255 books, 584 KB, 2026-09-02, user-approved commit).
 - **Phase 2 gate status:** every saved smart list in the real-world DB (a) binds to the matcher registry, (b) renders to a `Match` query string that re-parses and re-renders byte-identically, and (c) evaluates to the SAME book sets the C# cached in `CacheStorage` (Never Read = all 255, Files to update = the 3 dirty books, Reading/Read = empty). Evidence: `crates/cr-engine/tests/realworld_query.rs`.
