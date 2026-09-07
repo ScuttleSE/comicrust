@@ -255,6 +255,37 @@ on this. Research record (2026-09-06):
   (a panicked GTK main loop usually cannot recover — exit is
   acceptable). Pick up with Phase 8 polish if wanted.
 
+## User requests (2026-09-07)
+
+### Komga server connection
+
+- Add the ability to connect to a remote Komga server. When
+  connected, the Komga server appears as a second Library node in
+  the Library view (the navigator tree), next to the local Library
+  node.
+- This is a NEW feature (no C# counterpart). The Komga REST API
+  (OpenAPI-documented: `/api/v1/libraries`, `/api/v1/books`,
+  `/api/v1/books/{id}/file/...`, API-key auth) maps to a new
+  provider side: the node lists Komga libraries/series as books,
+  pages fetch over HTTP, and read-progress round-trips through
+  Komga's `markReadProgress` endpoints. Scope the read-state and
+  metadata write-back when picked up.
+- Needs the navigator's Library-node model to allow a second
+  source (today the tree hardcodes the single local Library).
+
+### Usenet support (NZB indexer + SABnzbd)
+
+- Add usenet download support: take NZBs (from an indexer) and
+  hand them to SABnzbd for download; downloaded comics land in the
+  library (the watch-folder/scan path covers the ingestion side
+  today).
+- NEW feature (no C# counterpart). Likely shape: an SABnzbd API
+  client (`add`, queue/status commands — SABnzbd exposes a simple
+  HTTP JSON API with an api-key), NZB file association/import, and
+  a download queue surface (a Tasks-dialog section or a
+  navigator node). Scope the indexer side (NZB search/browsing)
+  separately when picked up.
+
 ## From Phase 8 (deferred 2026-09-07)
 
 ### C#-parity per-book proposed cache (plan B)
