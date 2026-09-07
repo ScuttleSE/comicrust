@@ -4,8 +4,8 @@ Goal: ship quality — packaging, docs, migration tooling — plus the
 user-reported UX/perf items collected on 2026-09-06 after the Phase 7
 close-out.
 
-Target crates: `cr-ui` (T1-T6), `cr-core`/`cr-engine` (T3, T4),
-new packaging files (T8).
+Target crates: `cr-ui` (T1-T6, T11), `cr-core`/`cr-engine` (T3, T4,
+T11), new packaging files (T8).
 
 ## User-reported items (2026-09-06, verbatim scope)
 
@@ -199,10 +199,57 @@ new packaging files (T8).
   this task sweeps the rest only with measurements (no speculative
   tuning).
 
+### T11. Windows-path migration (first run from a ComicRack CE database)
+
+Added 2026-09-07 (user request). A migrated ComicRack CE
+`ComicDb.xml` carries Windows paths (`C:\…`, `\\server\…`) in
+`Book@File`, `WatchFolder@Folder`, and `BlackList`/`File`. Today the
+user re-adds the folders by hand and a scan re-homes the files.
+This task replaces that manual step with a migration dialog.
+T9's profile-copy helper (`cr-cli migrate`) stays separate — T11 is
+the path rewrite inside the app.
+
+- Detection: a path is Windows-style when it has a drive-letter root
+  or is UNC. At boot (first launch, after the attention dialog,
+  BEFORE the session-reopen pipeline) the app checks the three path
+  families. Any hit → the dialog; no hit → nothing shows. No skip
+  flag: the dialog re-prompts each boot while Windows paths remain
+  (user decision).
+- Dialog (`cr-ui/src/dialogs/path_migration.rs`): one row per
+  COLLAPSED common-prefix root — path components merge below the
+  drive root (`C:\Comics\Batman` + `C:\Comics\Daredevil` collapse to
+  `C:\Comics`; `C:\a` + `C:\b` never collapse to `C:\`). Each row:
+  the Windows root, book/watch/blacklist counts, a
+  browse-to-Linux-folder chooser, and a live "N of M found" preview.
+- OK applies (`cr-engine/src/path_migration.rs`, scanner-parity):
+  case-insensitive prefix strip, `\` → `/`, join under the chosen
+  target. File exists → set `file_path` +
+  `refresh_file_info` (size/times/missing flag — the
+  scanner.rs:57-61 parity). File NOT found → CLEAR `file_path`:
+  the book becomes a fileless book, metadata kept (user decision;
+  the Phase 6 FilelessMarker/open-gate/delete-guard machinery
+  already covers it). The dialog states the not-found count before
+  applying. Watch folders + blacklist: rewrite when the target
+  exists, else leave unchanged + report (removable in Preferences).
+  Direct DB mutation like the scanner move-recovery — NO
+  ComicInfo write-back queue (a path fix must not write the files),
+  DB marked dirty, watcher rebuilt, ItemView + navigator refresh,
+  saved by the normal dirty-save path.
+- Manual re-run: File ▸ "Migrate Windows Paths…"
+  (`win.migrate-paths`), enabled only when detection finds Windows
+  paths (user decision).
+- No model/XML-schema change — only string values change, so
+  ComicDb.xml byte-stability and the golden tests are untouched.
+- Gate: unit tests (collapse, case/UNC/separator mixes, the fileless
+  fallback), `pathmigration_probe` (isolated XDG + a Windows-path
+  fixture DB + a mirrored Linux tree: the popup appears, the mapping
+  rewrites, not-found → fileless, DB dirty, the menu re-run), then
+  the user test.
+
 ## Order
 
 T1 (quick wins) → T2 → T3 → T4 (the user pains first) → T5 → T6 →
-T8 → T9 → T10. The database-backend item is Phase 9 now (see T7).
+T8 → T9 → T11 → T10. The database-backend item is Phase 9 now (see T7).
 
 ## Status
 
@@ -210,3 +257,7 @@ T8 → T9 → T10. The database-backend item is Phase 9 now (see T7).
 - 2026-09-07: T7 (the database-backend exploration) re-homed to the
   new Phase 9 (`docs/phase-9-kickoff.md`) with the user decisions
   recorded there.
+- 2026-09-07: T11 added (the Windows-path migration dialog, user
+  request). Scope + the four user decisions (collapsed roots,
+  not-found → fileless, re-prompt each boot, the File menu re-run)
+  are recorded in the T11 section. Not started.

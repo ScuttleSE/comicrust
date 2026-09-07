@@ -149,7 +149,9 @@ Update this section at the **end of every work session**. The next agent must kn
   the popover arrows, the tree-menu position; T2 the default view =
   Library; T3/T4 the CBL-import and fileless-delete perf; T5 the
   Details column resize; T6 the Folders tab; T8 packaging; T9 docs +
-  migration; T10 the perf sweep). The database-backend item became
+  migration; T11 the Windows-path migration dialog (added 2026-09-07,
+  user request — scope + the four user decisions live in the T11
+  section); T10 the perf sweep). The database-backend item became
   PHASE 9 (2026-09-07, spun out of the Phase 8 T7 exploration):
   `docs/phase-9-kickoff.md` — SQLite canonical after an explicit
   Settings migration (Postgres rejected; XML becomes the ComicRack
