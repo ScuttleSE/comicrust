@@ -297,7 +297,19 @@ impl ItemView {
                     return;
                 };
                 let (sx, sy, view_w, view_h) = scroll_window(&scroller);
-                let window = Rect::new(sx, sy, view_w.max(width as f64), view_h.max(height as f64));
+                // The culling window is the VIEWPORT (the adjustment
+                // page size). The draw size is the canvas's FULL
+                // virtual allocation (set_content_height) — taking
+                // its max made every frame draw every item below the
+                // scroll position (a 2875-book list measured ~2.5k
+                // items / ~1 s per frame; the real visible set is
+                // ~35). The fallback covers a draw before the first
+                // allocation (page size still 0).
+                let window = if view_w > 1.0 && view_h > 1.0 {
+                    Rect::new(sx, sy, view_w, view_h)
+                } else {
+                    Rect::new(sx, sy, width as f64, height as f64)
+                };
                 let queued = draw_frame(ctx, &state, window);
                 if queued {
                     start_thumb_pump(&state);
@@ -1144,9 +1156,15 @@ fn decode_surface(bytes: &[u8]) -> Option<cairo::ImageSurface> {
     Some(surface_from_rgba(&img.rgba, img.width, img.height))
 }
 
+/// The error thumbnail surface, decoded once (cairo surfaces are not
+/// Send — a thread-local cache, the marker pattern; the per-frame
+/// decode ran for every failed-thumb item on every frame).
 fn error_surface() -> Option<cairo::ImageSurface> {
-    let img = cr_image::error_assets::error_thumbnail(256)?;
-    Some(surface_from_rgba(&img.rgba, img.width, img.height))
+    thread_local! {
+        static ERR: Option<cairo::ImageSurface> = cr_image::error_assets::error_thumbnail(256)
+            .map(|img| surface_from_rgba(&img.rgba, img.width, img.height));
+    }
+    ERR.with(|e| e.clone())
 }
 
 fn surface_from_rgba(rgba: &[u8], width: u32, height: u32) -> cairo::ImageSurface {
@@ -1236,6 +1254,9 @@ fn start_thumb_pump(state: &Rc<RefCell<ItemViewState>>) {
 /// Draws one frame; returns whether new thumbnail loads were queued
 /// (the caller starts the pump outside the borrow).
 fn draw_frame(ctx: &cairo::Context, state: &Rc<RefCell<ItemViewState>>, window: Rect) -> bool {
+    // Env-gated frame evidence (`CR_TRACE=1`): the culling window, the
+    // drawn item count, the thumb load backlog, and the frame cost.
+    let t0 = crate::trace::enabled().then(std::time::Instant::now);
     let mut s = state.borrow_mut();
     s.config.view_height = window.h;
     // The layout is maintained by the setters; the draw path only
@@ -1344,6 +1365,19 @@ fn draw_frame(ctx: &cairo::Context, state: &Rc<RefCell<ItemViewState>>, window: 
         ctx.set_source_rgba(pal.selected_bg.0, pal.selected_bg.1, pal.selected_bg.2, 0.3);
         ctx.rectangle(band.x - 2.0, band.y - 2.0, band.w + 4.0, band.h + 4.0);
         ctx.fill().ok();
+    }
+
+    if let Some(t0) = t0 {
+        crate::trace::trace(format!(
+            "draw_frame win=({:.0},{:.0} {:.0}x{:.0}) items={} thumbs_pending={} {:.1} ms",
+            window.x,
+            window.y,
+            window.w,
+            window.h,
+            visible.len(),
+            s.pending_thumbs,
+            t0.elapsed().as_secs_f64() * 1e3
+        ));
     }
 
     queued_thumbs

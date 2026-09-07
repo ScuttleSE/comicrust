@@ -169,22 +169,57 @@ Update this section at the **end of every work session**. The next agent must kn
   the view sort on every list switch; the C# keeps it per list — a
    recorded deviation).
   PHASE 8 STATE (2026-09-07, the session-fresh pointer): DONE =
-  T3 (the CBL import) + T10 slice 1 (the parse storms) — the two
-  records directly below; both USER TESTS PENDING (the T3 test =
-  import the big chronology `.cbl` in the app, it lands instantly;
-  the T10 test = sort/group column clicks + the Show Duplicates
-  toggle feel instant). NEXT IN ORDER: T1 (the UI fixes batch:
-  the `&` mnemonics, the popover arrows, the tree-menu position) →
-  T2 (the default view = Library) → T4 (the fileless-delete perf,
-  profile first) → T5 (the Details column resize) → T6 (the
-  Folders tab, Phase 4-sized) → T8 (packaging) → T9 (docs +
-  migration tooling) → T11 (the Windows-path migration, scope in
-  the kickoff) → the T10 remainder (startup + scan + 10k-list
-  sweeps, measured only). Work rules that paid off in T3/T10:
-  MEASURE the before with a committed timing gate, keep the C#
-  algorithm shapes intact (kill only the redundant parses), and
+  T3 (the CBL import) + T10 slice 1 (the parse storms) + T10
+  slice 2 (the scroll culling storm) — the records directly
+  below; USER TESTS PENDING (the T3 test = import the big
+  chronology `.cbl` in the app, it lands instantly; the T10 test =
+  sort/group column clicks + the Show Duplicates toggle feel
+  instant; the T10 scroll test = scroll the big 2875-book reading
+  list, it must track the wheel). NEXT IN ORDER: T1 (the UI fixes
+  batch: the `&` mnemonics, the popover arrows, the tree-menu
+  position) → T2 (the default view = Library) → T4 (the
+  fileless-delete perf, profile first) → T5 (the Details column
+  resize) → T6 (the Folders tab, Phase 4-sized) → T8 (packaging) →
+  T9 (docs + migration tooling) → T11 (the Windows-path migration,
+  scope in the kickoff) → the T10 remainder (startup + scan +
+  10k-list sweeps, measured only). Work rules that paid off in
+  T3/T10: MEASURE the before with a committed timing gate, keep the
+  C# algorithm shapes intact (kill only the redundant parses), and
   reuse `book_view::needs_prop`/`prop_table` for any new per-book
   proposed-parse need.
+  PHASE 8 T10 SLICE 2 IMPLEMENTED (2026-09-07), user test pending:
+  the ItemView SCROLL storm behind the "the 2875-book reading list
+  is unusable to scroll" report. CAUSE (measured, not read off):
+  the draw func built its culling window as
+  `max(viewport_page_size, draw_size)` — but the draw size IS the
+  canvas's FULL virtual allocation (`set_content_height`), so
+  `visible_items` culled only items ABOVE the scroll position and
+  every frame drew every item BELOW it (probe evidence at scroll
+  y=4000: 2589 items drawn per frame, 960 ms/frame; ~35 were
+  actually visible — GTK clipped the rest), and the first frame
+  queued ~2875 thumb loads at once. FIX: cull against the
+  adjustment page size (the true viewport; draw-size fallback only
+  pre-allocation) in `item_view.rs` set_draw_func. Side fixes that
+  fell out: `config.view_height` now gets the real viewport height,
+  so PageUp/PageDown step ONE page (was: the whole list —
+  page_step_display divides by it); `error_surface()` is a
+  thread-local cache (it decoded a PNG per failed-thumb item per
+  frame — the Failed placeholder path). Gate:
+  `cr-ui/examples/scrollperf_probe.rs` (2875 synthetic books;
+  CR_TRACE=1 prints per-frame win/items/pending/ms lines).
+  MEASURED (release): 2589→78 items/frame, 960→1.5 ms steady
+  frames. RESIDUAL (accepted): a ~110 ms hitch on the first paint
+  of a fresh viewport = the one-time per-book caption compute
+  (`caption_value` resolves up to 9 placeholders, each can trigger
+  an uncached `book_view::proposed()` full filename parse; the
+  result is cached per book in the `captions` map) — the C# pays
+  the same one-time class; if the user still feels hitches, the
+  follow-up is the parked Plan B per-book NameInfo cache
+  (docs/backlog.md, the invalidation surface note). 373 tests;
+  fmt/clippy green; listorder/contextmenu/commands/browserbar/
+  statusbar/tabstrip/navpages probes green (the contextmenu Gtk-
+  CRITICAL + commands GLib-GIO-CRITICAL verified pre-existing on
+  the base HEAD).
   PHASE 8 T3 IMPLEMENTED (2026-09-07), user test pending: the
   CBL-import perf — `reading_list.rs` builds a `LibraryIndex` per
   `create_from_reading_list` call (Guid + file-name HashMaps,
