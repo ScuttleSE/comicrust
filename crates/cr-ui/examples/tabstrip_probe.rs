@@ -223,7 +223,8 @@ fn main() {
             }
         });
 
-        // G. `+` → a new EMPTY slot: the reader shows blank, the
+        // G. `+` → a new EMPTY slot: the QuickOpen covers show in
+        //    the empty reader area (the C# overlay shape), the
         //    Pages tab hides (no CURRENT book — the C# rule), three
         //    comic tabs.
         glib::timeout_add_local(std::time::Duration::from_millis(4400), {
@@ -233,7 +234,7 @@ fn main() {
                 strip.click(&TabId::Plus);
                 let slots = strip.comic_slots();
                 println!(
-                    "G page={:?} slots={slots:?} pages-tab={} captions-empty={} (expect reader/3 slots/Pages false/true)",
+                    "G page={:?} slots={slots:?} pages-tab={} captions-empty={} (expect quickopen/3 slots/Pages false/true)",
                     shell.state_visible_page(),
                     strip.tab_visible(&TabId::Pages),
                     slots
@@ -259,7 +260,7 @@ fn main() {
                     strip.click_close(last);
                 }
                 println!(
-                    "H slots={:?} widgets={} page={:?} pages-tab={} (expect 2 slots/2 widgets/reader/Pages true — the neighbor comic slot shows)",
+                    "H slots={:?} widgets={} page={:?} pages-tab={} (expect 2 slots/2 widgets/reader/Pages true — the close follows the neighbor slot)",
                     strip.comic_slots(),
                     strip.comic_tab_widgets(),
                     shell.state_visible_page(),
@@ -269,18 +270,17 @@ fn main() {
             }
         });
 
-        // I. Close ALL → the QuickOpen covers (the C#
-        //    `UpdateQuickList` shape after the last close — the T2
-        //    reachable path), no comic tabs (slots AND widgets),
-        //    Pages hidden. The strip selection falls back to
-        //    Library (no reader slot behind the covers).
+        // I. Close ALL → the LAST BROWSER tab returns (the C#
+        //    `RebuildBookTabs` tail — `ShowLast()`), no comic tabs
+        //    (slots AND widgets), Pages hidden. The last browser
+        //    visited here is Pages (step F).
         glib::timeout_add_local(std::time::Duration::from_millis(5200), {
             let shell = shell.clone();
             let strip = strip.clone();
             move || {
                 shell.state_dispatch("win.close-all");
                 println!(
-                    "I page={:?} sel={:?} slots={:?} widgets={} pages-tab={} (expect quickopen/Library/[]/0/false)",
+                    "I page={:?} sel={:?} slots={:?} widgets={} pages-tab={} (expect pages/Pages/[]/0/false)",
                     shell.state_visible_page(),
                     strip.selected(),
                     strip.comic_slots(),

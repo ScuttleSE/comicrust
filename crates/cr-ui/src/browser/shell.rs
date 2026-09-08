@@ -217,7 +217,14 @@ impl ShellState {
     /// covers the browser).
     fn activate_slot(&self, slot: usize) {
         self.reader.switch_to_slot(slot);
-        self.stack.set_visible_child_name("reader");
+        // A slot with a book shows the reader; the EMPTY slot hosts
+        // the QuickOpen covers (the C# empty-reader overlay shape —
+        // the same state the `+` tab lands in).
+        if self.reader.has_current_book() {
+            self.stack.set_visible_child_name("reader");
+        } else {
+            self.show_quick_open();
+        }
     }
 
     /// The workspace tab strip click (`Selected`/`CaptionClick`):
@@ -262,9 +269,14 @@ impl ShellState {
             }
             TabId::Plus => {
                 // `OpenBooks.AddSlot` + `CurrentSlot = last`: the new
-                // empty slot selects and shows (blank reader view).
+                // empty slot selects and shows. The C# comic viewer
+                // carries the QuickOpen overlay in this state
+                // (`readerContainer.Controls.Add(quickOpenView)` —
+                // the empty reader area IS QuickOpen when
+                // `ShowQuickOpen` and the database has books); the
+                // blank reader otherwise.
                 self.reader.add_empty_slot();
-                self.stack.set_visible_child_name("reader");
+                self.show_quick_open();
             }
         }
         // The strip state renders from the workspace (the T6
@@ -297,17 +309,19 @@ impl ShellState {
         self.tab_strip.set_selected(&selected);
     }
 
-    /// The QuickOpen empty state (`UpdateQuickList`: visible when no
-    /// book is open, `ShowQuickOpen`, and the database has books).
+    /// The QuickOpen display (the C# shows the overlay inside the
+    /// EMPTY READER AREA — `UpdateQuickList`): visible when
+    /// `ShowQuickOpen` and the database has books, the blank reader
+    /// (the empty slot) otherwise.
     fn show_quick_open(&self) {
         if !cr_ui_settings().borrow().show_quick_open {
-            self.show_browser();
+            self.stack.set_visible_child_name("reader");
             return;
         }
         let lists = library::quick_open_lists();
         let total: usize = lists.iter().map(|(_, b)| b.len()).sum();
         if total == 0 {
-            self.show_browser();
+            self.stack.set_visible_child_name("reader");
             return;
         }
         let mut books: Vec<ComicBook> = Vec::new();
@@ -798,20 +812,27 @@ impl BrowserShell {
                 .set_on_last_tab_closed(move || {
                     if let Some(sh) = state.upgrade() {
                         sh.pages.clear_book();
-                        // The C# `UpdateQuickList` shape: no book open
-                        // → the QuickOpen covers show (when
-                        // `ShowQuickOpen` and the database has books),
-                        // the browser otherwise. This is QuickOpen's
-                        // reachable path since the boot opens on the
-                        // Library view (T2).
-                        sh.show_quick_open();
+                        // The C# `RebuildBookTabs` tail (MainForm.cs
+                        // 3140): the last book closed → `ShowLast()` —
+                        // the LAST browser tab returns (Library,
+                        // Folders, or Pages — the user report 2026-09-08:
+                        // closing a comic opened from the Folders view
+                        // must land back on Folders, not QuickOpen).
+                        // QuickOpen keeps the `+` empty slot as its
+                        // home (the C# shows the QuickOpen overlay in
+                        // the empty reader area).
+                        sh.select_last_browser();
                         sh.sync_enabled();
                     }
                 });
         }
 
         // The tab set changed (open/close/undock/re-dock/AddSlot) —
-        // the strip rebuilds with the sync.
+        // the strip rebuilds with the sync. The workspace follows
+        // the current slot while the reader area shows (the C#
+        // comic viewer rebinds on `OpenBooks_CurrentSlotChanged`):
+        // a book in the slot → the reader, an empty slot → the
+        // QuickOpen covers.
         {
             let state = Rc::downgrade(state);
             state
@@ -820,6 +841,18 @@ impl BrowserShell {
                 .reader
                 .set_on_tabs_changed(move || {
                     if let Some(sh) = state.upgrade() {
+                        let page = sh
+                            .stack
+                            .visible_child_name()
+                            .map(|s| s.to_string())
+                            .unwrap_or_default();
+                        if page == "reader" || page == "quickopen" {
+                            if sh.reader.has_current_book() {
+                                sh.stack.set_visible_child_name("reader");
+                            } else if !sh.reader.tab_infos().is_empty() {
+                                sh.show_quick_open();
+                            }
+                        }
                         sh.sync_enabled();
                     }
                 });

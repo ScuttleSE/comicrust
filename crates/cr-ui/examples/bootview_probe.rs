@@ -2,9 +2,11 @@
 //! lands on the BROWSER workspace with the Library list selected
 //! (the C# `OpenCount == 0 && !ShowQuickOpen` shape,
 //! MainForm.cs:3140), opening a comic still swaps to the reader,
-//! and closing the LAST tab shows the QuickOpen covers
-//! (`UpdateQuickList` — QuickOpen's reachable path since the boot
-//! no longer shows it). Run: Xvfb + `cargo run -p cr-ui --example
+//! and closing the LAST tab returns to the LAST BROWSER tab
+//! (`ShowLast` — the user report 2026-09-08: a comic opened from
+//! the Folders view must land back on Folders), while the `+`
+//! empty slot shows the QuickOpen covers (the C# empty-reader
+//! overlay). Run: Xvfb + `cargo run -p cr-ui --example
 //! bootview_probe` with an isolated XDG.
 use gtk4::glib;
 use gtk4::prelude::*;
@@ -67,23 +69,39 @@ fn main() {
             }
         });
 
-        // C. Close the tab: the LAST close shows the QuickOpen
-        //    covers (the C# UpdateQuickList shape).
+        // C. Close the tab: the LAST close returns to the LAST
+        //    browser tab (`ShowLast` — here the Library, the only
+        //    browser visited).
         glib::timeout_add_local(std::time::Duration::from_millis(3000), {
             let shell = shell.clone();
             move || {
                 let fired = shell.state_dispatch("win.close");
                 println!(
-                    "CLOSE fired={fired} page={:?} (expect quickopen)",
+                    "CLOSE fired={fired} page={:?} (expect browser)",
                     shell.state_stack_page()
                 );
                 glib::ControlFlow::Break
             }
         });
 
-        // D. QuickOpen stays reachable AND leaves again: Browse ▸
-        //    Browser shows the browser from the covers.
+        // D. QuickOpen lives at the `+` empty slot (the C#
+        //    empty-reader overlay): click `+` → the covers (the DB
+        //    has the seeded fileless books for the Recently Added
+        //    group); toggle-browser leaves again.
         glib::timeout_add_local(std::time::Duration::from_millis(3600), {
+            let shell = shell.clone();
+            move || {
+                shell
+                    .tab_strip_handle()
+                    .click(&cr_ui::browser::tabstrip::TabId::Plus);
+                println!(
+                    "PLUS page={:?} (expect quickopen)",
+                    shell.state_stack_page()
+                );
+                glib::ControlFlow::Break
+            }
+        });
+        glib::timeout_add_local(std::time::Duration::from_millis(4200), {
             let app = app.clone();
             let shell = shell.clone();
             move || {
