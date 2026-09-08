@@ -343,7 +343,21 @@ a generation guard (a stale scan of an older folder drops on
 arrival); the selection, the include-sub toggle, and the
 remove-rescan share the helper. The per-file scan COST is C# parity
 (the fast page-count open + the first-100 metadata read) — the
-wall time to fill the grid is unchanged, the freeze is gone. Deviations (recorded): no per-view browser
+wall time to fill the grid is unchanged, the freeze is gone.
+SECOND USER REPORT (2026-09-08): a comic opened from the Folders
+view, once closed, landed on QuickOpen — the C# `RebuildBookTabs`
+tail (MainForm.cs:3140) runs `ShowLast()` on the last close: the
+LAST browser tab returns (Library/Folders/Pages). The port's
+last-tab-close handler calls `select_last_browser()` now, and
+QuickOpen moved to its C# empty-reader-overlay home: the `+` empty
+slot, an empty-slot tab click, and a close that lands on an empty
+current slot show the QuickOpen covers (when `ShowQuickOpen` and
+the DB has books — the blank reader otherwise; the recorded "the +
+shows a blank reader" deviation resolves); the tab-change hook
+follows the current slot while the reader area shows (the C#
+`OpenBooks_CurrentSlotChanged` rebind). Probes: bootview C gates
+the browser on the last close + a new `+` → QuickOpen step;
+tabstrip G/H/I moved to the new shape. Deviations (recorded): no per-view browser
 toolbar on the folders page (the C# ComicBrowserControl toolStrip
 — Views/Group/Arrange/search stay library-bound; the folders view
 is double-click/context-menu driven; the menubar book commands stay
