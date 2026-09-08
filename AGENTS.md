@@ -173,12 +173,12 @@ Update this section at the **end of every work session**. The next agent must kn
   reasonably fast now"), T4 ("works fine"), T5 ("works fine"), T6
   ("works fine" — three fix rounds recorded in the T6 section:
   the side-by-side split, the worker-thread folder scan, the
-  last-close → ShowLast), T10 slice 2 ("works now"). The ONLY
-  pending user gate: the T10 slice 1 feel (sort/group column
-  clicks + the Show Duplicates toggle feel instant — treat the
-  next touch of those paths as its test). NEXT IN ORDER: T8
-  (packaging) → T9 (docs + migration tooling) → T11 (the
-  Windows-path migration) → the T10 remainder. BEHAVIOR CHANGE a
+  last-close → ShowLast), T10 slice 2 ("works now"), T10 slice 1
+  USER-TESTED, ALL PASS (2026-09-08 — sort/group column clicks +
+  the Show Duplicates toggle feel instant). PHASE 8 REMAINING
+  (user-decided order): T11 (the Windows-path migration — the app
+  work) → the T10 remainder (startup/scan/10k sweeps, measured
+  only) → T8 (packaging) → T9 (docs + migration tooling). BEHAVIOR CHANGE a
   fresh agent must know: the LAST-tab-close handler runs
   `select_last_browser()` (the C# RebuildBookTabs tail —
   MainForm.cs:3140 `ShowLast()`), NOT QuickOpen; the T2 record
