@@ -571,6 +571,27 @@ the target, not in `<target>/Comics`. Probe battery green (the
 statusbar_probe failure mid-round was a shared/polluted XDG — fresh
 XDG per probe run is the rule). fmt/clippy green. User test pending.
 
+USER TEST (2026-09-08, "It worked, but after clicking OK the whole
+app froze until all the comics were loaded"): FIX ROUND 1 — the OK
+path called the FULL file-info refresh per found book, and its
+page-count branch (scanner.rs: "page count == 0 || date_modified")
+opened EVERY archive inline on the UI thread; the stored
+Windows-era mtime always differs from the copied file's, so the open
+always fired (the scanner pays the same cost on its worker thread —
+the apply ran it inline). Fix: `scanner::refresh_file_info_basic`
+(the metadata-only slice: size/times/missing) is public and the
+apply uses it — the file content is the one the DB describes, only
+the path changed, the stored page count rides (the reader fills
+unknown counts from the provider index on open), and
+`refresh_file_info` keeps the full `GetFastPageCount` semantics for
+the scanner. Gate: `cr-engine/tests/path_migration_perf.rs` — the
+apply over 120 real zip archives stays at ~1 ms with the stored page
+counts asserted intact, and TIMES the old full-refresh path for the
+record (5.7 ms for 120 small zips — for CB7/CBR libraries the old
+path is a 7z SUBPROCESS per book, i.e. minutes; the light refresh
+removes the class entirely). CR_TRACE stage lines added around the
+apply + the refresh stages. All gates + the probe re-run green.
+
 ## Order
 
 T1 (quick wins) → T2 → T3 → T4 (the user pains first) → T5 → T6 →

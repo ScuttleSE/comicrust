@@ -45,8 +45,31 @@ pub struct ScanResult {
 
 /// What the scanner does to a book's file info
 /// (`RefreshInfoFromFile(GetFastPageCount)`): size, timestamps, page
-/// count.
+/// count. The page count costs ONE provider open per book — the
+/// scanner runs on its worker thread; the UI-thread callers use
+/// [`refresh_file_info_basic`].
 pub fn refresh_file_info(book: &mut ComicBook) -> bool {
+    let date_modified = refresh_file_info_basic(book);
+    // Page count: refresh when unknown or the file changed.
+    if book.info.page_count == 0 || date_modified {
+        let path = book.file_path.clone();
+        if !path.is_empty() {
+            if let Ok(provider) = cr_io::ComicProvider::open(Path::new(&path)) {
+                let count = provider.pages().len() as i32;
+                if count > 0 {
+                    book.info.page_count = count;
+                }
+            }
+        }
+    }
+    date_modified
+}
+
+/// The metadata-only slice of [`refresh_file_info`] (size,
+/// timestamps, the missing flag) — no provider open. The page count
+/// rides the stored value; the reader fills it from the provider
+/// index on open.
+pub fn refresh_file_info_basic(book: &mut ComicBook) -> bool {
     let path = book.file_path.clone();
     if path.is_empty() {
         return false;
@@ -87,15 +110,6 @@ pub fn refresh_file_info(book: &mut ComicBook) -> bool {
                 .unwrap_or_else(|| CrDateTime::min_value().naive),
             kind: cr_core::xml::scalar::DateKind::Utc,
         };
-    }
-    // Page count: refresh when unknown or the file changed.
-    if book.info.page_count == 0 || date_modified {
-        if let Ok(provider) = cr_io::ComicProvider::open(Path::new(&path)) {
-            let count = provider.pages().len() as i32;
-            if count > 0 {
-                book.info.page_count = count;
-            }
-        }
     }
     date_modified
 }

@@ -189,7 +189,19 @@ Update this section at the **end of every work session**. The next agent must kn
   `pathmigration_probe`. LESSON: the mapping STRIPS the Windows
   root (`C:\Comics\X` → `<target>/X`) — test mirrors put files
   directly in the target; and a shared XDG across probe runs
-  POISONS them (the statusbar false alarm) — fresh XDG per probe. PHASE 8 REMAINING
+  POISONS them (the statusbar false alarm) — fresh XDG per probe.
+  USER TEST (2026-09-08): the migration works; FIX ROUND 1 for the
+  "OK froze the app until all the comics were loaded" report — the
+  apply ran the FULL `refresh_file_info` per found book whose
+  page-count branch OPENS EVERY ARCHIVE inline on the UI thread
+  (the stored Windows mtime always differs after a copy, so it
+  always fired; the scanner runs the same cost on its worker).
+  `scanner::refresh_file_info_basic` (metadata-only) is now public
+  and the apply uses it; the stored page count rides (the reader
+  fills unknowns on open). Gate: `cr-engine/tests/path_migration_perf.rs`
+  (apply 120 real zips ~1 ms, page counts asserted intact, the old
+  path timed for the record — CB7/CBR libraries paid a 7z
+  subprocess per book). Re-test pending. PHASE 8 REMAINING
   (user-decided order): T11 (the Windows-path migration — the app
   work) → the T10 remainder (startup/scan/10k sweeps, measured
   only) → T8 (packaging) → T9 (docs + migration tooling). BEHAVIOR CHANGE a

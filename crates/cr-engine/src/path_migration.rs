@@ -341,7 +341,13 @@ pub fn apply(db: &mut ComicDatabase, mappings: &[Mapping]) -> ApplyReport {
             book.file_path = new;
             book.file_is_missing = false;
             if is_file {
-                crate::scanner::refresh_file_info(book);
+                // The LIGHT refresh (size/times/missing only): the
+                // file content is the one the DB describes — only the
+                // path changed — and the full refresh's per-book
+                // page-count open on the UI thread froze the apply
+                // (the user freeze report; the scanner pays the same
+                // cost on its worker thread instead).
+                crate::scanner::refresh_file_info_basic(book);
             }
             report.books_mapped += 1;
         } else {

@@ -702,11 +702,18 @@ impl BrowserShell {
     /// re-evaluates, the navigator tree refills, the action states +
     /// status panels re-sync.
     pub fn refresh_after_data_change(&self) {
+        let t = std::time::Instant::now();
         self.state.refresh_view_from_list();
+        crate::trace::trace(format!("path-migration refresh: view {:?}", t.elapsed()));
         self.state
             .navigator
             .refill(&library::comic_lists_snapshot());
+        crate::trace::trace(format!(
+            "path-migration refresh: +navigator {:?}",
+            t.elapsed()
+        ));
         self.state.sync_enabled();
+        crate::trace::trace(format!("path-migration refresh: total {:?}", t.elapsed()));
     }
 
     /// The grid's current view state (display-order checks + probes).

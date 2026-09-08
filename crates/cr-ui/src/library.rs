@@ -412,7 +412,15 @@ pub fn has_windows_paths() -> bool {
 pub fn apply_path_migration(
     mappings: &[cr_engine::path_migration::Mapping],
 ) -> cr_engine::path_migration::ApplyReport {
-    session().borrow_mut().apply_path_migration(mappings)
+    let t = std::time::Instant::now();
+    let report = session().borrow_mut().apply_path_migration(mappings);
+    crate::trace::trace(format!(
+        "path-migration apply: {} books, {} fileless, {}ms",
+        report.books_mapped + report.books_fileless,
+        report.books_fileless,
+        t.elapsed().as_millis()
+    ));
+    report
 }
 
 /// `DatabaseManager.Save` (the exit path): waits for an in-flight
