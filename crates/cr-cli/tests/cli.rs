@@ -161,3 +161,84 @@ fn pages_and_extract_on_cbz() {
 
     std::fs::remove_dir_all(&dir).ok();
 }
+
+#[test]
+fn migrate_copies_and_maps_a_ce_profile() {
+    let root = golden_dir();
+    let realworld = root
+        .join("../realworld/ComicDb.xml")
+        .canonicalize()
+        .expect("the real-world fixture is committed");
+    let work = std::env::temp_dir().join(format!("crcli-migrate-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&work);
+    // The CE profile layout: <profile>/ComicDb/ComicDb.xml + an ini
+    // with one consumed key and one unknown key.
+    let profile = work.join("profile");
+    std::fs::create_dir_all(profile.join("ComicDb")).unwrap();
+    std::fs::copy(&realworld, profile.join("ComicDb").join("ComicDb.xml")).unwrap();
+    std::fs::write(
+        profile.join("ComicRack.ini"),
+        "[Settings]\nCachePath=/tmp/ce-cache\nNotAPortKey=1\n",
+    )
+    .unwrap();
+
+    // The dry run writes nothing.
+    let out = Command::new(env!("CARGO_BIN_EXE_cr-cli"))
+        .args([
+            "migrate",
+            profile.to_str().unwrap(),
+            "--out",
+            work.join("out").to_str().unwrap(),
+            "--dry-run",
+        ])
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(out.status.success(), "{stdout}");
+    assert!(stdout.contains("WOULD COPY"), "{stdout}");
+    assert!(stdout.contains("CachePath=/tmp/ce-cache"), "{stdout}");
+    assert!(!work.join("out").exists(), "the dry run must not write");
+
+    // The real run: the copy lands, the ini keys map (only the
+    // consumed ones), the Windows-path note prints.
+    let out = Command::new(env!("CARGO_BIN_EXE_cr-cli"))
+        .args([
+            "migrate",
+            profile.to_str().unwrap(),
+            "--out",
+            work.join("out").to_str().unwrap(),
+        ])
+        .env("XDG_CONFIG_HOME", work.join("config"))
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&out.stdout).into_owned();
+    assert!(out.status.success(), "{stdout}");
+    assert!(stdout.contains("COPIED"), "{stdout}");
+    assert!(stdout.contains("255 books"), "{stdout}");
+    assert!(stdout.contains("Windows paths"), "{stdout}");
+    assert!(
+        !stdout.contains("NotAPortKey"),
+        "unknown ini keys must not map: {stdout}"
+    );
+    let copied = std::fs::read(work.join("out")).unwrap();
+    let source = std::fs::read(&realworld).unwrap();
+    assert_eq!(copied, source, "the copy must be byte-identical");
+    let ini = std::fs::read_to_string(work.join("config").join("comicrust").join("comicrust.ini"))
+        .expect("the port ini written");
+    assert!(ini.contains("CachePath=/tmp/ce-cache"), "{ini}");
+    assert!(!ini.contains("NotAPortKey"), "{ini}");
+
+    // A second run refuses without --force.
+    let out = Command::new(env!("CARGO_BIN_EXE_cr-cli"))
+        .args([
+            "migrate",
+            profile.to_str().unwrap(),
+            "--out",
+            work.join("out").to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+    assert!(!out.status.success(), "the second run must refuse");
+
+    std::fs::remove_dir_all(&work).ok();
+}

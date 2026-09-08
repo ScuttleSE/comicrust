@@ -70,6 +70,27 @@ enum Command {
     /// Prints list name, evaluated book count, and (when present) the
     /// count of the C#-cached id list for comparison.
     Lists { file: String },
+    /// Migrate a ComicRack CE profile: verify its ComicDb.xml, copy it
+    /// into this port's database location, and map the ini keys the
+    /// port consumes. The comic FILES stay where they are; Windows
+    /// paths left in the database are migrated by the app itself (the
+    /// boot prompt, File ▸ Migrate Windows Paths...).
+    Migrate {
+        /// The ComicRack CE profile directory (containing
+        /// ComicDb/ComicDb.xml) or a ComicDb.xml file directly.
+        source: String,
+        /// Target ComicDb.xml (default: this port's database
+        /// location).
+        #[arg(long)]
+        out: Option<String>,
+        /// Overwrite an existing target (the old file is kept as
+        /// `<target>.premigrate.bak`).
+        #[arg(long)]
+        force: bool,
+        /// Show what would happen; write nothing.
+        #[arg(long)]
+        dry_run: bool,
+    },
 }
 
 fn main() -> ExitCode {
@@ -99,6 +120,12 @@ fn run(command: Command) -> Result<ExitCode> {
         Command::Rewrite { file } => cmd_rewrite(&file),
         Command::Metron { file } => cmd_metron(&file),
         Command::Lists { file } => cmd_lists(&file),
+        Command::Migrate {
+            source,
+            out,
+            force,
+            dry_run,
+        } => cmd_migrate(&source, out.as_deref(), force, dry_run),
     }
 }
 
@@ -494,4 +521,168 @@ fn cmd_db_roundtrip(file: &str) -> Result<ExitCode> {
         );
         Ok(ExitCode::FAILURE)
     }
+}
+
+/// The `migrate` report (the summary the command prints).
+struct MigrateReport {
+    source: std::path::PathBuf,
+    target: std::path::PathBuf,
+    books: usize,
+    lists: usize,
+    watch_folders: usize,
+    black_list: usize,
+    has_windows_paths: bool,
+    ini_keys: Vec<String>,
+    ini_written: bool,
+}
+
+/// Resolves the ComicDb.xml inside a ComicRack CE profile layout: the
+/// argument may be the profile dir (`ComicDb/ComicDb.xml`), a dir with
+/// the database at its top, or the XML file itself.
+fn resolve_source_db(source: &Path) -> Result<std::path::PathBuf> {
+    if source.is_file() {
+        return Ok(source.to_path_buf());
+    }
+    if source.is_dir() {
+        for candidate in [
+            source.join("ComicDb").join("ComicDb.xml"),
+            source.join("ComicDb.xml"),
+        ] {
+            if candidate.is_file() {
+                return Ok(candidate);
+            }
+        }
+    }
+    anyhow::bail!(
+        "no ComicDb.xml found under {} (expected <profile>/ComicDb/ComicDb.xml, <dir>/ComicDb.xml, or the file itself)",
+        source.display()
+    )
+}
+
+/// The `migrate` engine (the command prints the report; the tests
+/// call this directly).
+fn migrate(source: &Path, out: Option<&Path>, force: bool, dry_run: bool) -> Result<MigrateReport> {
+    let source_db = resolve_source_db(source)?;
+    let db = load(&source_db).context("loading the ComicRack CE database")?;
+    let report = MigrateReport {
+        books: db.books.len(),
+        lists: db.comic_lists.len(),
+        watch_folders: db.watch_folders.len(),
+        black_list: db.black_list.len(),
+        has_windows_paths: cr_engine::path_migration::has_windows_paths(&db),
+        source: source_db,
+        target: out.map(|p| p.to_path_buf()).unwrap_or_else(|| {
+            cr_core::paths::database_file(&cr_core::paths::Paths::new_default())
+        }),
+        ini_keys: Vec::new(),
+        ini_written: false,
+    };
+
+    // The database copy (never through a symlinked overwrite; the old
+    // target is preserved when forced).
+    if !dry_run {
+        if report.target.exists() {
+            if !force {
+                anyhow::bail!(
+                    "{} already exists — pass --force to keep the old file as {}.premigrate.bak",
+                    report.target.display(),
+                    report.target.display()
+                );
+            }
+            let backup = report.target.with_file_name(format!(
+                "{}.premigrate.bak",
+                report
+                    .target
+                    .file_name()
+                    .and_then(|n| n.to_str())
+                    .unwrap_or("ComicDb.xml")
+            ));
+            std::fs::copy(&report.target, &backup).context("backing up the old target")?;
+            println!("kept the previous database as {}", backup.display());
+        }
+        if let Some(parent) = report.target.parent() {
+            std::fs::create_dir_all(parent).context("creating the database directory")?;
+        }
+        std::fs::copy(&report.source, &report.target).context("copying the database")?;
+    }
+
+    // The ini mapping: the ExtendedSettings keys the port consumes
+    // (the `ini: true` fields), read from the profile's ComicRack.ini
+    // when present, merged into the port's ini (the other keys stay).
+    let profile_dir = report
+        .source
+        .parent()
+        .and_then(|p| p.file_name())
+        .filter(|n| *n == "ComicDb")
+        .and_then(|_| report.source.parent()?.parent())
+        .map(|p| p.to_path_buf())
+        .or_else(|| report.source.parent().map(|p| p.to_path_buf()));
+    let mut ini_keys = Vec::new();
+    if let Some(profile) = profile_dir {
+        let source_ini = profile.join("ComicRack.ini");
+        if source_ini.is_file() {
+            let values = cr_core::settings::ini::IniValues::read_file(&source_ini);
+            for field in cr_core::settings::extended::EXTENDED_FIELDS {
+                if !field.ini_enabled {
+                    continue;
+                }
+                if let Some(v) = values.get(field.name) {
+                    ini_keys.push(format!("{}={v}", field.name));
+                }
+            }
+            if !ini_keys.is_empty() && !dry_run {
+                let entries: Vec<(&str, &str)> = ini_keys
+                    .iter()
+                    .map(|k| {
+                        let (n, v) = k.split_once('=').unwrap_or((k, ""));
+                        (n, v)
+                    })
+                    .collect();
+                let target_ini = cr_core::paths::Paths::new_default()
+                    .config_path
+                    .join(cr_core::paths::INI_FILE_NAME);
+                if let Some(parent) = target_ini.parent() {
+                    std::fs::create_dir_all(parent).ok();
+                }
+                cr_core::settings::ini::merge_write(&target_ini, &entries)
+                    .context("writing the port ini")?;
+            }
+        }
+    }
+    Ok(MigrateReport {
+        ini_written: !dry_run && !ini_keys.is_empty(),
+        ini_keys,
+        ..report
+    })
+}
+
+fn cmd_migrate(source: &str, out: Option<&str>, force: bool, dry_run: bool) -> Result<ExitCode> {
+    let report = migrate(Path::new(source), out.map(Path::new), force, dry_run)?;
+    let mode = if dry_run { "WOULD COPY" } else { "COPIED" };
+    println!(
+        "{}: {} -> {}",
+        mode,
+        report.source.display(),
+        report.target.display()
+    );
+    println!(
+        "verified: {} books, {} lists, {} watch folders, {} blacklist entries",
+        report.books, report.lists, report.watch_folders, report.black_list
+    );
+    if report.has_windows_paths {
+        println!(
+            "NOTE: the database carries Windows paths (C:\\... / \\\\server\\...). Start comicrust — it offers the path migration (File ▸ Migrate Windows Paths...)."
+        );
+    }
+    if report.ini_keys.is_empty() {
+        println!("ini: no ComicRack.ini keys to map (or none the port consumes)");
+    } else {
+        for k in &report.ini_keys {
+            println!("ini: {k}");
+        }
+        if !report.ini_written {
+            println!("ini: (dry run — nothing written)");
+        }
+    }
+    Ok(ExitCode::SUCCESS)
 }

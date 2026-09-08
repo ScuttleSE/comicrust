@@ -110,7 +110,19 @@ comicrust also writes a `ComicDb.xml.bak` copy next to the database and can reco
 
 ## Migrate your library from Windows ComicRack
 
-The database format is the same. Copy `ComicDb.xml` from `%APPDATA%\cYo\ComicRack Community Edition\ComicDb\` to `~/.local/share/comicrust/ComicDb/`. Your comic files stay where they are. If their paths changed, add the comic folders to the library again. The scanner then re-links moved books by file name and size.
+The database format is the same. Your comic files stay where they are.
+
+**The easy way** — run the migration helper from the release tarball (or your build):
+
+```sh
+cr-cli migrate /path/to/ComicRackCE-profile
+```
+
+Point it at your ComicRack profile folder (on Windows `%APPDATA%\cYo\ComicRack Community Edition`; copy it over if you run comicrust on another machine). The tool verifies the database, copies `ComicDb.xml` into `~/.local/share/comicrust/ComicDb/`, and maps the settings from `ComicRack.ini` that comicrust consumes. Use `--dry-run` to preview, `--out` for a custom target, `--force` to replace an existing database (the old file is kept as `ComicDb.xml.premigrate.bak`).
+
+**The manual way** — copy `ComicDb.xml` from `%APPDATA%\cYo\ComicRack Community Edition\ComicDb\` to `~/.local/share/comicrust/ComicDb/`.
+
+**Windows paths.** A migrated database points at Windows locations (`C:\...`, `\\server\...`). comicrust detects them at startup and offers the migration dialog: pick the Linux folder each Windows root maps to, and the app re-homes every found book (missing ones become fileless entries that keep their metadata). The same dialog is available any time under File ▸ Migrate Windows Paths…. If the comic files themselves moved to different names, add the comic folders to the library instead — the scanner re-links moved books by file name and size.
 
 ## Differences from ComicRack CE
 

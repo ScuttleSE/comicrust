@@ -416,6 +416,27 @@ the close-a-comic report became the ShowLast change below).
   (+ the settings mapping: the ini keys the port consumes).
 - Gate: the migration tool runs against the real-world fixture.
 
+IMPLEMENTED 2026-09-08. `cr-cli migrate <source> [--out] [--force]
+[--dry-run]`: the source is a CE profile dir
+(`<profile>/ComicDb/ComicDb.xml`), a dir with the database at the
+top, or the XML file; the engine (`migrate()`, testable) verifies
+the database through the cr-core loader (books/lists/watch/blacklist
+counts in the report), copies it to the port's database location
+(or `--out`) refusing to overwrite without `--force` (the old file
+rides as `<target>.premigrate.bak`), and maps the ini: the
+`ComicRack.ini` next to the profile is read and exactly the
+`ini: true` ExtendedSettings keys merge into the port's
+`comicrust.ini` (unknown keys skipped; the other port keys stay).
+A Windows-path hit prints the pointer to the T11 dialog. Gate:
+`cr-cli/tests/cli.rs::migrate_copies_and_maps_a_ce_profile` (the CE
+profile layout + the real-world fixture: the dry run writes
+nothing, the copy is byte-identical, only consumed keys map, the
+second run refuses) — run manually end-to-end as well (dry/real/
+refuse + the ini content check). README: the migration section
+rewritten (the helper command + the manual way + the Windows-path
+dialog flow), the data-paths table unchanged. fmt/clippy green;
+the full workspace tests green.
+
 ### T10. General perf passes
 
 - Startup time, the large-library scan, the list evaluation on
@@ -717,4 +738,12 @@ T8 → T9 → T11 → T10. The database-backend item is Phase 9 now (see T7).
   list walks, the lazy series stats, the path-keyed Proposed cache).
   Startup + scan measured healthy. No user test needed (no UI
   change; the behavior is byte-identical — only the costs dropped).
-  NEXT: T9 (docs + `cr-cli migrate`) → Phase 8 closes.
+- 2026-09-08: T9 COMPLETE (the `cr-cli migrate` tool + the README
+  migration rewrite; record in the T9 section; the first README
+  slice landed 2026-09-06). The T9-first-slice README facts were
+  re-verified against the current workflows + paths.
+- **PHASE 8 CLOSED 2026-09-08.** All tasks resolved: T1-T6, T10
+  (three slices), T11 done + user-tested; T7 re-homed to Phase 9;
+  T8 + HEIF/AVIF deferred/skipped by user decision (the backlog).
+  Next: Phase 9 (the SQLite database backend,
+  `docs/phase-9-kickoff.md`, ADR-029 gate before any code).

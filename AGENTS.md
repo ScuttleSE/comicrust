@@ -221,7 +221,17 @@ Update this section at the **end of every work session**. The next agent must kn
   25.6/33.5 ms at 10k, release) and the scan (33 ms/1000 fresh,
   5.4 ms re-scan) measured HEALTHY. No UI change → no user test.
   All parse consumers must use `proposed_cached`, never
-  `proposed` directly (tests excepted). BEHAVIOR CHANGE a
+  `proposed` directly (tests excepted). T9 COMPLETE (2026-09-08):
+  `cr-cli migrate <source> [--out] [--force] [--dry-run]` (the CE
+  profile verify + the byte-identical DB copy with the
+  .premigrate.bak guard + the consumed-ini-key mapping; gate
+  `migrate_copies_and_maps_a_ce_profile` on the real-world fixture)
+  + the README migration rewrite (the helper + the manual way + the
+  T11 dialog flow). **PHASE 8 CLOSED 2026-09-08** — T1-T6, T10,
+  T11 done + user-tested; T7 → Phase 9; T8 + HEIF/AVIF deferred by
+  user decision (docs/backlog.md). NEXT: Phase 9 (the SQLite
+  backend, docs/phase-9-kickoff.md; ADR-029 gate before any code).
+  BEHAVIOR CHANGE a
   fresh agent must know: the LAST-tab-close handler runs
   `select_last_browser()` (the C# RebuildBookTabs tail —
   MainForm.cs:3140 `ShowLast()`), NOT QuickOpen; the T2 record
