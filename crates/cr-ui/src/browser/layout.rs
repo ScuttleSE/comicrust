@@ -440,6 +440,46 @@ pub fn detail_column_rects(config: &LayoutConfig, row_rect: &Rect) -> Vec<Rect> 
     rects
 }
 
+/// `ColumnHeaderSeparatorHitTest` — the id of the visible column
+/// whose RIGHT edge is within ±2 px of x, with y inside the header
+/// strip (Detail only). Scans visible columns LAST to FIRST (the C#
+/// loop direction — the rightmost column wins an overlap). The
+/// resize drags a column's right edge; `id` locates it for mutation.
+pub fn column_separator_hit(
+    config: &LayoutConfig,
+    columns: &[crate::browser::columns::Column],
+    x: f64,
+    y: f64,
+) -> Option<i32> {
+    if !header_visible(config) || y >= config.header_height {
+        return None;
+    }
+    let mut right = COLUMN_OFFSET_X;
+    let mut edges: Vec<(f64, i32)> = Vec::new();
+    for c in columns.iter().filter(|c| c.visible) {
+        right += c.width;
+        edges.push((right, c.id));
+    }
+    edges
+        .iter()
+        .rev()
+        .find(|(edge, _)| x >= edge - 2.0 && x <= edge + 2.0)
+        .map(|(_, id)| *id)
+}
+
+/// The right edge (canvas x) of one visible column — the resize
+/// marker paints here while the drag is live.
+pub fn column_right_edge(columns: &[crate::browser::columns::Column], id: i32) -> Option<f64> {
+    let mut right = COLUMN_OFFSET_X;
+    for c in columns.iter().filter(|c| c.visible) {
+        right += c.width;
+        if c.id == id {
+            return Some(right);
+        }
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -593,6 +633,51 @@ mod tests {
         assert_eq!(cols[1].x, cols[0].x + 200.0);
         // Content width = the column sum.
         assert_eq!(layout.virtual_size.0, 300.0);
+    }
+
+    /// The separator hit: the visible column whose right edge is
+    /// within ±2 px (the C# `ColumnHeaderSeparatorHitTest`, scanned
+    /// last-to-first); Detail + the header strip only.
+    #[test]
+    fn column_separator_hit_finds_the_right_edge() {
+        use crate::browser::columns::default_columns;
+        let mut columns = default_columns();
+        // Two visible columns for a controlled geometry: Series at
+        // x 8..208, Number at 208..248.
+        for c in columns.iter_mut() {
+            c.visible = c.name == "Series" || c.name == "Number";
+        }
+        let config = LayoutConfig {
+            mode: ItemViewMode::Detail,
+            header_visible: true,
+            header_height: 20.0,
+            ..Default::default()
+        };
+        // The Series right edge = 8 + 200 = 208. Adjacent columns
+        // share the edge; the C# scan (last→first) returns the LEFT
+        // column of the pair (Series id = 1).
+        assert_eq!(
+            column_separator_hit(&config, &columns, 208.0, 10.0),
+            Some(1)
+        );
+        assert_eq!(
+            column_separator_hit(&config, &columns, 206.0, 10.0),
+            Some(1)
+        );
+        assert_eq!(column_separator_hit(&config, &columns, 211.0, 10.0), None);
+        // The Number right edge = 248; Number id = 2.
+        assert_eq!(
+            column_separator_hit(&config, &columns, 249.5, 10.0),
+            Some(2)
+        );
+        // Outside the header strip: no hit.
+        assert_eq!(column_separator_hit(&config, &columns, 208.0, 40.0), None);
+        // Non-Detail: no hit (the header only exists in Detail).
+        let thumbs = LayoutConfig {
+            mode: ItemViewMode::Thumbnail,
+            ..Default::default()
+        };
+        assert_eq!(column_separator_hit(&thumbs, &columns, 208.0, 10.0), None);
     }
 
     #[test]

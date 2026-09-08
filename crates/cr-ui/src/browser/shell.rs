@@ -1361,6 +1361,31 @@ impl BrowserShell {
         self.state.item_view.reselect(ids);
     }
 
+    /// The Detail column drag, driven through the real paths (the
+    /// T5 probe: begin / move / end).
+    pub fn state_column_resize_start(&self, id: i32, x: f64) -> bool {
+        self.state.item_view.probe_column_resize_start(id, x)
+    }
+
+    pub fn state_column_resize_move(&self, x: f64) -> f64 {
+        self.state.item_view.probe_column_resize_move(x)
+    }
+
+    pub fn state_column_resize_end(&self) -> f64 {
+        self.state.item_view.probe_column_resize_end()
+    }
+
+    /// The double-click auto-size (the C# `AutoSizeHeader`).
+    pub fn state_column_autosize(&self, id: i32) -> f64 {
+        self.state.item_view.autosize_column(id)
+    }
+
+    /// The persisted Detail column widths (id, visible, width) — the
+    /// T5 probe's resize round-trip.
+    pub fn state_column_widths(&self) -> Vec<(i32, bool, i32)> {
+        self.state.item_view.detail_columns_state()
+    }
+
     /// The visible workspace stack page name (the probe).
     pub fn state_stack_page(&self) -> String {
         self.state

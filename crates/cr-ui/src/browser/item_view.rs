@@ -13,9 +13,9 @@
 //! thumbnail).
 //!
 //! Deviations: the wheel scrolls natively (the C# steps 16 px per
-//! line), Detail headers draw but do not resize or reorder (T5),
-//! and Tile text lines are the caption + file name until the C#
-//! text builder lands (T4).
+//! line), Detail headers resize + auto-size but do not reorder
+//! (drag-reorder), and Tile text lines are the caption + file name
+//! until the C# text builder lands (T4).
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
@@ -50,6 +50,16 @@ const FOCUS_UNFOCUSED: (f64, f64, f64) = (0.5, 0.5, 0.55);
 /// The Ctrl+wheel size limits + step (`Program.Min/MaxThumbHeight`,
 /// the wheel steps 16 — `itemView_MouseWheel`).
 const THUMB_WHEEL_STEP: f64 = 16.0;
+
+/// The live column drag (`ItemView.resizeColumn`): the column id,
+/// the gesture-start x, and the width at start — the move applies
+/// `OnMouseMoveResizeColumnHeader`'s clamp math.
+#[derive(Clone, Copy)]
+struct ResizeState {
+    id: i32,
+    start_x: f64,
+    start_width: f64,
+}
 
 type ActivateFn = Box<dyn Fn(&CrGuid)>;
 type SelectionFn = Rc<dyn Fn(usize)>;
@@ -112,6 +122,10 @@ pub struct ItemViewState {
     /// `UpdateSelection`).
     band_snapshot: HashSet<CrGuid>,
     detail_columns: Vec<Column>,
+    /// The live column drag (`resizeColumn`): the column id, the
+    /// gesture-start x, and the width at start (the C# resize
+    /// fields; the move applies the C# clamp math).
+    resize: Option<ResizeState>,
     on_activate: Option<ActivateFn>,
     on_selection_changed: Option<SelectionFn>,
     /// The Detail header right-click (the T6 column chooser).
@@ -124,6 +138,40 @@ pub struct ItemViewState {
 }
 
 impl ItemViewState {
+    /// `OnMouseDownColumnHeaderSeparator`: the drag starts at the
+    /// column's right edge with its current width.
+    fn begin_resize(&mut self, id: i32, x: f64) -> bool {
+        let Some(c) = self.detail_columns.iter().find(|c| c.id == id) else {
+            return false;
+        };
+        self.resize = Some(ResizeState {
+            id,
+            start_x: x,
+            start_width: c.width,
+        });
+        true
+    }
+
+    /// `OnMouseMoveResizeColumnHeader`:
+    /// `width = (startWidth + (x - startX)).Clamp(0, 10000)`, live
+    /// reflow each move.
+    fn move_resize(&mut self, x: f64) -> f64 {
+        let Some(r) = self.resize else {
+            return -1.0;
+        };
+        let width = (r.start_width + (x - r.start_x)).clamp(0.0, 10000.0);
+        if let Some(c) = self.detail_columns.iter_mut().find(|c| c.id == r.id) {
+            c.width = width;
+        }
+        self.relayout(self.canvas.width() as f64);
+        width
+    }
+
+    /// `OnMouseUpResizeColumnHeader`.
+    fn end_resize(&mut self) {
+        self.resize = None;
+    }
+
     fn relayout(&mut self, canvas_width: f64) {
         if canvas_width > 1.0 {
             self.config.view_width = canvas_width;
@@ -273,6 +321,7 @@ impl ItemView {
             band_start: (0.0, 0.0),
             band_snapshot: HashSet::new(),
             detail_columns: columns::default_columns(),
+            resize: None,
             on_activate: None,
             on_selection_changed: None,
             on_header_context: None,
@@ -841,6 +890,47 @@ impl ItemView {
         )
     }
 
+    /// `AutoSizeHeader` — the widest displayed cell text + padding;
+    /// a non-text column keeps its width (the C# measures the item
+    /// renderer's bounds; the port's image cells have no text — a
+    /// recorded deviation).
+    pub fn autosize_column(&self, id: i32) -> f64 {
+        let width = autosize_column_state(&self.state, id);
+        self.canvas.queue_draw();
+        width
+    }
+
+    /// The drag start through the real click path (the probe).
+    pub fn probe_column_resize_start(&self, id: i32, x: f64) -> bool {
+        self.state.borrow_mut().begin_resize(id, x)
+    }
+
+    /// The drag move through the real path; returns the live width.
+    pub fn probe_column_resize_move(&self, x: f64) -> f64 {
+        let w = self.state.borrow_mut().move_resize(x);
+        self.canvas.queue_draw();
+        w
+    }
+
+    /// The drag end; returns the final width.
+    pub fn probe_column_resize_end(&self) -> f64 {
+        let width = {
+            let s = self.state.borrow();
+            s.resize
+                .as_ref()
+                .and_then(|r| {
+                    s.detail_columns
+                        .iter()
+                        .find(|c| c.id == r.id)
+                        .map(|c| c.width)
+                })
+                .unwrap_or(-1.0)
+        };
+        self.state.borrow_mut().end_resize();
+        self.canvas.queue_draw();
+        width
+    }
+
     fn update_size_request(&self) {
         update_size_request(&self.state, &self.canvas);
     }
@@ -879,7 +969,19 @@ impl ItemView {
             // click-to-focus — the Phase 3 lesson).
             canvas.grab_focus();
             if n != 1 {
-                // Double-click → activate.
+                // Double-click: a header separator auto-sizes the
+                // column first (`OnDoubleClickColumnHeaderSeperator`),
+                // otherwise it activates the focused book.
+                let header_hit = {
+                    let s = state.borrow();
+                    layout::column_separator_hit(&s.config, &s.detail_columns, x, y)
+                };
+                if let Some(id) = header_hit {
+                    autosize_column_state(&state, id);
+                    let canvas = canvas.clone();
+                    canvas.queue_draw();
+                    return;
+                }
                 let id = state.borrow().view.focus();
                 if let Some(id) = id {
                     if let Some(f) = state.borrow().on_activate.as_ref() {
@@ -887,6 +989,17 @@ impl ItemView {
                     }
                 }
                 return;
+            }
+            {
+                let mut s = state.borrow_mut();
+                // The header separator zone wins first (the C#
+                // `OnMouseDown` checks it before the item hit).
+                if let Some(id) = layout::column_separator_hit(&s.config, &s.detail_columns, x, y) {
+                    s.begin_resize(id, x);
+                    drop(s);
+                    canvas.queue_draw();
+                    return;
+                }
             }
             let mut s = state.borrow_mut();
             let hit = hit_test(&s.layout, x, y);
@@ -941,6 +1054,12 @@ impl ItemView {
             };
             gesture.set_state(gtk4::EventSequenceState::Claimed);
             let mut s = state.borrow_mut();
+            if s.resize.take().is_some() {
+                // `OnMouseUpResizeColumnHeader`.
+                drop(s);
+                canvas_released.queue_draw();
+                return;
+            }
             if let Some(band) = s.band.take() {
                 let band_ids: Vec<CrGuid> = layout::visible_items(&s.layout, band)
                     .map(|i| s.view.book_id(i.display))
@@ -963,7 +1082,7 @@ impl ItemView {
         });
         self.canvas.add_controller(gesture);
 
-        // Band motion.
+        // Band motion + the Detail column drag (`OnMouseMove`).
         let state = Rc::downgrade(&self.state);
         let motion = EventControllerMotion::new();
         motion.connect_motion(move |_, x, y| {
@@ -971,12 +1090,30 @@ impl ItemView {
                 return;
             };
             let mut s = state.borrow_mut();
+            if s.resize.is_some() {
+                // The C# returns early while resizing — the cursor
+                // stays the split marker and the band never runs.
+                s.move_resize(x);
+                s.canvas.set_cursor_from_name(Some("col-resize"));
+                s.canvas.queue_draw();
+                return;
+            }
             if s.band.is_some() {
                 let (sx, sy) = s.band_start;
                 let rect = Rect::new(sx.min(x), sy.min(y), (x - sx).abs(), (y - sy).abs());
                 s.band = Some(rect);
                 s.canvas.queue_draw();
             }
+            // The VSplit cursor over a separator (`OnMouseMove` —
+            // `Cursors.VSplit`); the default elsewhere.
+            let over_separator =
+                layout::column_separator_hit(&s.config, &s.detail_columns, x, y).is_some();
+            let cursor = if over_separator {
+                Some("col-resize")
+            } else {
+                None
+            };
+            s.canvas.set_cursor_from_name(cursor);
         });
         self.canvas.add_controller(motion);
     }
@@ -1307,7 +1444,9 @@ fn draw_frame(ctx: &cairo::Context, state: &Rc<RefCell<ItemViewState>>, window: 
         ctx.show_text(&text).ok();
     }
 
-    // Detail column header strip.
+    // Detail column header strip: the C# `OnDrawColumnHeaders` —
+    // each header cell paints clipped to its rect with the framed
+    // edge (the 1 px separator the drag handle sits on).
     if layout::header_visible(&s.config) {
         let header = Rect::new(0.0, 0.0, s.config.view_width, s.config.header_height);
         ctx.set_source_rgb(pal.window_bg.0, pal.window_bg.1, pal.window_bg.2);
@@ -1321,8 +1460,23 @@ fn draw_frame(ctx: &cairo::Context, state: &Rc<RefCell<ItemViewState>>, window: 
         let visible: Vec<&Column> = s.detail_columns.iter().filter(|c| c.visible).collect();
         let mut x = header.x + layout::COLUMN_OFFSET_X;
         for column in visible {
+            // Clip the caption to its column (the C#
+            // `gr.IntersectClip(columnHeaderRectangle)`); a 0-width
+            // column shows nothing.
+            ctx.save().ok();
+            ctx.rectangle(x, header.y, column.width.max(0.0), header.h);
+            ctx.clip();
             ctx.move_to(x + 2.0, header.y + header.h * 0.7);
             ctx.show_text(column.name).ok();
+            ctx.restore().ok();
+            // The framed edge (the C# `DrawStyledRectangle` — the
+            // separator the drag handle sits on).
+            if column.width > 0.0 {
+                ctx.set_source_rgba(pal.fg.0, pal.fg.1, pal.fg.2, 0.35);
+                ctx.rectangle(x + column.width - 0.5, header.y + 2.0, 1.0, header.h - 4.0);
+                ctx.fill().ok();
+                ctx.set_source_rgb(pal.fg.0, pal.fg.1, pal.fg.2);
+            }
             x += column.width;
         }
     }
@@ -1380,6 +1534,18 @@ fn draw_frame(ctx: &cairo::Context, state: &Rc<RefCell<ItemViewState>>, window: 
         ctx.fill().ok();
     }
 
+    // The resize marker: a full-height line at the dragged column's
+    // right edge (`ThemePens.ItemView.ResizeMarker`).
+    if let Some(r) = s.resize {
+        if let Some(edge) = layout::column_right_edge(&s.detail_columns, r.id) {
+            ctx.set_source_rgb(pal.selected_bg.0, pal.selected_bg.1, pal.selected_bg.2);
+            ctx.set_line_width(1.0);
+            ctx.move_to(edge, 0.0);
+            ctx.line_to(edge, s.layout.virtual_size.1);
+            ctx.stroke().ok();
+        }
+    }
+
     if let Some(t0) = t0 {
         crate::trace::trace(format!(
             "draw_frame win=({:.0},{:.0} {:.0}x{:.0}) items={} thumbs_pending={} {:.1} ms",
@@ -1394,6 +1560,45 @@ fn draw_frame(ctx: &cairo::Context, state: &Rc<RefCell<ItemViewState>>, window: 
     }
 
     queued_thumbs
+}
+
+/// `AutoSizeHeader` (`GetAutoHeaderSize`): the widest cell text over
+/// the DISPLAYED items + padding, clamped to the C# 0..10000. The
+/// scratch context measures with the cell font (Sans 12).
+fn autosize_column_state(state: &Rc<RefCell<ItemViewState>>, id: i32) -> f64 {
+    let surface =
+        cairo::ImageSurface::create(cairo::Format::ARgb32, 1, 1).expect("autosize scratch surface");
+    let ctx = cairo::Context::new(&surface).expect("autosize scratch context");
+    ctx.select_font_face("Sans", cairo::FontSlant::Normal, cairo::FontWeight::Normal);
+    ctx.set_font_size(12.0);
+    let mut s = state.borrow_mut();
+    let Some(idx) = s.detail_columns.iter().position(|c| c.id == id) else {
+        return 0.0;
+    };
+    let width =
+        if !s.detail_columns[idx].is_text_column() && s.detail_columns[idx].name != "Position" {
+            s.detail_columns[idx].width
+        } else {
+            let mut max = 0.0f64;
+            for (d, &di) in s.view.display_order().iter().enumerate() {
+                let text = if s.detail_columns[idx].name == "Position" {
+                    (d + 1).to_string()
+                } else {
+                    columns::cell_text(&s.detail_columns[idx], s.view.book(di))
+                };
+                if text.is_empty() {
+                    continue;
+                }
+                if let Ok(ext) = ctx.text_extents(&text) {
+                    max = max.max(ext.width());
+                }
+            }
+            (max + 8.0).clamp(0.0, 10000.0)
+        };
+    s.detail_columns[idx].width = width;
+    let cw = s.canvas.width() as f64;
+    s.relayout(cw);
+    width
 }
 
 fn draw_thumbnail_item(
