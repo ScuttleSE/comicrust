@@ -29,6 +29,7 @@ use crate::reader_shell::TabInfo;
 #[derive(Clone, PartialEq, Debug)]
 pub enum TabId {
     Library,
+    Folders,
     Pages,
     Comic(usize),
     Plus,
@@ -73,6 +74,7 @@ struct Inner {
     host: gtk4::Box,
     comic_box: gtk4::Box,
     library_btn: Button,
+    folders_btn: Button,
     pages_btn: Button,
     pages_root: gtk4::Box,
     plus_btn: Button,
@@ -113,8 +115,11 @@ impl TabStrip {
         widget.append(&items_box);
         widget.append(&host);
 
-        // tsbLibrary / tsbPages (`Resources.Library` / `ComicPage`).
+        // tsbLibrary / tsbFolders / tsbPages (`Resources.Library` /
+        // `FileBrowser` (the GIF — the text-only fallback) /
+        // `ComicPage`).
         let library_btn = tab_button("Library", crate::icon::icon("Library"));
+        let folders_btn = tab_button("Folders", crate::icon::icon("FileBrowser"));
         let pages_btn = tab_button("Pages", crate::icon::icon("ComicPage"));
         let pages_root = gtk4::Box::new(Orientation::Horizontal, 0);
         pages_root.append(&pages_btn);
@@ -133,6 +138,7 @@ impl TabStrip {
         }
         let comic_box = gtk4::Box::new(Orientation::Horizontal, 2);
         items_box.append(&library_btn);
+        items_box.append(&folders_btn);
         items_box.append(&pages_root);
         items_box.append(&comic_box);
         items_box.append(&plus_btn);
@@ -143,6 +149,7 @@ impl TabStrip {
             host,
             comic_box,
             library_btn,
+            folders_btn,
             pages_btn,
             pages_root,
             plus_btn,
@@ -166,6 +173,12 @@ impl TabStrip {
             let weak = Rc::downgrade(&strip.inner);
             strip.inner.library_btn.connect_clicked(move |_| {
                 fire_select(&weak, &TabId::Library);
+            });
+        }
+        {
+            let weak = Rc::downgrade(&strip.inner);
+            strip.inner.folders_btn.connect_clicked(move |_| {
+                fire_select(&weak, &TabId::Folders);
             });
         }
         {
@@ -362,6 +375,7 @@ impl TabStrip {
             }
         };
         mark(&self.inner.library_btn, *sel == TabId::Library);
+        mark(&self.inner.folders_btn, *sel == TabId::Folders);
         mark(&self.inner.pages_btn, *sel == TabId::Pages);
         let tabs = self.inner.comic_tabs.borrow();
         for item in tabs.iter() {
@@ -372,6 +386,12 @@ impl TabStrip {
     /// `tsbPages.Visible` (a book must be open).
     pub fn set_pages_visible(&self, visible: bool) {
         self.inner.pages_root.set_visible(visible);
+    }
+
+    /// `tsbFolders` removed under `DisableFoldersView` (the C#
+    /// removes the tab item from the strip).
+    pub fn set_folders_visible(&self, visible: bool) {
+        self.inner.folders_btn.set_visible(visible);
     }
 
     /// The comic tabs + `+` hide while the reader is undocked (the
@@ -438,6 +458,7 @@ impl TabStrip {
     pub fn tab_visible(&self, id: &TabId) -> bool {
         match id {
             TabId::Library => self.inner.library_btn.is_visible(),
+            TabId::Folders => self.inner.folders_btn.is_visible(),
             TabId::Pages => self.inner.pages_root.is_visible(),
             TabId::Plus => self.inner.plus_btn.is_visible(),
             TabId::Comic(slot) => self
@@ -456,6 +477,7 @@ impl TabStrip {
     pub fn click(&self, id: &TabId) {
         match id {
             TabId::Library => self.inner.library_btn.emit_clicked(),
+            TabId::Folders => self.inner.folders_btn.emit_clicked(),
             TabId::Pages => self.inner.pages_btn.emit_clicked(),
             TabId::Plus => self.inner.plus_btn.emit_clicked(),
             TabId::Comic(slot) => {

@@ -61,6 +61,8 @@ pub struct Settings {
     pub move_files_to_recycle_bin: bool,
     pub also_remove_from_library: bool,
     pub also_remove_from_library_filtered: bool,
+    /// `Settings.FavoriteFolders` (the Files browser's favorites).
+    pub favorite_folders: Vec<String>,
     pub remove_files_from_database: bool,
     pub tab_layouts: TabLayouts,
     pub quick_open_thumbnail_size: i32,
@@ -189,6 +191,7 @@ impl Default for Settings {
             move_files_to_recycle_bin: false,
             also_remove_from_library: false,
             also_remove_from_library_filtered: false,
+            favorite_folders: Vec::new(),
             remove_files_from_database: false,
             tab_layouts: TabLayouts(0), // TabLayouts.None
             quick_open_thumbnail_size: 128,
@@ -402,6 +405,7 @@ impl Settings {
             "AlsoRemoveFromLibraryFiltered",
             self.also_remove_from_library_filtered,
         )?;
+        w_strings(e, "FavoriteFolders", &self.favorite_folders)?;
         w_bool(
             e,
             "RemoveFilesfromDatabase",
@@ -738,6 +742,7 @@ fn read_elem(r: &mut XmlReader<'_>, s: &Start, x: &mut Settings) -> XmlResult<bo
         "AlsoRemoveFromLibraryFiltered" => {
             x.also_remove_from_library_filtered = r_bool(r, "AlsoRemoveFromLibraryFiltered")?
         }
+        "FavoriteFolders" => x.favorite_folders = r_strings(r, "FavoriteFolders")?,
         "RemoveFilesfromDatabase" => {
             x.remove_files_from_database = r_bool(r, "RemoveFilesfromDatabase")?
         }
@@ -1024,6 +1029,7 @@ mod tests {
             right_to_left_reading_mode: RightToLeftReadingMode::FlipParts,
             last_library_item: CrGuid::parse("01234567-89ab-cdef-0123-456789abcdef").unwrap(),
             last_open_files: vec!["/a.cbz".into(), "/b.cbz".into()],
+            favorite_folders: vec!["/comics".into()],
             selected_browser: Some(String::new()), // empty string, not null
             plugins_states: None,                  // null → the element is omitted
             ..Settings::default()

@@ -33,8 +33,11 @@ fn main() {
     if !std::env::var("XDG_DATA_HOME")
         .map(|v| v.contains("/tmp/opencode"))
         .unwrap_or(false)
+        || !std::env::var("XDG_CONFIG_HOME")
+            .map(|v| v.contains("/tmp/opencode"))
+            .unwrap_or(false)
     {
-        eprintln!("REFUSED: set XDG_DATA_HOME=/tmp/opencode/<dir> (the probe seeds books into the DB it opens)");
+        eprintln!("REFUSED: set XDG_DATA_HOME=/tmp/opencode/<dir> AND XDG_CONFIG_HOME=/tmp/opencode/<dir> (the probe seeds books and can write Config.xml)");
         std::process::exit(1);
     }
     let work = std::path::Path::new("/tmp/opencode/detailresize");

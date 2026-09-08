@@ -207,17 +207,68 @@ fmt/clippy/`cargo test --workspace` green, `importlist_probe` +
 - Fix + a timing gate (delete 200 fileless books headlessly —
   seconds). The user test decides.
 
+IMPLEMENTED 2026-09-08 (measured, no fix round for the remove flow
+itself — the storm was the rebuild). The profile
+(`deleteperf_probe` — the REAL flow: the chronology `.cbl` imported
+through the missing-books dialog, ~250 fileless placeholders
+selected, the context menu → the confirm dialog): the per-id loop +
+evaluate ≈ 2 ms, the DB save 4 ms, `set_books` ≈ 875 ms — the WHOLE
+hang sat in the view REBUILD. CAUSE: the eager `book_view::PropTable`
+parsed ~one ComicNameInfo per book per rebuild (~0.33 ms each —
+`needs_prop` is true for nearly every book: `enable_proposed`
+defaults TRUE and Title is usually empty) even when no grouper/sort
+read a single parse. The pre-T10-slice code (the user's report) paid
+the same parse per COMPARISON in the sort + the error-surface decode
+storm on top — the minute. FIX: the PropTable went LAZY (the C#
+`ComicBook.Proposed` semantics — parse on first read): build()
+only allocates, get() parses slot i on first read, dead books
+resolve to the shared empty parse, and the unsorted/ungrouped view
+(no getter ever reads) parses NOTHING; the empty-sort-chain guard
+moved into the sort closure (the resolve arguments must not parse
+before compare early-outs). The C# per-book SESSION cache stays
+plan B in `docs/backlog.md`. MEASURED (release, the user scenario):
+the remove+refresh closure **886 ms → 20 ms**. Gates:
+`view_state::tests::rebuild_reading_list_scale_stays_fast` (2886
+books, 1 s budget — a parse-per-book regression blows it in debug)
++ `deleteperf_probe` (the real import + real remove path; falls
+back to the synthetic 200-fileless scenario without the fixtures).
+CR_TRACE stage lines live in refresh/set_books. 375 tests; probes
+green. USER TEST PENDING.
+
 ### T5. Details-view column resize (item 6)
 
 - The C# Detail columns drag-resize; widths persist in
   `ItemViewConfig.Columns` (the T14 workspace). Check what the
   port's `workspace.rs`/`columns.rs` store (the T14 record carries
   `Columns` — widths may be missing).
-- Implement: a drag handle in the Detail header (hit zone + a
-  grab cursor), min widths, live reflow; persist the widths in the
+- Implement: a drag handle in the Detail header (hit zone + a grab
+  cursor), min widths, live reflow; persist the widths in the
   workspace (the T14 write path).
 - Gate: `workspace_probe` + a probe (drag → the column width + the
   persisted round-trip), then the user test.
+
+IMPLEMENTED 2026-09-08 (no fix round). The C# separator behavior
+over the port's Detail header: `ColumnHeaderSeparatorHitTest` (the
+±2 px zone at each visible column's RIGHT edge, scanned last-to-
+first — pure in layout.rs, unit-tested), left-drag resize with the
+C# clamp math (`width = start + dx`, 0..10000 — the kickoff's "min
+widths" IS the C# clamp; a 0-width column shows nothing — the
+captions clip per column), live reflow per move, the double-click
+auto-size (`GetAutoHeaderSize` — the widest displayed cell text +
+8 padding measured on a scratch cairo context; image-only columns
+keep their width — recorded deviation), the col-resize cursor on
+the hit zone (`Cursors.VSplit`), the full-height ResizeMarker line
+while dragging, per-column clipped header captions with a 1 px
+framed edge (the C# `DrawStyledRectangle` separator). The widths
+ALREADY rode the T14 workspace round-trip (`detail_columns_state`
+kept them) — the probe now gates the resize through it. NOT ported:
+header-click sort + drag-reorder (the port's header has no
+sort-click parity yet — recorded). Gate: the layout unit tests +
+`detailresize_probe` (the real drag path: Series 200→280 through
+the move math, the zero clamp, the auto-size 92, and the collect →
+second-shell width restore). 375 tests; fmt/clippy green; the
+workspace/browserbar/listorder/bootview/statusbar probes green.
+USER TEST PENDING.
 
 ### T6. Folders tab (item 5)
 
@@ -234,6 +285,68 @@ fmt/clippy/`cargo test --workspace` green, `importlist_probe` +
   Phase 4-sized view task.
 - Gate: a probe (the folder tree renders, selecting a folder lists
   its comics), then the user test.
+
+IMPLEMENTED 2026-09-08. The provider
+(`folder_tree::folder_book_list`): the `FileUtility.GetFiles` walk
+(files first, then recursion — plain, no `comicrackscanner.ini`
+honoring), the provider extension registry filter
+(`Providers.Readers.GetFileExtensions`), the `AddToTemporary`
+session books (`scanner::create_book` made public), the stored
+metadata read for the first 100 files only
+(`RefreshInfoOptions.DontReadInformation` beyond), the provider
+page count always wins. The panel (`FolderTree`): one "/" root
+("File System"), LAZY fill with the dummy-child pattern (a childless
+row shows no expander — every fresh row carries one dummy the fill
+swaps out), names sorted with `extended_compare_ignore_case`,
+`drill_to` through the navigator-proven `expand_to_path` chain
+(per-row `expand_row` fails on fresh rows — measured, then fixed),
+refresh re-roots + re-drills. The toolbar: the favorites dropdown
+(rebuilt on open — the dynamic fill lesson), Add To Favorites, the
+Include Sub Folders toggle (the Settings
+`ExplorerIncludeSubFolders` write + the rescan), Refresh, Add
+Folder To Library (the scan flow + the view refresh). Settings:
+`FavoriteFolders` ported (the `<FavoriteFolders><string>…` shape,
+reader/writer arms + the round-trip fixture). The shell: the
+"folders" stack page with its OWN ItemView (the C#
+`AddExplorerView(null, filesBrowser, tsbFolders)` shape), the paned
+tree left/grid right, `TabId::Folders` + the tab (the FileBrowser
+GIF is not bundled → text-only; `DisableFoldersView` hides the tab
+— the C# removes it), the tab click rules (the CaptionClick toggle
++ `last_browser=2` in the ShowLast chain), the selection → the
+synced scan, the folder context menu (Open / Reveal / Move to
+Recycle Bin — the C# `RemoveBooks` ask with the
+"Additionally remove… from the Library" option =
+`RemoveFilesfromDatabase` + the failed-delete message; the is-file
+guard from the Phase 7 audit), the status panels + the thumb slider
+route to the ACTIVE browser (the C# `FindActiveService`), and
+`LastExplorerFolder` captured at close (the boot drills to it).
+FIX ROUNDS during the gate: (1) the drill expanded per-row
+(`expand_row` false on fresh rows) → `expand_to_path`; (2) the
+insert_root pre-marked "/" filled (no children ever) → the lazy
+dummy; (3) the boot `set_include_sub` RefCell abort — the
+edition-2021 temporaries lesson (the settings borrow held through
+the toggled handler's borrow_mut); (4) INCIDENT: a probe run
+(foldersview) wrote Config.xml into the REAL `~/.config/comicrust`
+(the probe guarded only XDG_DATA_HOME; `add_favorite` calls
+`save_settings` directly) — `ExplorerIncludeSubFolders=true`, the
+/tmp favorite, `LastExplorerFolder` repaired to defaults; the
+user's pre-probe Config.xml (workspace/settings) is NOT recoverable
+— the probe and deleteperf/detailresize now REFUSE without BOTH
+XDG vars isolated. Deviations (recorded): no per-view browser
+toolbar on the folders page (the C# ComicBrowserControl toolStrip
+— Views/Group/Arrange/search stay library-bound; the folders view
+is double-click/context-menu driven; the menubar book commands stay
+library-bound), no RemoveFavorite / Open Window / Open Tab, no
+FileView workspace persistence (the T14 deferral stands), the scan
+is synchronous (no progress dialog), the tree skips dot-dirs and
+shows names only (the shell icon list is not portable), the View
+menu's Folders item not ported (the tab is the entry point). Gate:
+`foldersview_probe` (A the tab+strip selection, B the drill → 2
+comics with the stored-series caption, C the include-sub rescan →
+3, D the favorite persists, E back to Library). 375 tests;
+fmt/clippy green; tabstrip/bootview/statusbar/browserbar/listorder/
+menubar/commands/navpages/foldersview/detailresize/deleteperf
+probes green. USER TEST PENDING.
 
 ### T7. Database backend — MOVED TO PHASE 9 (2026-09-07)
 
@@ -429,7 +542,12 @@ T8 → T9 → T11 → T10. The database-backend item is Phase 9 now (see T7).
   probes extended: menubar/browserbar/navpages gates + the new
   bootview_probe + the tabstrip A/I expectations moved to the T2
   shape). T1 + T2 USER-TESTED, ALL PASS ("works now").
-- Remaining order: T4 → T5 → T6 → T8 → T9 → T11 → the T10
-  remainder (startup + scan + 10k-list sweeps, measured only).
-  One user test is pending before that: the T10 slice 1 feel
-  (sort/group column clicks + Show Duplicates are instant).
+- 2026-09-08: T4 + T5 + T6 IMPLEMENTED (records in their task
+  sections; new gates: `rebuild_reading_list_scale_stays_fast` +
+  `deleteperf_probe` + `detailresize_probe` + `foldersview_probe`;
+  375 tests). T4 measured 886 ms → 20 ms on the user's delete
+  scenario. All three user tests PENDING.
+- Remaining order: T8 → T9 → T11 → the T10 remainder (startup +
+  scan + 10k-list sweeps, measured only). One user test is pending
+  before that: the T10 slice 1 feel (sort/group column clicks +
+  Show Duplicates are instant).

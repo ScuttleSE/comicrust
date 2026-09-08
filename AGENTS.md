@@ -168,18 +168,76 @@ Update this section at the **end of every work session**. The next agent must kn
   writers, HEIF/AVIF decode, the T14 per-list sort (the port resets
   the view sort on every list switch; the C# keeps it per list — a
    recorded deviation).
-  PHASE 8 STATE (2026-09-07, the session-fresh pointer): DONE =
-  T1 + T2 + T3 (the CBL import) + T10 slice 1 (the parse storms)
-  + T10 slice 2 (the scroll culling storm) — the records in the
-  phase-8-kickoff task sections. USER TESTS: T3 PASS ("the
-  cbl-lists imported reasonably fast now"); T10 slice 2 PASS
-  ("works now" — the 2875-book reading list tracks the wheel);
-  T1 + T2 USER-TESTED, ALL PASS (2026-09-07, "works now" — the
-  `&` strips, the arrowless popovers, the tree-menu position, the
-  Library boot view, and the last-close QuickOpen shape). The T10
-  slice 1 gate (sort/group column clicks + the Show Duplicates
-  toggle feel instant) is still PENDING an explicit word — treat
-  the next touch of those paths as its test. T1 record: `&`
+  PHASE 8 STATE (2026-09-08, the session-fresh pointer): DONE =
+  T1 + T2 + T3 (the CBL import) + T4 (the fileless-delete perf) +
+  T5 (the Details column resize) + T6 (the Folders tab) + T10
+  slice 1 (the parse storms) + T10 slice 2 (the scroll culling
+  storm) — the records in the phase-8-kickoff task sections. USER
+  TESTS: T3 PASS ("the cbl-lists imported reasonably fast now");
+  T10 slice 2 PASS ("works now" — the 2875-book reading list
+  tracks the wheel); T1 + T2 USER-TESTED, ALL PASS (2026-09-07,
+  "works now"). PENDING USER TESTS: T4, T5, T6 (2026-09-08), and
+  the T10 slice 1 feel (sort/group column clicks + the Show
+  Duplicates toggle feel instant — treat the next touch of those
+  paths as its test). T4 record: the delete hang WAS the view
+  rebuild — the eager `book_view::PropTable` parsed ~one
+  ComicNameInfo per book per rebuild (~0.33 ms × 2627 books;
+  `needs_prop` is true for nearly every book: `enable_proposed`
+  defaults TRUE and Title is usually empty) even with no grouper
+  and an empty sort chain. The PropTable is LAZY now (the C#
+  `Proposed` semantics — parse on first read; the dead books
+  resolve to the shared empty parse; the empty-chain guard sits in
+  the sort closure so the resolve args don't parse first).
+  Measured (release, the real chronology + 250 placeholder
+  removals through the real menu → dialog): the remove+refresh
+  closure 886 ms → 20 ms. Gates:
+  `view_state::tests::rebuild_reading_list_scale_stays_fast` +
+  `deleteperf_probe` (the real import + remove flow; falls back to
+  the synthetic scenario without the fixtures). The C# per-book
+  session cache stays plan B (backlog). T5 record: the C#
+  separator behavior over the Detail header — the ±2 px hit zone
+  at each visible column's right edge
+  (`layout::column_separator_hit`, scanned last-to-first,
+  unit-tested), left-drag with the C# clamp (0..10000; a 0-width
+  column shows nothing), live reflow, double-click auto-size
+  (the widest displayed cell text + 8 on a scratch cairo context;
+  image columns keep their width — deviation), the col-resize
+  cursor, the full-height ResizeMarker line, per-column clipped
+  captions with a 1 px framed edge. Widths already rode the T14
+  round-trip. NOT ported: header-click sort + drag-reorder. Gate:
+  `detailresize_probe`. T6 record: the Files (Folders) view —
+  `folder_tree.rs` (the provider `folder_book_list`: the plain
+  FileUtility walk, the extension registry, the session books via
+  the now-public `scanner::create_book`, the stored metadata read
+  for the first 100 files only; the tree: one "/" root, LAZY
+  dummy-child fill (a childless row shows no expander),
+  `drill_to` through `expand_to_path` (per-row expand_row FAILS on
+  fresh rows — measured), the favorites dropdown +
+  Add To Favorites (the Settings `FavoriteFolders` port — the
+  `<string>` items) + the Include Sub Folders toggle + Add Folder
+  To Library + Refresh). The shell: the "folders" stack page with
+  its OWN ItemView, `TabId::Folders` (the FileBrowser GIF is not
+  bundled → text-only; `DisableFoldersView` hides the tab), the
+  CaptionClick toggle + last_browser=2, the folder context menu
+  (Open/Reveal/Move to Recycle Bin — the C# RemoveBooks ask + the
+  `RemoveFilesfromDatabase` option + the failed-delete message +
+  the is-file guard), the status panels + the slider route to the
+  ACTIVE browser, LastExplorerFolder captured at close. Deviations:
+  no per-view browser toolbar on the folders page (the menubar
+  book commands stay library-bound), no RemoveFavorite/Open
+  Window/Open Tab, no FileView workspace persistence, the scan is
+  synchronous, dot-dirs skipped, names only (no shell icons), the
+  View-menu Folders item not ported. Gate: `foldersview_probe`.
+  T6 INCIDENT: a probe run wrote Config.xml into the REAL
+  `~/.config/comicrust` (the probe guarded only XDG_DATA_HOME;
+  `add_favorite` → `save_settings`) — the polluted fields
+  (ExplorerIncludeSubFolders/FavoriteFolders/LastExplorerFolder)
+  were repaired to defaults, the user's pre-probe workspace/
+  settings snapshot is NOT recoverable (the app told in the UAT);
+  foldersview/deleteperf/detailresize now REFUSE without BOTH XDG
+  vars. Boot-restore lesson: `set_include_sub` fired the toggled
+  handler through the boot's settings borrow — the edition-2021
+  temporaries lesson AGAIN (hoist the read). T1 record: `&`
   mnemonics strip at render (`menubar::strip_amp`; tables stay
   verbatim; the submenu-parent key strips `&`+`_` so
   `set_sub_enabled("Recent Books"/"Page Type")` finally matches),
@@ -200,16 +258,15 @@ Update this section at the **end of every work session**. The next agent must kn
   books). Gate: `bootview_probe` (boot→browser+Library,
   open→reader, last close→quickopen, toggle→browser); the
   `tabstrip_probe` A/I expectations moved to the new shape. NEXT IN
-  ORDER: T4 (the
-  fileless-delete perf, profile first) → T5 (the Details column
-  resize) → T6 (the Folders tab, Phase 4-sized) → T8 (packaging) →
-  T9 (docs + migration tooling) → T11 (the Windows-path migration,
-  scope in the kickoff) → the T10 remainder (startup + scan +
-  10k-list sweeps, measured only). Work rules that paid off in
-  T3/T10: MEASURE the before with a committed timing gate, keep the
-  C# algorithm shapes intact (kill only the redundant parses), and
-  reuse `book_view::needs_prop`/`prop_table` for any new per-book
-  proposed-parse need.
+  ORDER: T8 (packaging) → T9 (docs + migration tooling) → T11 (the
+  Windows-path migration, scope in the kickoff) → the T10
+  remainder (startup + scan + 10k-list sweeps, measured only).
+  Work rules that paid off in T3/T10/T4: MEASURE the before with a
+  committed timing gate, keep the C# algorithm shapes intact (kill
+  only the redundant parses), and reuse
+  `book_view::needs_prop`/`PropTable::build`+`get` for any new
+  per-book proposed-parse need (the table is LAZY now — read
+  through it, never parse directly).
   PHASE 8 T10 SLICE 2 COMPLETE — USER-TESTED, ALL PASS (2026-09-07,
   "works now"): the ItemView SCROLL storm behind the "the
   2875-book reading list is unusable to scroll" report. CAUSE

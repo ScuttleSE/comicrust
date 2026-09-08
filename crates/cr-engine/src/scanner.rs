@@ -101,8 +101,11 @@ pub fn refresh_file_info(book: &mut ComicBook) -> bool {
 }
 
 /// `ComicBook.Create(file, options)`: fresh defaults + the file path,
-/// then the info refresh.
-fn create_book(file: &str, now: &CrDateTime) -> ComicBook {
+/// then the info refresh. Public for the Files view's folder book
+/// list (`FolderComicListProvider.GetFolderBookList` — the
+/// `AddToTemporary` session books; the library scan builds the same
+/// shape).
+pub fn create_book(file: &str, now: &CrDateTime) -> ComicBook {
     let mut book = ComicBook {
         id: CrGuid::new_random(),
         file_path: file.to_string(),

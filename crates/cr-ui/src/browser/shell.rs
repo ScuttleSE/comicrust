@@ -42,6 +42,8 @@ use super::tabstrip::TabId;
 #[derive(Clone, Copy, PartialEq)]
 enum Workspace {
     Library,
+    /// The Files (Folders) view (`tsbFolders`).
+    Folders,
     Pages,
 }
 
@@ -69,6 +71,13 @@ struct ShellState {
     status_bar: super::status_bar::StatusBar,
     navigator: Rc<Navigator>,
     item_view: ItemView,
+    /// The Files (Folders) view: the filesystem tree + its own grid
+    /// (the C# `ComicListFolderFilesBrowser` — a full browser view).
+    folders_tree: Rc<super::folder_tree::FolderTree>,
+    folders_view: ItemView,
+    /// The current folder's display name (the status-bar selection
+    /// panel while the Files view shows).
+    current_folder_name: RefCell<String>,
     quick_view: ItemView,
     pages: PagesPanel,
     /// The full-window Pages workspace page (the probe measures its
@@ -171,12 +180,17 @@ impl ShellState {
     }
 
     /// Selects a browser workspace tab (`ShowView(tsbLibrary)`/
-    /// `ShowView(tsbPages)`); the reader hides behind it.
+    /// `ShowView(tsbFolders)`/`ShowView(tsbPages)`); the reader
+    /// hides behind it.
     fn select_workspace(&self, ws: Workspace) {
         match ws {
             Workspace::Library => {
                 self.last_browser.set(0);
                 self.stack.set_visible_child_name("browser");
+            }
+            Workspace::Folders => {
+                self.last_browser.set(2);
+                self.stack.set_visible_child_name("folders");
             }
             Workspace::Pages => {
                 self.last_browser.set(1);
@@ -187,10 +201,10 @@ impl ShellState {
 
     /// `ShowLast` — the last browser workspace tab.
     fn select_last_browser(&self) {
-        let ws = if self.last_browser.get() == 1 {
-            Workspace::Pages
-        } else {
-            Workspace::Library
+        let ws = match self.last_browser.get() {
+            1 => Workspace::Pages,
+            2 => Workspace::Folders,
+            _ => Workspace::Library,
         };
         self.select_workspace(ws);
     }
@@ -219,6 +233,13 @@ impl ShellState {
                     self.toggle_browser();
                 } else {
                     self.select_workspace(Workspace::Library);
+                }
+            }
+            TabId::Folders => {
+                if visible == "folders" {
+                    self.toggle_browser();
+                } else {
+                    self.select_workspace(Workspace::Folders);
                 }
             }
             TabId::Pages => {
@@ -262,6 +283,7 @@ impl ShellState {
             .set_comic_tabs_visible(!self.reader.is_undocked());
         let selected = match self.stack.visible_child_name().as_deref() {
             Some("browser") => TabId::Library,
+            Some("folders") => TabId::Folders,
             Some("pages") => TabId::Pages,
             _ => self
                 .reader
@@ -319,29 +341,67 @@ impl ShellState {
 
     /// The status-bar panels (`OnUpdateGui`'s strip updates fold
     /// into the same sync the actions ride): the selection info, the
-    /// book caption, the page + count, and the thumb slider.
+    /// book caption, the page + count, and the thumb slider. The
+    /// Files page reads ITS browser (the C# `FindActiveService`
+    /// picks the active `IComicBrowser`).
     fn update_status_panels(&self) {
         // The selection info (the C# `SelectionInfo`).
-        let count = self.item_view.book_count();
-        let total = self.item_view.total_count();
-        let total_size = self.item_view.visible_size();
-        let selected = self.item_view.selection_len();
-        let selected_size = self.item_view.selected_size();
-        let selected_path = if selected == 1 {
-            self.item_view
-                .selection_ids()
-                .first()
-                .and_then(library::book_path)
+        let page = self.stack.visible_child_name().map(|s| s.to_string());
+        let folders_visible = page.as_deref() == Some("folders");
+        let (count, total, total_size, selected, selected_size, selected_path) = if folders_visible
+        {
+            let view = self.folders_view.view_state();
+            let selected_ids: Vec<CrGuid> = view.selection_snapshot().into_iter().collect();
+            let selected_size: i64 = view
+                .books()
+                .iter()
+                .filter(|b| selected_ids.contains(&b.id))
+                .map(|b| b.file_size.max(0))
+                .sum();
+            let path = if selected_ids.len() == 1 {
+                view.books()
+                    .iter()
+                    .find(|b| b.id == selected_ids[0])
+                    .map(|b| b.file_path.clone())
+            } else {
+                None
+            };
+            (
+                view.len(),
+                view.books().len(),
+                view.books().iter().map(|b| b.file_size.max(0)).sum(),
+                selected_ids.len(),
+                selected_size,
+                path,
+            )
         } else {
-            None
+            (
+                self.item_view.book_count(),
+                self.item_view.total_count(),
+                self.item_view.visible_size(),
+                self.item_view.selection_len(),
+                self.item_view.selected_size(),
+                if self.item_view.selection_len() == 1 {
+                    self.item_view
+                        .selection_ids()
+                        .first()
+                        .and_then(library::book_path)
+                } else {
+                    None
+                },
+            )
         };
-        let list_name = self.current_list_name.borrow().clone();
+        let list_name = if folders_visible {
+            self.current_folder_name.borrow().clone()
+        } else {
+            self.current_list_name.borrow().clone()
+        };
         // The C# reads the ACTIVE browser service: with the reader
         // or QuickOpen showing, `FindActiveService<IComicBrowser>`
         // returns null and the panel goes EMPTY (the "Ready" text is
         // only the Designer default).
-        let browser_visible = self.stack.visible_child_name().as_deref() == Some("browser");
-        let info = if browser_visible {
+        let browser_visible = page.as_deref() == Some("browser");
+        let info = if browser_visible || folders_visible {
             status_bar::selection_info(
                 &list_name,
                 count,
@@ -381,9 +441,15 @@ impl ShellState {
             .set_page_count(&status_bar::page_count_text(page_count));
 
         // The thumb slider: the browser workspace only (the C#
-        // `mainViewContainer.Expanded`), range/value per mode.
-        let size = self.item_view.item_size();
-        self.status_bar.sync_slider(size, browser_visible);
+        // `mainViewContainer.Expanded`), range/value per mode — the
+        // ACTIVE browser's view.
+        let size = if folders_visible {
+            self.folders_view.item_size()
+        } else {
+            self.item_view.item_size()
+        };
+        self.status_bar
+            .sync_slider(size, browser_visible || folders_visible);
     }
 }
 
@@ -422,6 +488,14 @@ impl BrowserShell {
             view: quick_view,
         } = ItemView::create(Arc::clone(&pool));
         quick_view.configure(|c| c.hide_captions = true);
+        // The Files (Folders) view: its own grid over the scanned
+        // folder books (the C# `AddExplorerView(null, filesBrowser,
+        // tsbFolders)` — a separate browser view per tab).
+        let super::item_view::ItemViewWidgets {
+            scroller: folders_scroller,
+            view: folders_view,
+        } = ItemView::create(Arc::clone(&pool));
+        let folders_tree = super::folder_tree::FolderTree::create();
         let super::pages_view::PagesPanelWidgets {
             widget: pages_widget,
             panel: pages,
@@ -475,6 +549,18 @@ impl BrowserShell {
         let browser_page = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
         browser_page.append(&paned);
 
+        // The Files page: the folder tree pane left, the grid right
+        // (the C# filesBrowser's own ComicBrowserControl layout).
+        let folders_paned = Paned::new(gtk4::Orientation::Horizontal);
+        folders_paned.set_start_child(Some(folders_tree.widget()));
+        folders_paned.set_shrink_start_child(false);
+        folders_paned.set_position(280);
+        folders_paned.set_vexpand(true);
+        let folders_page = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+        folders_page.append(&folders_paned);
+        folders_page.append(&folders_scroller);
+        folders_scroller.set_vexpand(true);
+
         // The quick-open page (the C# reader-area overlay shown when
         // no book is open and `ShowQuickOpen`): the recent lists as
         // captionless covers.
@@ -503,6 +589,7 @@ impl BrowserShell {
         stack.set_hexpand(true);
         stack.add_named(&quick_page, Some("quickopen"));
         stack.add_named(&browser_page, Some("browser"));
+        stack.add_named(&folders_page, Some("folders"));
         let pages_page = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
         pages_page.append(&pages_widget);
         stack.add_named(&pages_page, Some("pages"));
@@ -537,6 +624,9 @@ impl BrowserShell {
             status_bar,
             navigator: Rc::clone(&navigator),
             item_view,
+            folders_tree: Rc::clone(&folders_tree),
+            folders_view,
+            current_folder_name: RefCell::new(String::new()),
             quick_view,
             pages,
             pages_page: pages_page.clone(),
@@ -1099,6 +1189,141 @@ impl BrowserShell {
                 });
         }
 
+        // ----- The Files (Folders) view wiring -----
+        // The folder tree selection → the scan → the grid
+        // (`tvFolders_AfterSelect` → `FillBooks`; the provider
+        // refreshes on the Path change).
+        {
+            let state = Rc::downgrade(state);
+            state
+                .upgrade()
+                .expect("state")
+                .folders_tree
+                .connect_selected(move |path| {
+                    if let Some(sh) = state.upgrade() {
+                        let include_sub = library::settings().borrow().explorer_include_sub_folders;
+                        let name = std::path::Path::new(path)
+                            .file_name()
+                            .map(|n| n.to_string_lossy().into_owned())
+                            .unwrap_or_else(|| "File System".into());
+                        *sh.current_folder_name.borrow_mut() = name;
+                        let books =
+                            super::folder_tree::folder_book_list(Path::new(path), include_sub);
+                        sh.folders_view.set_books(books);
+                        sh.sync_enabled();
+                    }
+                });
+        }
+        // Include Sub Folders: the setting flips and the current
+        // folder rescans (`SwitchIncludeSubFolders` → the provider
+        // Refresh).
+        {
+            let state = Rc::downgrade(state);
+            state
+                .upgrade()
+                .expect("state")
+                .folders_tree
+                .connect_include_sub(move |active| {
+                    if let Some(sh) = state.upgrade() {
+                        library::settings()
+                            .borrow_mut()
+                            .explorer_include_sub_folders = active;
+                        if let Some(path) = sh.folders_tree.current_folder() {
+                            let books =
+                                super::folder_tree::folder_book_list(Path::new(&path), active);
+                            sh.folders_view.set_books(books);
+                        }
+                    }
+                });
+        }
+        // Add To Favorites (`AddToFavorites`).
+        {
+            let state = Rc::downgrade(state);
+            let Some(btn) = state
+                .upgrade()
+                .map(|sh| sh.folders_tree.button("add-favorite"))
+                .unwrap_or(None)
+            else {
+                return;
+            };
+            btn.connect_clicked(move |_| {
+                if let Some(sh) = state.upgrade() {
+                    super::folder_tree::add_favorite(&sh.folders_tree);
+                }
+            });
+        }
+        // Add Folder To Library (`miAddFolderLibrary` →
+        // `Scanner.ScanFileOrFolder(CurrentFolder, all: true)`).
+        {
+            let state = Rc::downgrade(state);
+            let Some(btn) = state
+                .upgrade()
+                .map(|sh| sh.folders_tree.button("add-library"))
+                .unwrap_or(None)
+            else {
+                return;
+            };
+            btn.connect_clicked(move |_| {
+                if let Some(sh) = state.upgrade() {
+                    if let Some(path) = sh.folders_tree.current_folder() {
+                        let state2 = state.clone();
+                        library::add_folder_to_library(Path::new(&path), move |_| {
+                            if let Some(sh) = state2.upgrade() {
+                                sh.refresh_view_from_list();
+                                sh.sync_enabled();
+                            }
+                        });
+                    }
+                }
+            });
+        }
+        // The Files grid: double-click / Enter opens the comic (the
+        // C# books path — the session books carry real file paths).
+        {
+            let state = Rc::downgrade(state);
+            state
+                .upgrade()
+                .expect("state")
+                .folders_view
+                .connect_activate(move |id| {
+                    if let Some(sh) = state.upgrade() {
+                        let view = sh.folders_view.view_state();
+                        if let Some(book) = view.books().iter().find(|b| &b.id == id) {
+                            if !book.file_path.is_empty() {
+                                sh.open_comic(Path::new(&book.file_path));
+                            }
+                        }
+                    }
+                });
+        }
+        // The Files grid: the selection feeds the status panel.
+        {
+            let state = Rc::downgrade(state);
+            state
+                .upgrade()
+                .expect("state")
+                .folders_view
+                .connect_selection_changed(move |_| {
+                    if let Some(sh) = state.upgrade() {
+                        sh.sync_enabled();
+                    }
+                });
+        }
+        // The Files grid right-click: the folder view's own menu
+        // (Open / Reveal / Remove — the `IRemoveBooks` shape: the
+        // FILES go to the recycle bin; the port's is-file guard
+        // applies, the C# trashes the folder path for folder comics).
+        {
+            let state = Rc::downgrade(state);
+            state
+                .upgrade()
+                .expect("state")
+                .folders_view
+                .connect_context(move |id, x, y| {
+                    show_folder_context_menu(&state, id, x, y);
+                });
+        }
+
         // The window-activation focus: the browser page grabs the
         // ItemView, the reader page its PageView (the Phase 3
         // dead-first-keypress fix, now per view).
@@ -1150,6 +1375,11 @@ impl BrowserShell {
                         let mut s = s.borrow_mut();
                         s.quick_open_thumbnail_size = size;
                         s.last_open_files = open_files;
+                        // `Settings.LastExplorerFolder` (the Files
+                        // view restores it at boot).
+                        if let Some(f) = sh.folders_tree.current_folder() {
+                            s.last_explorer_folder = f;
+                        }
                     }
                 }
                 if let Err(err) = library::save() {
@@ -1203,7 +1433,8 @@ impl BrowserShell {
                     }
                 });
         }
-        // The slider drag → `SetItemSize` (the C# `TrackBar.Scroll`).
+        // The slider drag → `SetItemSize` (the C# `TrackBar.Scroll`
+        // routes to the ACTIVE browser's view).
         {
             let state = Rc::downgrade(state);
             state
@@ -1212,7 +1443,11 @@ impl BrowserShell {
                 .status_bar
                 .connect_slider(move |value| {
                     if let Some(sh) = state.upgrade() {
-                        sh.item_view.set_item_size(value);
+                        if sh.stack.visible_child_name().as_deref() == Some("folders") {
+                            sh.folders_view.set_item_size(value);
+                        } else {
+                            sh.item_view.set_item_size(value);
+                        }
                     }
                 });
         }
@@ -1237,6 +1472,23 @@ impl BrowserShell {
         // opens on the Library view, the QuickOpen covers show only
         // through the last-tab-close path (`UpdateQuickList`).
         state.navigator.refill(&library::comic_lists_snapshot());
+        // The Files view boot (the C# ComicListFolderFilesBrowser
+        // OnLoad): the tab drops under `DisableFoldersView`, the
+        // saved include-sub state + the last folder restore.
+        state.tab_strip.set_folders_visible(
+            !cr_core::settings::ExtendedSettings::global().disable_folders_view,
+        );
+        // The include read hoists BEFORE the set — set_active fires
+        // the toggled handler synchronously, and the handler borrows
+        // the settings mutably (the edition-2021 temporaries lesson).
+        let include = cr_ui_settings().borrow().explorer_include_sub_folders;
+        state.folders_tree.set_include_sub(include);
+        {
+            let last = cr_ui_settings().borrow().last_explorer_folder.clone();
+            if !last.is_empty() {
+                state.folders_tree.drill_to(&last);
+            }
+        }
         // `UpdateSettings` applies the stored QuickOpen thumbnail size.
         {
             let size = cr_ui_settings().borrow().quick_open_thumbnail_size as f64;
@@ -1384,6 +1636,47 @@ impl BrowserShell {
     /// T5 probe's resize round-trip.
     pub fn state_column_widths(&self) -> Vec<(i32, bool, i32)> {
         self.state.item_view.detail_columns_state()
+    }
+
+    /// The visible stack page (the Folders probe's tab gate).
+    pub fn state_folders_page(&self) -> Option<String> {
+        self.state.stack.visible_child_name().map(|s| s.to_string())
+    }
+
+    /// The Files view handle (the probe drives the real tree paths).
+    pub fn state_folders_tree(&self) -> Rc<super::folder_tree::FolderTree> {
+        Rc::clone(&self.state.folders_tree)
+    }
+
+    /// The Files grid's book count.
+    pub fn state_folders_book_count(&self) -> usize {
+        self.state.folders_view.book_count()
+    }
+
+    /// The Files grid's selection length.
+    pub fn state_folders_selection_len(&self) -> usize {
+        self.state.folders_view.selection_len()
+    }
+
+    /// The Files panel's toolbar button by name (the probe's
+    /// real-click path).
+    pub fn state_folders_button(&self, name: &str) -> Option<Button> {
+        self.state.folders_tree.button(name)
+    }
+
+    /// The saved favorite folders (the probe).
+    pub fn state_favorite_folders(&self) -> Vec<String> {
+        library::settings().borrow().favorite_folders.clone()
+    }
+
+    /// The workspace tab strip handle (the probe's tab gates).
+    pub fn tab_strip_handle(&self) -> super::tabstrip::TabStrip {
+        self.state.tab_strip.clone()
+    }
+
+    /// The Files grid's view state (the probe's caption reads).
+    pub fn state_folders_view_state(&self) -> super::view_state::ViewState {
+        self.state.folders_view.view_state()
     }
 
     /// The visible workspace stack page name (the probe).
@@ -2703,7 +2996,7 @@ impl ShellState {
             .unwrap_or_default();
         match visible.as_str() {
             "reader" | "quickopen" => self.select_last_browser(),
-            "browser" | "pages" if self.reader.has_current_book() => {
+            "browser" | "pages" | "folders" if self.reader.has_current_book() => {
                 self.stack.set_visible_child_name("reader");
             }
             _ => {}
@@ -4312,6 +4605,189 @@ fn show_context_menu(state: &std::rc::Weak<ShellState>, target: Option<CrGuid>, 
             .map(|sh| sh.item_view.probe_scroll_value())
             .unwrap_or(-1.0)
     ));
+    popover.popup();
+}
+
+/// The Files view's context menu (`ItemContextMenuStrip` → the
+/// `FolderComicListProvider.RemoveBooks` shape): Open, Reveal, and
+/// Move to Recycle Bin. The remove asks the C# question ("Are you
+/// sure you want to move these files to the Recycle Bin?") with the
+/// "Additionally remove the books from the Library" option
+/// (`RemoveFilesfromDatabase`); the port's is-file guard applies
+/// (the Phase 7 audit — the C# `ShellFile.DeleteFile` would trash a
+/// FOLDER path for folder comics).
+fn show_folder_context_menu(
+    state: &std::rc::Weak<ShellState>,
+    target: Option<CrGuid>,
+    x: f64,
+    y: f64,
+) {
+    let popover = gtk4::Popover::new();
+    popover.set_has_arrow(false);
+    let box_ = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+    box_.set_margin_top(4);
+    box_.set_margin_bottom(4);
+    box_.set_margin_start(4);
+    box_.set_margin_end(4);
+    let window = state
+        .upgrade()
+        .map(|sh| sh.window.clone())
+        .expect("shell alive while the menu opens");
+    // The selected (plus the right-clicked) folder book paths.
+    let target_paths = |sh: &ShellState, target: Option<CrGuid>| -> Vec<(CrGuid, String)> {
+        let view = sh.folders_view.view_state();
+        let selection: Vec<CrGuid> = view.selection_snapshot().into_iter().collect();
+        let mut ids = selection;
+        if let Some(id) = target {
+            if !ids.contains(&id) {
+                ids.push(id);
+            }
+        }
+        view.books()
+            .iter()
+            .filter(|b| ids.contains(&b.id))
+            .map(|b| (b.id, b.file_path.clone()))
+            .collect()
+    };
+    let add_item = |box_: &gtk4::Box, label: &str, action: &'static str| {
+        let popover = popover.clone();
+        let state = state.clone();
+        let window = window.clone();
+        let button = Button::with_label(label);
+        button.set_has_frame(false);
+        button.set_halign(gtk4::Align::Fill);
+        button.connect_clicked(move |_| {
+            popover.popdown();
+            let Some(sh) = state.upgrade() else {
+                return;
+            };
+            match action {
+                "open" => {
+                    if let Some(id) = target {
+                        let view = sh.folders_view.view_state();
+                        if let Some(book) = view.books().iter().find(|b| b.id == id) {
+                            sh.open_comic(Path::new(&book.file_path));
+                        }
+                    }
+                }
+                "reveal" => {
+                    for (_, path) in target_paths(&sh, target) {
+                        if !path.is_empty() {
+                            let _ = std::process::Command::new("xdg-open")
+                                .arg(Path::new(&path).parent().unwrap_or(Path::new("/")))
+                                .spawn();
+                            break;
+                        }
+                    }
+                }
+                "remove" => {
+                    // The C# `RemoveBooks(ask: true)`.
+                    let paths = target_paths(&sh, target);
+                    if paths.is_empty() {
+                        return;
+                    }
+                    let confirm = gtk4::MessageDialog::builder()
+                        .transient_for(&window)
+                        .modal(true)
+                        .title("Remove Books")
+                        .text("Are you sure you want to move these files to the Recycle Bin?")
+                        .message_type(gtk4::MessageType::Question)
+                        .buttons(gtk4::ButtonsType::OkCancel)
+                        .build();
+                    let also_library = gtk4::CheckButton::with_label(
+                        "Additionally remove the books from the Library (all information not stored in the files will be lost)",
+                    );
+                    also_library.set_active(library::settings().borrow().remove_files_from_database);
+                    let area = confirm
+                        .child()
+                        .and_downcast::<gtk4::Box>()
+                        .and_then(|vbox| vbox.first_child().and_downcast::<gtk4::Box>());
+                    if let Some(area) = area {
+                        area.append(&also_library);
+                    }
+                    let refresh_state = state.clone();
+                    confirm.connect_response(move |dlg, resp| {
+                        let remove_from_library = also_library.is_active();
+                        dlg.destroy();
+                        if resp != gtk4::ResponseType::Ok {
+                            return;
+                        }
+                        let Some(sh) = refresh_state.upgrade() else {
+                            return;
+                        };
+                        library::settings().borrow_mut().remove_files_from_database =
+                            remove_from_library;
+                        let mut deleted = true;
+                        for (_, path) in &paths {
+                            // The is-file guard (the Phase 7 audit).
+                            let p = Path::new(path);
+                            if path.is_empty() || !p.is_file() {
+                                continue;
+                            }
+                            let _ = std::process::Command::new("gio")
+                                .args(["trash", path])
+                                .status();
+                            if p.exists() {
+                                deleted = false;
+                            }
+                        }
+                        if remove_from_library {
+                            // `Program.Database.Books.RemoveRange(books)`
+                            // — the library books at the same paths.
+                            let lib = library::session();
+                            let mut l = lib.borrow_mut();
+                            let before = l.database().books.len();
+                            l.database_mut().books.retain(|b| {
+                                !paths
+                                    .iter()
+                                    .any(|(_, p)| *p == b.file_path)
+                            });
+                            if l.database().books.len() != before {
+                                l.mark_dirty();
+                            }
+                        }
+                        // The failed-delete message (the C#
+                        // `FailedDeleteBooks`).
+                        if !deleted {
+                            let err = gtk4::MessageDialog::builder()
+                                .transient_for(&sh.window)
+                                .modal(true)
+                                .title("comicrust")
+                                .text("Some books could not be deleted (maybe they are in use)!")
+                                .message_type(gtk4::MessageType::Info)
+                                .buttons(gtk4::ButtonsType::Ok)
+                                .build();
+                            err.connect_response(|d, _| d.close());
+                            err.present();
+                        }
+                        // The provider refreshes on the Path change
+                        // (the C# `BookListChanged`) — rescan.
+                        if let Some(folder) = sh.folders_tree.current_folder() {
+                            let include_sub =
+                                library::settings().borrow().explorer_include_sub_folders;
+                            let books = super::folder_tree::folder_book_list(
+                                Path::new(&folder),
+                                include_sub,
+                            );
+                            sh.folders_view.set_books(books);
+                        }
+                        sh.sync_enabled();
+                    });
+                    confirm.present();
+                }
+                _ => {}
+            }
+        });
+        box_.append(&button);
+    };
+    add_item(&box_, "Open", "open");
+    add_item(&box_, "Reveal in File Manager", "reveal");
+    add_item(&box_, "Move to Recycle Bin", "remove");
+    popover.set_child(Some(&box_));
+    popover.set_parent(&window);
+    popover.connect_closed(|p| p.unparent());
+    let rect = gtk4::gdk::Rectangle::new(x as i32, y as i32 + 8, 1, 1);
+    popover.set_pointing_to(Some(&rect));
     popover.popup();
 }
 

@@ -3,6 +3,7 @@
 
 pub mod browser_toolbar;
 pub mod columns;
+pub mod folder_tree;
 pub mod item;
 pub mod item_view;
 pub mod layout;
