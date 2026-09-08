@@ -332,7 +332,18 @@ the toggled handler's borrow_mut); (4) INCIDENT: a probe run
 /tmp favorite, `LastExplorerFolder` repaired to defaults; the
 user's pre-probe Config.xml (workspace/settings) is NOT recoverable
 — the probe and deleteperf/detailresize now REFUSE without BOTH
-XDG vars isolated. Deviations (recorded): no per-view browser
+XDG vars isolated. USER TEST (2026-09-08) FIX ROUND: (a) the grid
+sat BELOW the paned (a horizontal split) — it is the paned's END
+child now (the Library shape: tree left, grid right; the probe
+gates the grid inside a HORIZONTAL paned); (b) the folder scan
+froze the UI — the scan runs on a WORKER THREAD now (`scan_folder_async`,
+the ADR-019 pattern; the C# wraps the same work in
+`AutomaticProgressDialog`, the port keeps the UI free instead) with
+a generation guard (a stale scan of an older folder drops on
+arrival); the selection, the include-sub toggle, and the
+remove-rescan share the helper. The per-file scan COST is C# parity
+(the fast page-count open + the first-100 metadata read) — the
+wall time to fill the grid is unchanged, the freeze is gone. Deviations (recorded): no per-view browser
 toolbar on the folders page (the C# ComicBrowserControl toolStrip
 — Views/Group/Arrange/search stay library-bound; the folders view
 is double-click/context-menu driven; the menubar book commands stay
