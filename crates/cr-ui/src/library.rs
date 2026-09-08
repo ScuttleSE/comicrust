@@ -394,6 +394,27 @@ pub fn take_watch_folder_rescans() -> Vec<String> {
     session().borrow_mut().take_watch_folder_rescans()
 }
 
+/// The collapsed Windows-path roots (the migration dialog rows; the
+/// Phase 8 T11 helper).
+pub fn windows_path_roots() -> Vec<cr_engine::path_migration::PathRoot> {
+    session().borrow().windows_path_roots()
+}
+
+/// Any Windows-style path left in the database? (The `win.migrate-paths`
+/// enable state.)
+pub fn has_windows_paths() -> bool {
+    session().borrow().has_windows_paths()
+}
+
+/// Applies the root → target mappings (books / watch folders /
+/// blacklist rewrite, dirty mark, watcher rebuild). The view refresh
+/// is the caller's job.
+pub fn apply_path_migration(
+    mappings: &[cr_engine::path_migration::Mapping],
+) -> cr_engine::path_migration::ApplyReport {
+    session().borrow_mut().apply_path_migration(mappings)
+}
+
 /// `DatabaseManager.Save` (the exit path): waits for an in-flight
 /// scan to merge back first (the C# `Scanner.Stop`/join runs before
 /// `DatabaseManager.Dispose` → `Save` — saving mid-scan would write

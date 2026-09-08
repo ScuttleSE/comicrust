@@ -175,7 +175,21 @@ Update this section at the **end of every work session**. The next agent must kn
   the side-by-side split, the worker-thread folder scan, the
   last-close → ShowLast), T10 slice 2 ("works now"), T10 slice 1
   USER-TESTED, ALL PASS (2026-09-08 — sort/group column clicks +
-  the Show Duplicates toggle feel instant). PHASE 8 REMAINING
+  the Show Duplicates toggle feel instant). T11 IMPLEMENTED
+  (2026-09-08, user test pending): the Windows-path migration —
+  `cr-engine/src/path_migration.rs` (detection, the collapsed
+  common-prefix roots, component-wise case-insensitive
+  `map_relative`, found → re-home + refresh, not-found → fileless,
+  watch/blacklist rewrite-on-exists; 11 unit tests) + the
+  `Library` methods + the dialog (`dialogs/path_migration.rs`,
+  the live "N of M found" rows) + the boot prompt
+  (`maybe_prompt_windows_path_migration`, after the attention
+  dialog, before the file pipeline) + `win.migrate-paths` (File
+  menu, enabled only while Windows paths remain). Gate:
+  `pathmigration_probe`. LESSON: the mapping STRIPS the Windows
+  root (`C:\Comics\X` → `<target>/X`) — test mirrors put files
+  directly in the target; and a shared XDG across probe runs
+  POISONS them (the statusbar false alarm) — fresh XDG per probe. PHASE 8 REMAINING
   (user-decided order): T11 (the Windows-path migration — the app
   work) → the T10 remainder (startup/scan/10k sweeps, measured
   only) → T8 (packaging) → T9 (docs + migration tooling). BEHAVIOR CHANGE a

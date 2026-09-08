@@ -697,6 +697,18 @@ impl BrowserShell {
         Rc::clone(&self.state.navigator)
     }
 
+    /// The refresh after a direct database mutation outside the
+    /// normal view flow (the path-migration apply): the ItemView
+    /// re-evaluates, the navigator tree refills, the action states +
+    /// status panels re-sync.
+    pub fn refresh_after_data_change(&self) {
+        self.state.refresh_view_from_list();
+        self.state
+            .navigator
+            .refill(&library::comic_lists_snapshot());
+        self.state.sync_enabled();
+    }
+
     /// The grid's current view state (display-order checks + probes).
     pub fn item_view_state(&self) -> super::view_state::ViewState {
         self.state.item_view.view_state()
@@ -2139,6 +2151,9 @@ impl ShellState {
         }
         self.set_action_enabled("prev-list", can_prev);
         self.set_action_enabled("next-list", can_next);
+        // migrate-paths lives only while Windows-style paths remain
+        // (the Phase 8 T11 user decision).
+        self.set_action_enabled("migrate-paths", library::has_windows_paths());
         // Radio/check state follows the reader (`IsPageFitBest`,
         // `IsPageSingle`, `RightToLeftReading` checks).
         if let Some(fit) = self.reader.current_fit_mode() {
@@ -3531,6 +3546,22 @@ impl ShellState {
                     sh.navigator.refill(&library::comic_lists_snapshot());
                 }
                 glib::ControlFlow::Break
+            });
+        });
+        // migrate-paths — the Windows-path migration dialog (Phase 8
+        // T11): the boot prompt, re-runnable from the File menu.
+        self.add_simple(&group, "migrate-paths", |sh| {
+            if !library::has_windows_paths() {
+                return;
+            }
+            let window = sh.window.clone();
+            let state = Rc::clone(sh);
+            crate::dialogs::path_migration::run(&window, move |report| {
+                if report.is_some_and(|r| r.changed_anything()) {
+                    state.navigator.refill(&library::comic_lists_snapshot());
+                    state.refresh_view_from_list();
+                    state.sync_enabled();
+                }
             });
         });
         self.add_simple(&group, "scan-folders", |_sh| {

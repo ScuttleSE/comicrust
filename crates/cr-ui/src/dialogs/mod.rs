@@ -9,6 +9,7 @@ pub mod import_list;
 pub mod list_editor;
 pub mod name_prompt;
 pub mod new_book_series;
+pub mod path_migration;
 pub mod quick_rating;
 pub mod smart_list;
 pub mod tasks;

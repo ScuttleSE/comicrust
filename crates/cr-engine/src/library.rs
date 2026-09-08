@@ -225,6 +225,38 @@ impl Library {
         self.watcher = Watcher::new(&self.database.watch_folders).ok();
     }
 
+    /// The collapsed Windows-path roots over the three families (the
+    /// migration dialog rows; see [`crate::path_migration`]).
+    pub fn windows_path_roots(&self) -> Vec<crate::path_migration::PathRoot> {
+        crate::path_migration::collect_roots(
+            &self.database.books,
+            &self.database.watch_folders,
+            &self.database.black_list,
+        )
+    }
+
+    /// Any Windows-style path left in the database?
+    pub fn has_windows_paths(&self) -> bool {
+        crate::path_migration::has_windows_paths(&self.database)
+    }
+
+    /// Applies the user-decided root → target mappings: books,
+    /// watch folders, and blacklist rewrite in place, the library
+    /// marks dirty, and the watcher rebuilds (the mapped watch
+    /// folders are live paths now). The view refresh is the
+    /// caller's job.
+    pub fn apply_path_migration(
+        &mut self,
+        mappings: &[crate::path_migration::Mapping],
+    ) -> crate::path_migration::ApplyReport {
+        let report = crate::path_migration::apply(&mut self.database, mappings);
+        if report.changed_anything() {
+            self.dirty = true;
+            self.rebuild_watcher();
+        }
+        report
+    }
+
     fn scan_items(&mut self, items: &[ScanItem]) -> ScanResult {
         let now = CrDateTime::now();
         let result = scan_database(&mut self.database, items, &now);

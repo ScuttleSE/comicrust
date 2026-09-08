@@ -185,6 +185,9 @@ fn handle_command_line(app: &Application, argv: &[String]) {
         if let Some(message) = OPEN_MESSAGE.with(|cell| cell.take()) {
             show_attention_dialog(&shell.window(), &message);
         }
+        // The Windows-path migration prompt (Phase 8 T11), BEFORE the
+        // file pipeline — a re-homed book opens cleanly.
+        maybe_prompt_windows_path_migration(&shell);
         for file in &ext.files {
             let path = Path::new(file);
             if path.is_file() {
@@ -217,6 +220,22 @@ fn handle_command_line(app: &Application, argv: &[String]) {
             open_supported_file(&shell, Path::new(file), true, ext.page, true);
         }
     }
+}
+
+/// The Windows-path migration prompt (Phase 8 T11): any Windows-style
+/// path in the three families asks on every boot while one remains
+/// (the user decision). The boot branch and the probe share it.
+pub fn maybe_prompt_windows_path_migration(shell: &browser::shell::BrowserShell) {
+    if !library::has_windows_paths() {
+        return;
+    }
+    let window = shell.window();
+    let sh = shell.clone();
+    dialogs::path_migration::run(&window, move |report| {
+        if report.is_some_and(|r| r.changed_anything()) {
+            sh.refresh_after_data_change();
+        }
+    });
 }
 
 /// The `-il` switch (`ImportComicList`): imports the list into the

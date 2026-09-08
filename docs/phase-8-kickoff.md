@@ -531,6 +531,46 @@ the path rewrite inside the app.
   rewrites, not-found → fileless, DB dirty, the menu re-run), then
   the user test.
 
+IMPLEMENTED 2026-09-08. The engine
+(`cr-engine/src/path_migration.rs`, 11 unit tests): `is_windows_path`
+(drive-letter root or UNC), `collect_roots` (the three families →
+groups per drive/share root → the longest common component prefix;
+the bare drive never collapses — `C:\a` + `C:\b` stay two roots,
+drive-root files get a `C:\` row; counting is case-insensitive),
+`map_relative` (component-wise case-insensitive prefix, `\`→`/`,
+join under the target — the boundary `C:\Comics2` does not match
+`C:\Comics`), `preview_books` (the live found/not-found counts),
+`apply` (exists → set path + `refresh_file_info` when a file, a dir
+target keeps the path with just the missing flag cleared; NOT found
+→ `file_path.clear()` — the Phase 6 fileless machinery takes over;
+watch folders rewrite on `is_dir`, blacklist on `exists`, else left +
+counted; direct DB mutation, no ComicInfo write-back).
+`Library::{windows_path_roots, has_windows_paths, apply_path_migration}`
+(mutate + dirty + watcher rebuild). The dialog
+(`cr-ui/src/dialogs/path_migration.rs`): one row per root (the root +
+counts, a target entry + Choose… FileChooserNative, the live "N of M
+found; K not found will become fileless books." label), OK applies
+the non-empty rows through `library::apply_path_migration`, unmapped
+rows stay for the next prompt. The boot hook: `app.rs` first branch
+runs `maybe_prompt_windows_path_migration` (pub — the probe shares
+it) right after the attention dialog, before the file pipeline; the
+apply refreshes via the new `BrowserShell::refresh_after_data_change`
+(ItemView re-evaluate + navigator refill + sync). `win.migrate-paths`
+(`cmd` in commands.rs, the File-menu item next to Add Folder to
+Library, no icon — a port addition): enabled only while
+`has_windows_paths()` (the sync checks the database; it flips off
+after the apply). Gate: 386 tests + `pathmigration_probe` (A the
+collapse + counts, B the boot prompt opens the dialog, C the live
+previews "2 of 3 found; 1 not found", D the apply through the real
+response path — books re-home with a refreshed size, Gone → fileless,
+both watch folders + the blacklist rewrite, dirty=true, E
+`has_windows_paths` false → the action disabled). PROBE LESSON (twice
+in one day): the mapping STRIPS the Windows root — `C:\Comics\X`
+lands at `<target>/X`, so a test mirror puts the files directly in
+the target, not in `<target>/Comics`. Probe battery green (the
+statusbar_probe failure mid-round was a shared/polluted XDG — fresh
+XDG per probe run is the rule). fmt/clippy green. User test pending.
+
 ## Order
 
 T1 (quick wins) → T2 → T3 → T4 (the user pains first) → T5 → T6 →
@@ -584,3 +624,6 @@ T8 → T9 → T11 → T10. The database-backend item is Phase 9 now (see T7).
   clicks + Show Duplicates feel instant). Remaining order
   (user-decided): T11 (the app work) → the T10 remainder (measured
   only) → T8 (packaging) → T9 (docs).
+- 2026-09-08: T11 IMPLEMENTED (the engine + dialog + boot hook +
+  the File-menu re-run; record in the T11 section). User test
+  pending.

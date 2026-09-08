@@ -8,6 +8,7 @@ pub mod image_pool;
 pub mod library;
 pub mod lists;
 pub mod matcher;
+pub mod path_migration;
 pub mod queue;
 pub mod queue_manager;
 pub mod reading_list;

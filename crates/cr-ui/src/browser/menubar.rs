@@ -67,6 +67,10 @@ pub const FILE: &[MenuNode] = &[
         "<Control><Shift>a",
         "AddFolder",
     ),
+    // NO C# item — the Windows-path migration helper (Phase 8 T11,
+    // the user request): a port addition next to the other
+    // re-point-the-library command.
+    Item("Migrate _Windows Paths...", "win.migrate-paths", "", ""),
     Item(
         "Scan Book _Folders",
         "win.scan-folders",

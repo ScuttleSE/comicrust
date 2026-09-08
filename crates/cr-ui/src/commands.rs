@@ -46,6 +46,9 @@ pub const COMMANDS: &[CommandSpec] = &[
     cmd("new-tab", &["<Control>t"]),
     cmd("add-folder", &["<Control><Shift>a"]),
     cmd("scan-folders", &["<Control><Shift>s"]),
+    // NO C# item: the Windows-path migration helper (Phase 8 T11,
+    // the user request) — a port addition, no accelerator.
+    cmd("migrate-paths", &[]),
     cmd("update-book-files", &["<Control><Shift>u"]),
     // The C# binds NO menu shortcut (Ctrl+Shift+T is Tasks); the
     // `Generate Cover Thumbnails` item is a stub until the thumbnail
