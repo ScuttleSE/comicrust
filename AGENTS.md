@@ -168,18 +168,28 @@ Update this section at the **end of every work session**. The next agent must kn
   writers, HEIF/AVIF decode, the T14 per-list sort (the port resets
   the view sort on every list switch; the C# keeps it per list — a
    recorded deviation).
-  PHASE 8 STATE (2026-09-08, the session-fresh pointer): DONE =
-  T1 + T2 + T3 (the CBL import) + T4 (the fileless-delete perf) +
-  T5 (the Details column resize) + T6 (the Folders tab) + T10
-  slice 1 (the parse storms) + T10 slice 2 (the scroll culling
-  storm) — the records in the phase-8-kickoff task sections. USER
-  TESTS: T3 PASS ("the cbl-lists imported reasonably fast now");
-  T10 slice 2 PASS ("works now" — the 2875-book reading list
-  tracks the wheel); T1 + T2 USER-TESTED, ALL PASS (2026-09-07,
-  "works now"). PENDING USER TESTS: T4, T5, T6 (2026-09-08), and
-  the T10 slice 1 feel (sort/group column clicks + the Show
-  Duplicates toggle feel instant — treat the next touch of those
-  paths as its test). T4 record: the delete hang WAS the view
+  PHASE 8 STATE (2026-09-08 late, the session-fresh pointer):
+  DONE + USER-TESTED = T1, T2, T3 ("the cbl-lists imported
+  reasonably fast now"), T4 ("works fine"), T5 ("works fine"), T6
+  ("works fine" — three fix rounds recorded in the T6 section:
+  the side-by-side split, the worker-thread folder scan, the
+  last-close → ShowLast), T10 slice 2 ("works now"). The ONLY
+  pending user gate: the T10 slice 1 feel (sort/group column
+  clicks + the Show Duplicates toggle feel instant — treat the
+  next touch of those paths as its test). NEXT IN ORDER: T8
+  (packaging) → T9 (docs + migration tooling) → T11 (the
+  Windows-path migration) → the T10 remainder. BEHAVIOR CHANGE a
+  fresh agent must know: the LAST-tab-close handler runs
+  `select_last_browser()` (the C# RebuildBookTabs tail —
+  MainForm.cs:3140 `ShowLast()`), NOT QuickOpen; the T2 record
+  below is OUTDATED on that point — QuickOpen's home is now the
+  `+` empty slot / any empty current slot (the C# empty-reader
+  overlay; the blank reader when ShowQuickOpen is off or the DB
+  has no books), and the tab-change hook follows the current slot
+  while the reader area shows. bootview (C=the browser on the
+  last close, D=`+` → quickopen) and tabstrip (G=quickopen,
+  H=the close follows the neighbor slot, I=ShowLast → Pages)
+  expectations moved to that shape. T4 record: the delete hang WAS the view
   rebuild — the eager `book_view::PropTable` parsed ~one
   ComicNameInfo per book per rebuild (~0.33 ms × 2627 books;
   `needs_prop` is true for nearly every book: `enable_proposed`
@@ -251,16 +261,9 @@ Update this section at the **end of every work session**. The next agent must kn
   pointing rect at the click point). T2 record: boot calls
   `show_browser()` (the C# MainForm.cs:3140 shape; the navigator
   boot fill selects the Library root — no LastLibraryItem
-  persistence was added), and the LAST-tab-close handler now calls
-  `show_quick_open()` (the C# `UpdateQuickList` shape —
-  QuickOpen's reachable path since boot no longer shows it; the
-  browser shows when `ShowQuickOpen` is off or the DB has no
-  books). Gate: `bootview_probe` (boot→browser+Library,
-  open→reader, last close→quickopen, toggle→browser); the
-  `tabstrip_probe` A/I expectations moved to the new shape. NEXT IN
-  ORDER: T8 (packaging) → T9 (docs + migration tooling) → T11 (the
-  Windows-path migration, scope in the kickoff) → the T10
-  remainder (startup + scan + 10k-list sweeps, measured only).
+  persistence was added). [OUTDATED since 2026-09-08: the
+  LAST-tab-close now runs `select_last_browser()` and QuickOpen
+  lives at the `+` empty slot — see the PHASE 8 STATE block.]
   Work rules that paid off in T3/T10/T4: MEASURE the before with a
   committed timing gate, keep the C# algorithm shapes intact (kill
   only the redundant parses), and reuse

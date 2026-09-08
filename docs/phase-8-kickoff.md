@@ -233,7 +233,7 @@ books, 1 s budget — a parse-per-book regression blows it in debug)
 + `deleteperf_probe` (the real import + real remove path; falls
 back to the synthetic 200-fileless scenario without the fixtures).
 CR_TRACE stage lines live in refresh/set_books. 375 tests; probes
-green. USER TEST PENDING.
+green. USER-TESTED, ALL PASS (2026-09-08, "works fine").
 
 ### T5. Details-view column resize (item 6)
 
@@ -268,7 +268,7 @@ sort-click parity yet — recorded). Gate: the layout unit tests +
 the move math, the zero clamp, the auto-size 92, and the collect →
 second-shell width restore). 375 tests; fmt/clippy green; the
 workspace/browserbar/listorder/bootview/statusbar probes green.
-USER TEST PENDING.
+USER-TESTED, ALL PASS (2026-09-08, "works fine").
 
 ### T6. Folders tab (item 5)
 
@@ -357,7 +357,8 @@ shows a blank reader" deviation resolves); the tab-change hook
 follows the current slot while the reader area shows (the C#
 `OpenBooks_CurrentSlotChanged` rebind). Probes: bootview C gates
 the browser on the last close + a new `+` → QuickOpen step;
-tabstrip G/H/I moved to the new shape. Deviations (recorded): no per-view browser
+tabstrip G/H/I moved to the new shape. The T6 + T4 + T5 user
+tests: ALL PASS (2026-09-08, "works fine"). Deviations (recorded): no per-view browser
 toolbar on the folders page (the C# ComicBrowserControl toolStrip
 — Views/Group/Arrange/search stay library-bound; the folders view
 is double-click/context-menu driven; the menubar book commands stay
@@ -371,7 +372,9 @@ comics with the stored-series caption, C the include-sub rescan →
 3, D the favorite persists, E back to Library). 375 tests;
 fmt/clippy green; tabstrip/bootview/statusbar/browserbar/listorder/
 menubar/commands/navpages/foldersview/detailresize/deleteperf
-probes green. USER TEST PENDING.
+probes green. USER-TESTED, ALL PASS (2026-09-08, "works fine" —
+two fix rounds: the side-by-side split + the worker-thread scan;
+the close-a-comic report became the ShowLast change below).
 
 ### T7. Database backend — MOVED TO PHASE 9 (2026-09-07)
 
@@ -567,11 +570,16 @@ T8 → T9 → T11 → T10. The database-backend item is Phase 9 now (see T7).
   probes extended: menubar/browserbar/navpages gates + the new
   bootview_probe + the tabstrip A/I expectations moved to the T2
   shape). T1 + T2 USER-TESTED, ALL PASS ("works now").
-- 2026-09-08: T4 + T5 + T6 IMPLEMENTED (records in their task
-  sections; new gates: `rebuild_reading_list_scale_stays_fast` +
-  `deleteperf_probe` + `detailresize_probe` + `foldersview_probe`;
-  375 tests). T4 measured 886 ms → 20 ms on the user's delete
-  scenario. All three user tests PENDING.
+- 2026-09-08: T4 + T5 + T6 IMPLEMENTED + USER-TESTED, ALL PASS
+  ("works fine"; records in their task sections; new gates:
+  `rebuild_reading_list_scale_stays_fast` + `deleteperf_probe` +
+  `detailresize_probe` + `foldersview_probe`; 375 tests). T4
+  measured 886 ms → 20 ms on the user's delete scenario. T6 fix
+  rounds from the tests: the side-by-side split, the worker-thread
+  scan, and the last-tab-close → `ShowLast()` change (the T2
+  last-close → QuickOpen shape is REPLACED — QuickOpen lives at
+  the `+` empty slot now; bootview/tabstrip probe expectations
+  moved).
 - Remaining order: T8 → T9 → T11 → the T10 remainder (startup +
   scan + 10k-list sweeps, measured only). One user test is pending
   before that: the T10 slice 1 feel (sort/group column clicks +
