@@ -163,7 +163,7 @@ impl BookShadow {
                 || book.info.volume == -1
                 || book.info.year == -1);
         let prop = if needs_prop {
-            book_view::proposed(book)
+            book_view::proposed_cached(book)
         } else {
             name_info::ComicNameInfo::new()
         };

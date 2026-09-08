@@ -51,13 +51,14 @@ fn evaluate_inner<'a>(
         ComicListItem::Folder(folder) => match folder.combine_mode {
             ComicFolderCombineMode::Or => {
                 // Union by book id, first-seen order (the C#
-                // `Union(..., ComicBook.GuidEquality)`).
-                let mut seen: Vec<CrGuid> = Vec::new();
+                // `Union(..., ComicBook.GuidEquality)`). The membership
+                // set is a HashSet — a linear scan made the union
+                // O(N²) (the T10 measurement: 28 s at 10k books).
+                let mut seen: std::collections::HashSet<CrGuid> = std::collections::HashSet::new();
                 let mut union: Vec<&ComicBook> = Vec::new();
                 for child in &folder.items {
                     for book in evaluate_inner(child, db, visiting) {
-                        if !seen.contains(&book.id) {
-                            seen.push(book.id);
+                        if seen.insert(book.id) {
                             union.push(book);
                         }
                     }
@@ -70,7 +71,8 @@ fn evaluate_inner<'a>(
                 let mut intersection: Option<Vec<&ComicBook>> = None;
                 for child in &folder.items {
                     let child_books = evaluate_inner(child, db, visiting);
-                    let ids: Vec<CrGuid> = child_books.iter().map(|b| b.id).collect();
+                    let ids: std::collections::HashSet<CrGuid> =
+                        child_books.iter().map(|b| b.id).collect();
                     intersection = Some(match intersection {
                         None => child_books,
                         Some(current) => current
@@ -93,17 +95,12 @@ fn evaluate_inner<'a>(
         ComicListItem::IdList(list) => {
             let index: std::collections::HashMap<CrGuid, &ComicBook> =
                 db.books.iter().map(|b| (b.id, b)).collect();
-            let mut seen: Vec<CrGuid> = Vec::new();
+            // First-seen dedupe over a HashSet (a linear Vec scan made
+            // the walk O(N²) — the T10 measurement: 277 ms at 10k).
+            let mut seen: std::collections::HashSet<CrGuid> = std::collections::HashSet::new();
             list.book_ids
                 .iter()
-                .filter(|id| {
-                    if seen.contains(id) {
-                        false
-                    } else {
-                        seen.push(**id);
-                        true
-                    }
-                })
+                .filter(|id| seen.insert(**id))
                 .filter_map(|id| index.get(id).copied())
                 .collect()
         }

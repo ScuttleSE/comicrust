@@ -493,6 +493,53 @@ uncached `book_view::proposed()` filename parse; cached per book in
 the `captions` map) — the C# pays the same one-time class; the user
 test passed without a hitch report, so plan B stays unpicked.
 
+THIRD SLICE — the T10 REMAINDER, COMPLETE 2026-09-08 (measured, the
+three committed gates; the list-eval gate condemned real offenders
+on its first run). Gates: `cr-engine/tests/list_eval_perf.rs` (10k
+books: the Library root, a folder tree, a smart list with a Series
+matcher, an id list with every id), `cr-engine/tests/scan_perf.rs`
+(1000 real CBZs: the fresh add + the no-op re-scan),
+`cr-ui/examples/startup_probe.rs` (staged boot: init / shell-create
+/ settled; scenarios fresh / real-255 / big-10k).
+
+MEASURED (release, after the fixes below): list evaluation —
+Library root 5.7 µs, folder tree 2.7 ms, id list 0.94 ms, smart
+list 1.6 ms first + 1.2 ms re-eval at 10k books; view gates — sort
+5000 by Series 4.9 ms, group pass 823 ms (the one-time parse per
+distinct path), duplicates 1000 102 ms; scan — 33 ms fresh / 5.4 ms
+re-scan per 1000 files; startup — real-255: init 3.2 ms +
+shell-create 22.5 ms, big-10k: init 25.6 ms + shell-create 33.5 ms.
+Verdicts: startup and the scan are HEALTHY (no fix); list
+evaluation had three O(N²)/parse-storm offenders, all fixed:
+
+1. The folder union/intersect and the id-list walk deduped and
+   matched through LINEAR Vec scans (`seen.contains` / `ids.contains`)
+   — O(N²): folder 28 s, id list 277 ms at 10k (debug). Fix:
+   HashSet membership (first-seen ORDER kept — the C# Union/
+   bookIds-walk parity). → 2.7 ms / 0.94 ms release.
+2. `MatchContext::new` built the series statistics EAGERLY, forcing
+   a proposed parse per parse-needy book per evaluation (needs_prop
+   is true for nearly every real book — Title is usually empty):
+   27 s at 10k debug while the matcher pipeline itself ran 7 ms.
+   Fix: the stats map builds LAZILY on the first `stats_for` call.
+3. The parse itself stayed per-evaluation (the C# caches `Proposed`
+   on the book instance) — the parked plan B, now measured as
+   required. LANDED: `book_view::proposed_cached` — the process-wide
+   cache keyed by the FILE PATH (the parse's only input; same
+   input = same output, so NO invalidation surface), capped at
+   100k entries. All parse consumers ride it (`PropTable`,
+   `MatchContext::prop`, the display text/captions/tile lines, the
+   CBL import, the editor placeholders). The backlog plan-B entry
+   is marked LANDED with the rationale.
+
+Debug note for the record: the first evaluation of a fresh library
+still pays one parse per distinct path (12.7 s at 5000 parse-needy
+books in debug; 823 ms release) — the C# pays the same one-time
+class per session. GATES: 34 test suites green, fmt/clippy clean,
+the full probe battery green (commands/menubar/bootview/tabstrip/
+statusbar/browserbar/listorder/navpages/foldersview/detailresize/
+importlist/pathmigration/deleteperf).
+
 ### T11. Windows-path migration (first run from a ComicRack CE database)
 
 Added 2026-09-07 (user request). A migrated ComicRack CE
@@ -665,3 +712,9 @@ T8 → T9 → T11 → T10. The database-backend item is Phase 9 now (see T7).
   decisions). Remaining order: the T10 remainder (the three
   measurement gates; fix only measured offenders) → T9 (docs +
   `cr-cli migrate`) → Phase 8 closes.
+- 2026-09-08: the T10 REMAINDER COMPLETE (the third slice; gates +
+  measurements + the three fixes in the T10 section: the HashSet
+  list walks, the lazy series stats, the path-keyed Proposed cache).
+  Startup + scan measured healthy. No user test needed (no UI
+  change; the behavior is byte-identical — only the costs dropped).
+  NEXT: T9 (docs + `cr-cli migrate`) → Phase 8 closes.

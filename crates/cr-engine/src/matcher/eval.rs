@@ -26,10 +26,15 @@ use super::tree::{Matcher, ValueMatcher};
 pub struct MatchContext<'a> {
     /// "Now" for the date matcher's `is in last days` value conversion.
     pub now: CrDateTime,
-    props: std::cell::RefCell<
-        HashMap<*const ComicBook, cr_core::model::comic_name_info::ComicNameInfo>,
-    >,
-    stats: HashMap<SeriesKey, SeriesStatistics>,
+    /// The series statistics, built on FIRST USE. The build forces a
+    /// proposed parse per parse-needy book (`needs_prop` — Title is
+    /// usually empty), so an eager build made every list evaluation
+    /// parse the whole library even when no matcher reads a series
+    /// statistic (the T10 measurement: 27 s at 10k books vs 7 ms for
+    /// the matcher itself).
+    stats: std::cell::RefCell<Option<HashMap<SeriesKey, SeriesStatistics>>>,
+    /// The context's book set (owned — the lazy stats build needs it).
+    books: Vec<&'a ComicBook>,
     _marker: PhantomData<&'a ()>,
 }
 
@@ -42,41 +47,40 @@ impl<'a> MatchContext<'a> {
     /// parse; the C# caches `Proposed` on the book instance).
     pub fn new(books: &[&'a ComicBook]) -> Self {
         let now = chrono::Local::now().naive_local();
-        let mut ctx = MatchContext {
+        MatchContext {
             now: CrDateTime {
                 naive: now,
                 kind: cr_core::xml::scalar::DateKind::Unspecified,
             },
-            props: std::cell::RefCell::new(HashMap::new()),
-            stats: HashMap::new(),
+            stats: std::cell::RefCell::new(None),
+            books: books.to_vec(),
             _marker: PhantomData,
-        };
-        // The statistics reuse the cached parses (each book appears in
-        // one series group).
-        let stats = series::create(books, &|b| ctx.prop(b));
-        ctx.stats = stats;
-        ctx
+        }
     }
 
-    /// The proposed parse for one book — parsed on first use, cloned
-    /// after. Books whose parse is dead (`needs_prop` false) return
-    /// the never-read empty info.
+    /// The proposed parse for one book — served from the process-wide
+    /// `Proposed` cache (one parse per book state; see
+    /// `book_view::proposed_cached`). Books whose parse is dead
+    /// (`needs_prop` false) get the never-read empty info.
     pub fn prop(&self, book: &ComicBook) -> cr_core::model::comic_name_info::ComicNameInfo {
-        if !book_view::needs_prop(book) {
-            return cr_core::model::comic_name_info::ComicNameInfo::new();
-        }
-        let key = book as *const ComicBook;
-        if let Some(p) = self.props.borrow().get(&key) {
-            return p.clone();
-        }
-        let p = book_view::proposed(book);
-        self.props.borrow_mut().insert(key, p.clone());
-        p
+        book_view::proposed_cached(book)
     }
 
-    fn stats_for(&self, book: &ComicBook) -> Option<&SeriesStatistics> {
+    fn stats_for(&self, book: &ComicBook) -> Option<std::cell::Ref<'_, SeriesStatistics>> {
+        {
+            let mut slot = self.stats.borrow_mut();
+            if slot.is_none() {
+                // The statistics reuse the cached parses (each book
+                // appears in one series group).
+                *slot = Some(series::create(&self.books, &|b| self.prop(b)));
+            }
+        }
         let prop = self.prop(book);
-        self.stats.get(&SeriesKey::of(book, &prop))
+        let key = SeriesKey::of(book, &prop);
+        std::cell::Ref::filter_map(self.stats.borrow(), |m| {
+            m.as_ref().and_then(|map| map.get(&key))
+        })
+        .ok()
     }
 }
 

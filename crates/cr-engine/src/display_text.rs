@@ -72,7 +72,7 @@ pub fn file_size_as_text(size: i64) -> String {
 
 /// The column text for one `DisplayProperty` name.
 pub fn column_text(book: &ComicBook, name: &str) -> String {
-    let prop = book_view::proposed(book);
+    let prop = book_view::proposed_cached(book);
     match name {
         "Series" => book_view::shadow_series(book, &prop).to_string(),
         "Title" => book_view::shadow_title(book, &prop).to_string(),
@@ -289,7 +289,7 @@ fn caption_value(book: &ComicBook, name: &str, ignore: &[&str]) -> Option<String
     if ignore.iter().any(|i| i.eq_ignore_ascii_case(name)) {
         return None;
     }
-    let prop = book_view::proposed(book);
+    let prop = book_view::proposed_cached(book);
     let value = match name.to_ascii_lowercase().as_str() {
         "format" => book_view::shadow_format(book, &prop).to_string(),
         "series" => book_view::shadow_series(book, &prop).to_string(),

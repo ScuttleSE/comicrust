@@ -207,7 +207,21 @@ Update this section at the **end of every work session**. The next agent must kn
   PHASE 8 REMAINING (user-decided order): the T10 remainder (three
   measurement gates: startup_probe, scan_perf, list_eval_perf —
   fix only measured offenders) → T9 (docs + `cr-cli migrate`) →
-  Phase 8 closes. BEHAVIOR CHANGE a
+  Phase 8 closes. THE T10 REMAINDER IS COMPLETE (2026-09-08): the
+  three gates exist and the list-eval one condemned real offenders
+  — fixed: the folder-union/intersect + id-list linear-scan dedups
+  (O(N²) → HashSet; 28 s / 277 ms → 2.7 ms / 0.94 ms at 10k), the
+  EAGER series-stats build in MatchContext (forced a proposed parse
+  per parse-needy book per evaluation, 27 s at 10k → LAZY on first
+  stats_for), and the parse itself now rides
+  `book_view::proposed_cached` — the path-keyed process-wide
+  Proposed cache (the parse's only input is the file path, so the
+  key IS the invalidation; 100k-entry cap; the backlog plan-B entry
+  is LANDED). Startup (init 3.2 ms + shell 22.5 ms at 255;
+  25.6/33.5 ms at 10k, release) and the scan (33 ms/1000 fresh,
+  5.4 ms re-scan) measured HEALTHY. No UI change → no user test.
+  All parse consumers must use `proposed_cached`, never
+  `proposed` directly (tests excepted). BEHAVIOR CHANGE a
   fresh agent must know: the LAST-tab-close handler runs
   `select_last_browser()` (the C# RebuildBookTabs tail —
   MainForm.cs:3140 `ShowLast()`), NOT QuickOpen; the T2 record

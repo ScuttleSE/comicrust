@@ -130,7 +130,7 @@ fn date_from_text(
 /// parse feeds the gray cue text of the seven proposed fields while
 /// `EnableProposed` is Yes.
 pub fn proposed_placeholders(book: &ComicBook) -> Vec<(&'static str, String)> {
-    let p = cr_engine::matcher::book_view::proposed(book);
+    let p = cr_engine::matcher::book_view::proposed_cached(book);
     let num = |v: i32| if v > 0 { v.to_string() } else { String::new() };
     vec![
         ("Series", p.series.clone()),

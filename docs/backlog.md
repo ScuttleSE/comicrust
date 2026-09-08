@@ -297,7 +297,16 @@ on this. Research record (2026-09-06):
 
 ## From Phase 8 (deferred 2026-09-07)
 
-### C#-parity per-book proposed cache (plan B)
+### C#-parity per-book proposed cache (plan B) — LANDED 2026-09-08
+
+RESOLVED by the T10 remainder sweep: the 10k+ measurement this entry
+waited for arrived (list evaluation re-parsed every parse-needing
+book per evaluation — 27 s at 10k debug), and the cache is now
+`book_view::proposed_cached` — keyed by the FILE PATH (the parse's
+only input; same input = same output, no invalidation surface at
+all), process-wide, capped at 100k entries. The per-operation
+`PropTable`/`MatchContext` consumers ride it. No serde-skipped field,
+no manual invalidation (the whole surface below is moot).
 
 The Phase 8 perf work (T3 + the view-side sweep) computes the
 ComicNameInfo parse per OPERATION (per import, per rebuild, per

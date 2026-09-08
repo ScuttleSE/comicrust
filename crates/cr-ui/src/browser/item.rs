@@ -355,7 +355,7 @@ pub fn line_height(ctx: &Context) -> f64 {
 /// (text, font scale, bold). The tab-stop lines carry a `"\t"` that
 /// the caller renders as a two-column block.
 pub fn tile_text_lines(book: &ComicBook) -> Vec<(String, f64, bool)> {
-    let prop: ComicNameInfo = book_view::proposed(book);
+    let prop: ComicNameInfo = book_view::proposed_cached(book);
     let mut lines: Vec<(String, f64, bool)> = vec![
         (display_text::caption_without_title(book), 1.0, true),
         (book_view::shadow_title(book, &prop).to_string(), 1.0, true),

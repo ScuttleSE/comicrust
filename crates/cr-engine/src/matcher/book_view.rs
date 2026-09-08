@@ -8,6 +8,8 @@
 
 use chrono::Datelike;
 
+use std::collections::HashMap;
+
 use cr_core::model::comic_book::ComicBook;
 use cr_core::model::comic_name_info::{self, ComicNameInfo};
 use cr_core::model::enums::{MangaYesNo, YesNo};
@@ -60,12 +62,44 @@ pub fn empty_prop() -> &'static ComicNameInfo {
     E.get_or_init(ComicNameInfo::new)
 }
 
+/// The C# `ComicBook.Proposed` instance cache (the plan-B the T10
+/// slice-1 record parked, now measured as required: the matchers read
+/// the proposed values of nearly every real book — Title is usually
+/// empty — so a per-operation parse made every list evaluation regex
+/// the whole library, 27 s at 10k books).
+///
+/// One parse per distinct file path, process-wide: the parse reads
+/// ONLY the path, so same input = same output and no invalidation
+/// problem. The cap bounds the memory (the C# cache dies with the
+/// book object; a removal here keeps the entry until the next
+/// overflow clears).
+pub fn proposed_cached(book: &ComicBook) -> ComicNameInfo {
+    static CACHE: std::sync::Mutex<Option<HashMap<String, ComicNameInfo>>> =
+        std::sync::Mutex::new(None);
+    if !needs_prop(book) {
+        return ComicNameInfo::new();
+    }
+    let mut slot = CACHE
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let cache = slot.get_or_insert_with(HashMap::new);
+    if let Some(info) = cache.get(&book.file_path) {
+        return info.clone();
+    }
+    let info = proposed(book);
+    if cache.len() >= 100_000 {
+        cache.clear();
+    }
+    cache.insert(book.file_path.clone(), info.clone());
+    info
+}
+
 /// The proposed parses of a book slice, computed LAZILY — on first
-/// read, one parse per book per operation (the C# `ComicBook.Proposed`
-/// instance cache parses on first access the same way). A dead book
-/// (`needs_prop` false) resolves to the shared empty parse and never
-/// parses, so a metadata-complete library or an unsorted/grouped view
-/// (no getter ever reads) parses nothing.
+/// read, served from [`proposed_cached`] (one parse per distinct
+/// path, process-wide). A dead book (`needs_prop` false) resolves
+/// to the shared empty parse and never parses, so a
+/// metadata-complete library or an unsorted/grouped view (no
+/// getter ever reads) parses nothing.
 pub struct PropTable {
     slots: Vec<std::cell::OnceCell<ComicNameInfo>>,
     dead: Vec<bool>,
@@ -89,7 +123,7 @@ impl PropTable {
         if self.dead[i] {
             return empty_prop();
         }
-        self.slots[i].get_or_init(|| proposed(book))
+        self.slots[i].get_or_init(|| proposed_cached(book))
     }
 }
 
