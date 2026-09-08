@@ -201,10 +201,13 @@ Update this section at the **end of every work session**. The next agent must kn
   fills unknowns on open). Gate: `cr-engine/tests/path_migration_perf.rs`
   (apply 120 real zips ~1 ms, page counts asserted intact, the old
   path timed for the record — CB7/CBR libraries paid a 7z
-  subprocess per book). Re-test pending. PHASE 8 REMAINING
-  (user-decided order): T11 (the Windows-path migration — the app
-  work) → the T10 remainder (startup/scan/10k sweeps, measured
-  only) → T8 (packaging) → T9 (docs + migration tooling). BEHAVIOR CHANGE a
+  subprocess per book). USER-TESTED, ALL PASS (2026-09-08, "works
+  just fine"). T8 DEFERRED to `docs/backlog.md` + HEIF/AVIF
+  SKIPPED (user decisions, 2026-09-08 — the tarball tracks stand).
+  PHASE 8 REMAINING (user-decided order): the T10 remainder (three
+  measurement gates: startup_probe, scan_perf, list_eval_perf —
+  fix only measured offenders) → T9 (docs + `cr-cli migrate`) →
+  Phase 8 closes. BEHAVIOR CHANGE a
   fresh agent must know: the LAST-tab-close handler runs
   `select_last_browser()` (the C# RebuildBookTabs tail —
   MainForm.cs:3140 `ShowLast()`), NOT QuickOpen; the T2 record

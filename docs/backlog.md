@@ -27,7 +27,16 @@ omissions stay in that phase's kickoff tracker.
   write-back. Low use, as `phase-1-kickoff.md` predicted.
 - **HEIF/AVIF/J2K page decode** — the decode chain reports
   UnsupportedFormat for these formats. The codecs need system
-  libraries (libheif, openjpeg). Decide at packaging time.
+  libraries (libheif, openjpeg). SKIPPED (2026-09-08, user decision
+  at the Phase 8 T8 round): no libheif dependency; the gap stays
+  recorded. Revisit on demand.
+
+## From Phase 8
+
+- **Packaging (T8: Flatpak / .deb / AUR + release-workflow
+  artifacts)** — deferred 2026-09-08 (user decision): the existing
+  tarball release tracks stand; add nothing else for now. The T8
+  scope stays in `docs/phase-8-kickoff.md` for whoever picks it up.
 
 ## From port-plan §6
 

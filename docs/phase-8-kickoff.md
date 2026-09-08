@@ -386,7 +386,16 @@ the close-a-comic report became the ShowLast change below).
 - Nothing changed for Phase 8: no code, no ADR yet. Phase 9 T1
   (the spike) starts after Phase 8 closes and produces ADR-029.
 
-### T8. Packaging
+### T8. Packaging — DEFERRED (2026-09-08, user decision)
+
+- The Flatpak/.deb/AUR + release-artifact work moved to
+  `docs/backlog.md` ("From Phase 8") — the existing tarball release
+  tracks stand; add nothing else for now.
+- The HEIF/AVIF decode decision that rode this task is made: SKIP
+  (no libheif dependency; the gap stays recorded — the backlog
+  entry updated).
+
+### T8 original scope (for whoever picks the backlog item up)
 
 - Flatpak (the manifest + the metainfo + the desktop entry + the
   icons), .deb, AUR (PKGBUILD). The release workflows build/attach
@@ -591,6 +600,8 @@ record (5.7 ms for 120 small zips — for CB7/CBR libraries the old
 path is a 7z SUBPROCESS per book, i.e. minutes; the light refresh
 removes the class entirely). CR_TRACE stage lines added around the
 apply + the refresh stages. All gates + the probe re-run green.
+USER-TESTED, ALL PASS (2026-09-08, "works just fine" — the re-test
+after fix round 1).
 
 ## Order
 
@@ -648,3 +659,9 @@ T8 → T9 → T11 → T10. The database-backend item is Phase 9 now (see T7).
 - 2026-09-08: T11 IMPLEMENTED (the engine + dialog + boot hook +
   the File-menu re-run; record in the T11 section). User test
   pending.
+- 2026-09-08: T11 USER-TESTED, ALL PASS ("works just fine"; fix
+  round 1 = the metadata-only file-info refresh, record in the T11
+  section). T8 DEFERRED to the backlog + HEIF/AVIF skipped (user
+  decisions). Remaining order: the T10 remainder (the three
+  measurement gates; fix only measured offenders) → T9 (docs +
+  `cr-cli migrate`) → Phase 8 closes.
