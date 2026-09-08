@@ -78,6 +78,9 @@ struct ShellState {
     /// The current folder's display name (the status-bar selection
     /// panel while the Files view shows).
     current_folder_name: RefCell<String>,
+    /// The folder-scan generation (stale async results drop — the
+    /// reader's stale-payload lesson).
+    folder_scan_gen: Cell<u64>,
     quick_view: ItemView,
     pages: PagesPanel,
     /// The full-window Pages workspace page (the probe measures its
@@ -550,16 +553,18 @@ impl BrowserShell {
         browser_page.append(&paned);
 
         // The Files page: the folder tree pane left, the grid right
-        // (the C# filesBrowser's own ComicBrowserControl layout).
+        // — the SAME side-by-side shape as the Library page (the
+        // user report: the grid sat BELOW the paned, a horizontal
+        // split).
         let folders_paned = Paned::new(gtk4::Orientation::Horizontal);
         folders_paned.set_start_child(Some(folders_tree.widget()));
         folders_paned.set_shrink_start_child(false);
         folders_paned.set_position(280);
         folders_paned.set_vexpand(true);
+        folders_paned.set_end_child(Some(&folders_scroller));
+        folders_paned.set_shrink_end_child(false);
         let folders_page = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
         folders_page.append(&folders_paned);
-        folders_page.append(&folders_scroller);
-        folders_scroller.set_vexpand(true);
 
         // The quick-open page (the C# reader-area overlay shown when
         // no book is open and `ShowQuickOpen`): the recent lists as
@@ -627,6 +632,7 @@ impl BrowserShell {
             folders_tree: Rc::clone(&folders_tree),
             folders_view,
             current_folder_name: RefCell::new(String::new()),
+            folder_scan_gen: Cell::new(0),
             quick_view,
             pages,
             pages_page: pages_page.clone(),
@@ -1200,18 +1206,8 @@ impl BrowserShell {
                 .expect("state")
                 .folders_tree
                 .connect_selected(move |path| {
-                    if let Some(sh) = state.upgrade() {
-                        let include_sub = library::settings().borrow().explorer_include_sub_folders;
-                        let name = std::path::Path::new(path)
-                            .file_name()
-                            .map(|n| n.to_string_lossy().into_owned())
-                            .unwrap_or_else(|| "File System".into());
-                        *sh.current_folder_name.borrow_mut() = name;
-                        let books =
-                            super::folder_tree::folder_book_list(Path::new(path), include_sub);
-                        sh.folders_view.set_books(books);
-                        sh.sync_enabled();
-                    }
+                    let include_sub = library::settings().borrow().explorer_include_sub_folders;
+                    scan_folder_async(&state, path.to_string(), include_sub);
                 });
         }
         // Include Sub Folders: the setting flips and the current
@@ -1229,9 +1225,7 @@ impl BrowserShell {
                             .borrow_mut()
                             .explorer_include_sub_folders = active;
                         if let Some(path) = sh.folders_tree.current_folder() {
-                            let books =
-                                super::folder_tree::folder_book_list(Path::new(&path), active);
-                            sh.folders_view.set_books(books);
+                            scan_folder_async(&state, path, active);
                         }
                     }
                 });
@@ -1677,6 +1671,22 @@ impl BrowserShell {
     /// The Files grid's view state (the probe's caption reads).
     pub fn state_folders_view_state(&self) -> super::view_state::ViewState {
         self.state.folders_view.view_state()
+    }
+
+    /// The Files page's split shape (the probe): (grid's parent is
+    /// the paned, orientation is Horizontal = side by side).
+    pub fn state_folders_split(&self) -> (bool, bool) {
+        let paned = self
+            .state
+            .folders_view
+            .grid_widget()
+            .ancestor(gtk4::Paned::static_type());
+        let in_paned = paned.is_some();
+        let horizontal = paned
+            .and_downcast::<gtk4::Paned>()
+            .map(|p| p.orientation() == gtk4::Orientation::Horizontal)
+            .unwrap_or(false);
+        (in_paned, horizontal)
     }
 
     /// The visible workspace stack page name (the probe).
@@ -4350,6 +4360,53 @@ fn selection_ids_with_target(sh: &ShellState, target: Option<CrGuid>) -> Vec<CrG
     ids
 }
 
+/// The folder scan on a worker thread (the C# wraps the provider
+/// refresh in `AutomaticProgressDialog` with a Cancel button; the
+/// port keeps the UI free instead — the ADR-019 worker pattern).
+/// Each request bumps the generation; a stale result drops on
+/// arrival, so a fast folder switch never lands an older scan.
+fn scan_folder_async(state: &std::rc::Weak<ShellState>, path: String, include_sub: bool) {
+    let state = std::rc::Weak::clone(state);
+    let Some(sh) = state.upgrade() else {
+        return;
+    };
+    sh.folder_scan_gen.set(sh.folder_scan_gen.get() + 1);
+    let gen = sh.folder_scan_gen.get();
+    let (tx, rx) = std::sync::mpsc::channel::<(u64, String, Vec<ComicBook>)>();
+    std::thread::Builder::new()
+        .name("Folder Scan".into())
+        .spawn(move || {
+            let name = std::path::Path::new(&path)
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "File System".into());
+            let books =
+                super::folder_tree::folder_book_list(std::path::Path::new(&path), include_sub);
+            let _ = tx.send((gen, name, books));
+        })
+        .expect("spawn Folder Scan");
+    glib::timeout_add_local(std::time::Duration::from_millis(40), move || {
+        let Some(sh) = state.upgrade() else {
+            return glib::ControlFlow::Break;
+        };
+        // Bind the recv result before matching (the scrutinee-borrow
+        // lesson).
+        let received = rx.try_recv();
+        match received {
+            Ok((g, name, books)) => {
+                if g == sh.folder_scan_gen.get() {
+                    *sh.current_folder_name.borrow_mut() = name;
+                    sh.folders_view.set_books(books);
+                    sh.sync_enabled();
+                }
+                glib::ControlFlow::Break
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => glib::ControlFlow::Break,
+        }
+    });
+}
+
 fn show_context_menu(state: &std::rc::Weak<ShellState>, target: Option<CrGuid>, x: f64, y: f64) {
     let popover = gtk4::Popover::new();
     // No pointing arrow (the C# ContextMenuStrip shape).
@@ -4761,15 +4818,13 @@ fn show_folder_context_menu(
                             err.present();
                         }
                         // The provider refreshes on the Path change
-                        // (the C# `BookListChanged`) — rescan.
+                        // (the C# `BookListChanged`) — rescan on the
+                        // worker (the same async path).
                         if let Some(folder) = sh.folders_tree.current_folder() {
                             let include_sub =
                                 library::settings().borrow().explorer_include_sub_folders;
-                            let books = super::folder_tree::folder_book_list(
-                                Path::new(&folder),
-                                include_sub,
-                            );
-                            sh.folders_view.set_books(books);
+                            let weak = refresh_state.clone();
+                            scan_folder_async(&weak, folder, include_sub);
                         }
                         sh.sync_enabled();
                     });

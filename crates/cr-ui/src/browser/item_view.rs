@@ -878,6 +878,11 @@ impl ItemView {
         self.canvas.queue_draw();
     }
 
+    /// The grid canvas (the ancestor walks in the probes).
+    pub fn grid_widget(&self) -> DrawingArea {
+        self.canvas.clone()
+    }
+
     /// The current sort/group labels (the toolbar button texts —
     /// the C# `OnIdle` tbbSort/tbbGroup text updates). No book clone.
     pub fn sort_group_summary(&self) -> (Option<String>, bool, Option<&'static str>) {

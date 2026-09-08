@@ -103,7 +103,9 @@ fn main() {
         std::mem::forget(shell.clone());
 
         // A. The Folders tab: visible + click → the folders page +
-        //    the strip marks it.
+        //    the strip marks it + the side-by-side split (the grid
+        //    inside a HORIZONTAL paned — the user report: the grid
+        //    sat below the paned).
         glib::timeout_add_local(std::time::Duration::from_millis(700), {
             let shell = shell.clone();
             move || {
@@ -113,9 +115,13 @@ fn main() {
                 let page = shell.state_folders_page();
                 let sel = strip.selected();
                 println!("A tab visible={visible} page={page:?} sel={sel:?}");
+                let (in_paned, horizontal) = shell.state_folders_split();
+                println!("A split in_paned={in_paned} horizontal={horizontal}");
                 let ok = visible
                     && page.as_deref() == Some("folders")
-                    && sel == cr_ui::browser::tabstrip::TabId::Folders;
+                    && sel == cr_ui::browser::tabstrip::TabId::Folders
+                    && in_paned
+                    && horizontal;
                 println!("A ok={ok}");
                 glib::ControlFlow::Break
             }
