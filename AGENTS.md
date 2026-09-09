@@ -125,7 +125,22 @@ Update this section at the **end of every work session**. The next agent must kn
   REPLACE-same-name-asset (idempotent re-runs — the first run had
   already attached the source tarball; a strict append would die on
   the re-attach). The packaging files ride the TAG's checkout, so a
-  re-run needs the tag moved to the fixed HEAD first.
+  re-run needs the tag moved to the fixed HEAD first. FIX ROUND 2
+  (same day, after the v0.0.276 packaging run): arch GREEN (the
+  .pkg.tar.zst attached); flatpak still died at the cargo build with
+  `bwrap: No permissions to create a new namespace` — the
+  workflow-level `options: --privileged` did NOT take effect. The
+  act_runner example config states it plainly: "With privileged
+  disabled, options that could escape the container (--security-opt,
+  --device, --cap-add, --pid, ...) are ignored in a workflow's
+  container.options, but keep working here." So the fix is HOST-side:
+  in the runner's config.yaml set `container: privileged: true` and
+  restart the runner daemon (the runner-level `options:` field also
+  accepts security flags; the workflow-level one never will until
+  the runner allows them). The workflow keeps the
+  `options: --privileged` line as documented intent. LESSON: any
+  future job needing bwrap/kvm/devices hits the same wall — fix it
+  in the runner config, not the workflow.
   T4 IMPLEMENTED + TESTED (2026-09-09, user test pending) — the
   export post-processing ("convert rar→zip" request): the port of
   `QueueManager.ExportComic` lines 455-508. cr-core gained

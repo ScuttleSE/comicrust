@@ -256,9 +256,14 @@ jobs:
     container:
       image: comicrust-ci:latest
       # flatpak-builder runs every build command in a bwrap sandbox and
-      # needs elevated container permissions (the runner's default
-      # docker profile blocks the namespaces — measured 2026-09-09);
-      # privileged also serves the optional openh264 apply_extra.
+      # needs elevated container permissions (the runner's docker
+      # profile blocks the namespaces — measured 2026-09-09 twice).
+      # NOTE: act_runner IGNORES security-escaping options here
+      # (--privileged, --cap-add, --device...) while its own
+      # `container.privileged` is false — the real switch lives in the
+      # RUNNER'S config.yaml (container: privileged: true) + a runner
+      # restart. This line documents the intent and takes effect once
+      # the runner allows it.
       options: --privileged
 
     env:

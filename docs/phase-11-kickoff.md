@@ -145,6 +145,12 @@ Both packagers build from a CI-produced source tarball:
   - Known cost: act_runner containers are ephemeral, so the flatpak
     runtime re-downloads each run (~1-2 GB). An actions/cache step is
     the follow-up if it hurts.
+  - RUNNER REQUIREMENT (measured 2026-09-09): flatpak-builder's
+    sandbox needs an elevated container, and act_runner IGNORES
+    security-escaping `container.options` from the workflow while its
+    own `container.privileged` is false. The flatpak job is green
+    only after the runner host sets `container: privileged: true` in
+    the act_runner config and restarts the daemon.
 - Tokens: `RELEASE_TOKEN` (Gitea) and `MIRROR_RELEASE_TOKEN` (GitHub),
   the existing secrets.
 
