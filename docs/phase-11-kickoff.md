@@ -151,6 +151,14 @@ lives in the omissions section. The replacement:
 
 ## Gate
 
+**PIPELINE COMPLETE (2026-09-09):** the v0.0.283 release carries the
+full 9-asset set on BOTH hosts — binary tarball + sha, source tarball
++ sha, arch `.pkg.tar.zst` + sha + the sed'd PKGBUILD, `.deb` + sha.
+The tag-convention note that shaped the final rounds: the user keeps
+tag = commit count = latest main, all three at once — every post-tag
+fix commit (even workflow-only) means a renumber; v0.0.273 → 276 →
+278 → 281 → 282 → 283 over the day.
+
 - fmt/clippy/`cargo test --workspace` green; the new asset-lookup
   unit tests green.
 - The workflow files are validated by CI itself on first dispatch

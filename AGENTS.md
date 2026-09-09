@@ -172,6 +172,30 @@ Update this section at the **end of every work session**. The next agent must kn
   refreshes desktop-db/icon-cache) → dpkg-deb info/contents sanity →
   attach `comicrust_<v>-1_amd64.deb` + sha). The deb targets Debian
   13 / glibc-2.41 derivatives; older distros use the tarball.
+  DEB JOB FIX ROUNDS (2026-09-09, both mine, both in the workflow's
+  "Build the package" step): (1) `dpkg-deb --contents | grep -q` —
+  grep exits at the first match, closes the pipe, dpkg-deb dies on
+  the SIGPIPE ("tar subprocess was killed by signal"); capture the
+  listing first. (2) The step built the deb into the extracted
+  /tmp/comicrust tree but sha256sum'd a bare name after cd-ing back
+  to the workspace — absolute paths everywhere; the step body was
+  DRY-RUN locally with stub dpkg-deb/cargo before pushing (the
+  lesson: prove CI step bodies with a stubbed end-to-end run, not by
+  re-dispatching). THE TAG CONVENTION (user-enforced, cost two
+  renumbers): tag = commit count = LATEST MAIN, all three at once;
+  any commit after tagging (even a workflow-only fix) breaks
+  "tag = latest main", so the user renumbers — v0.0.273 → 276 → 278
+  → 281 → 282 → 283. GOING FORWARD: before re-running Packaging,
+  always re-point the tag to current main (renumber if the count
+  moved); dispatches read workflow files from MAIN, not the tag.
+  PHASE 11 PIPELINE COMPLETE (2026-09-09): the v0.0.283 release
+  carries the full 9-asset set on BOTH hosts (binary tarball + sha,
+  source tarball + sha, arch .pkg.tar.zst + sha + sed'd PKGBUILD,
+  .deb + sha). USER TEST PENDING = the kickoff's 5 install steps
+  (Arch makepkg/pacman flow, deb apt flow, the launch + asset
+  checks, the portable-tarball regression). Open gaps: the LICENSE
+  file (placeholders in PKGBUILD/metainfo), placeholder icon art,
+  AUR submission (manual), RPM.
   T4 IMPLEMENTED + TESTED (2026-09-09, user test pending) — the
   export post-processing ("convert rar→zip" request): the port of
   `QueueManager.ExportComic` lines 455-508. cr-core gained
@@ -242,7 +266,9 @@ Update this section at the **end of every work session**. The next agent must kn
   picked from `docs/backlog.md` and re-homed into a kickoff FIRST.
   Open gaps: WebComicProvider, PDF/DjVu writers, the LICENSE file
   (Phase 11 packaging gap), the T14 per-list sort deviation,
-  HEIF/AVIF decode.
+  HEIF/AVIF decode. The Phase 11 PIPELINE is COMPLETE (the v0.0.283
+  release carries all 9 assets on both hosts); the install steps
+  (the kickoff user test) remain.
 - **(Phase 8 — CLOSED 2026-09-08 — the kickoff is
   `docs/phase-8-kickoff.md`; done so far: T3 (the
   CBL-import perf) + T10 first slice (the view-side proposed-parse
