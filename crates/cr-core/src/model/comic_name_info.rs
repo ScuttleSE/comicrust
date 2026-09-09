@@ -5,6 +5,7 @@
 //! of the pattern. Lookarounds need the `fancy-regex` engine.
 
 use fancy_regex::Regex;
+use std::collections::HashMap;
 use std::sync::OnceLock;
 
 #[derive(Clone, Debug, PartialEq, Default)]
@@ -54,8 +55,24 @@ fn rx_brackets() -> &'static Regex {
     R.get_or_init(|| regex(r"\(.*?\)|\[.*?\]"))
 }
 
-fn rx_count(extra: &str) -> Regex {
-    regex(&format!(r"\b({extra})\s*\d+\b"))
+/// The one pattern that varies with configuration (the `OfValues`
+/// list). Compiled per parse before — 5000 first-parses paid 5000
+/// regex compiles (seconds in debug) — now cached per pattern. The
+/// config is near-constant, so the map holds one or two entries; the
+/// cap bounds a pathological settings churn.
+fn rx_count(extra: &str) -> &'static Regex {
+    static CACHE: OnceLock<std::sync::Mutex<HashMap<String, &'static Regex>>> = OnceLock::new();
+    let cache = CACHE.get_or_init(|| std::sync::Mutex::new(HashMap::new()));
+    let mut map = cache
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    if map.len() > 32 {
+        map.clear();
+    }
+    map.entry(extra.to_string()).or_insert_with(|| {
+        let r: &'static Regex = Box::leak(Box::new(regex(&format!(r"\b({extra})\s*\d+\b"))));
+        r
+    })
 }
 
 fn rx_volume() -> &'static Regex {
@@ -281,7 +298,7 @@ pub fn from_file_path_with_of(path: &str, of_values: &str) -> ComicNameInfo {
         .collect::<Vec<_>>()
         .join("|");
     let count_rx = rx_count(&of_pattern);
-    if let Some((s, e)) = last_match(&count_rx, &text) {
+    if let Some((s, e)) = last_match(count_rx, &text) {
         let value = text[s..e].to_string();
         text = format!("{}{}", &text[..s], &text[e..]);
         info.count = get_number(&value).trim().parse().unwrap_or(-1);

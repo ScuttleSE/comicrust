@@ -113,6 +113,13 @@ fn group_pass_5000_books_stays_scalar_fast() {
         .find(|(k, _)| *k == "Series")
         .map(|(_, g)| *g)
         .expect("Series grouper");
+    // Pre-warm (the gate's subject is the group pass, not the lazy
+    // first-parse — the same shape as the sort gate; without it the
+    // timed region depends on which sibling test warmed the shared
+    // process-wide cache first).
+    for (i, b) in lib.iter().enumerate() {
+        props.get(i, b);
+    }
     let t = Instant::now();
     let count = lib
         .iter()
