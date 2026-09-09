@@ -87,7 +87,9 @@ breakdowns with acceptance criteria:
 - Phase 6: `phase-6-kickoff.md` — the re-scoped native-features phase (ADR-027). COMPLETE (2026-09-06, user-tested). The original scripting kickoff survives as a superseded record inside that file.
 - Phase 7: `phase-7-kickoff.md` — the platform phase (D-Bus single
   instance + the startup file pipeline, ADR-028 re-scope). COMPLETE (2026-09-06).
-- Phase 8: `phase-8-kickoff.md` — polish/ship + the user-reported list (in progress).
+- Phase 8: `phase-8-kickoff.md` — polish/ship + the user-reported list. CLOSED (2026-09-08); T1-T6, T10, T11 done + user-tested, T7 → Phase 9, T8 + HEIF/AVIF deferred to the backlog.
 - Phase 9: `phase-9-kickoff.md` — the database-backend phase (SQLite
   canonical, ADR-029 gate). Spun out of Phase 8 T7 (2026-09-07);
-  starts after Phase 8 closes.
+  DEFERRED to the backlog 2026-09-08 (user decision) — no active
+  phase; whoever picks it up re-homes the kickoff first and starts
+  at T1 (the spike) → T2 (ADR-029 + user sign-off).

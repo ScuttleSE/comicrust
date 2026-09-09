@@ -200,3 +200,9 @@ parallel to T4 after T3. Starts after Phase 8 closes.
 ## Status
 
 - Written 2026-09-07 (spun out of Phase 8 T7). T1 next.
+- DEFERRED TO THE BACKLOG 2026-09-08 (user decision, right after
+  Phase 8 closed): no active phase owns this work now. The kickoff
+  stands as the full design record; the backlog entry
+  (`docs/backlog.md`, "From Phase 9") points here. Whoever picks it
+  up starts at T1 (the spike) → T2 (ADR-029 + user sign-off); NO
+  product code before that gate.

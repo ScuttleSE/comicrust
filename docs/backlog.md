@@ -38,6 +38,18 @@ omissions stay in that phase's kickoff tracker.
   tarball release tracks stand; add nothing else for now. The T8
   scope stays in `docs/phase-8-kickoff.md` for whoever picks it up.
 
+## From Phase 9
+
+- **The SQLite database backend (the whole phase)** — deferred
+  2026-09-08 (user decision, right after Phase 8 closed): no active
+  phase owns it now. The FULL design is already written and stands —
+  `docs/phase-9-kickoff.md` (the locked user decisions, the coupling
+  audit, the work breakdown ~3-5 wk, the task list T1-T7). Whoever
+  picks it up starts at T1 (the spike) → T2 (ADR-029 + user
+  sign-off); NO product code before that gate. An agent that picks
+  an entry re-homes the kickoff back into an active phase first.
+
+
 ## From port-plan §6
 
 - **Browser dock modes (Fill + Bottom)** — Phase 5.5 T10, moved out

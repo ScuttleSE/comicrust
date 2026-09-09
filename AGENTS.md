@@ -2,7 +2,7 @@
 
 You are working on **comicrust**. This project is a from-scratch port of **ComicRack Community Edition** (a Windows C# WinForms comic library manager/reader). The target is a **Linux-native Rust + GTK4 application** with **full 1:1 feature parity**.
 
-Read this file first. Then read `docs/port-plan.md` (architecture and roadmap), `docs/decisions.md` (locked decisions), and the current phase's kickoff doc (`docs/phase-<N>-kickoff.md` — the status section below names the active one). Do not challenge a locked decision without explicit user approval.
+Read this file first. Then read `docs/port-plan.md` (architecture and roadmap), `docs/decisions.md` (locked decisions), and the active phase's kickoff doc (`docs/phase-<N>-kickoff.md` — the status section below names the active one; when NO phase is active, open work is picked from `docs/backlog.md` and re-homed into a kickoff first). Do not challenge a locked decision without explicit user approval.
 
 ---
 
@@ -59,8 +59,15 @@ Update this section at the **end of every work session**. The next agent must kn
 
 ### State summary
 
-- **Phase:** 8 (polish/ship + the user-reported list) IN PROGRESS —
-  the kickoff is `docs/phase-8-kickoff.md`; done so far: T3 (the
+- **Phase:** NONE ACTIVE (2026-09-08). Phases 0-8 are COMPLETE
+  (every delivered task user-tested; the trail below carries the
+  records). Phase 9 (the SQLite backend) is DEFERRED to
+  `docs/backlog.md` with its full design intact. Open work is
+  picked from `docs/backlog.md` and re-homed into a kickoff FIRST.
+  Open gaps: WebComicProvider, PDF/DjVu writers, packaging (the T8
+  scope), the T14 per-list sort deviation, HEIF/AVIF decode.
+- **(Phase 8 — CLOSED 2026-09-08 — the kickoff is
+  `docs/phase-8-kickoff.md`; done so far: T3 (the
   CBL-import perf) + T10 first slice (the view-side proposed-parse
   storms), both records in the paragraphs below, both user tests
   PENDING; next in the task order: T1 → T2 → T4 → T5 → T6 → T8 →
@@ -229,8 +236,16 @@ Update this section at the **end of every work session**. The next agent must kn
   + the README migration rewrite (the helper + the manual way + the
   T11 dialog flow). **PHASE 8 CLOSED 2026-09-08** — T1-T6, T10,
   T11 done + user-tested; T7 → Phase 9; T8 + HEIF/AVIF deferred by
-  user decision (docs/backlog.md). NEXT: Phase 9 (the SQLite
-  backend, docs/phase-9-kickoff.md; ADR-029 gate before any code).
+  user decision (docs/backlog.md). PHASE 9 DEFERRED (2026-09-08,
+  user decision immediately after Phase 8 closed): the SQLite
+  backend has NO active phase now — the full design stands in
+  `docs/phase-9-kickoff.md` and the backlog entry
+  ("From Phase 9") points there; whoever picks it up re-homes the
+  kickoff into an active phase first and starts at T1 (the spike)
+  → T2 (ADR-029 + user sign-off; NO product code before that
+  gate). NO PHASE IS ACTIVE — open work is picked from
+  `docs/backlog.md` (open gaps: WebComicProvider, PDF/DjVu
+  writers, packaging T8, the T14 per-list sort deviation).
   BEHAVIOR CHANGE a
   fresh agent must know: the LAST-tab-close handler runs
   `select_last_browser()` (the C# RebuildBookTabs tail —
@@ -936,7 +951,7 @@ Update this section at the **end of every work session**. The next agent must kn
   Phases 0-5 are complete (their gates stay green). Open Phase 1
   gaps: WebComicProvider and the PDF/DjVu writers (tracked in
   `docs/phase-1-kickoff.md`).
-- **State:** `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` are green. 373 tests (the two Phase 8 perf gates live in `cr-engine/tests/reading_list_perf.rs` + `cr-engine/tests/view_perf.rs`; the real-fixture parts skip in CI without the git-ignored `tests/testfiles/` files). CI runs on the `docker-runner-amd64` container runner (ADR-020). The release tracks are `release.yaml` (rolling prerelease per push) and `tagged-release.yaml` (manual dispatch, stable release for an existing tag — ADR-021, 2026-09-03). Until the runner is registered and `comicrust-ci:latest` is built on the runner host, pushed and dispatched workflows sit queued on that label.
+- **State:** `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` are green. 386+ tests — 34 suites (the Phase 8 perf gates: `reading_list_perf`, `view_perf`, `path_migration_perf`, `list_eval_perf`, `scan_perf`; the cr-ui probes are examples, not tests; the real-fixture parts skip in CI without the git-ignored `tests/testfiles/` files). CI runs on the `docker-runner-amd64` container runner (ADR-020). The release tracks are `release.yaml` (rolling prerelease per push) and `tagged-release.yaml` (manual dispatch, stable release for an existing tag — ADR-021, 2026-09-03). Until the runner is registered and `comicrust-ci:latest` is built on the runner host, pushed and dispatched workflows sit queued on that label.
 - **GitHub mirror (2026-09-06):** remote `github` = `git@github.com:ScuttleSE/comicrust.git` — a TRUE mirror (identical SHAs; `.gitea/` rides along but is inert there, GitHub Actions only reads `.github/workflows/`). After every origin push also `git push github main`; stable tags get pushed manually once; the `rolling` tag is CI-managed on BOTH sides (each release run deletes/recreates it) — never push it by hand. Both release workflows also publish the built tarball + sha256 to GitHub Releases through `.gitea/publish_github_release.sh` (build once on Gitea, assets on both); it needs the Gitea secret `MIRROR_RELEASE_TOKEN` (GitHub PAT with Contents read/write on ScuttleSE/comicrust; Gitea forbids a `GITHUB_` prefix) — unset secret = the step skips with a notice.
 - **Phase 0 gate status:** byte-stable ComicDb.xml round-trip proven on all three synthetic fixtures AND the real-world database `tests/realworld/ComicDb.xml` (255 books, 584 KB, 2026-09-02, user-approved commit).
 - **Phase 2 gate status:** every saved smart list in the real-world DB (a) binds to the matcher registry, (b) renders to a `Match` query string that re-parses and re-renders byte-identically, and (c) evaluates to the SAME book sets the C# cached in `CacheStorage` (Never Read = all 255, Files to update = the 3 dirty books, Reading/Read = empty). Evidence: `crates/cr-engine/tests/realworld_query.rs`.
