@@ -127,6 +127,7 @@ jobs:
           # Unset = the step skips with a notice.
           GH_TOKEN: ${{ secrets.MIRROR_RELEASE_TOKEN }}
           GH_REPO: ScuttleSE/comicrust
+          TAG: ${{ inputs.tag }}
           VERSION: ${{ steps.version.outputs.version }}
         run: |
           set -euo pipefail
