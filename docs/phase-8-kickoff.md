@@ -488,6 +488,22 @@ backlog: plan B (the C#-parity per-book session cache) with the
 full rationale + invalidation surface (`docs/backlog.md`,
 "C#-parity per-book proposed cache").
 
+CORRECTION (2026-09-09, the CI flake): the 78 µs / 0.44 ms "after"
+numbers are WARM-cache numbers. The group gate's timed loop paid
+the FIRST parse of all 5000 paths, and the recorded speed only
+happened when the sort test's pre-warm filled the shared
+process-wide `proposed_cached` cache first in the same binary —
+test-order luck. In CI the group gate lost the race and failed at
+18.16 s (debug budget 15 s; locally reproduced 13.76 s cold). Fixed
+in commit 9a759fd, two parts: the group gate pre-warms its
+PropTable like the sort gate (the gate's subject is the pass, not
+the lazy first-parse), and the true offender underneath —
+`ComicNameInfo` `rx_count` (the OfValues pattern), the one
+non-cached pattern, compiled a fancy-regex on EVERY parse — is now
+cached per pattern in `comic_name_info.rs`. Measured after: cold
+group gate 425 µs (debug). LESSON: any new timing gate must
+pre-warm what its subject does not measure.
+
 SECOND SLICE — USER-TESTED, ALL PASS 2026-09-07 ("works now"): the
 ItemView scroll storm behind the "the 2875-book reading list is
 unusable to scroll" report. Cause (measured): the draw func built

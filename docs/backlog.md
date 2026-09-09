@@ -335,7 +335,11 @@ still pays one parse per parse-needing book per evaluation — the
 - **Why deferred**: after the per-operation precomputes, the measured
   hot paths are scalar (sort 5000 books 4.5 ms, group pass 78 µs,
   duplicates 1000 books 5.9 ms, CBL import 0.069 s at 2886×255 —
-  release). No remaining user-visible wait justifies the invalidation
+  release; WARM-cache numbers — see the 2026-09-09 correction in
+  `docs/phase-8-kickoff.md` T10: a COLD pass pays one parse per
+  parse-needing book, which is exactly this plan-B case, now cheaper
+  since the OfValues count regex no longer recompiles per parse). No
+  remaining user-visible wait justifies the invalidation
   risk: a stale cached parse after a file edit/rename/scan would
   silently break series matching and sorting. Revisit only if a
   measured rebuild cost reappears (a 10k+ library with
