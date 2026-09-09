@@ -77,7 +77,15 @@ Update this section at the **end of every work session**. The next agent must kn
   425 µs; suite sort 29.8 ms / group 425 µs / dup 987 ms (debug);
   fmt/clippy/400 tests green. LESSON: the view_perf "warm" numbers
   assumed test-order luck inside one binary; any new gate must
-  pre-warm what its subject does not measure.
+  pre-warm what its subject does not measure. Same-day round 2
+  (commit after the 26.08 packaging fix): `queues::
+  duplicate_add_does_not_requeue` flaked on CI (left 2, right 1) —
+  a no-op queue callback can claim, run, and FINISH between two
+  adds, making the re-add a legitimate second run; the queue
+  semantics were CORRECT (C# parity, dedup covers pending AND
+  running items, queue.rs:6-13). The test now pins item 7 pending
+  behind a barrier blocker (the file's established shape) and also
+  asserts the AddToTop move deterministically; 10 local runs green.
 - **PHASE 10 ACTIVE (2026-09-09) — CBR/RAR write-back** (the kickoff
   is `docs/phase-10-kickoff.md`, decision ADR-030): T1-T4 ALL
   IMPLEMENTED + GATED (commits cbbd689, 9eb9df1; fmt/clippy/400

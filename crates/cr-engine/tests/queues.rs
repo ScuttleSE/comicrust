@@ -58,6 +58,16 @@ fn duplicate_add_does_not_requeue() {
     let runs = Arc::new(AtomicUsize::new(0));
     let queue: ProcessingQueue<usize> =
         ProcessingQueue::new_single("t", ThreadPriority::BelowNormal, usize::MAX);
+    // Item 0 blocks the single worker so item 7 is guaranteed to be in
+    // the queue when the duplicate arrives. The original shape raced:
+    // a no-op callback can claim, run, and FINISH item 7 between the
+    // two adds, and a re-add after completion is a legitimate new run
+    // (the CI flake of 2026-09-09).
+    let barrier = Arc::new(Barrier::new(2));
+    let b0 = Arc::clone(&barrier);
+    queue.add_item(0, move |_| {
+        b0.wait();
+    });
     let r1 = Arc::clone(&runs);
     queue.add_item_with_key(
         7,
@@ -67,7 +77,8 @@ fn duplicate_add_does_not_requeue() {
         },
         AddMode::AddToBottom,
     );
-    // Same key: no second callback registration (C# AddCallback).
+    // Same key while 7 is pending: no second callback registration (C#
+    // AddCallback), and the AddToTop re-add moves it to the front.
     let r2 = Arc::clone(&runs);
     queue.add_item_with_key(
         7,
@@ -77,6 +88,8 @@ fn duplicate_add_does_not_requeue() {
         },
         AddMode::AddToTop,
     );
+    assert_eq!(queue.pending_items(), vec![7, 0]);
+    barrier.wait(); // release item 0
     assert!(wait_for(Duration::from_secs(5), || {
         queue.count() == 0 && !queue.is_active()
     }));
