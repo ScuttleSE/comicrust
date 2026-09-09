@@ -59,6 +59,25 @@ Update this section at the **end of every work session**. The next agent must kn
 
 ### State summary
 
+- **CI GROUP-PERF FLAKE FIXED (2026-09-09, commit 9a759fd):** the
+  `group_pass_5000_books_stays_scalar_fast` gate failed in CI
+  (18.16 s vs the 15 s budget; locally reproduced 13.76 s with a
+  COLD cache). Two causes, both fixed. (1) The test was flaky by
+  construction: its timed loop paid the FIRST parse of all 5000
+  paths, and the recorded 78 µs numbers only happened when the sort
+  test's pre-warm filled the shared process-wide `proposed_cached`
+  cache first in the same binary — the group gate now pre-warms its
+  PropTable like the sort gate ("the gate's subject is the pass,
+  not the lazy first-parse"). (2) The real offender underneath:
+  `ComicNameInfo` `rx_count` (the OfValues pattern) compiled a
+  fancy-regex on EVERY parse — the one non-cached pattern; now
+  cached per pattern (`HashMap<String, &'static Regex>`, 32-entry
+  cap) in `comic_name_info.rs`. Every first parse in the app pays
+  no compile anymore. Measured after: cold group gate 13.76 s →
+  425 µs; suite sort 29.8 ms / group 425 µs / dup 987 ms (debug);
+  fmt/clippy/400 tests green. LESSON: the view_perf "warm" numbers
+  assumed test-order luck inside one binary; any new gate must
+  pre-warm what its subject does not measure.
 - **PHASE 10 ACTIVE (2026-09-09) — CBR/RAR write-back** (the kickoff
   is `docs/phase-10-kickoff.md`, decision ADR-030): T1-T4 ALL
   IMPLEMENTED + GATED (commits cbbd689, 9eb9df1; fmt/clippy/400
