@@ -59,7 +59,36 @@ Update this section at the **end of every work session**. The next agent must kn
 
 ### State summary
 
-- **Phase:** NONE ACTIVE (2026-09-08). Phases 0-8 are COMPLETE
+- **PHASE 10 ACTIVE (2026-09-09) — CBR/RAR write-back** (the kickoff
+  is `docs/phase-10-kickoff.md`, decision ADR-030): T1-T3
+  IMPLEMENTED, commit cbbd689, user test PENDING. `cr-io` gained
+  `rar.rs` (`find_rar` = `CR_RAR` env then PATH, never `unrar`;
+  `add_files` = one `rar a -y` with cwd at the staging dir so entries
+  land root-level bare-named, stdin null) and the
+  `store_info_scoped` CBR/RAR5 branch (one `rar a` call for the
+  ComicInfo.xml/ComicBook.xml pairs, `with_book_info` scoping as
+  CB7; success reports changed). The app path
+  (`update_book_file`) surfaces "rar executable not found" through
+  the existing Update-Book-Files error dialog; the queue path swallows
+  (book stays in Files-to-update). `supports_update` stays FALSE for
+  RAR (C# parity; only consumers are the write gate +
+  `ComicProvider::store_info`, no UI gates). MEASURED FACTS: rar 7.x
+  has NO `-ma4` (cannot CREATE RAR4) but UPDATES existing RAR4
+  archives fine (format preserved, pages intact — proven on a rar
+  6.24-built fixture); `-p-` is NOT a rar switch (it ENCRYPTS with
+  password "-"; the no-hang guarantee is stdin null — password
+  targets fail fast, measured exit 12); the update staging dirs are
+  now unique per call (pid alone raced between concurrent updates —
+  fixed for BOTH the rar and 7z paths). Gates:
+  `cr-io/tests/rar_gated.rs` (the missing-binary error path runs
+  everywhere incl. CI; `CR_RAR_TESTS=1` + `rar` + `7z` gates the
+  rar5 round-trip; `CBR_RAR4_FIXTURE=<path>` adds the RAR4
+  round-trip on a git-ignored real file). The xattr
+  (`NtfsInfoStorage`) parity write-back was OFFERED and DECLINED by
+  the user — DB stays the master copy without `rar`. USER TEST =
+  the 4 steps at the end of `docs/phase-10-kickoff.md`.
+- **Phase:** NONE ACTIVE besides the Phase 10 block above
+  (2026-09-09). Phases 0-8 are COMPLETE
   (every delivered task user-tested; the trail below carries the
   records). Phase 9 (the SQLite backend) is DEFERRED to
   `docs/backlog.md` with its full design intact. Open work is
@@ -951,7 +980,7 @@ Update this section at the **end of every work session**. The next agent must kn
   Phases 0-5 are complete (their gates stay green). Open Phase 1
   gaps: WebComicProvider and the PDF/DjVu writers (tracked in
   `docs/phase-1-kickoff.md`).
-- **State:** `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` are green. 386+ tests — 34 suites (the Phase 8 perf gates: `reading_list_perf`, `view_perf`, `path_migration_perf`, `list_eval_perf`, `scan_perf`; the cr-ui probes are examples, not tests; the real-fixture parts skip in CI without the git-ignored `tests/testfiles/` files). CI runs on the `docker-runner-amd64` container runner (ADR-020). The release tracks are `release.yaml` (rolling prerelease per push) and `tagged-release.yaml` (manual dispatch, stable release for an existing tag — ADR-021, 2026-09-03). Until the runner is registered and `comicrust-ci:latest` is built on the runner host, pushed and dispatched workflows sit queued on that label.
+- **State:** `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` are green. 397 tests — 35 suites (the Phase 8 perf gates: `reading_list_perf`, `view_perf`, `path_migration_perf`, `list_eval_perf`, `scan_perf`; the cr-ui probes are examples, not tests; the real-fixture parts skip in CI without the git-ignored `tests/testfiles/` files; the RAR round-trips skip without `CR_RAR_TESTS` + `rar`). CI runs on the `docker-runner-amd64` container runner (ADR-020). The release tracks are `release.yaml` (rolling prerelease per push) and `tagged-release.yaml` (manual dispatch, stable release for an existing tag — ADR-021, 2026-09-03). Until the runner is registered and `comicrust-ci:latest` is built on the runner host, pushed and dispatched workflows sit queued on that label.
 - **GitHub mirror (2026-09-06):** remote `github` = `git@github.com:ScuttleSE/comicrust.git` — a TRUE mirror (identical SHAs; `.gitea/` rides along but is inert there, GitHub Actions only reads `.github/workflows/`). After every origin push also `git push github main`; stable tags get pushed manually once; the `rolling` tag is CI-managed on BOTH sides (each release run deletes/recreates it) — never push it by hand. Both release workflows also publish the built tarball + sha256 to GitHub Releases through `.gitea/publish_github_release.sh` (build once on Gitea, assets on both); it needs the Gitea secret `MIRROR_RELEASE_TOKEN` (GitHub PAT with Contents read/write on ScuttleSE/comicrust; Gitea forbids a `GITHUB_` prefix) — unset secret = the step skips with a notice.
 - **Phase 0 gate status:** byte-stable ComicDb.xml round-trip proven on all three synthetic fixtures AND the real-world database `tests/realworld/ComicDb.xml` (255 books, 584 KB, 2026-09-02, user-approved commit).
 - **Phase 2 gate status:** every saved smart list in the real-world DB (a) binds to the matcher registry, (b) renders to a `Match` query string that re-parses and re-renders byte-identically, and (c) evaluates to the SAME book sets the C# cached in `CacheStorage` (Never Read = all 255, Files to update = the 3 dirty books, Reading/Read = empty). Evidence: `crates/cr-engine/tests/realworld_query.rs`.
