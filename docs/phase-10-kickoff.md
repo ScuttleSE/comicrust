@@ -1,8 +1,11 @@
 # Phase 10 — CBR/RAR write-back
 
-Status: ACTIVE (2026-09-09). User decision: real in-archive metadata
-writes for CBR/RAR. The xattr (`NtfsInfoStorage`) parity write-back
-was OFFERED and DECLINED — DB stays the master copy for users without
+Status: ACTIVE (2026-09-09). T1-T4 IMPLEMENTED (commit cbbd689 +
+9eb9df1; fmt/clippy/400 tests green); BOTH USER TESTS PENDING —
+steps 1-4 (rar write-back) and steps 5-8 (export post-processing) at
+the end of this file. User decision: real in-archive metadata writes
+for CBR/RAR. The xattr (`NtfsInfoStorage`) parity write-back was
+OFFERED and DECLINED — DB stays the master copy for users without
 the `rar` binary.
 
 ## Source study (the C# facts)

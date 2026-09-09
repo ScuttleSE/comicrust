@@ -60,8 +60,11 @@ Update this section at the **end of every work session**. The next agent must kn
 ### State summary
 
 - **PHASE 10 ACTIVE (2026-09-09) — CBR/RAR write-back** (the kickoff
-  is `docs/phase-10-kickoff.md`, decision ADR-030): T1-T3
-  IMPLEMENTED, commit cbbd689, user test PENDING. `cr-io` gained
+  is `docs/phase-10-kickoff.md`, decision ADR-030): T1-T4 ALL
+  IMPLEMENTED + GATED (commits cbbd689, 9eb9df1; fmt/clippy/400
+  tests green), BOTH USER TESTS PENDING — steps 1-4 (rar
+  write-back) and steps 5-8 (the export "Replace source" surgery)
+  at the end of the kickoff. T1-T3 = the rar writer: `cr-io` gained
   `rar.rs` (`find_rar` = `CR_RAR` env then PATH, never `unrar`;
   `add_files` = one `rar a -y` with cwd at the staging dir so entries
   land root-level bare-named, stdin null) and the
