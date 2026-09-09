@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- AppStream metainfo for the packaged app (the PKGBUILD and the
+     Flatpak manifest both install this file). The release CI seds the
+     built version+date into the <release> entry; the committed entry
+     below stays a generic dev record. project_license is a PLACEHOLDER
+     until the repo picks a LICENSE file (the Phase 11 open gap). -->
+<component type="desktop-application">
+  <id>io.github.ScuttleSE.comicrust</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>LicenseRef-Proprietary</project_license>
+  <name>ComicRust</name>
+  <summary>Comic library manager and reader</summary>
+  <description>
+    <p>
+      ComicRust is a Linux-native port of the ComicRack comic library
+      manager and reader. It organizes comic archives (CBZ, CBR, CBT,
+      CB7, folders, PDF, DjVu) in a library with smart lists, reads
+      them in a configurable reader, and reads and writes embedded
+      ComicInfo.xml metadata without damaging the archives.
+    </p>
+  </description>
+  <launchable type="desktop-id">io.github.ScuttleSE.comicrust.desktop</launchable>
+  <provides>
+    <binary>comicrust</binary>
+  </provides>
+  <content_rating type="oars-1.1" />
+  <releases>
+    <release version="0.0.dev" date="2026-09-09">
+      <description>
+        <p>Development build.</p>
+      </description>
+    </release>
+  </releases>
+</component>

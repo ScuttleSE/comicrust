@@ -34,9 +34,12 @@ omissions stay in that phase's kickoff tracker.
 ## From Phase 8
 
 - **Packaging (T8: Flatpak / .deb / AUR + release-workflow
-  artifacts)** — deferred 2026-09-08 (user decision): the existing
-  tarball release tracks stand; add nothing else for now. The T8
-  scope stays in `docs/phase-8-kickoff.md` for whoever picks it up.
+  artifacts)** — deferred 2026-09-08 (user decision), then RE-HOMED
+  2026-09-09 into the active `docs/phase-11-kickoff.md` (Arch PKGBUILD
+  + Flatpak bundle + a dispatch-on-tag packaging workflow; the user
+  picked the in-repo-PKGBUILD, self-hosted-bundle, manual-dispatch
+  shapes). The remaining scopes — `.deb`/RPM, AUR publishing from CI,
+  Flathub — stay HERE.
 
 ## From Phase 9
 

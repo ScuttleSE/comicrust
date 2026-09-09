@@ -64,7 +64,28 @@ File(s)" reports the error.
 
 ## Install
 
-### From a release
+### Arch package
+
+Download `comicrust-<version>-source.tar.gz` and `PKGBUILD` from the [Releases page](https://github.com/ScuttleSE/comicrust/releases), put both in one folder, and build:
+
+```sh
+makepkg -f
+sudo pacman -U comicrust-<version>-*-x86_64.pkg.tar.zst
+```
+
+The package installs `/usr/bin/comicrust` with a desktop entry and app icon. Optional packages: `p7zip` (CB7/CBR reading), `djvulibre` (DjVu), `rar` (RAR write-back).
+
+### Flatpak bundle
+
+Download `comicrust-<version>.flatpak` from the [Releases page](https://github.com/ScuttleSE/comicrust/releases). Install it from the file (the freedesktop runtime comes from Flathub):
+
+```sh
+flatpak remote-add --if-not-exists --user flathub https://flathub.org/repo/flathub.flatpakrepo
+flatpak install --user ./comicrust-<version>.flatpak
+flatpak run io.github.ScuttleSE.comicrust
+```
+
+### Portable tarball
 
 Download `comicrust-<version>-linux-amd64.tar.gz` from the [Releases page](https://github.com/ScuttleSE/comicrust/releases). Then:
 
@@ -86,9 +107,7 @@ cd comicrust
 cargo run -p cr-app --release
 ```
 
-Run from the repository root. The build then finds its assets in the source tree.
-
-## Requirements
+Run from the repository root. The build then finds its assets in the source tree.## Requirements
 
 - Linux with GTK 4.6 or newer (`libgtk-4-1`)
 - Optional: `7z` (p7zip) for CB7, CBR, and RAR archives

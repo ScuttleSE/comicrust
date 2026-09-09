@@ -1,0 +1,342 @@
+name: Packaging
+
+# Builds the distribution packages for an EXISTING tag and attaches
+# them to the release. Trigger: manual only (Actions -> "Packaging" ->
+# Run workflow, enter the tag). RUN THE TAGGED RELEASE WORKFLOW FIRST —
+# this workflow attaches to the release it created (the attach step
+# fails hard when the release is missing).
+#
+# Jobs:
+#   checks  - the fmt/clippy/test gate (the tagged-release shape).
+#   source  - assembles the vendored source tarball
+#             (comicrust-<version>-source.tar.gz: the checkout plus
+#             cargo-vendored dependencies and a .cargo/config.toml
+#             selecting them, so every build below is offline), seds
+#             the release version+date into the metainfo, attaches
+#             tarball + sha256 to the release, and exports
+#             version/sha256/asset as job outputs.
+#   arch    - runs makepkg in an archlinux container exactly as a user
+#             would (checksum verification included) and attaches the
+#             .pkg.tar.zst + sha256 + the sed'd PKGBUILD.
+#   flatpak - builds the single-file .flatpak bundle and attaches it
+#             (+ sha256).
+#
+# Assets land on both Gitea and the GitHub mirror (the mirror steps
+# skip with a notice when MIRROR_RELEASE_TOKEN is unset).
+#
+# Version: the tag without its leading "v" (v0.1.0 -> 0.1.0) — the
+# tagged-release rule. The About version is stamped from it in every
+# build (VERSION env -> cr-ui/build.rs).
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing tag to package, e.g. v0.1.0
+        required: true
+
+permissions:
+  contents: write
+
+concurrency:
+  group: packaging-${{ inputs.tag }}
+  # Never kill a run mid-publish: the release would be left half-updated.
+  cancel-in-progress: false
+
+jobs:
+  checks:
+    name: fmt, clippy, test
+    runs-on: docker-runner-amd64
+    container:
+      image: comicrust-ci:latest
+
+    steps:
+      - name: Validate tag input
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          if ! printf '%s' "$TAG" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+$'; then
+              echo "tag '$TAG' must look like v0.1.0" >&2
+              exit 1
+          fi
+
+      - name: Checkout (at the tag)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+
+      - name: rustfmt
+        run: cargo fmt --check --all
+
+      - name: clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Test
+        env:
+          CR_FORMAT_TESTS: "1"
+        run: cargo test --workspace
+
+  source:
+    name: vendored source tarball
+    needs: checks
+    runs-on: docker-runner-amd64
+    container:
+      image: comicrust-ci:latest
+
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      sha256: ${{ steps.tarball.outputs.sha256 }}
+      asset: ${{ steps.tarball.outputs.asset }}
+
+    steps:
+      - name: Checkout (at the tag)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+
+      - name: Version
+        id: version
+        env:
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+          version="${TAG#v}"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+          echo "packaging version: $version"
+
+      - name: Vendor the cargo dependencies
+        run: |
+          set -euo pipefail
+          cargo vendor vendor > /dev/null
+          mkdir -p .cargo
+          cat > .cargo/config.toml <<'EOF'
+          [source.crates-io]
+          replace-with = "vendored-sources"
+
+          [source.vendored-sources]
+          directory = "vendor"
+          EOF
+          du -sh vendor
+
+      - name: Assemble the source tarball
+        id: tarball
+        env:
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          asset="comicrust-${VERSION}-source.tar.gz"
+          # The release date for the metainfo entry (the packaged
+          # release date, not the author date of the commit).
+          today="$(date -u +%Y-%m-%d)"
+          mkdir -p dist-src
+          git archive HEAD --prefix=comicrust/ | tar -x -C dist-src
+          cd dist-src/comicrust
+          # The metainfo both packagers install carries the release.
+          sed -i "s/version=\"0.0.dev\" date=\"[^\"]*\"/version=\"${VERSION}\" date=\"${today}\"/" \
+              packaging/io.github.ScuttleSE.comicrust.metainfo.xml
+          cp -r "$GITHUB_WORKSPACE/vendor" vendor
+          cp -r "$GITHUB_WORKSPACE/.cargo" .cargo
+          cd ..
+          tar -czf "../$asset" comicrust
+          cd ..
+          sha256sum "$asset" > "${asset}.sha256"
+          echo "asset=$asset" >> "$GITHUB_OUTPUT"
+          echo "sha256=$(cut -d' ' -f1 "${asset}.sha256")" >> "$GITHUB_OUTPUT"
+          echo "packaged: $asset"
+
+      - name: Attach to the release
+        env:
+          TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+          API: ${{ github.server_url }}/api/v1
+          REPO: ${{ github.repository }}
+          TAG: ${{ inputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          bash .gitea/attach_release_assets.sh "$TAG" \
+              "comicrust-${VERSION}-source.tar.gz" \
+              "comicrust-${VERSION}-source.tar.gz.sha256"
+
+      - name: Attach to the GitHub mirror
+        env:
+          GH_TOKEN: ${{ secrets.MIRROR_RELEASE_TOKEN }}
+          GH_REPO: ScuttleSE/comicrust
+          TAG: ${{ inputs.tag }}
+          VERSION: ${{ steps.version.outputs.version }}
+        run: |
+          set -euo pipefail
+          bash .gitea/attach_github_release_assets.sh "$TAG" \
+              "comicrust-${VERSION}-source.tar.gz" \
+              "comicrust-${VERSION}-source.tar.gz.sha256"
+
+  arch:
+    name: Arch package
+    needs: source
+    runs-on: docker-runner-amd64
+    container:
+      # A fresh Arch container: makepkg decides. nodejs arrives before
+      # the JS actions (the runner execs them with the job container's
+      # own node — the comicrust-ci image lesson).
+      image: archlinux:base-devel
+
+    env:
+      TAG: ${{ inputs.tag }}
+      VERSION: ${{ needs.source.outputs.version }}
+      SHA256: ${{ needs.source.outputs.sha256 }}
+      ASSET: ${{ needs.source.outputs.asset }}
+      TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+      API: ${{ github.server_url }}/api/v1
+      REPO: ${{ github.repository }}
+      GH_TOKEN: ${{ secrets.MIRROR_RELEASE_TOKEN }}
+      GH_REPO: ScuttleSE/comicrust
+
+    steps:
+      - name: Install nodejs (for the JS actions), rust, gtk4, jq
+        # gtk4 carries the headers/pkg-config files (Arch does not
+        # split dev packages); jq serves the release-API fetch.
+        run: pacman -Syu --noconfirm nodejs rust gtk4 jq
+
+      - name: Checkout (at the tag, for the packaging files)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+
+      - name: Fetch the source tarball from the release
+        run: |
+          set -euo pipefail
+          url="$(curl -fsS -H "Authorization: token $TOKEN" \
+              "$API/repos/$REPO/releases/tags/$TAG" \
+              | jq -r --arg name "$ASSET" '.assets[] | select(.name == $name) | .browser_download_url')"
+          if [ -z "$url" ]; then
+              echo "asset $ASSET not found on the $TAG release" >&2
+              exit 1
+          fi
+          curl -fsSL -H "Authorization: token $TOKEN" -o "$ASSET" "$url"
+          echo "$SHA256  $ASSET" | sha256sum -c -
+
+      - name: makepkg
+        run: |
+          set -euo pipefail
+          pkgdir="$(pwd)/pkgbuild"
+          mkdir -p "$pkgdir"
+          sed -e "s/^pkgver=.*/pkgver=$VERSION/" \
+              -e "s/^sha256sums=.*/sha256sums=('$SHA256')/" \
+              packaging/arch/PKGBUILD > "$pkgdir/PKGBUILD"
+          cp "$ASSET" "$pkgdir/"
+          # makepkg refuses root: run it as a plain user.
+          useradd -m -s /bin/bash builder
+          chown -R builder:builder "$pkgdir"
+          su builder -c "cd $pkgdir && makepkg -f --noconfirm"
+          pkgfile=$(cd "$pkgdir" && ls comicrust-"$VERSION"-*-x86_64.pkg.tar.zst)
+          cp "$pkgdir/$pkgfile" .
+          sha256sum "$pkgfile" > "${pkgfile}.sha256"
+          # The sed'd PKGBUILD rides along (the AUR submission base).
+          cp "$pkgdir/PKGBUILD" PKGBUILD
+          echo "packaged: $pkgfile"
+
+      - name: Attach to the release
+        run: |
+          set -euo pipefail
+          pkgfile=$(ls comicrust-"$VERSION"-*-x86_64.pkg.tar.zst)
+          bash .gitea/attach_release_assets.sh "$TAG" \
+              "$pkgfile" "${pkgfile}.sha256" PKGBUILD
+
+      - name: Attach to the GitHub mirror
+        run: |
+          set -euo pipefail
+          pkgfile=$(ls comicrust-"$VERSION"-*-x86_64.pkg.tar.zst)
+          bash .gitea/attach_github_release_assets.sh "$TAG" \
+              "$pkgfile" "${pkgfile}.sha256" PKGBUILD
+
+  flatpak:
+    name: Flatpak bundle
+    needs: source
+    runs-on: docker-runner-amd64
+    container:
+      image: comicrust-ci:latest
+
+    env:
+      TAG: ${{ inputs.tag }}
+      VERSION: ${{ needs.source.outputs.version }}
+      SHA256: ${{ needs.source.outputs.sha256 }}
+      ASSET: ${{ needs.source.outputs.asset }}
+      TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
+      API: ${{ github.server_url }}/api/v1
+      REPO: ${{ github.repository }}
+      GH_TOKEN: ${{ secrets.MIRROR_RELEASE_TOKEN }}
+      GH_REPO: ScuttleSE/comicrust
+
+    steps:
+      - name: Checkout (at the tag, for the packaging files)
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.tag }}
+
+      - name: Fetch the source tarball from the release
+        run: |
+          set -euo pipefail
+          url="$(curl -fsS -H "Authorization: token $TOKEN" \
+              "$API/repos/$REPO/releases/tags/$TAG" \
+              | jq -r --arg name "$ASSET" '.assets[] | select(.name == $name) | .browser_download_url')"
+          if [ -z "$url" ]; then
+              echo "asset $ASSET not found on the $TAG release" >&2
+              exit 1
+          fi
+          curl -fsSL -H "Authorization: token $TOKEN" -o "$ASSET" "$url"
+          echo "$SHA256  $ASSET" | sha256sum -c -
+
+      - name: Install the flatpak tooling
+        run: |
+          set -euo pipefail
+          apt-get update
+          apt-get install -y --no-install-recommends flatpak flatpak-builder
+          flatpak remote-add --if-not-exists flathub \
+              https://flathub.org/repo/flathub.flatpakrepo
+
+      - name: Install the runtime + the Rust extension
+        run: |
+          set -euo pipefail
+          flatpak install --noninteractive --or-update flathub \
+              org.freedesktop.Platform//24.08 \
+              org.freedesktop.Sdk//24.08 \
+              org.freedesktop.Sdk.Extension.rust-stable//24.08
+
+      - name: Point the manifest at the release tarball
+        run: |
+          set -euo pipefail
+          manifest="packaging/flatpak/io.github.ScuttleSE.comicrust.yml"
+          sed -i \
+              -e "s|url: .*|path: $PWD/$ASSET|" \
+              -e "s/sha256: 0\{64\}/sha256: $SHA256/" \
+              -e "s/VERSION: \"0.0.dev\"/VERSION: \"$VERSION\"/" \
+              -e "s/branch: \"0.0.dev\"/branch: \"$VERSION\"/" \
+              "$manifest"
+          grep -n "path:\|sha256:\|VERSION:\|branch:" "$manifest"
+
+      - name: Build the bundle
+        run: |
+          set -euo pipefail
+          flatpak-builder --force-clean --install-deps-from=flathub \
+              --repo=repo builddir \
+              packaging/flatpak/io.github.ScuttleSE.comicrust.yml
+          flatpak build-bundle repo \
+              "comicrust-${VERSION}.flatpak" \
+              io.github.ScuttleSE.comicrust "$VERSION"
+          sha256sum "comicrust-${VERSION}.flatpak" \
+              > "comicrust-${VERSION}.flatpak.sha256"
+          echo "packaged: comicrust-${VERSION}.flatpak"
+
+      - name: Attach to the release
+        run: |
+          set -euo pipefail
+          bash .gitea/attach_release_assets.sh "$TAG" \
+              "comicrust-${VERSION}.flatpak" \
+              "comicrust-${VERSION}.flatpak.sha256"
+
+      - name: Attach to the GitHub mirror
+        run: |
+          set -euo pipefail
+          bash .gitea/attach_github_release_assets.sh "$TAG" \
+              "comicrust-${VERSION}.flatpak" \
+              "comicrust-${VERSION}.flatpak.sha256"

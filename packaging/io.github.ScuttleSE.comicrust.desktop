@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=ComicRust
+GenericName=Comic Reader
+Comment=Read and organize digital comic archives
+Exec=comicrust %U
+Icon=io.github.ScuttleSE.comicrust
+Terminal=false
+Categories=Graphics;Viewer;
+MimeType=application/vnd.comicbook+zip;application/vnd.comicbook-rar;application/vnd.comicbook+tar;application/x-cb7;application/x-cbz;application/x-cbr;application/x-cbt;
+StartupWMClass=comicrust

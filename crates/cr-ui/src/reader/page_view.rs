@@ -18,7 +18,7 @@
 
 use std::cell::RefCell;
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::sync::{Arc, Mutex};
 use std::time::Instant;
@@ -435,9 +435,9 @@ fn resolve_texture_bytes(path: &str) -> Option<Vec<u8>> {
     if std::path::Path::new(path).is_absolute() {
         return std::fs::read(path).ok();
     }
-    for roots in [PAPER_ROOTS, BACKGROUND_ROOTS] {
-        for root in roots {
-            if let Ok(bytes) = std::fs::read(std::path::Path::new(root).join(path)) {
+    for kind in ["papers", "backgrounds"] {
+        for root in texture_roots(kind) {
+            if let Ok(bytes) = std::fs::read(root.join(path)) {
                 return Some(bytes);
             }
         }
@@ -445,21 +445,22 @@ fn resolve_texture_bytes(path: &str) -> Option<Vec<u8>> {
     std::fs::read(path).ok()
 }
 
-/// The texture asset roots (`LoadDefaultPaperTextures`/
-/// `LoadDefaultBackgroundTextures` shape — the bundled folders, the
-/// papers loader precedent).
-const PAPER_ROOTS: &[&str] = &["assets/papers", "crates/cr-ui/assets/papers"];
-const BACKGROUND_ROOTS: &[&str] = &["assets/backgrounds", "crates/cr-ui/assets/backgrounds"];
+/// The texture asset roots for one kind (`papers` / `backgrounds` —
+/// the `LoadDefaultPaperTextures`/`LoadDefaultBackgroundTextures`
+/// shape), derived from the shared asset roots (Phase 11: the system
+/// install / XDG roots ride along; see `assets::asset_roots`).
+fn texture_roots(kind: &str) -> Vec<PathBuf> {
+    crate::assets::asset_roots()
+        .into_iter()
+        .map(|root| root.join(kind))
+        .collect()
+}
 
 /// The bundled texture file names for the dialog combos (sorted —
 /// the C# `FileUtility.GetFiles` result is ordered).
 pub fn bundled_texture_files(backgrounds: bool) -> Vec<String> {
-    let roots = if backgrounds {
-        BACKGROUND_ROOTS
-    } else {
-        PAPER_ROOTS
-    };
-    let mut names: Vec<String> = roots
+    let kind = if backgrounds { "backgrounds" } else { "papers" };
+    let mut names: Vec<String> = texture_roots(kind)
         .iter()
         .filter_map(|root| std::fs::read_dir(root).ok())
         .flat_map(|rd| {
@@ -480,14 +481,11 @@ pub fn bundled_texture_files(backgrounds: bool) -> Vec<String> {
 /// Resolves a texture file name to an asset path (the two roots,
 /// first hit wins).
 pub fn texture_asset_path(backgrounds: bool, file: &str) -> Option<std::path::PathBuf> {
-    let roots = if backgrounds {
-        BACKGROUND_ROOTS
-    } else {
-        PAPER_ROOTS
-    };
+    let kind = if backgrounds { "backgrounds" } else { "papers" };
+    let roots = texture_roots(kind);
     roots
         .iter()
-        .map(|root| std::path::Path::new(root).join(file))
+        .map(|root| root.join(file))
         .find(|p| p.is_file())
 }
 

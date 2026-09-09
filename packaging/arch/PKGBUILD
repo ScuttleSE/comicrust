@@ -1,0 +1,61 @@
+# Maintainer: ScuttleSE <https://github.com/ScuttleSE>
+# The comicrust Arch package. Builds the GTK4 app from the release
+# source tarball (which carries cargo-vendored dependencies, so the
+# build is offline and reproducible).
+#
+# The CI packaging workflow (.gitea/workflows/packaging.yaml) seds
+# pkgver + the source checksum, drops the tarball next to this file,
+# and runs makepkg — i.e. CI validates exactly what a user runs. The
+# sed'd PKGBUILD is attached to the release (the AUR submission base).
+#
+# Local build: download comicrust-<version>-source.tar.gz from the
+# release page, set pkgver + the tarball's sha256 below, put the
+# tarball next to this file, then `makepkg -f`.
+#
+# App layout after install:
+#   /usr/bin/comicrust
+#   /usr/share/comicrust/assets/{icons,papers,backgrounds}
+#   /usr/share/applications + /usr/share/icons/hicolor + metainfo
+
+pkgname=comicrust
+pkgver=0.0.dev
+pkgrel=1
+pkgdesc="Comic library manager and reader (ComicRack port)"
+arch=(x86_64)
+url="https://github.com/ScuttleSE/comicrust"
+# PLACEHOLDER until the repo picks a LICENSE file (Phase 11 open gap).
+license=(LicenseRef-Proprietary)
+depends=(gtk4)
+makedepends=(rust)
+optdepends=(
+  'p7zip: CB7/CBR/RAR archive reading'
+  'djvulibre: DjVu comic reading'
+  'rar: RAR archive write-back'
+)
+source=("comicrust-$pkgver-source.tar.gz::$url/releases/download/v$pkgver/comicrust-$pkgver-source.tar.gz")
+# CI replaces SKIP with the release tarball's sha256.
+sha256sums=(SKIP)
+
+build() {
+  cd "$pkgname"
+  export VERSION="$pkgver"
+  cargo build --release --locked --offline -p cr-app
+}
+
+package() {
+  cd "$pkgname"
+  install -Dm755 target/release/cr-app "$pkgdir/usr/bin/comicrust"
+
+  for kind in icons papers backgrounds; do
+    cp -r "crates/cr-ui/assets/$kind" "$pkgdir/usr/share/comicrust/assets/$kind"
+  done
+
+  install -Dm644 packaging/io.github.ScuttleSE.comicrust.desktop \
+    "$pkgdir/usr/share/applications/io.github.ScuttleSE.comicrust.desktop"
+  install -Dm644 packaging/icons/io.github.ScuttleSE.comicrust.128.png \
+    "$pkgdir/usr/share/icons/hicolor/128x128/apps/io.github.ScuttleSE.comicrust.png"
+  install -Dm644 packaging/icons/io.github.ScuttleSE.comicrust.256.png \
+    "$pkgdir/usr/share/icons/hicolor/256x256/apps/io.github.ScuttleSE.comicrust.png"
+  install -Dm644 packaging/io.github.ScuttleSE.comicrust.metainfo.xml \
+    "$pkgdir/usr/share/metainfo/io.github.ScuttleSE.comicrust.metainfo.xml"
+}

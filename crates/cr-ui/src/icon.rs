@@ -20,9 +20,12 @@ use std::path::{Path, PathBuf};
 use gtk4::gdk;
 use gtk4::gio;
 
-/// The asset roots, tried in order: the crate directory and the
-/// workspace root (the `papers` loader precedent).
-const ASSET_ROOTS: &[&str] = &["assets/icons", "crates/cr-ui/assets/icons"];
+/// The asset roots, tried in order (Phase 11 packaging: the portable
+/// tarball + dev roots first, then the system install / XDG roots —
+/// see `assets::asset_roots`).
+fn asset_roots() -> Vec<PathBuf> {
+    crate::assets::asset_roots()
+}
 
 thread_local! {
     static CACHE: RefCell<HashMap<String, Option<gdk::Texture>>> =
@@ -48,14 +51,14 @@ pub fn path_for_name(name: &str) -> Option<PathBuf> {
         return None;
     }
     let dark = base.strip_prefix("Dark").filter(|rest| !rest.is_empty());
-    for root in ASSET_ROOTS {
+    for root in asset_roots() {
         if let Some(rest) = dark {
-            let candidate = Path::new(root).join("Dark").join(format!("{rest}.png"));
+            let candidate = root.join("icons").join("Dark").join(format!("{rest}.png"));
             if candidate.is_file() {
                 return Some(candidate);
             }
         }
-        let candidate = Path::new(root).join(format!("{base}.png"));
+        let candidate = root.join("icons").join(format!("{base}.png"));
         if candidate.is_file() {
             return Some(candidate);
         }

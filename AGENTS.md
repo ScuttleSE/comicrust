@@ -131,14 +131,55 @@ Update this section at the **end of every work session**. The next agent must kn
   Recorded deviations: no pre-export `RefreshInfoFromFile` pass, no
   `FileIsInDatabase` duplicate-target guard. User test = steps 5-8
   in the kickoff.
-- **Phase:** NONE ACTIVE besides the Phase 10 block above
+- **PHASE 11 ACTIVE (2026-09-09) — PACKAGING (Arch + Flatpak)** (the
+  kickoff is `docs/phase-11-kickoff.md`; re-homed from the deferred
+  Phase 8 T8; user shapes: in-repo PKGBUILD + CI artifact, self-hosted
+  .flatpak bundle, manual dispatch on a tag; .deb/RPM/AUR-publish/
+  Flathub stay in the backlog). ALL FOUR TASKS IMPLEMENTED
+  (fmt/clippy/408 tests green), CI-first validation — no local
+  makepkg/flatpak on this machine, the containers + the user test
+  decide. T1: `cr-ui/src/assets.rs` — the shared asset-lookup roots
+  (CWD pair first = old behavior, then $XDG_DATA_HOME, then
+  exe-relative `../share/comicrust/assets` — covers /usr/bin AND
+  flatpak /app/bin, then $XDG_DATA_DIRS); `icon.rs` +
+  `page_view.rs` texture roots rewired onto it (+8 unit tests, the
+  env mapping is a pure function — NO env mutation in tests).
+  T1b: `packaging/` — the desktop file, metainfo, hicolor icons
+  (PLACEHOLDER art from `packaging/gen_placeholder_icon.py`, replace
+  when real art exists). T2: `packaging/arch/PKGBUILD` — builds from
+  the release source tarball (vendored = offline; `VERSION=$pkgver`
+  stamps the About version), installs /usr/bin/comicrust +
+  /usr/share/comicrust/assets + desktop integration; license + the
+  metainfo project_license are PLACEHOLDERS (no LICENSE file in the
+  repo — open user decision). T3:
+  `packaging/flatpak/io.github.ScuttleSE.comicrust.yml` —
+  freedesktop 24.08 + the rust-stable Sdk extension; the source block
+  carries url+sha placeholders that CI seds to a local `path:` (a
+  release asset URL may need auth — flatpak-builder's fetch has
+  none); `branch:` must match the build-bundle arg. T4: the attach
+  scripts (`.gitea/attach_release_assets.sh` +
+  `attach_github_release_assets.sh` — APPEND-only; the publish
+  scripts DELETE+recreate the release and would drop assets) +
+  `.gitea/workflows/packaging.yaml` (dispatch on tag; checks → source
+  → arch in `archlinux:base-devel` ∥ flatpak in comicrust-ci). DESIGN
+  NOTES: the source job attaches the vendored tarball to the release
+  and arch/flatpak download it BACK through the release API (sha
+  verified) — no upload/download-artifact JS actions needed (the arch
+  container gets nodejs via pacman BEFORE actions/checkout — the
+  comicrust-ci node lesson); makepkg runs as a non-root user
+  (`useradd -m -s /bin/bash builder`, su); `pacman -Syu nodejs rust
+  gtk4 jq` (Arch does not split dev packages — gtk4 carries the
+  headers). USER TEST = the 5 steps at the end of the kickoff
+  (needs a tagged release + a workflow run).
+- **Phase:** NONE ACTIVE besides the Phase 10 + Phase 11 blocks above
   (2026-09-09). Phases 0-8 are COMPLETE
   (every delivered task user-tested; the trail below carries the
   records). Phase 9 (the SQLite backend) is DEFERRED to
   `docs/backlog.md` with its full design intact. Open work is
   picked from `docs/backlog.md` and re-homed into a kickoff FIRST.
-  Open gaps: WebComicProvider, PDF/DjVu writers, packaging (the T8
-  scope), the T14 per-list sort deviation, HEIF/AVIF decode.
+  Open gaps: WebComicProvider, PDF/DjVu writers, the LICENSE file
+  (Phase 11 packaging gap), the T14 per-list sort deviation,
+  HEIF/AVIF decode.
 - **(Phase 8 — CLOSED 2026-09-08 — the kickoff is
   `docs/phase-8-kickoff.md`; done so far: T3 (the
   CBL-import perf) + T10 first slice (the view-side proposed-parse
@@ -1024,7 +1065,7 @@ Update this section at the **end of every work session**. The next agent must kn
   Phases 0-5 are complete (their gates stay green). Open Phase 1
   gaps: WebComicProvider and the PDF/DjVu writers (tracked in
   `docs/phase-1-kickoff.md`).
-- **State:** `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` are green. 400 tests — 36 suites (the Phase 8 perf gates: `reading_list_perf`, `view_perf`, `path_migration_perf`, `list_eval_perf`, `scan_perf`; the cr-ui probes are examples, not tests; the real-fixture parts skip in CI without the git-ignored `tests/testfiles/` files; the RAR round-trips skip without `CR_RAR_TESTS` + `rar`). CI runs on the `docker-runner-amd64` container runner (ADR-020) and is LIVE (it caught the 2026-09-09 group-gate flake — the runner + `comicrust-ci:latest` image work). The release tracks are `release.yaml` (rolling prerelease per push) and `tagged-release.yaml` (manual dispatch, stable release for an existing tag — ADR-021, 2026-09-03).
+- **State:** `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` are green. 408 tests — 36 suites (the Phase 8 perf gates: `reading_list_perf`, `view_perf`, `path_migration_perf`, `list_eval_perf`, `scan_perf`; the cr-ui probes are examples, not tests; the real-fixture parts skip in CI without the git-ignored `tests/testfiles/` files; the RAR round-trips skip without `CR_RAR_TESTS` + `rar`). CI runs on the `docker-runner-amd64` container runner (ADR-020) and is LIVE (it caught the 2026-09-09 group-gate flake — the runner + `comicrust-ci:latest` image work). The release tracks are `release.yaml` (rolling prerelease per push) and `tagged-release.yaml` (manual dispatch, stable release for an existing tag — ADR-021, 2026-09-03); `packaging.yaml` (Phase 11) attaches the source tarball, the Arch package, and the Flatpak bundle to a tagged release.
 - **GitHub mirror (2026-09-06):** remote `github` = `git@github.com:ScuttleSE/comicrust.git` — a TRUE mirror (identical SHAs; `.gitea/` rides along but is inert there, GitHub Actions only reads `.github/workflows/`). After every origin push also `git push github main`; stable tags get pushed manually once; the `rolling` tag is CI-managed on BOTH sides (each release run deletes/recreates it) — never push it by hand. Both release workflows also publish the built tarball + sha256 to GitHub Releases through `.gitea/publish_github_release.sh` (build once on Gitea, assets on both); it needs the Gitea secret `MIRROR_RELEASE_TOKEN` (GitHub PAT with Contents read/write on ScuttleSE/comicrust; Gitea forbids a `GITHUB_` prefix) — unset secret = the step skips with a notice.
 - **Phase 0 gate status:** byte-stable ComicDb.xml round-trip proven on all three synthetic fixtures AND the real-world database `tests/realworld/ComicDb.xml` (255 books, 584 KB, 2026-09-02, user-approved commit).
 - **Phase 2 gate status:** every saved smart list in the real-world DB (a) binds to the matcher registry, (b) renders to a `Match` query string that re-parses and re-renders byte-identically, and (c) evaluates to the SAME book sets the C# cached in `CacheStorage` (Never Read = all 255, Files to update = the 3 dirty books, Reading/Read = empty). Evidence: `crates/cr-engine/tests/realworld_query.rs`.
