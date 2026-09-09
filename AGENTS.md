@@ -148,8 +148,10 @@ Update this section at the **end of every work session**. The next agent must kn
   updates it continuously (rust 1.98.0 on 2026-08-16) — the manifest
   `runtime-version` + the workflow's three install refs moved to
   26.08. The flatpak job builds from the TAG, so every such fix
-  needs the tag re-pointed (v0.0.273 → v0.0.276 → v0.0.277; the
-  user chose renumber-over-move to keep tag = commit count).
+  needs the tag re-pointed (v0.0.273 → v0.0.276 → v0.0.278; the
+  user chose renumber-over-move to keep tag = commit count — the
+  record commit itself consumed the 277 count, so the fix landed at
+  278).
   T4 IMPLEMENTED + TESTED (2026-09-09, user test pending) — the
   export post-processing ("convert rar→zip" request): the port of
   `QueueManager.ExportComic` lines 455-508. cr-core gained
