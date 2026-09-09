@@ -300,9 +300,13 @@ jobs:
           cargo build --release --locked --offline -p cr-app
           packaging/deb/build.sh "$PWD"
           deb="comicrust_${VERSION}-1_amd64.deb"
-          # Sanity: parseable control + the expected tree.
+          # Sanity: parseable control + the expected tree. The listing
+          # is captured first — `grep -q` on a live pipe exits at the
+          # first match, closes the pipe, and dpkg-deb dies on the
+          # SIGPIPE (the 2026-09-09 CI failure).
           dpkg-deb --info "$deb" > /dev/null
-          dpkg-deb --contents "$deb" | grep -q "usr/share/comicrust/assets/papers"
+          contents="$(dpkg-deb --contents "$deb")"
+          printf '%s\n' "$contents" | grep "usr/share/comicrust/assets/papers" > /dev/null
           cd "$GITHUB_WORKSPACE"
           sha256sum "$deb" > "${deb}.sha256"
           echo "packaged: $deb"
