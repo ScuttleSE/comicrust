@@ -87,6 +87,28 @@ Update this section at the **end of every work session**. The next agent must kn
   (`NtfsInfoStorage`) parity write-back was OFFERED and DECLINED by
   the user — DB stays the master copy without `rar`. USER TEST =
   the 4 steps at the end of `docs/phase-10-kickoff.md`.
+  T4 IMPLEMENTED + TESTED (2026-09-09, user test pending) — the
+  export post-processing ("convert rar→zip" request): the port of
+  `QueueManager.ExportComic` lines 455-508. cr-core gained
+  `ComicInfo::set_info` (ComicInfo.cs:1210 field-by-field port,
+  per-type empty rules) + `ComicBook::set_info` (the
+  ComicBook.cs:2662 page clamps); cr-io `export_book`/
+  `export_books_combined` now RETURN the output path and
+  `build_export_info` is pub; cr-ui `library::export_post_process`
+  (+ `_with` trash-injectable) does replace-source re-point (write
+  back BEFORE the by-path source removal, or the removal eats the
+  key book — the C# order is load-bearing) + refresh_file_info_basic
+  + info set-back + FromComic color-reset + the wasReplaced dirty
+  rule, delete-original, add-to-library; a failed trash skips only
+  that source's removal (data-safe, the ShellFile.DeleteFile throw
+  shape). Dialog: surgery runs per group in the OK path,
+  "Add to library" disables on Replace-source
+  (ExportComicsDialog.cs:204). Gate: `cr-ui/tests/export_surgery.rs`
+  (isolated XDG + FAKE trash — `gio trash` REFUSES tmpfs/system
+  mounts, so desktop trash behavior stays user-test territory).
+  Recorded deviations: no pre-export `RefreshInfoFromFile` pass, no
+  `FileIsInDatabase` duplicate-target guard. User test = steps 5-8
+  in the kickoff.
 - **Phase:** NONE ACTIVE besides the Phase 10 block above
   (2026-09-09). Phases 0-8 are COMPLETE
   (every delivered task user-tested; the trail below carries the

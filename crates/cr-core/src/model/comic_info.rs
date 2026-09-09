@@ -431,6 +431,72 @@ impl ComicInfo {
         }
     }
 
+    /// `ComicInfo.SetInfo(ci, onlyUpdateEmpty, updatePages)`
+    /// (ComicInfo.cs:1210-1418): the field-by-field copy with the
+    /// per-type empty rules (empty strings, Unknown enums, -1 ints,
+    /// 0 rating, empty unparsed capture). `update_pages` copies the
+    /// page entries: wholesale into an empty target, else a
+    /// type/bookmark/rotation overlay per index.
+    pub fn set_info(&mut self, ci: &ComicInfo, only_update_empty: bool, update_pages: bool) {
+        macro_rules! str_field {
+            ($($f:ident),* $(,)?) => {$(
+                if !only_update_empty || self.$f.is_empty() {
+                    self.$f = ci.$f.clone();
+                })*};
+        }
+        str_field! {
+            writer, publisher, imprint, penciller, inker, title,
+            series, alternate_series, story_arc, series_group,
+            summary, notes, review, genre, colorist, editor,
+            translator, letterer, cover_artist, web, language_iso,
+            format, age_rating, characters, teams,
+            main_character_or_team, locations, scan_information,
+            number, tags, alternate_number,
+        }
+        if !only_update_empty || self.black_and_white == YesNo::Unknown {
+            self.black_and_white = ci.black_and_white;
+        }
+        if !only_update_empty || self.manga == MangaYesNo::Unknown {
+            self.manga = ci.manga;
+        }
+        macro_rules! int_field {
+            ($($f:ident),* $(,)?) => {$(
+                if !only_update_empty || self.$f == -1 {
+                    self.$f = ci.$f;
+                })*};
+        }
+        int_field! { count, alternate_count, volume, year, month, day }
+        if !only_update_empty || self.community_rating == 0.0 {
+            self.community_rating = ci.community_rating;
+        }
+        if !only_update_empty || self.unparsed_elements.is_empty() {
+            self.unparsed_elements = ci.unparsed_elements.clone();
+        }
+        if !update_pages || ci.page_count == 0 {
+            return;
+        }
+        if only_update_empty {
+            if self.pages.len() < ci.pages.len() {
+                self.pages.clear();
+            }
+            if self.page_count < ci.page_count {
+                self.page_count = ci.page_count;
+            }
+        } else {
+            self.page_count = ci.page_count;
+            self.pages.clear();
+        }
+        if self.pages.is_empty() {
+            self.pages = ci.pages.clone();
+            return;
+        }
+        for i in 0..self.pages.len().min(ci.pages.len()) {
+            self.pages[i].page_type = ci.pages[i].page_type;
+            self.pages[i].bookmark = ci.pages[i].bookmark.clone();
+            self.pages[i].rotation = ci.pages[i].rotation;
+        }
+    }
+
     /// `GetPage(page, add: true)`: the entry at the list position,
     /// growing the list with sequential-index defaults (`new
     /// ComicPageInfo(Pages.Count)` parity) when out of range.
@@ -744,5 +810,65 @@ mod page_op_tests {
         assert_eq!(info.pages[2].image_width, 4464);
         // Negative pages are the C# `Empty` page — a no-op.
         assert!(!info.update_page_size(-1, 10, 10));
+    }
+
+    #[test]
+    fn set_info_full_overwrite() {
+        let mut target = ComicInfo {
+            series: "Old".into(),
+            count: 12,
+            volume: 3,
+            ..Default::default()
+        };
+        target.pages = vec![ComicPageInfo {
+            bookmark: Some("keep".into()),
+            ..Default::default()
+        }];
+        let src = ComicInfo {
+            series: "New".into(),
+            count: -1,
+            volume: 7,
+            ..Default::default()
+        };
+        let mut src = src;
+        src.pages = vec![ComicPageInfo {
+            page_type: ComicPageType(8),
+            bookmark: Some("b1".into()),
+            ..Default::default()
+        }];
+        src.page_count = 5;
+
+        target.set_info(&src, false, true);
+        assert_eq!(target.series, "New");
+        assert_eq!(target.count, -1, "full overwrite copies even -1");
+        assert_eq!(target.volume, 7);
+        assert_eq!(target.page_count, 5);
+        assert_eq!(target.pages.len(), 1);
+        assert_eq!(
+            target.pages[0].bookmark.as_deref(),
+            Some("b1"),
+            "wholesale page copy"
+        );
+    }
+
+    #[test]
+    fn set_info_only_empty_keeps_values() {
+        let mut target = ComicInfo {
+            series: "Keep".into(),
+            count: 12,
+            title: String::new(),
+            ..Default::default()
+        };
+        let src = ComicInfo {
+            series: "Ignored".into(),
+            count: 3,
+            title: "Filled".into(),
+            ..Default::default()
+        };
+        target.set_info(&src, true, false);
+        assert_eq!(target.series, "Keep");
+        assert_eq!(target.count, 12);
+        assert_eq!(target.title, "Filled");
+        assert_eq!(target.page_count, 0, "update_pages=false leaves pages");
     }
 }

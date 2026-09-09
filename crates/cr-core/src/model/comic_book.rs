@@ -115,6 +115,15 @@ impl ComicBook {
         }
     }
 
+    /// `ComicBook.SetInfo(ci, onlyUpdateEmpty, updatePages)` — the
+    /// base copy plus the reading-position clamps
+    /// (ComicBook.cs:2662-2667).
+    pub fn set_info(&mut self, ci: &ComicInfo, only_update_empty: bool, update_pages: bool) {
+        self.info.set_info(ci, only_update_empty, update_pages);
+        self.last_page_read = self.last_page_read.min(self.info.page_count - 1);
+        self.current_page = self.current_page.min(self.info.page_count - 1);
+    }
+
     pub fn write_xml<W: Write>(&self, e: &mut Emitter<W>) -> std::io::Result<()> {
         e.start("Book")?;
         self.write_body(e)?;

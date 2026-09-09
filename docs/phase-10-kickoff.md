@@ -62,6 +62,57 @@ the `rar` binary.
 - User install notes: Arch (AUR `rar`), Debian/Ubuntu (`non-free`),
   Fedora (RPM Fusion), or the RARLAB static tarball; `CR_RAR` overrides.
 
+## T4 — export post-processing (the rar→zip conversion path)
+
+Added 2026-09-09 (user request "convert rar-files to zip"). The C#
+converts formats through Export with target "Replace source": the
+`QueueManager.ExportComic` post-export block (QueueManager.cs:455-508)
+re-points the book, trashes the old file, and manages the database.
+The port carried the dialog flags and the engine but consumed
+neither.
+
+- `cr-core`: `ComicInfo::set_info` (the ComicInfo.cs:1210-1418
+  field-by-field port with the per-type empty rules) +
+  `ComicBook::set_info` (the ComicBook.cs:2662 reading-position
+  clamps). Unit-tested.
+- `cr-io`: `export_book`/`export_books_combined` return the output
+  path; `build_export_info` is public (`ComicExporter.ComicInfo`).
+- `cr-ui`: `library::export_post_process` (+ `_with` with the trash
+  step injected for tests) — replace-source re-point +
+  `refresh_file_info_basic` + info set-back + the FromComic
+  color-adjustment reset + dirty clears (the `wasReplaced` rule
+  covers the same-path overwrite); delete-original; add-to-library
+  (`ComicBookFactory.Create` parity via the `open_book` shape).
+  Sources are filtered `!= outPath` before both branches; the
+  by-path DB removal cannot hit the re-pointed key book (the C#
+  order — write-back first). A failed trash skips only that source's
+  removal and is reported (the C# `ShellFile.DeleteFile` throw
+  shape); `trash_path` keeps the Phase 7 guards (empty path /
+  non-file never reach gio).
+- Dialog: the OK path runs the surgery per group (combine = one
+  group) and surfaces surgery errors in the error label;
+  "Add to library" disables when target = Replace source
+  (ExportComicsDialog.cs:204).
+- Deviations: the C# `RefreshInfoFromFile` pre-export pass and the
+  `FileIsInDatabase` duplicate-target guard are not ported
+  (pre-existing export-engine scope).
+- Gate: `cr-ui/tests/export_surgery.rs` (isolated XDG; a fake trash
+  because `gio` refuses tmpfs; the three flows + reading state +
+  dirty rule). USER TEST below.
+
+## User test (T4 addition)
+
+5. Select a `.cbr` book → "Export…" → Target = "Replace source",
+   Format = eComic (ZIP) → OK.
+6. Verify: a `.cbz` sits next to the old file, the `.cbr` is in the
+   trash, the library book now points at the `.cbz` (opens fine,
+   reading position kept), and the book left "Files to update".
+7. Repeat with "Delete original files after export" unchecked and
+   Target = "Export to new folder": both files remain, the library
+   book still points at the `.cbr`.
+8. "Add exported files to the library" with a new folder: the library
+   gains a second book for the export.
+
 ## User test
 
 1. Install `rar` (see T3 notes), set nothing else (`CR_RAR` optional).

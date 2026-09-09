@@ -235,6 +235,9 @@ pub fn show_export_dialog(
                 Some(2) => ExportTarget::ReplaceSource,
                 _ => ExportTarget::NewFolder,
             };
+            // The C# `chkAddNewToLibrary.Enabled = Target !=
+            // ReplaceSource` (ExportComicsDialog.cs:204).
+            add_check.set_sensitive(s.target != ExportTarget::ReplaceSource);
             s.target_folder = folder_entry.text().to_string();
             s.format_id = format_combo
                 .active_id()
@@ -355,27 +358,42 @@ pub fn show_export_dialog(
                     crate::library::set_export_active(true);
                     if s.combine {
                         progress_label.set_text("Exporting combined file…");
-                        if let Err(err) =
-                            export_books_combined(&s, &books, &captions, &|done, total| {
-                                progress_label.set_text(&format!("Exporting… page {done}/{total}"));
-                            })
-                        {
-                            errors.push(err.to_string());
+                        match export_books_combined(&s, &books, &captions, &|done, total| {
+                            progress_label.set_text(&format!("Exporting… page {done}/{total}"));
+                        }) {
+                            Ok((_pages, out_path)) => {
+                                if let Err(err) =
+                                    crate::library::export_post_process(&s, &books, &out_path)
+                                {
+                                    errors.push(err);
+                                }
+                            }
+                            Err(err) => errors.push(err.to_string()),
                         }
                     } else {
                         for (i, book) in books.iter().enumerate() {
                             progress_label.set_text(&format!("Exporting {}/{}…", i + 1, total));
-                            if let Err(err) =
-                                export_book(&s, book, &captions[i], i, &|done, total| {
-                                    progress_label.set_text(&format!(
-                                        "Exporting {}/{} — page {done}/{total}",
-                                        i + 1,
-                                        total
-                                    ));
-                                })
-                            {
-                                errors.push(err.to_string());
-                                break;
+                            match export_book(&s, book, &captions[i], i, &|done, total| {
+                                progress_label.set_text(&format!(
+                                    "Exporting {}/{} — page {done}/{total}",
+                                    i + 1,
+                                    total
+                                ));
+                            }) {
+                                Ok((_pages, out_path)) => {
+                                    if let Err(err) = crate::library::export_post_process(
+                                        &s,
+                                        std::slice::from_ref(book),
+                                        &out_path,
+                                    ) {
+                                        errors.push(err);
+                                        break;
+                                    }
+                                }
+                                Err(err) => {
+                                    errors.push(err.to_string());
+                                    break;
+                                }
                             }
                         }
                     }

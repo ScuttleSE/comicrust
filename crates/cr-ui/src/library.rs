@@ -12,7 +12,9 @@ use cr_core::database::comic_database::OpenStatus;
 use cr_core::model::comic_book::ComicBook;
 use cr_core::xml::scalar::{CrDateTime, CrGuid};
 use cr_engine::library::Library;
-use cr_engine::scanner::{refresh_file_info, scan_sync, ScanItem, ScanResult};
+use cr_engine::scanner::{
+    refresh_file_info, refresh_file_info_basic, scan_sync, ScanItem, ScanResult,
+};
 use glib::ControlFlow;
 use gtk4::glib;
 
@@ -996,6 +998,154 @@ pub fn update_book_file(id: &CrGuid, always_write: bool) -> Result<bool, String>
         }
     }
     Ok(written)
+}
+
+/// `ShellFile.DeleteFile` parity — the recycle bin via `gio trash`
+/// (ADR-006). The Phase 7 incident guards: an EMPTY path or a
+/// non-file never reaches the trash (gio resolves "" to the
+/// process's CWD).
+fn trash_path(path: &str) -> bool {
+    if path.is_empty() || !Path::new(path).is_file() {
+        return false;
+    }
+    std::process::Command::new("gio")
+        .args(["trash", path])
+        .status()
+        .map(|s| s.success())
+        .unwrap_or(false)
+}
+
+/// The `QueueManager.ExportComic` post-export block
+/// (QueueManager.cs:455-508) for ONE export group: `group[0]` is the
+/// group's key book (`kcb`), the rest are combine sources, and
+/// `out_path` is the single output file. Replace-source re-points the
+/// book at the output and trashes the leftover sources;
+/// delete-original trashes the sources; add-to-library creates a book
+/// for the output. The dirty flags clear only when the book's own
+/// file was replaced (the export embedded the info).
+pub fn export_post_process(
+    setting: &cr_io::export::ExportSetting,
+    group: &[ComicBook],
+    out_path: &Path,
+) -> Result<(), String> {
+    export_post_process_with(setting, group, out_path, &trash_path)
+}
+
+/// The surgery with the trash step injected (the gio call is
+/// environment-dependent — tmpfs and USB sticks refuse to trash; the
+/// failure then only skips that source's removal and is reported).
+pub fn export_post_process_with(
+    setting: &cr_io::export::ExportSetting,
+    group: &[ComicBook],
+    out_path: &Path,
+    trash: &dyn Fn(&str) -> bool,
+) -> Result<(), String> {
+    use cr_io::export::{ExportImageProcessingSource, ExportTarget};
+
+    let Some(kcb) = group.first() else {
+        return Ok(());
+    };
+    let out_str = out_path.to_string_lossy().into_owned();
+    let is_local = !kcb.file_path.is_empty();
+    let replace_source = setting.target == ExportTarget::ReplaceSource;
+    let is_local_and_replace = is_local && replace_source;
+    let was_replaced = is_local_and_replace || kcb.file_path == out_str;
+    // Captured from the pre-export book in the C# (`clearDirtyInfoFlag`).
+    let clear_dirty_info = setting.embed_comic_info && kcb.comic_info_is_dirty;
+    let clear_dirty_book = setting.embed_comic_book && kcb.comic_book_is_dirty;
+    let exported = cr_io::export::build_export_info(setting, kcb);
+    // The local group members, minus the output itself (the C#
+    // filters `p != outPath` before both branches).
+    let sources: Vec<String> = group
+        .iter()
+        .filter(|b| !b.file_path.is_empty() && b.file_path != out_str)
+        .map(|b| b.file_path.clone())
+        .collect();
+
+    let mut errors: Vec<String> = Vec::new();
+    let lib = session();
+    let mut l = lib.borrow_mut();
+
+    // The C# `Database.Books.Remove(item)` — every book pointing at
+    // the removed file leaves the database.
+    let remove_by_path = |l: &mut Library, file: &str| {
+        l.database_mut().books.retain(|b| b.file_path != file);
+    };
+    // Trash + drop; a failed trash keeps the book (data-safe — the
+    // C# `ShellFile.DeleteFile` throw skips the removal too).
+    let remove_source = |l: &mut Library, file: &str, errors: &mut Vec<String>| {
+        if trash(file) {
+            remove_by_path(l, file);
+        } else {
+            errors.push(format!("could not trash the original file: {file}"));
+        }
+    };
+
+    if is_local_and_replace {
+        let mut book = kcb.clone();
+        book.file_path = out_str.clone();
+        refresh_file_info_basic(&mut book);
+        book.set_info(&exported, false, true);
+        if setting.image_processing_source == ExportImageProcessingSource::FromComic {
+            book.color_adjustment = cr_core::model::bitmap_adjustment::BitmapAdjustment::default();
+        }
+        if clear_dirty_info {
+            book.comic_info_is_dirty = false;
+        }
+        if clear_dirty_book {
+            book.comic_book_is_dirty = false;
+        }
+        // The C# re-points `kcb.FilePath` (QueueManager.cs:471)
+        // BEFORE the source-delete loop, so the by-path removal
+        // cannot hit the key book — the write-back goes first here
+        // for the same reason.
+        if let Some(slot) = l.database_mut().books.iter_mut().find(|b| b.id == kcb.id) {
+            *slot = book;
+            l.mark_dirty();
+        }
+        for source in &sources {
+            remove_source(&mut l, source, &mut errors);
+        }
+    } else {
+        if setting.delete_original && is_local {
+            for source in &sources {
+                remove_source(&mut l, source, &mut errors);
+            }
+        }
+        if setting.add_to_library || replace_source {
+            let mut book = ComicBook {
+                file_path: out_str.clone(),
+                added_time: CrDateTime::now(),
+                ..ComicBook::default()
+            };
+            book.set_info(&exported, false, true);
+            l.database_mut().books.push(book);
+            l.mark_dirty();
+        }
+        if was_replaced {
+            // The same-path overwrite case: the export embedded the
+            // info, so the dirty flags clear on the kept book.
+            if let Some(slot) = l.database_mut().books.iter_mut().find(|b| b.id == kcb.id) {
+                let mut changed = false;
+                if clear_dirty_info && slot.comic_info_is_dirty {
+                    slot.comic_info_is_dirty = false;
+                    changed = true;
+                }
+                if clear_dirty_book && slot.comic_book_is_dirty {
+                    slot.comic_book_is_dirty = false;
+                    changed = true;
+                }
+                if changed {
+                    l.mark_dirty();
+                }
+            }
+        }
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(errors.join("; "))
+    }
 }
 
 /// Removes one book from the library by id (the context-menu

@@ -267,14 +267,16 @@ pub const EXPORT_FORMATS: [(i32, &str); 3] = [
 /// Exports ONE book per the settings (the sequential core of the
 /// C# `ExportComicQueue` page loop; the parallel/spill machinery is
 /// deliberately single-threaded here — a local export does not need
-/// it). Returns the page count written.
+/// it). Returns the page count written and the output path (the C#
+/// `comicExporter.Export` return, consumed by the
+/// `QueueManager.ExportComic` post-export block).
 pub fn export_book(
     setting: &ExportSetting,
     book: &ComicBook,
     caption: &str,
     index: usize,
     progress: &dyn Fn(usize, usize),
-) -> Result<usize> {
+) -> Result<(usize, PathBuf)> {
     let source = Path::new(&book.file_path);
     let provider = ComicProvider::open(source)?;
 
@@ -297,21 +299,22 @@ pub fn export_book(
 
     let info = build_export_info(setting, book);
     let pages = pack_pages(setting, &provider, &info, &target, progress)?;
-    Ok(pages)
+    Ok((pages, target))
 }
 
 /// Combine variant: all books merge into ONE archive at
 /// `target_path` of the FIRST book (the C#
 /// `QueueManager.ExportComic(books, ...)` combine branch; natural
-/// page order carries over — pages append).
+/// page order carries over — pages append). Returns the page count
+/// written and the output path.
 pub fn export_books_combined(
     setting: &ExportSetting,
     books: &[ComicBook],
     captions: &[String],
     progress: &dyn Fn(usize, usize),
-) -> Result<usize> {
+) -> Result<(usize, PathBuf)> {
     let Some(first) = books.first() else {
-        return Ok(0);
+        return Ok((0, PathBuf::new()));
     };
     let target = target_path(
         setting,
@@ -380,12 +383,14 @@ pub fn export_books_combined(
     writer.start_file("ComicInfo.xml", options)?;
     writer.write_all(info_bytes.as_slice())?;
     writer.finish()?;
-    std::fs::rename(&tmp, target)?;
-    Ok(done)
+    std::fs::rename(&tmp, &target)?;
+    Ok((done, target))
 }
 
-/// The exported ComicInfo: the book's info + the tags appended.
-fn build_export_info(setting: &ExportSetting, book: &ComicBook) -> ComicInfo {
+/// The exported ComicInfo (`ComicExporter.ComicInfo` — the book's
+/// info + the tags appended); the post-export block sets this back
+/// onto the book.
+pub fn build_export_info(setting: &ExportSetting, book: &ComicBook) -> ComicInfo {
     let mut info = book.info.clone();
     if let Some(tags) = &setting.tags_to_append {
         if info.tags.is_empty() {
@@ -682,10 +687,12 @@ mod engine_tests {
             target_folder: out_dir.to_string_lossy().into_owned(),
             ..ExportSetting::default()
         };
-        let pages = export_book(&setting, &book, "probe caption", 0, &|_, _| {}).expect("export");
+        let (pages, out_path) =
+            export_book(&setting, &book, "probe caption", 0, &|_, _| {}).expect("export");
         assert_eq!(pages, 2);
 
         let target = out_dir.join("src.cbz");
+        assert_eq!(out_path, target, "the output path is reported");
         assert!(target.exists(), "the exported file exists");
         let file = std::fs::File::open(&target).unwrap();
         let mut archive = zip::ZipArchive::new(file).unwrap();

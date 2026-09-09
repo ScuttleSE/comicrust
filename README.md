@@ -49,6 +49,12 @@ Page images: JPEG, PNG, GIF, TIFF, WebP, and JPEG XL. HEIF, AVIF, and JPEG 2000 
 
 Export produces CBZ or CBT archives. Export to PDF, DjVu, or CB7 is not available.
 
+To convert a comic to another format (for example `.cbr` to `.cbz`),
+use "Export…" with Target = "Replace source": the book re-points to
+the new file and the old one moves to the trash. "Delete original
+files after export" and "Add exported files to the library" cover the
+other conversions.
+
 Writing metadata into CBR/RAR archives uses the RARLAB `rar` command
 (not included; install it from your package repository or
 [rarlab.com](https://www.rarlab.com/download.htm), or point `CR_RAR`
