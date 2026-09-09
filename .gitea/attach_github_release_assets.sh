@@ -52,6 +52,14 @@ for file in "$@"; do
         exit 1
     fi
     name=$(basename "$file")
+    # Idempotent re-runs: replace an existing asset of the same name.
+    asset_id=$(curl -fsS "${stdhdr[@]}" "$API/repos/$GH_REPO/releases/$release_id/assets" \
+        | jq -r --arg name "$name" '.[] | select(.name == $name) | .id' | head -n 1)
+    if [ -n "$asset_id" ]; then
+        curl -fsS -X DELETE "${stdhdr[@]}" \
+            "$API/repos/$GH_REPO/releases/assets/$asset_id" > /dev/null
+        echo "replaced existing $name"
+    fi
     # GitHub asset upload takes the RAW body on uploads.github.com
     # (multipart -F is a Gitea-ism and fails here).
     curl -fsS -X POST "${stdhdr[@]}" -H "Content-Type: application/octet-stream" \

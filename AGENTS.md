@@ -109,6 +109,23 @@ Update this section at the **end of every work session**. The next agent must kn
   (`NtfsInfoStorage`) parity write-back was OFFERED and DECLINED by
   the user — DB stays the master copy without `rar`. USER TEST =
   the 4 steps at the end of `docs/phase-10-kickoff.md`.
+  PACKAGING FIX ROUND 1 (2026-09-09, after the first packaging run on
+  v0.0.273): the arch job built fine (2m45s vendored offline) but
+  package() died on `cp -r` into missing parents — `install -d`
+  added before the assets loop (the flatpak manifest got the same
+  fix + a single-line loop). The flatpak job died twice: rofiles-fuse
+  (`/dev/fuse` absent in the container) and — the deeper measured
+  fact — `bwrap: No permissions to create a new namespace` (the
+  openh264 apply_extra warning): the runner's docker profile blocks
+  namespaces. Fixes: `options: --privileged` on the flatpak job
+  container (act_runner honors the GH-spec container.options; if a
+  future runner ignores it, the fallback is privileged containers in
+  the runner host config) + `--disable-rofiles-fuse` (drops the fuse
+  dependency entirely). Both attach scripts gained
+  REPLACE-same-name-asset (idempotent re-runs — the first run had
+  already attached the source tarball; a strict append would die on
+  the re-attach). The packaging files ride the TAG's checkout, so a
+  re-run needs the tag moved to the fixed HEAD first.
   T4 IMPLEMENTED + TESTED (2026-09-09, user test pending) — the
   export post-processing ("convert rar→zip" request): the port of
   `QueueManager.ExportComic` lines 455-508. cr-core gained

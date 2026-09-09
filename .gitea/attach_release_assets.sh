@@ -46,6 +46,14 @@ for file in "$@"; do
         exit 1
     fi
     name=$(basename "$file")
+    # Idempotent re-runs: replace an existing asset of the same name.
+    asset_id=$(curl -fsS -H "$auth" "$API/repos/$REPO/releases/$release_id/assets" \
+        | jq -r --arg name "$name" '.[] | select(.name == $name) | .id' | head -n 1)
+    if [ -n "$asset_id" ]; then
+        curl -fsS -X DELETE -H "$auth" \
+            "$API/repos/$REPO/releases/$release_id/assets/$asset_id" > /dev/null
+        echo "replaced existing $name"
+    fi
     curl -fsS -X POST -H "$auth" \
         -F "attachment=@${file}" \
         "$API/repos/$REPO/releases/$release_id/assets?name=${name}" > /dev/null

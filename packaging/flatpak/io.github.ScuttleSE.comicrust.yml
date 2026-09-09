@@ -53,9 +53,8 @@ modules:
     build-commands:
       - cargo build --release --locked --offline -p cr-app
       - install -Dm755 target/release/cr-app /app/bin/comicrust
-      - for kind in icons papers backgrounds; do
-          cp -r "crates/cr-ui/assets/$kind" /app/share/comicrust/assets/$kind;
-        done
+      - install -d /app/share/comicrust/assets
+      - for kind in icons papers backgrounds; do cp -r "crates/cr-ui/assets/$kind" /app/share/comicrust/assets/$kind; done
       - install -Dm644 packaging/io.github.ScuttleSE.comicrust.desktop
           /app/share/applications/io.github.ScuttleSE.comicrust.desktop
       - install -Dm644 packaging/icons/io.github.ScuttleSE.comicrust.128.png
