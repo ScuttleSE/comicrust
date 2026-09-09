@@ -40,7 +40,7 @@ The core application is complete and ready for daily use. Work continues on poli
 | CBZ | yes | yes |
 | CBT | yes | yes |
 | CB7 | yes (needs 7z) | yes (needs 7z) |
-| CBR, RAR | yes (needs 7z) | no |
+| CBR, RAR | yes (needs 7z) | yes (needs the `rar` CLI) |
 | PDF | yes (needs pdfium) | no |
 | DjVu | yes (needs djvulibre) | no |
 | Folders of images | yes | yes (sidecar files) |
@@ -48,6 +48,13 @@ The core application is complete and ready for daily use. Work continues on poli
 Page images: JPEG, PNG, GIF, TIFF, WebP, and JPEG XL. HEIF, AVIF, and JPEG 2000 pages do not decode yet.
 
 Export produces CBZ or CBT archives. Export to PDF, DjVu, or CB7 is not available.
+
+Writing metadata into CBR/RAR archives uses the RARLAB `rar` command
+(not included; install it from your package repository or
+[rarlab.com](https://www.rarlab.com/download.htm), or point `CR_RAR`
+at the binary). Old RAR4 archives keep their format when updated.
+Without `rar`, edits stay in the library database and "Update Book
+File(s)" reports the error.
 
 ## Install
 

@@ -12,6 +12,8 @@
 //! - CBT: full tar rewrite, same order.
 //! - CB7: `7z u -t7z <archive> <tempfile>` per metadata file, as the
 //!   C# `Update` does (temp dir + delete).
+//! - CBR/RAR5: the ADR-030 addition — one `rar a` through the RARLAB
+//!   binary (`rar.rs`); the C# has no RAR write path at all.
 //! - Folder: plain files.
 //!
 //! Failure semantics mirror `WriteErrorException`: the caller gets an
@@ -32,8 +34,8 @@ const COMIC_BOOK_XML: &str = "ComicBook.xml";
 
 /// `ComicProvider.StoreInfo`/`OnStoreInfo`: write both metadata files
 /// into the source when the format supports updating
-/// (`FileFormatAttribute(EnableUpdate = true)`). Returns whether the
-/// archive content changed.
+/// (`FileFormatAttribute(EnableUpdate = true)`, plus the ADR-030 `rar`
+/// path for RAR). Returns whether the archive content changed.
 pub fn store_info(provider: &ComicProvider, book: &ComicBook) -> Result<bool> {
     store_info_scoped(provider, book, true)
 }
@@ -42,12 +44,17 @@ pub fn store_info(provider: &ComicProvider, book: &ComicBook) -> Result<bool> {
 /// info only writes when the caller allows it (the C# passes
 /// `GetInfo()` — ComicInfo only — when `UpdateComicBookFiles` is
 /// off).
+///
+/// RAR archives (CBR/RAR5) carry no `EnableUpdate` in the C# either;
+/// their in-archive write is the ADR-030 `rar` addition and its
+/// availability is decided inside the rar branch.
 pub fn store_info_scoped(
     provider: &ComicProvider,
     book: &ComicBook,
     with_book_info: bool,
 ) -> Result<bool> {
-    if !provider.format().supports_update {
+    let format = provider.format();
+    if !format.supports_update && format.id != ids::CBR && format.id != ids::RAR5 {
         return Ok(false);
     }
     let info_bytes = book
@@ -79,6 +86,7 @@ pub fn store_info_scoped(
             }
             Ok(changed)
         }
+        ids::CBR | ids::RAR5 => rar_update(provider.source(), &pairs),
         ids::FOLDER => {
             let base = provider.source();
             for (name, bytes) in &pairs {
@@ -214,7 +222,7 @@ fn sevenzip_update(source: &Path, format: i32, name: &str, data: &[u8]) -> Resul
     };
     let exe = crate::sevenzip::find_7z()
         .ok_or_else(|| Error::Access("7z executable not found".into()))?;
-    let tmp_dir = std::env::temp_dir().join(format!("comicrust-update-{}", std::process::id()));
+    let tmp_dir = update_stage_dir();
     std::fs::create_dir_all(&tmp_dir)?;
     let tmp_file = tmp_dir.join(name);
     std::fs::write(&tmp_file, data)?;
@@ -236,6 +244,36 @@ fn sevenzip_update(source: &Path, format: i32, name: &str, data: &[u8]) -> Resul
     }
     // 7z updates the entry even when identical; report changed based
     // on whether the archive previously contained different data.
+    Ok(true)
+}
+
+/// Staging directory for one archive-update subprocess call — unique
+/// per call (pid alone collides when two updates run concurrently in
+/// one process, e.g. tests or parallel queue workers).
+fn update_stage_dir() -> PathBuf {
+    static SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let seq = SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    std::env::temp_dir().join(format!("comicrust-update-{}-{}", std::process::id(), seq))
+}
+
+/// RAR write-back (ADR-030): stage the payload files in one temp
+/// directory and run a single `rar a` with cwd at the staging
+/// directory, so entries land at the archive root. Success reports
+/// changed — the `a` command replaces same-name entries and rewrites
+/// the archive, mirroring the 7z update path's report.
+fn rar_update(source: &Path, pairs: &[(&str, &[u8])]) -> Result<bool> {
+    let tmp_dir = update_stage_dir();
+    std::fs::create_dir_all(&tmp_dir)?;
+    let mut paths = Vec::new();
+    for (name, bytes) in pairs {
+        let p = tmp_dir.join(name);
+        std::fs::write(&p, bytes)?;
+        paths.push(p);
+    }
+    let refs: Vec<&Path> = paths.iter().map(|p| p.as_path()).collect();
+    let result = crate::rar::add_files(source, &refs);
+    let _ = std::fs::remove_dir_all(&tmp_dir);
+    result?;
     Ok(true)
 }
 

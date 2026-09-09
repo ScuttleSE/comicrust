@@ -38,6 +38,7 @@ pub mod hash;
 pub mod info;
 pub mod pdf;
 pub mod provider;
+pub mod rar;
 pub mod sevenzip;
 pub mod write;
 
