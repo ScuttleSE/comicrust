@@ -307,10 +307,13 @@ jobs:
       - name: Install the runtime + the Rust extension
         run: |
           set -euo pipefail
+          # 26.08 (not 24.08): the 24.08 rust-stable extension is
+          # end-of-life frozen at rustc 1.89 while the locked gtk-rs
+          # crates need 1.92+ (measured 2026-09-09); 26.08 ships ~1.98.
           flatpak install --noninteractive --or-update flathub \
-              org.freedesktop.Platform//24.08 \
-              org.freedesktop.Sdk//24.08 \
-              org.freedesktop.Sdk.Extension.rust-stable//24.08
+              org.freedesktop.Platform//26.08 \
+              org.freedesktop.Sdk//26.08 \
+              org.freedesktop.Sdk.Extension.rust-stable//26.08
 
       - name: Point the manifest at the release tarball
         run: |

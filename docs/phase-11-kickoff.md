@@ -97,9 +97,12 @@ Both packagers build from a CI-produced source tarball:
 
 `packaging/flatpak/io.github.ScuttleSE.comicrust.yml`:
 
-- `org.freedesktop.Platform` / `Sdk` 24.08 with the
+- `org.freedesktop.Platform` / `Sdk` **26.08** with the
   `org.freedesktop.Sdk.Extension.rust-stable` sdk-extension
-  (the canonical Rust flatpak shape; GTK4 is in the runtime).
+  (the canonical Rust flatpak shape; GTK4 is in the runtime). The
+  26.08 branch is deliberate: the 24.08 rust extension is
+  end-of-life frozen at rustc 1.89 while the locked gtk-rs crates
+  need 1.92+ (measured 2026-09-09).
 - `finish-args`: `--socket=fallback-x11 --socket=wayland
   --share=ipc --device=dri --filesystem=home` (comics live anywhere in
   home; the library DB stays in the sandboxed app data — no extra

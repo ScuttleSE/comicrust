@@ -137,10 +137,19 @@ Update this section at the **end of every work session**. The next agent must kn
   in the runner's config.yaml set `container: privileged: true` and
   restart the runner daemon (the runner-level `options:` field also
   accepts security flags; the workflow-level one never will until
-  the runner allows them). The workflow keeps the
+  the runner allows them).   The workflow keeps the
   `options: --privileged` line as documented intent. LESSON: any
   future job needing bwrap/kvm/devices hits the same wall — fix it
-  in the runner config, not the workflow.
+  in the runner config, not the workflow. FIX ROUND 3 (same day,
+  after the runner got `privileged: true`): the sandbox ran but the
+  cargo build died — the 24.08 `rust-stable` Sdk extension is
+  end-of-life frozen at rustc 1.89 while the locked gtk-rs crates
+  need 1.92+. Flathub carries the extension up to runtime 26.08 and
+  updates it continuously (rust 1.98.0 on 2026-08-16) — the manifest
+  `runtime-version` + the workflow's three install refs moved to
+  26.08. The flatpak job builds from the TAG, so every such fix
+  needs the tag re-pointed (v0.0.273 → v0.0.276 → v0.0.277; the
+  user chose renumber-over-move to keep tag = commit count).
   T4 IMPLEMENTED + TESTED (2026-09-09, user test pending) — the
   export post-processing ("convert rar→zip" request): the port of
   `QueueManager.ExportComic` lines 455-508. cr-core gained
