@@ -290,23 +290,22 @@ jobs:
       - name: Build the package
         run: |
           set -euo pipefail
+          deb="comicrust_${VERSION}-1_amd64.deb"
           # Build from the extracted release tarball (exactly what a
           # user gets), not the checkout — the vendored config makes
-          # the build offline.
+          # the build offline. The out dir is the workspace root via
+          # an ABSOLUTE path, and every later reference is absolute
+          # too — nothing depends on the caller's cwd (the
+          # 2026-09-09 sha256sum miss).
           tar -xzf "$ASSET" -C /tmp
           src=/tmp/comicrust
           cd "$src"
           export VERSION
           cargo build --release --locked --offline -p cr-app
-          packaging/deb/build.sh "$PWD"
-          deb="comicrust_${VERSION}-1_amd64.deb"
-          # Sanity: parseable control + the expected tree. The listing
-          # is captured first — `grep -q` on a live pipe exits at the
-          # first match, closes the pipe, and dpkg-deb dies on the
-          # SIGPIPE (the 2026-09-09 CI failure).
-          dpkg-deb --info "$deb" > /dev/null
-          contents="$(dpkg-deb --contents "$deb")"
-          printf '%s\n' "$contents" | grep "usr/share/comicrust/assets/papers" > /dev/null
+          packaging/deb/build.sh "$GITHUB_WORKSPACE"
+          dpkg-deb --info "$GITHUB_WORKSPACE/$deb" > /dev/null
+          dpkg-deb --contents "$GITHUB_WORKSPACE/$deb" > /tmp/deb-contents.txt
+          grep "usr/share/comicrust/assets/papers" /tmp/deb-contents.txt > /dev/null
           cd "$GITHUB_WORKSPACE"
           sha256sum "$deb" > "${deb}.sha256"
           echo "packaged: $deb"
