@@ -6,15 +6,13 @@ Re-homed from `docs/backlog.md` ("From Phase 8", the deferred T8) on
 - **Arch:** an in-repo PKGBUILD; CI builds the package in an
   `archlinux:base-devel` container and attaches the `.pkg.tar.zst` to
   the release. AUR submission stays a manual follow-up (no CI secrets).
-- **Flatpak:** a self-hosted bundle — the manifest lives in the repo;
-  CI builds a single-file `.flatpak` and attaches it to the release.
-  Users install with `flatpak install ./comicrust.flatpak`. Flathub is
-  NOT the target (a follow-up if asked).
+- **Flatpak:** a self-hosted bundle — DROPPED 2026-09-09 mid-phase
+  (user decision) after two runtime walls; replaced by the **Debian
+  .deb**. The full record lives in the omissions section.
 - **Trigger:** the new workflow runs on manual dispatch with a tag
   input (the `tagged-release.yaml` shape), gated by fmt/clippy/test.
   The rolling tarball track is untouched.
-- Priorities: Arch first, Flatpak second. `.deb`/RPM stay in the
-  backlog.
+- Priorities: Arch first, .deb second. RPM stays in the backlog.
 
 Existing tracks stay as-is: `release.yaml` (rolling tarball) and
 `tagged-release.yaml` (stable tarball). This phase adds
@@ -93,28 +91,32 @@ Both packagers build from a CI-produced source tarball:
   to the binary; packages install them under `/usr/share/comicrust/`.
   Both resolve through T1's lookup.
 
-### T3. Flatpak manifest
+### T3. Debian package (the .deb pivot, 2026-09-09)
 
-`packaging/flatpak/io.github.ScuttleSE.comicrust.yml`:
+The Flatpak attempt is DROPPED (user decision: "seems very
+cumbersome") after two measured walls in one day: the 24.08 rust
+extension is EOL-frozen at rustc 1.89 (< the crates' 1.92), and the
+26.08 freedesktop runtime has NO GTK4 at all (only gtk3 — paged
+through the freedesktop-sdk components tree); the next step would
+have been the GNOME runtime + its extension wiring. The full record
+lives in the omissions section. The replacement:
 
-- `org.freedesktop.Platform` / `Sdk` **26.08** with the
-  `org.freedesktop.Sdk.Extension.rust-stable` sdk-extension
-  (the canonical Rust flatpak shape; GTK4 is in the runtime). The
-  26.08 branch is deliberate: the 24.08 rust extension is
-  end-of-life frozen at rustc 1.89 while the locked gtk-rs crates
-  need 1.92+ (measured 2026-09-09).
-- `finish-args`: `--socket=fallback-x11 --socket=wayland
-  --share=ipc --device=dri --filesystem=home` (comics live anywhere in
-  home; the library DB stays in the sandboxed app data — no extra
-  grants). GApplication single-instance rides the session bus under
-  the own name (granted by default).
-- `buildsystem: simple`: cargo `--offline --locked` against the
-  vendored tarball; installs binary + assets + desktop integration
-  under `/app`.
-- The repo manifest carries placeholder source url+sha256; the CI job
-  seds in the release tarball's values at build time (a per-release
-  field cannot live in a committed manifest). The header documents the
-  local-build recipe.
+- `packaging/deb/build.sh` — a hand-rolled `dpkg-deb --build` script
+  (zero extra tooling; dpkg-deb ships in the Debian CI image), run
+  from the built source tree: `VERSION=<v> packaging/deb/build.sh
+  [out-dir]`. Same layout as the PKGBUILD: `/usr/bin/comicrust`,
+  `/usr/share/comicrust/assets/{icons,papers,backgrounds}`, the
+  desktop file, the hicolor icons, the metainfo.
+- Control: `Depends: libc6 (>= 2.41), libgtk-4-1 (>= 4.6)` — the
+  binary is built on Debian trixie, so the deb targets Debian 13 and
+  equivalent-glibc derivatives (older distros: the portable tarball);
+  `Recommends: p7zip-full, djvulibre-bin`. A `postinst` refreshes the
+  desktop-database and icon cache (guarded `|| true`).
+- CI (the `deb` job): fetches + sha-verifies the release source
+  tarball, extracts it, builds offline (`--locked --offline`, the
+  vendored config), runs the script, sanity-checks with
+  `dpkg-deb --info/--contents`, attaches `comicrust_<v>-1_amd64.deb`
+  + sha256 to both hosts.
 
 ### T4. CI: `packaging.yaml` + attach scripts
 
@@ -141,19 +143,9 @@ Both packagers build from a CI-produced source tarball:
      create a build user (makepkg refuses root), install rust,
      sed the PKGBUILD, `makepkg -f`, attach the `.pkg.tar.zst` +
      sha256 to Gitea AND GitHub.
-  4. `flatpak` (comicrust-ci, needs source): apt-install
-     flatpak/flatpak-builder, add flathub, install the 24.08
-     runtime/sdk/extension, sed the manifest, `flatpak-builder` +
-     `build-bundle`, attach the `.flatpak` + sha256 to both.
-  - Known cost: act_runner containers are ephemeral, so the flatpak
-    runtime re-downloads each run (~1-2 GB). An actions/cache step is
-    the follow-up if it hurts.
-  - RUNNER REQUIREMENT (measured 2026-09-09): flatpak-builder's
-    sandbox needs an elevated container, and act_runner IGNORES
-    security-escaping `container.options` from the workflow while its
-    own `container.privileged` is false. The flatpak job is green
-    only after the runner host sets `container: privileged: true` in
-    the act_runner config and restarts the daemon.
+  4. `deb` (comicrust-ci, needs source): fetch + verify the source
+     tarball, extract, build offline, `dpkg-deb --build`, attach the
+     `.deb` + sha256 to both.
 - Tokens: `RELEASE_TOKEN` (Gitea) and `MIRROR_RELEASE_TOKEN` (GitHub),
   the existing secrets.
 
@@ -173,18 +165,28 @@ Both packagers build from a CI-produced source tarball:
      backgrounds render (the reader Display dialog lists 4 papers +
      14 backgrounds).
   3. `pacman -R comicrust` removes cleanly.
-  4. `flatpak install ./comicrust-<v>.flatpak` then
-     `flatpak run io.github.ScuttleSE.comicrust`; same asset checks
-     on a fresh sandbox; `flatpak uninstall` clean.
+  4. Download `comicrust_<v>-1_amd64.deb` from the release; on a
+     Debian 13 machine (or container): `sudo apt install ./...deb`;
+     launch from the desktop menu (the icon shows) AND from a terminal
+     in an unrelated directory; same asset checks; `sudo apt remove
+     comicrust` removes cleanly.
   5. Confirm the portable tarball still runs as before (CWD-relative
      assets win).
 
 ## Omissions / postponed
 
+- **Flatpak — DROPPED 2026-09-09 (user decision)** after the measured
+  wall chain: (1) the runner's docker profile blocks bwrap namespaces
+  (needed the runner-host `container.privileged: true`), (2) the
+  24.08 rust-stable extension is EOL-frozen at rustc 1.89 while the
+  locked gtk-rs crates need 1.92+, (3) the 26.08 freedesktop runtime
+  has NO GTK4 at all (only gtk3 — freedesktop-sdk components tree),
+  so a GNOME-runtime manifest would have been the next round. The
+  manifest was deleted with the pivot to the .deb; the pieces remain
+  in git history (`packaging/flatpak/` up to commit 1cf2d37) if it is
+  ever revisited.
 - AUR publishing (needs an AUR account + SSH deploy key secret) — the
   PKGBUILD is AUR-ready by construction; submit by hand later.
-- Flathub submission — the manifest follows Flathub conventions but
-  Flathub hosts its own manifest repo + review.
-- `.deb`/RPM — backlog.
+- RPM — backlog.
 - Real app-icon art — placeholder generated; replace in `packaging/`.
 - LICENSE file — open user decision; blocks nothing mechanically.

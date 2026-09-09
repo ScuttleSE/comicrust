@@ -18,8 +18,9 @@ name: Packaging
 #   arch    - runs makepkg in an archlinux container exactly as a user
 #             would (checksum verification included) and attaches the
 #             .pkg.tar.zst + sha256 + the sed'd PKGBUILD.
-#   flatpak - builds the single-file .flatpak bundle and attaches it
-#             (+ sha256).
+#   deb     - builds the Debian package from the extracted release
+#             tarball (dpkg-deb, no extra tooling) and attaches the
+#             .deb + sha256.
 #
 # Assets land on both Gitea and the GitHub mirror (the mirror steps
 # skip with a notice when MIRROR_RELEASE_TOKEN is unset).
@@ -249,22 +250,12 @@ jobs:
           bash .gitea/attach_github_release_assets.sh "$TAG" \
               "$pkgfile" "${pkgfile}.sha256" PKGBUILD
 
-  flatpak:
-    name: Flatpak bundle
+  deb:
+    name: Debian package
     needs: source
     runs-on: docker-runner-amd64
     container:
       image: comicrust-ci:latest
-      # flatpak-builder runs every build command in a bwrap sandbox and
-      # needs elevated container permissions (the runner's docker
-      # profile blocks the namespaces — measured 2026-09-09 twice).
-      # NOTE: act_runner IGNORES security-escaping options here
-      # (--privileged, --cap-add, --device...) while its own
-      # `container.privileged` is false — the real switch lives in the
-      # RUNNER'S config.yaml (container: privileged: true) + a runner
-      # restart. This line documents the intent and takes effect once
-      # the runner allows it.
-      options: --privileged
 
     env:
       TAG: ${{ inputs.tag }}
@@ -296,61 +287,36 @@ jobs:
           curl -fsSL -H "Authorization: token $TOKEN" -o "$ASSET" "$url"
           echo "$SHA256  $ASSET" | sha256sum -c -
 
-      - name: Install the flatpak tooling
+      - name: Build the package
         run: |
           set -euo pipefail
-          apt-get update
-          apt-get install -y --no-install-recommends flatpak flatpak-builder
-          flatpak remote-add --if-not-exists flathub \
-              https://flathub.org/repo/flathub.flatpakrepo
-
-      - name: Install the runtime + the Rust extension
-        run: |
-          set -euo pipefail
-          # 26.08 (not 24.08): the 24.08 rust-stable extension is
-          # end-of-life frozen at rustc 1.89 while the locked gtk-rs
-          # crates need 1.92+ (measured 2026-09-09); 26.08 ships ~1.98.
-          flatpak install --noninteractive --or-update flathub \
-              org.freedesktop.Platform//26.08 \
-              org.freedesktop.Sdk//26.08 \
-              org.freedesktop.Sdk.Extension.rust-stable//26.08
-
-      - name: Point the manifest at the release tarball
-        run: |
-          set -euo pipefail
-          manifest="packaging/flatpak/io.github.ScuttleSE.comicrust.yml"
-          sed -i \
-              -e "s|url: .*|path: $PWD/$ASSET|" \
-              -e "s/sha256: 0\{64\}/sha256: $SHA256/" \
-              -e "s/VERSION: \"0.0.dev\"/VERSION: \"$VERSION\"/" \
-              -e "s/branch: \"0.0.dev\"/branch: \"$VERSION\"/" \
-              "$manifest"
-          grep -n "path:\|sha256:\|VERSION:\|branch:" "$manifest"
-
-      - name: Build the bundle
-        run: |
-          set -euo pipefail
-          flatpak-builder --force-clean --disable-rofiles-fuse \
-              --install-deps-from=flathub \
-              --repo=repo builddir \
-              packaging/flatpak/io.github.ScuttleSE.comicrust.yml
-          flatpak build-bundle repo \
-              "comicrust-${VERSION}.flatpak" \
-              io.github.ScuttleSE.comicrust "$VERSION"
-          sha256sum "comicrust-${VERSION}.flatpak" \
-              > "comicrust-${VERSION}.flatpak.sha256"
-          echo "packaged: comicrust-${VERSION}.flatpak"
+          # Build from the extracted release tarball (exactly what a
+          # user gets), not the checkout — the vendored config makes
+          # the build offline.
+          tar -xzf "$ASSET" -C /tmp
+          src=/tmp/comicrust
+          cd "$src"
+          export VERSION
+          cargo build --release --locked --offline -p cr-app
+          packaging/deb/build.sh "$PWD"
+          deb="comicrust_${VERSION}-1_amd64.deb"
+          # Sanity: parseable control + the expected tree.
+          dpkg-deb --info "$deb" > /dev/null
+          dpkg-deb --contents "$deb" | grep -q "usr/share/comicrust/assets/papers"
+          cd "$GITHUB_WORKSPACE"
+          sha256sum "$deb" > "${deb}.sha256"
+          echo "packaged: $deb"
 
       - name: Attach to the release
         run: |
           set -euo pipefail
           bash .gitea/attach_release_assets.sh "$TAG" \
-              "comicrust-${VERSION}.flatpak" \
-              "comicrust-${VERSION}.flatpak.sha256"
+              "comicrust_${VERSION}-1_amd64.deb" \
+              "comicrust_${VERSION}-1_amd64.deb.sha256"
 
       - name: Attach to the GitHub mirror
         run: |
           set -euo pipefail
           bash .gitea/attach_github_release_assets.sh "$TAG" \
-              "comicrust-${VERSION}.flatpak" \
-              "comicrust-${VERSION}.flatpak.sha256"
+              "comicrust_${VERSION}-1_amd64.deb" \
+              "comicrust_${VERSION}-1_amd64.deb.sha256"

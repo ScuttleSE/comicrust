@@ -75,15 +75,15 @@ sudo pacman -U comicrust-<version>-*-x86_64.pkg.tar.zst
 
 The package installs `/usr/bin/comicrust` with a desktop entry and app icon. Optional packages: `p7zip` (CB7/CBR reading), `djvulibre` (DjVu), `rar` (RAR write-back).
 
-### Flatpak bundle
+### Debian package
 
-Download `comicrust-<version>.flatpak` from the [Releases page](https://github.com/ScuttleSE/comicrust/releases). Install it from the file (the freedesktop runtime comes from Flathub):
+Download `comicrust_<version>-1_amd64.deb` from the [Releases page](https://github.com/ScuttleSE/comicrust/releases). Then:
 
 ```sh
-flatpak remote-add --if-not-exists --user flathub https://flathub.org/repo/flathub.flatpakrepo
-flatpak install --user ./comicrust-<version>.flatpak
-flatpak run io.github.ScuttleSE.comicrust
+sudo apt install ./comicrust_<version>-1_amd64.deb
 ```
+
+The package installs `/usr/bin/comicrust` with a desktop entry and app icon. Optional packages: `p7zip-full` (CB7/CBR reading), `djvulibre-bin` (DjVu). The deb is built on Debian 13 (glibc 2.41) — older distros use the portable tarball below.
 
 ### Portable tarball
 

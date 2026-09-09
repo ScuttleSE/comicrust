@@ -159,7 +159,19 @@ Update this section at the **end of every work session**. The next agent must kn
   needs the tag re-pointed (v0.0.273 → v0.0.276 → v0.0.278; the
   user chose renumber-over-move to keep tag = commit count — the
   record commit itself consumed the 277 count, so the fix landed at
-  278).
+  278). FLATPAK DROPPED + .DEB PIVOT (2026-09-09, user decision
+  "seems very cumbersome") — round 3 failed even on 26.08 at the
+  cargo build: `Package 'gtk4' not found` — the freedesktop 26.08
+  runtime has NO GTK4 (only gtk3; verified through the
+  freedesktop-sdk components tree). So flatpak would have needed the
+  GNOME runtime + new extension wiring; instead `packaging/flatpak/`
+  is deleted, the workflow's flatpak job became the `deb` job (same
+  comicrust-ci image, fetch+verify tarball → extract → offline build
+  → `packaging/deb/build.sh` (hand-rolled dpkg-deb --build, zero new
+  tooling; control has libc6 (>= 2.41) + libgtk-4-1 floors, postinst
+  refreshes desktop-db/icon-cache) → dpkg-deb info/contents sanity →
+  attach `comicrust_<v>-1_amd64.deb` + sha). The deb targets Debian
+  13 / glibc-2.41 derivatives; older distros use the tarball.
   T4 IMPLEMENTED + TESTED (2026-09-09, user test pending) — the
   export post-processing ("convert rar→zip" request): the port of
   `QueueManager.ExportComic` lines 455-508. cr-core gained
