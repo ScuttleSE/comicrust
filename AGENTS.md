@@ -73,6 +73,38 @@ Update this section at the **end of every work session**. The next agent must kn
 
 ### State summary
 
+- **EXIT MID-SCAN FIXED (2026-09-10, user report: "can't quit the
+  app while the scan goes on — have to kill it via console; after
+  restarting, the library was empty, nothing had been saved"):** two
+  bugs. (1) The close-request path ran `library::save()`, which
+  WAITED for the running scan to finish (the pump loop) — a long
+  scan = a hung window. The C# exit STOPS the scanner first
+  (`QueueManager.Dispose` → `Scanner.Dispose` →
+  `Stop(clearQueue: true)`, ComicScanner.cs:228-234). FIX:
+  `library::save()` now calls `abort_scan()` when a scan is in
+  flight before the pump wait — the abort makes the wait a one-tick
+  partial merge, and the save writes the books found so far. (2) The
+  console kill signals (Ctrl+C / `kill`) terminated the process with
+  no save at all. FIX: SIGINT/SIGTERM route through the GRACEFUL
+  close — a libc `signal()` handler raises a flag (one store,
+  async-signal-safe; the glib crate has no unix-signal binding in
+  0.22 — `libc` joined the workspace deps) and a 200 ms main-loop
+  poll closes the shell window (the close-request path saves);
+  SIGKILL stays uncatchable. (3) FOUND THROUGH THE GATE: the
+  scan-folders done callback ran `refresh_view_from_list` AFTER the
+  queue popped the next root's scan — that scan had already taken
+  the storage, so the refresh evaluated "0 books" and WIPED the
+  view between roots ("evaluate 10002 books" immediately followed by
+  "evaluate 0 books" in the trace); the done callback now runs
+  BEFORE the queue pop. Gate: scanrefresh_probe grew F — a fresh
+  5000-book folder starts landing, the window closes mid-add, and
+  main verifies the SAVED ComicDb.xml holds the partial (measured:
+  close at 10322 books in the grid → the DB file holds 10399 =
+  10002 + the 397-book partial; a RE-scan abort instead lands the
+  full stored set — the gate's fixture must ADD books). 486 tests;
+  fmt/clippy green. USER TEST = start a scan, close the window (or
+  Ctrl+C) mid-scan → the app exits promptly and the restart shows
+  the books found so far; `kill -9` remains unsaveable (uncatchable).
 - **SCAN-GLITCH FIXED — INCREMENTAL APPEND (2026-09-10, user report
   "while it scans it periodically redraws the entire view — looks
   like the app is glitching"):** the progressive-fill hook ran the

@@ -56,6 +56,16 @@ fn main() {
     let work = std::path::Path::new("/tmp/opencode/scanrefresh");
     let _ = std::fs::remove_dir_all(work);
     std::fs::create_dir_all(work).unwrap();
+    // The probe owns the XDG pair — a stale database from a previous
+    // run (the exit save) would fail gate A.
+    for dir in [
+        std::path::PathBuf::from(std::env::var("XDG_DATA_HOME").expect("XDG_DATA_HOME")),
+        std::path::Path::new(&std::env::var("XDG_CONFIG_HOME").expect("XDG_CONFIG_HOME"))
+            .to_path_buf(),
+    ] {
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+    }
     cr_ui::library::initialize().expect("session init");
 
     // The scanned folder: two comics (real zips — the scan opens each
@@ -144,9 +154,23 @@ fn main() {
 
     // The app runs until the gates finish (the last gate exits the
     // process — a plain Window probe shape would exit early, the
-    // ApplicationWindow holds it).
+    // ApplicationWindow holds it). Gate F closes the window mid-scan:
+    // the close-request handler aborts the scan, merges the partial
+    // and saves — the run loop then returns and main verifies the
+    // saved file.
     let _ = app.run();
-    unreachable!("the probe exits through the final gate");
+    let data = std::env::var("XDG_DATA_HOME").expect("XDG_DATA_HOME");
+    let db_path = std::path::Path::new(&data).join("comicrust/ComicDb/ComicDb.xml");
+    let db =
+        cr_core::database::comic_database::load(&db_path).expect("F: the saved database loads");
+    let n = db.books.len();
+    assert!(
+        n > BIG_COUNT + 2 && n < BIG_COUNT + 2 + EXTRA_COUNT,
+        "F FAIL: the exit saved {n} books (expected the partial add: {} < n < {})",
+        BIG_COUNT + 2,
+        BIG_COUNT + 2 + EXTRA_COUNT
+    );
+    println!("F ok: the mid-add exit saved {n} books");
 }
 
 /// C. The re-scan (the same command again): the count stays 2 and the
@@ -269,13 +293,68 @@ fn gate_e(shell: &cr_ui::browser::shell::BrowserShell) {
                     "E ok: the re-scan completed the library ({} books)",
                     BIG_COUNT + 2
                 );
-                std::process::exit(0);
+                gate_f(&shell);
+                return glib::ControlFlow::Break;
             }
             if ticks.get() > 400 {
                 panic!(
                     "E FAIL: the re-scan after the abort landed (scanning={scanning}) but the grid shows {count} books (expected {})",
                     BIG_COUNT + 2
                 );
+            }
+            glib::ControlFlow::Continue
+        }
+    });
+}
+
+/// F: quitting MID-SCAN saves the partial library (the C#
+/// Stop-before-Save order). A FRESH folder (5000 REAL one-page zips —
+/// the provider open stretches the walk past a poll tick; zero-byte
+/// files scan between two ticks) starts landing; closing the window
+/// mid-add aborts the scan, merges the partial and writes the DB;
+/// the app run loop exits and `main` verifies the saved file.
+const EXTRA_COUNT: usize = 5_000;
+
+fn gate_f(shell: &cr_ui::browser::shell::BrowserShell) {
+    let extra = std::path::Path::new("/tmp/opencode/scanrefresh/big2");
+    let _ = std::fs::remove_dir_all(extra);
+    std::fs::create_dir_all(extra).unwrap();
+    for i in 0..EXTRA_COUNT {
+        write_page_zip(&extra.join(format!("more{i:05}.cbz")));
+    }
+    {
+        let lib = cr_ui::library::session();
+        let mut l = lib.borrow_mut();
+        l.database_mut()
+            .watch_folders
+            .push(cr_core::database::list_items::WatchFolder {
+                folder: extra.to_string_lossy().into_owned(),
+                watch: true,
+            });
+        l.mark_dirty();
+    }
+    let window = shell.window();
+    let _ = gtk4::prelude::WidgetExt::activate_action(&window, "win.scan-folders", None);
+    let ticks = Rc::new(Cell::new(0u32));
+    glib::timeout_add_local(std::time::Duration::from_millis(25), {
+        let shell = shell.clone();
+        move || {
+            ticks.set(ticks.get() + 1);
+            let scanning = cr_ui::library::is_scanning();
+            let count = shell.state_grid_book_count();
+            // New books are landing — close while the fresh scan adds.
+            if scanning && count >= BIG_COUNT + 22 {
+                println!("F: mid-add ({count} books) — closing the window (the graceful exit)");
+                shell.window().close();
+                return glib::ControlFlow::Break;
+            }
+            if !scanning {
+                panic!(
+                    "F FAIL: the scan finished before the close could land mid-add (count {count})"
+                );
+            }
+            if ticks.get() > 2000 {
+                panic!("F FAIL: no mid-add fill observed (count {count})");
             }
             glib::ControlFlow::Continue
         }

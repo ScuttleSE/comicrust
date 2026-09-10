@@ -23,6 +23,25 @@ use crate::theme;
 
 pub const APP_ID: &str = "org.comicrust.ComicRust";
 
+/// The console kill signals (SIGINT / SIGTERM) raise this flag; the
+/// main-loop poll turns it into the graceful close. The handler
+/// stores only (async-signal-safe).
+static QUIT_SIGNAL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+extern "C" fn on_quit_signal(_sig: i32) {
+    QUIT_SIGNAL.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// `signal(SIGINT, …)` + `signal(SIGTERM, …)` (the Linux ABI values
+/// ride libc's constants).
+fn install_quit_signals() {
+    #[allow(unsafe_code)]
+    unsafe {
+        libc::signal(libc::SIGINT, on_quit_signal as *const () as usize);
+        libc::signal(libc::SIGTERM, on_quit_signal as *const () as usize);
+    }
+}
+
 /// File-dialog filter extensions (`KnownFileFormats` + folders; the
 /// C# open dialog uses the same list from the provider registry).
 pub const OPEN_FILTER_EXTS: &[&str] = &[
@@ -108,6 +127,30 @@ pub fn run(args: Vec<String>) {
                 });
             }
             glib::ControlFlow::Continue
+        });
+
+        // The console kill signals (Ctrl+C / `kill`): route them
+        // through the GRACEFUL close — the close-request handler
+        // saves the library (a raw signal exit would lose everything
+        // since the last save; the user report). The handler itself
+        // only raises the flag (async-signal-safe); a main-loop
+        // source polls it and closes the shell window. SIGKILL stays
+        // uncatchable.
+        install_quit_signals();
+        glib::timeout_add_local(std::time::Duration::from_millis(200), {
+            let app = app.clone();
+            move || {
+                if QUIT_SIGNAL.swap(false, std::sync::atomic::Ordering::Relaxed) {
+                    if let Some(shell) =
+                        BROWSER.with(|cell| cell.borrow().as_ref().map(|s| s.clone()))
+                    {
+                        shell.window().close();
+                    } else {
+                        app.quit();
+                    }
+                }
+                glib::ControlFlow::Continue
+            }
         });
     }
 

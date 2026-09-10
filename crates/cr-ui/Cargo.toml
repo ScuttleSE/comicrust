@@ -13,6 +13,7 @@ cr-scrape.workspace = true
 serde_json.workspace = true
 gtk4 = { version = "0.11", features = ["v4_6", "v4_10"] }
 chrono.workspace = true
+libc.workspace = true
 
 [dev-dependencies]
 zip.workspace = true

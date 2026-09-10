@@ -501,14 +501,19 @@ fn start_scan_worker(location: String, done: impl FnOnce(ScanResult) + 'static) 
                     SCAN_LOCATION.with(|cell| cell.borrow_mut().clear());
                     SCAN_STOP.with(|cell| *cell.borrow_mut() = None);
                     fire_scan_view_hook(&[]);
+                    // The done callback refreshes against the MERGED
+                    // database — it must run BEFORE the next queued
+                    // scan takes the storage (a refresh against the
+                    // taken, empty book list wipes the view; measured:
+                    // "evaluate 0 books" right after "evaluate 10002").
+                    if let Some(d) = done.take() {
+                        d(result);
+                    }
                     // The queued requests run one at a time, in arrival
                     // order (the C# scan queue).
                     let next = SCAN_QUEUE.with(|q| q.borrow_mut().pop());
                     if let Some((location, done_next)) = next {
                         start_scan_worker(location, done_next);
-                    }
-                    if let Some(d) = done.take() {
-                        d(result);
                     }
                     return ControlFlow::Break;
                 }
@@ -572,11 +577,16 @@ pub fn apply_path_migration(
     report
 }
 
-/// `DatabaseManager.Save` (the exit path): waits for an in-flight
-/// scan to merge back first (the C# `Scanner.Stop`/join runs before
-/// `DatabaseManager.Dispose` → `Save` — saving mid-scan would write
-/// the taken, empty book list), then saves unconditionally.
+/// `DatabaseManager.Save` (the exit path): stops an in-flight scan
+/// first — the C# `QueueManager.Dispose` → `Scanner.Dispose` →
+/// `Stop(clearQueue: true)` (ComicScanner.cs:228) — then waits for
+/// the partial merge (one pump tick) and saves unconditionally.
+/// Waiting for a RUNNING scan would hang the exit (the user report);
+/// saving mid-scan would write the taken, empty book list.
 pub fn save() -> Result<(), cr_core::database::DbError> {
+    if scan_in_flight() {
+        abort_scan();
+    }
     while scan_in_flight() {
         // The merge happens in the scan pump (a main-loop source) —
         // drive the loop until it runs.

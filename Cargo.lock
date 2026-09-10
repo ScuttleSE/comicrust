@@ -476,6 +476,7 @@ dependencies = [
  "cr-io",
  "cr-scrape",
  "gtk4",
+ "libc",
  "serde_json",
  "zip",
 ]

@@ -30,6 +30,7 @@ image = { version = "0.25", default-features = false, features = ["png", "gif", 
 zune-jpeg = "0.4"
 zune-core = "0.4"
 jxl-oxide = "0.8"
+libc = "0.2"
 
 [workspace.lints.rust]
 unsafe_code = "deny"
