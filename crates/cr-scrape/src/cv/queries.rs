@@ -14,8 +14,18 @@ use super::connection::{CvClient, CvError};
 use super::models::{Issue, IssueRef, SeriesRef};
 use crate::utils::convert_number_words;
 
+/// A progress/cancel callback for the series search: the matches so
+/// far and the expected callback count; returns `true` to cancel
+/// (C# `callback_function(num_matches, expected)`).
+pub type SeriesProgressFn<'a> = dyn FnMut(usize, usize) -> bool + 'a;
+
+/// A progress/cancel callback for the issue-list query: the 0..1
+/// completion ratio; returns `true` to cancel.
+pub type IssueProgressFn<'a> = dyn FnMut(f64) -> bool + 'a;
+
 /// A progress/cancel callback for paged queries: returns `true` to
 /// cancel (C# `callback_function`).
+#[deprecated(note = "use SeriesProgressFn / IssueProgressFn")]
 pub type ProgressFn<'a> = dyn FnMut() -> bool + 'a;
 
 /// The session-scoped caches the C# `db.py` keeps (`__series_ref_cache`
@@ -126,7 +136,7 @@ impl Cv {
         search_terms: &str,
         ignored_terms: &[String],
         max_results: i32,
-        progress: &mut ProgressFn,
+        progress: &mut SeriesProgressFn,
     ) -> Result<Vec<SeriesRef>, CvError> {
         let mut terms = search_terms.to_string();
         if !ignored_terms.is_empty() {
@@ -155,7 +165,7 @@ impl Cv {
         &self,
         terms: &str,
         max_results: i32,
-        progress: &mut ProgressFn,
+        progress: &mut SeriesProgressFn,
     ) -> Result<Vec<SeriesRef>, CvError> {
         let mut refs = Vec::new();
         let cleaned = cleanup_search_terms(terms, false);
@@ -185,7 +195,7 @@ impl Cv {
         &self,
         terms: &str,
         max_results: i32,
-        progress: &mut ProgressFn,
+        progress: &mut SeriesProgressFn,
     ) -> Result<Vec<SeriesRef>, CvError> {
         const PAGE_SIZE: usize = 100;
         let mut refs: Vec<SeriesRef> = Vec::new();
@@ -207,11 +217,12 @@ impl Cv {
 
         collect_volumes(&dom, &mut refs, &mut seen, max);
         let mut iteration = PAGE_SIZE;
-        let mut cancelled = progress();
+        let num_remaining_pages = num_results / PAGE_SIZE;
+        let mut cancelled = progress(refs.len(), num_remaining_pages);
         while iteration < num_results && refs.len() < max && !cancelled {
             let dom = self.series_search_dom(terms, iteration / PAGE_SIZE + 1)?;
             iteration += PAGE_SIZE;
-            cancelled = progress();
+            cancelled = progress(refs.len(), num_remaining_pages);
             let has_page = dom
                 .get("number_of_page_results")
                 .and_then(Value::as_i64)
@@ -245,7 +256,7 @@ impl Cv {
     pub fn query_issue_refs(
         &mut self,
         series_ref: &SeriesRef,
-        progress: &mut ProgressFn,
+        progress: &mut IssueProgressFn,
     ) -> Result<Vec<IssueRef>, CvError> {
         if let Some((key, refs)) = &self.caches.issue_refs {
             if *key == series_ref.series_key {
@@ -260,7 +271,7 @@ impl Cv {
     fn uncached_issue_refs(
         &self,
         series_ref: &SeriesRef,
-        progress: &mut ProgressFn,
+        progress: &mut IssueProgressFn,
     ) -> Result<Vec<IssueRef>, CvError> {
         const PAGE_SIZE: usize = 100;
         let mut refs: Vec<IssueRef> = Vec::new();
@@ -277,7 +288,8 @@ impl Cv {
 
         collect_issues(&dom, &mut refs, &mut seen);
         let mut iteration = PAGE_SIZE;
-        let mut cancelled = progress();
+        let ratio = |done: usize| done as f64 / num_results.max(1) as f64;
+        let mut cancelled = progress(ratio(iteration.min(num_results as usize)));
         while iteration < num_results as usize && !cancelled {
             let dom = self.issues_dom(
                 &series_ref.series_key.to_string(),
@@ -292,7 +304,7 @@ impl Cv {
             if has_page {
                 collect_issues(&dom, &mut refs, &mut seen);
             }
-            cancelled = progress();
+            cancelled = progress(ratio(iteration.min(num_results as usize)));
         }
         Ok(if cancelled { Vec::new() } else { refs })
     }

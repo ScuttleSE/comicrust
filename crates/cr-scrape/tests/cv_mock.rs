@@ -58,7 +58,11 @@ fn client_for(base: &str) -> Cv {
     ))
 }
 
-fn no_cancel() -> bool {
+fn no_cancel_series(_matches: usize, _expected: usize) -> bool {
+    false
+}
+
+fn no_cancel_issue(_ratio: f64) -> bool {
     false
 }
 
@@ -126,7 +130,7 @@ fn search_series_returns_refs_with_pagination() {
     let (base, _guard) = serve(CANNED);
     let mut cv = client_for(&base);
     let refs = cv
-        .query_series_refs("batman", &[], 100, &mut no_cancel)
+        .query_series_refs("batman", &[], 100, &mut no_cancel_series)
         .unwrap();
     assert_eq!(refs.len(), 2);
     let batman = refs.iter().find(|r| r.series_key == 40501).unwrap();
@@ -150,7 +154,7 @@ fn search_series_returns_refs_with_pagination() {
     drop(_guard);
     std::thread::sleep(std::time::Duration::from_millis(50));
     let cached = cv
-        .query_series_refs("batman", &[], 100, &mut no_cancel)
+        .query_series_refs("batman", &[], 100, &mut no_cancel_series)
         .unwrap();
     assert_eq!(cached.len(), 2);
 }
@@ -169,7 +173,7 @@ fn ignored_search_terms_are_stripped() {
             "batman c2c noads",
             &["c2c".to_string(), "noads".to_string()],
             100,
-            &mut no_cancel,
+            &mut no_cancel_series,
         )
         .unwrap();
     // the query still succeeds; the terms reached the (mock) server
@@ -199,7 +203,7 @@ fn issue_refs_list_and_issue_details() {
     let (base, _guard) = serve(CANNED);
     let mut cv = client_for(&base);
     let series = SeriesRef::new(40501, "Batman", 1940, "DC Comics", 2, None).unwrap();
-    let refs = cv.query_issue_refs(&series, &mut no_cancel).unwrap();
+    let refs = cv.query_issue_refs(&series, &mut no_cancel_issue).unwrap();
     assert_eq!(refs.len(), 2);
     let first = refs.iter().find(|r| r.issue_key == 400011).unwrap();
     assert_eq!(first.issue_num, "1½");
@@ -333,7 +337,7 @@ fn error_status_and_retry_surface() {
     let (base, _guard) = serve(BROKEN);
     let mut cv = client_for(&base);
     let err = cv
-        .query_series_refs("batman", &[], 100, &mut no_cancel)
+        .query_series_refs("batman", &[], 100, &mut no_cancel_series)
         .unwrap_err();
     assert!(err.to_string().contains("101"), "{err}");
 }
@@ -419,7 +423,7 @@ fn the_xml_shaped_results_wrapper_still_parses() {
     let (base, _guard) = serve(CANNED);
     let mut cv = client_for(&base);
     let refs = cv
-        .query_series_refs("wrapped", &[], 100, &mut no_cancel)
+        .query_series_refs("wrapped", &[], 100, &mut no_cancel_series)
         .unwrap();
     assert_eq!(refs.len(), 1);
     assert_eq!(refs[0].series_name(), "Wrapped");

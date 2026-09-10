@@ -246,7 +246,7 @@ fn automatcher_identifies_a_non_first_issue() {
         &MatchScore::new(HashSet::new()),
         2026,
         Some(&page0),
-        &mut || false,
+        &mut |_, _| false,
     )
     .unwrap();
     assert!(found.is_some(), "the automatcher must identify the series");
@@ -267,7 +267,7 @@ fn automatcher_bails_on_nearly_identical_first_issue_covers() {
         &MatchScore::new(HashSet::new()),
         2026,
         Some(&page0),
-        &mut || false,
+        &mut |_, _| false,
     )
     .unwrap();
     assert!(
@@ -292,7 +292,7 @@ fn automatcher_rejects_a_dissimilar_cover() {
         &MatchScore::new(HashSet::new()),
         2026,
         Some(&page0),
-        &mut || false,
+        &mut |_, _| false,
     )
     .unwrap();
     assert!(found.is_none(), "a dissimilar cover must not match");

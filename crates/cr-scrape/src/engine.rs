@@ -390,7 +390,11 @@ impl ScrapeEngine {
                     .cloned()
                     .collect::<Vec<_>>(),
                 self.config.advanced().max_search_results,
-                &mut || self.cancelled(),
+                &mut |matches, expected| {
+                    ui.progress(ProgressKind::SeriesSearch, matches as f64);
+                    let _ = expected;
+                    self.cancelled()
+                },
             ) {
                 Ok(refs) => refs,
                 Err(err) => {
@@ -513,7 +517,7 @@ impl ScrapeEngine {
             &score,
             current_year(),
             page0.as_ref(),
-            &mut || self.cancelled(),
+            &mut |_matches, _expected| self.cancelled(),
         )
     }
 
@@ -615,7 +619,10 @@ impl ScrapeEngine {
         // 2. the full issue list fills the caller's cache (and the
         //    number matching below)
         if issue_refs.is_empty() {
-            match cv.query_issue_refs(series_ref, &mut || self.cancelled()) {
+            match cv.query_issue_refs(series_ref, &mut |ratio| {
+                ui.progress(ProgressKind::IssueList, ratio);
+                self.cancelled()
+            }) {
                 Ok(loaded) => {
                     if self.cancelled() {
                         return IssueResult::Cancel;

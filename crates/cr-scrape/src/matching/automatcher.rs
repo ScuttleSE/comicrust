@@ -12,7 +12,7 @@ use crate::bookdata::BookData;
 use crate::config::Configuration;
 use crate::cv::connection::CvError;
 use crate::cv::models::SeriesRef;
-use crate::cv::queries::{Cv, ProgressFn};
+use crate::cv::queries::{Cv, SeriesProgressFn};
 use crate::matching::imagehash::{hash, similarity};
 use crate::matching::matchscore::MatchScore;
 use crate::matching::{filter_series_refs, strip_back_cover, MATCH_THRESHOLD};
@@ -30,7 +30,7 @@ pub fn find_series_ref(
     score: &MatchScore,
     current_year: i32,
     page0: Option<&Image>,
-    progress: &mut ProgressFn,
+    progress: &mut SeriesProgressFn,
 ) -> Result<Option<SeriesRef>, CvError> {
     // 1. the series search + the preference filters
     let advanced = config.advanced();

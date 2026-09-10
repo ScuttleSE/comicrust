@@ -330,25 +330,75 @@ fn ask_series(
 
     let refs = std::rc::Rc::new(refs.to_vec());
     let list = std::rc::Rc::new(list);
-    let answer = answer.clone();
-    dialog.connect_response(move |dlg, response| {
-        let index = list.selected_row().map(|r| r.index() as usize);
-        let value = match response {
-            gtk4::ResponseType::Ok => match index {
-                Some(i) if i < refs.len() => UiAnswer::Series(SeriesResult::Ok(refs[i].clone())),
-                _ => UiAnswer::Series(SeriesResult::Skip),
-            },
-            gtk4::ResponseType::Apply => match list.selected_row().map(|r| r.index() as usize) {
-                Some(i) if i < refs.len() => UiAnswer::Series(SeriesResult::Show(refs[i].clone())),
-                _ => UiAnswer::Series(SeriesResult::Skip),
-            },
-            gtk4::ResponseType::Reject => UiAnswer::Series(SeriesResult::Search),
-            gtk4::ResponseType::No => UiAnswer::Series(SeriesResult::Skip),
-            _ => UiAnswer::Series(SeriesResult::Cancel),
-        };
-        dlg.close();
-        let _ = answer.send(value);
+    // One-shot finish: the button responses and the row activation
+    // both close + answer exactly once.
+    let done = std::rc::Rc::new(std::cell::Cell::new(false));
+    let finish = std::rc::Rc::new({
+        let dialog = dialog.clone();
+        let done = std::rc::Rc::clone(&done);
+        let answer = answer.clone();
+        move |value: UiAnswer| {
+            if done.replace(true) {
+                return;
+            }
+            dialog.close();
+            let _ = answer.send(value);
+        }
     });
+    cr_scrape::log::debug("displaying the series selection dialog");
+    // Double-click / Enter on a row commits it as the selection (the
+    // C# SeriesForm list activate).
+    {
+        let finish = std::rc::Rc::clone(&finish);
+        let refs = std::rc::Rc::clone(&refs);
+        list.connect_row_activated(move |_, row| {
+            let i = row.index() as usize;
+            if i < refs.len() {
+                cr_scrape::log::debug(&format!("user chose the series {} (row activate)", refs[i]));
+                finish(UiAnswer::Series(SeriesResult::Ok(refs[i].clone())));
+            }
+        });
+    }
+    {
+        let finish = std::rc::Rc::clone(&finish);
+        let refs = std::rc::Rc::clone(&refs);
+        let list = std::rc::Rc::clone(&list);
+        dialog.connect_response(move |dlg, response| {
+            let index = list.selected_row().map(|r| r.index() as usize);
+            let value = match response {
+                gtk4::ResponseType::Ok => match index {
+                    Some(i) if i < refs.len() => {
+                        cr_scrape::log::debug("user chose the series (Select Series)");
+                        UiAnswer::Series(SeriesResult::Ok(refs[i].clone()))
+                    }
+                    _ => UiAnswer::Series(SeriesResult::Skip),
+                },
+                gtk4::ResponseType::Apply => {
+                    match list.selected_row().map(|r| r.index() as usize) {
+                        Some(i) if i < refs.len() => {
+                            cr_scrape::log::debug("user chose the series (Show Issues)");
+                            UiAnswer::Series(SeriesResult::Show(refs[i].clone()))
+                        }
+                        _ => UiAnswer::Series(SeriesResult::Skip),
+                    }
+                }
+                gtk4::ResponseType::Reject => {
+                    cr_scrape::log::debug("user chose to search again");
+                    UiAnswer::Series(SeriesResult::Search)
+                }
+                gtk4::ResponseType::No => {
+                    cr_scrape::log::debug("user chose to skip the book");
+                    UiAnswer::Series(SeriesResult::Skip)
+                }
+                _ => {
+                    cr_scrape::log::debug("user cancelled the scrape");
+                    UiAnswer::Series(SeriesResult::Cancel)
+                }
+            };
+            let _ = dlg;
+            finish(value);
+        });
+    }
     dialog.present();
     dialog
 }
@@ -419,21 +469,67 @@ fn ask_issue(
 
     let issues = std::rc::Rc::new(issues.to_vec());
     let list = std::rc::Rc::new(list);
-    let answer = answer.clone();
-    dialog.connect_response(move |dlg, response| {
-        let index = list.selected_row().map(|r| r.index() as usize);
-        let value = match response {
-            gtk4::ResponseType::Ok => match index {
-                Some(i) if i < issues.len() => UiAnswer::Issue(IssueResult::Ok(issues[i].clone())),
-                _ => UiAnswer::Issue(IssueResult::Skip),
-            },
-            gtk4::ResponseType::Reject => UiAnswer::Issue(IssueResult::Back),
-            gtk4::ResponseType::No => UiAnswer::Issue(IssueResult::Skip),
-            _ => UiAnswer::Issue(IssueResult::Cancel),
-        };
-        dlg.close();
-        let _ = answer.send(value);
+    let done = std::rc::Rc::new(std::cell::Cell::new(false));
+    let finish = std::rc::Rc::new({
+        let dialog = dialog.clone();
+        let done = std::rc::Rc::clone(&done);
+        let answer = answer.clone();
+        move |value: UiAnswer| {
+            if done.replace(true) {
+                return;
+            }
+            dialog.close();
+            let _ = answer.send(value);
+        }
     });
+    cr_scrape::log::debug("displaying the issue selection dialog");
+    // Double-click / Enter on a row commits it as the choice (the
+    // C# IssueForm list activate).
+    {
+        let finish = std::rc::Rc::clone(&finish);
+        let issues = std::rc::Rc::clone(&issues);
+        list.connect_row_activated(move |_, row| {
+            let i = row.index() as usize;
+            if i < issues.len() {
+                cr_scrape::log::debug(&format!(
+                    "user chose the issue {} (row activate)",
+                    issues[i]
+                ));
+                finish(UiAnswer::Issue(IssueResult::Ok(issues[i].clone())));
+            }
+        });
+    }
+    {
+        let finish = std::rc::Rc::clone(&finish);
+        let issues = std::rc::Rc::clone(&issues);
+        let list = std::rc::Rc::clone(&list);
+        dialog.connect_response(move |dlg, response| {
+            let index = list.selected_row().map(|r| r.index() as usize);
+            let value = match response {
+                gtk4::ResponseType::Ok => match index {
+                    Some(i) if i < issues.len() => {
+                        cr_scrape::log::debug("user chose the issue (Select Issue)");
+                        UiAnswer::Issue(IssueResult::Ok(issues[i].clone()))
+                    }
+                    _ => UiAnswer::Issue(IssueResult::Skip),
+                },
+                gtk4::ResponseType::Reject => {
+                    cr_scrape::log::debug("user chose to go back to the series dialog");
+                    UiAnswer::Issue(IssueResult::Back)
+                }
+                gtk4::ResponseType::No => {
+                    cr_scrape::log::debug("user chose to skip the book");
+                    UiAnswer::Issue(IssueResult::Skip)
+                }
+                _ => {
+                    crate::trace::trace("scrape issue dialog cancel");
+                    UiAnswer::Issue(IssueResult::Cancel)
+                }
+            };
+            let _ = dlg;
+            finish(value);
+        });
+    }
     dialog.present();
     dialog
 }
