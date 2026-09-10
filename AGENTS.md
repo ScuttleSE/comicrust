@@ -73,6 +73,39 @@ Update this section at the **end of every work session**. The next agent must kn
 
 ### State summary
 
+- **SCAN-LAND VIEW REFRESH FIXED (2026-09-10, commit 2fe9b23; user
+  report: fresh config + a watch folder + File ▸ Scan Book Folders →
+  the Tasks dialog showed the "Scanning '<path>'" line but the
+  Library stayed empty):** ROOT CAUSE — the scan itself ran and
+  landed fine; the scan's done callback was EMPTY at both UI entry
+  points (`win.scan-folders` in `browser/shell.rs` and the
+  watch-folder rescan poll in `app.rs`), and the port's scan shape
+  moves the whole book storage to the Book Scanner worker and merges
+  it back ONCE at landing (the Phase 4 ADR-019 architecture; the C#
+  adds books to the LIVE storage per file — `ComicBookCollection.Add`
+  → `OnBookAdded` — so its view fills progressively), so nothing
+  ever re-evaluated the view. The Tasks "Scanning" line is correct
+  C#-parity behavior (`Scanner.CurrentLocation`) while the worker
+  holds the storage. FIX: `win.scan-folders`'s callback now
+  `refresh_view_from_list` + `sync_enabled` (the folders-view
+  Add-Folder shape, a `Weak<ShellState>` capture), and the watch-poll
+  callback calls `BrowserShell::refresh_after_data_change` (its
+  trace labels generalized from "path-migration" to "data-change").
+  Gate: `scanrefresh_probe` (new; isolated XDG pair; settles 600 ms
+  past the boot fill's 200 ms debounced Library evaluation FIRST —
+  an immediate dispatch passed against the UNFIXED code through that
+  boot race, measured; then A the fresh grid is 0, B the scan lands
+  and the grid shows the scanned books, C the re-scan keeps the
+  count). Verified BOTH ways: the stashed fix FAILS gate B
+  ("the grid shows 0 books — the scan-land refresh did not run"),
+  the fix passes. fmt/clippy/484 tests green. USER TEST = fresh
+  config, add a watch folder, File ▸ Scan Book Folders → the books
+  appear in the Library when the scan finishes (big folders stay
+  silent until the landing — the recorded mid-scan deviation; the
+  status-bar scan lamp + the Tasks line are the progress signal).
+  LESSON: a "did X happen" probe must settle past every boot-time
+  deferred fill (the navigator's SELECT_DEBOUNCE_MS = 200 ms) or the
+  boot race passes the gate against unfixed code.
 - **SCRAPER UX FIX ROUND 3 + EDITOR/PREFS FIXES (2026-09-10, the
   user-reported batch) — USER-TESTED, ALL PASS (same day, "all ok";
   commit e2e9b65; the kickoff record is the FIX ROUND 3 section of
