@@ -367,6 +367,27 @@ Update this section at the **end of every work session**. The next agent must kn
     vectors, 10 mock-server CV tests, 23 bookdata tests, 9 matching
     tests, 6 engine tests, 2 pool tests, scrapeconfig_probe,
     scrape_probe. USER TEST = the 7 steps at the end of the kickoff.
+  FIX ROUND 1 (2026-09-10, commit e42eb40, user report "no results
+  when I try to scrape, API key entered"): ROOT CAUSE measured
+  against the live API — the port requests format=json and
+  ComicVine's JSON carries the results list as a FLAT array (the
+  invalid-key response itself shows {"status_code":100,
+  "results":[]}); the C# fetched format=xml whose dom wraps the
+  elements (results.volume / results.issue), and my mock fixtures
+  encoded THAT wrapper shape — so the port parsed every real
+  search/issues response as empty. The mocks passed because they
+  reproduced the port's wrong assumption, not the API. FIX:
+  result_items() in queries.rs accepts both shapes (the flat array
+  is the real form); every fixture now carries the real shape; a
+  new cv_mock test pins the XML-wrapper tolerance. LOGGING (the
+  user's ask): crates/cr-scrape/src/log.rs — CR_SCRAPE_DEBUG=1
+  prints every GET (the api_key redacted), HTTP + API status codes,
+  byte counts, and the engine's decision points; ScrapeUi::error
+  surfaces query failures in the wizard's progress line instead of
+  dying into Unscraped/Delayed. 482 tests. USER TEST = rerun the
+  scrape (CR_SCRAPE_DEBUG=1 shows every query); LESSON: when a port
+  changes the wire format (xml -> json), re-derive the fixture
+  shapes from the LIVE API, never from the C# dom shapes.
 - **Phase:** PHASE 12 COMPLETE, USER TEST PENDING (2026-09-10, above)
   besides the Phase 10 + Phase 11 blocks above
   (2026-09-09). Phases 0-8 are COMPLETE
