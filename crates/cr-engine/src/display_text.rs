@@ -10,6 +10,16 @@ use cr_core::registry::{self, PropValue};
 
 use crate::matcher::book_view;
 
+/// `ComicInfo.GetYesNoAsText(YesNo)`: Yes → "Yes", No → "No",
+/// Unknown → empty.
+pub fn yes_no_text(yn: cr_core::model::enums::YesNo) -> String {
+    match yn {
+        cr_core::model::enums::YesNo::Yes => "Yes".into(),
+        cr_core::model::enums::YesNo::No => "No".into(),
+        cr_core::model::enums::YesNo::Unknown => String::new(),
+    }
+}
+
 /// `ComicBook.FormatVolume`: −1 → empty, else `V{volume}`.
 pub fn format_volume(volume: i32) -> String {
     if volume != -1 {
@@ -28,7 +38,7 @@ pub fn format_year(year: i32) -> String {
     }
 }
 
-fn date_text(d: &cr_core::xml::scalar::CrDateTime) -> String {
+pub fn date_text(d: &cr_core::xml::scalar::CrDateTime) -> String {
     // The default short date column format (`ComicDateFormat`
     // default); the per-column format pickers arrive in Phase 5.
     if d.naive <= cr_core::xml::scalar::CrDateTime::min_value().naive {
@@ -119,6 +129,48 @@ pub fn column_text(book: &ComicBook, name: &str) -> String {
             cr_core::model::enums::YesNo::No => "No".into(),
             cr_core::model::enums::YesNo::Unknown => "Unknown".into(),
         },
+        // The computed `*AsText` properties (the C# `GetYesNoAsText`
+        // shape: Unknown renders empty).
+        "BlackAndWhiteAsText" => yes_no_text(book.info.black_and_white),
+        "MangaAsText" => match book.info.manga {
+            cr_core::model::enums::MangaYesNo::YesAndRightToLeft => "Yes (Right to Left)".into(),
+            cr_core::model::enums::MangaYesNo::Yes => "Yes".into(),
+            cr_core::model::enums::MangaYesNo::No => "No".into(),
+            cr_core::model::enums::MangaYesNo::Unknown => String::new(),
+        },
+        "SeriesCompleteAsText" => yes_no_text(book.series_complete),
+        "HasBeenReadAsText" => {
+            if book_view::has_been_read(book) {
+                "Yes".into()
+            } else {
+                "No".into()
+            }
+        }
+        "IsLinkedAsText" => {
+            if !book.file_path.is_empty() {
+                "Yes".into()
+            } else {
+                "No".into()
+            }
+        }
+        "EnableProposedAsText" => {
+            if book.enable_proposed {
+                "Yes".into()
+            } else {
+                "No".into()
+            }
+        }
+        "BookPriceAsText" => {
+            if book.book_price >= 0.0 {
+                format!("{:.2}", book.book_price)
+            } else {
+                "Unknown".into()
+            }
+        }
+        "PublishedRegional" => date_text(&book_view::published(book, &prop)),
+        "ActualFileFormat" => cr_io::formats::source_format(std::path::Path::new(&book.file_path))
+            .map(|f| f.name.to_string())
+            .unwrap_or_default(),
         "LanguageAsText" => book_view::language_as_text(book),
         "FilePath" => book.file_path.clone(),
         "FileName" | "FileDirectory" => {

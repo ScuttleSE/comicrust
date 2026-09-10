@@ -30,7 +30,7 @@ fn cr_ui_settings() -> std::rc::Rc<std::cell::RefCell<cr_core::settings::Setting
 }
 use crate::reader_shell::ReaderShell;
 
-use super::columns::default_columns;
+use super::columns::{self, default_columns};
 use super::item_view::ItemView;
 use super::layout::ItemViewMode;
 use super::navigator::Navigator;
@@ -133,9 +133,13 @@ struct ShellState {
     /// Duplicate List source (`GetCurrentMatcher`).
     current_filter: RefCell<Option<Matcher>>,
     /// The Detail header column chooser (the C#
-    /// `autoHeaderContextMenuStrip`): a FRESH plain popover per open;
+    /// `autoHeaderContextMenuStrip`): a FRESH PopoverMenu per open;
     /// the last one is kept for the probe.
     columns_drop: RefCell<Option<gtk4::Popover>>,
+    /// The per-column check actions of the chooser ("cols.col<id>",
+    /// state = visible — the model items' checkmarks). States refresh
+    /// on every open.
+    column_actions: RefCell<HashMap<i32, gio::SimpleAction>>,
     /// The book context menu's last popover (the probe's arrow
     /// gate) — the same fresh-per-open shape.
     context_drop: RefCell<Option<gtk4::Popover>>,
@@ -692,6 +696,7 @@ impl BrowserShell {
             // (the exact shape of the proven book context menu; the
             // last one stays here for the probe).
             columns_drop: RefCell::new(None),
+            column_actions: RefCell::new(HashMap::new()),
             context_drop: RefCell::new(None),
             pool,
             tasks_window: RefCell::new(None),
@@ -3051,45 +3056,117 @@ impl ShellState {
     /// parented to the top-level window on Wayland; a plain popover
     /// maps fine.
     fn popup_column_chooser(self: &Rc<ShellState>, wx: f64, wy: f64) {
-        let popover = gtk4::Popover::new();
+        let snapshot = self.item_view.detail_columns_snapshot();
+        // The per-column check actions (one stateful bool per column
+        // id — the model items' checkmarks). Created once; the states
+        // refresh on every open so an external `win.toggle-column`
+        // between opens keeps the checks honest.
+        if self.column_actions.borrow().is_empty() {
+            let group = gio::SimpleActionGroup::new();
+            let mut map = self.column_actions.borrow_mut();
+            for (id, _, _) in snapshot.iter().cloned() {
+                let action =
+                    gio::SimpleAction::new_stateful(&format!("col{id}"), None, &false.to_variant());
+                let state = Rc::downgrade(self);
+                action.connect_activate(move |a, _| {
+                    let Some(sh) = state.upgrade() else {
+                        return;
+                    };
+                    sh.item_view.toggle_column_visible(id);
+                    let visible = sh
+                        .item_view
+                        .detail_columns_snapshot()
+                        .iter()
+                        .find(|c| c.0 == id)
+                        .map(|c| c.2)
+                        .unwrap_or(false);
+                    a.set_state(&visible.to_variant());
+                    sh.sync_enabled();
+                });
+                group.add_action(&action);
+                map.insert(id, action);
+            }
+            self.window.insert_action_group("cols", Some(&group));
+        }
+        for (id, _, visible) in &snapshot {
+            if let Some(a) = self.column_actions.borrow().get(id) {
+                a.set_state(&visible.to_variant());
+            }
+        }
+        // The `CreateHeaderMenu` fill: the visible columns at top
+        // level, then All + the letter submenus. The big pages are
+        // custom scrolled widgets (the model pages cannot scroll).
+        let chooser = columns::chooser_menu(&snapshot);
+        let menu = gio::Menu::new();
+        let top = gio::Menu::new();
+        for entry in &chooser.top {
+            let mi = gio::MenuItem::new(Some(&entry.1), None);
+            mi.set_action_and_target_value(Some(&format!("cols.col{}", entry.0)), None);
+            top.append_item(&mi);
+        }
+        menu.append_section(None, &top);
+        let push_custom = |menu: &gio::Menu, label: &str, id: &str| {
+            let mi = gio::MenuItem::new(Some(label), None);
+            mi.set_attribute_value("custom", Some(&id.to_variant()));
+            mi.set_link("submenu", Some(&gio::Menu::new()));
+            menu.append_item(&mi);
+        };
+        push_custom(&menu, "All", "chooser-all");
+        for (i, (label, _)) in chooser.letters.iter().enumerate() {
+            push_custom(&menu, label, &format!("chooser-letters-{i}"));
+        }
+        let popover = gtk4::PopoverMenu::from_model(Some(&menu));
         // No pointing arrow (the C# ContextMenuStrip shape).
         popover.set_has_arrow(false);
+        popover.add_child(&self.chooser_page(&chooser.all), "chooser-all");
+        for (i, (_, run)) in chooser.letters.iter().enumerate() {
+            popover.add_child(&self.chooser_page(run), &format!("chooser-letters-{i}"));
+        }
+        popover.set_parent(&self.window);
+        popover.connect_closed(|p| p.unparent());
+        let rect = gtk4::gdk::Rectangle::new(wx as i32, wy as i32 + 4, 1, 1);
+        popover.set_pointing_to(Some(&rect));
+        *self.columns_drop.borrow_mut() = Some(popover.clone().upcast::<gtk4::Popover>());
+        popover.popup();
+    }
+
+    /// One chooser submenu page: a scroller of check rows (the big
+    /// submenus exceed the screen — the C# scroll arrows).
+    fn chooser_page(
+        self: &Rc<ShellState>,
+        entries: &[columns::ChooserEntry],
+    ) -> gtk4::ScrolledWindow {
         let list = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
         list.set_margin_top(4);
         list.set_margin_bottom(4);
         list.set_margin_start(4);
         list.set_margin_end(4);
-        let scroller = gtk4::ScrolledWindow::builder()
+        for (id, name, visible) in entries.iter().cloned() {
+            let check = gtk4::CheckButton::with_label(&name);
+            check.set_active(visible);
+            let state = Rc::downgrade(self);
+            check.connect_toggled(move |c| {
+                if let Some(sh) = state.upgrade() {
+                    sh.item_view.toggle_column_visible(id);
+                    // Keep the model check states honest while open.
+                    if let Some(a) = sh.column_actions.borrow().get(&id) {
+                        a.set_state(&c.is_active().to_variant());
+                    }
+                    sh.sync_enabled();
+                }
+            });
+            list.append(&check);
+        }
+        gtk4::ScrolledWindow::builder()
             .propagate_natural_width(true)
             // Without natural-height propagation the scroller
-            // collapses to ~2 rows — request the list's full height
-            // up to the cap (the user report).
+            // collapses — request the list's full height up to the
+            // cap (the T6 lesson).
             .propagate_natural_height(true)
             .max_content_height(480)
             .hscrollbar_policy(gtk4::PolicyType::Never)
             .child(&list)
-            .build();
-        for (id, name, visible) in self.item_view.detail_columns_snapshot() {
-            let check = gtk4::CheckButton::with_label(&name);
-            check.set_active(visible);
-            let state = Rc::downgrade(self);
-            let popover_ref = popover.clone();
-            check.connect_toggled(move |_| {
-                if let Some(sh) = state.upgrade() {
-                    sh.item_view.toggle_column_visible(id);
-                    sh.sync_enabled();
-                }
-                let _ = &popover_ref;
-            });
-            list.append(&check);
-        }
-        popover.set_child(Some(&scroller));
-        popover.set_parent(&self.window);
-        popover.connect_closed(|p| p.unparent());
-        let rect = gtk4::gdk::Rectangle::new(wx as i32, wy as i32 + 4, 1, 1);
-        popover.set_pointing_to(Some(&rect));
-        *self.columns_drop.borrow_mut() = Some(popover.clone());
-        popover.popup();
+            .build()
     }
 
     /// The Preferences dialog (shared by the header button and the
@@ -3288,7 +3365,11 @@ impl ShellState {
                 f64::from(ws.view.tile_height * 2),
                 f64::from(ws.view.tile_height),
             );
-            c.row_height = f64::from(ws.view.row_height);
+            // The C# guard (`value.ItemRowHeight >= 8`): an unset
+            // height keeps the boot default (font height + 6).
+            if ws.view.row_height >= 8 {
+                c.row_height = f64::from(ws.view.row_height);
+            }
         });
         if let Some(key) = &ws.view.sort_key {
             self.item_view.set_sort_column(key);

@@ -19,8 +19,11 @@ pub const COLUMN_OFFSET_X: f64 = 8.0;
 pub const LABEL_LINES: f64 = 3.0;
 pub const DEFAULT_THUMB_HEIGHT: f64 = 128.0;
 pub const DEFAULT_TILE: (f64, f64) = (192.0, 96.0);
-pub const DEFAULT_ROW_HEIGHT: f64 = 16.0;
-pub const DEFAULT_HEADER_HEIGHT: f64 = 20.0;
+/// The C# runtime default: `ItemRowHeight = Font.Height + ScaleDpiY(6)`
+/// (ComicBrowserControl.cs:861) — font height 15 + 6.
+pub const DEFAULT_ROW_HEIGHT: f64 = 21.0;
+/// `ColumnHeaderHeight = ItemRowHeight` (ComicBrowserControl.cs:862).
+pub const DEFAULT_HEADER_HEIGHT: f64 = 21.0;
 pub const DEFAULT_GROUP_HEADER_HEIGHT: f64 = 40.0;
 
 // The status-bar slider + Ctrl+wheel limits (`Program.MinThumbHeight`
@@ -148,6 +151,9 @@ pub struct ItemRect {
     pub rect: Rect,
     pub column: usize,
     pub row: usize,
+    /// The row index WITHIN the group (`ItemDrawInformation.GroupItem`)
+    /// — the Detail banding alternates on it and restarts per group.
+    pub group_row: usize,
 }
 
 /// One placed group header.
@@ -271,6 +277,7 @@ pub fn compute(view: &ViewState, config: &LayoutConfig) -> ItemLayout {
         if group.collapsed {
             continue;
         }
+        let mut group_row = 0usize;
         for &display in &group.items {
             let _ = display;
             let (dx, dy) = (x + pad, y + pad);
@@ -285,11 +292,13 @@ pub fn compute(view: &ViewState, config: &LayoutConfig) -> ItemLayout {
                     rect: Rect::new(dx, dy, w, h),
                     column: 0,
                     row,
+                    group_row,
                 };
                 layout.items[display] = Some(item);
                 if let Some(last) = layout.rows.last_mut() {
                     last.push(display);
                 }
+                group_row += 1;
                 row += 1;
                 y += cell_stride_h;
                 x = 0.0;
@@ -313,6 +322,7 @@ pub fn compute(view: &ViewState, config: &LayoutConfig) -> ItemLayout {
                 rect: Rect::new(x + pad, y + pad, w, h),
                 column,
                 row,
+                group_row: 0,
             };
             row_start.push(Some(item));
             row_width = row_width.max(x + 2.0 * pad + cell_w);

@@ -73,6 +73,87 @@ Update this section at the **end of every work session**. The next agent must kn
 
 ### State summary
 
+- **DETAIL VIEW MATCHED TO CR (2026-09-10; user batch: "text slightly
+  too small, rows almost twice CR's, alternate white/grey rows,
+  column chooser like CR"):** four fixes, all C#-source derived.
+  (1) FONT: the Detail cells + header strip + auto-size measure drew
+  at Sans 12; the C# item font is `SystemFonts.IconTitleFont`
+  (`ComicBrowserControl.cs:859`) ≈ Sans 13 on the Linux stack —
+  `DETAIL_FONT_SIZE = 13.0` in one const, used by the cell draw, the
+  header strip, and `AutoSizeHeader`. The cell text is now CENTERED
+  per cell (`LineAlignment.Center`), aligned Near/Far/Center with
+  widths MEASURED through `text_extents` (the old 6.6/char estimate
+  drifted), 2 px inset (`Inflate(-2, 0)`).
+  (2) ROW HEIGHT: `DEFAULT_ROW_HEIGHT` 16 → 21 = the C# boot formula
+  `ItemRowHeight = Font.Height + ScaleDpiY(6)`
+  (ComicBrowserControl.cs:861); `DEFAULT_HEADER_HEIGHT` → 21
+  (`ColumnHeaderHeight = ItemRowHeight`, :862). The workspace
+  restore now carries the C# apply guard (`value.ItemRowHeight >=
+  8`, ItemView.cs:1596) and the cr-core workspace default is 0 =
+  unset (keeps the boot default). USER-REPORT ROOT CAUSE, measured:
+  the OLD T8 `sync_slider` set the slider range UNGUARDED — the GTK
+  clamp fired `value_changed` and ANY mode switch slammed the row
+  height to the 48 ceiling (fixed in d5f53b8, but every close after
+  such a switch SAVED 48; this machine's Config.xml carries
+  `<ItemRowHeight>48</ItemRowHeight>`). C# parity keeps restoring
+  the stored value, so the user must drag the status-bar slider
+  (Detail range 12..48) or Ctrl+wheel down ONCE; later saves
+  persist the choice.
+  (3) BANDING: `ItemRect.group_row` (the row index within its
+  group — the C# `ItemDrawInformation.GroupItem` restarts per
+  group) and the Detail draw paints every non-selected even row
+  with the C# `ThemeColors.DetailView.RowHighlight` =
+  `Color.LightGray` at alpha 96 over the window base (dark theme:
+  RGB 72,72,72 per DarkThemeColorTable; base luminance picks the
+  target). The band spans the full client width
+  (`GetItemBounds` = (clientWidth, ItemRowHeight)), not just the
+  column strip.
+  (4) COLUMN CHOOSER = the CR `ContextMenuBuilder.Create(20)` shape
+  (`ItemView.CreateHeaderMenu`): the 13 default-visible columns as
+  top-level check rows (registration order), then "All" (every
+  column, alphabetical — the user's explicit spec; the C# orders it
+  by registration), then letter submenus with the C# run-merge rule
+  (a run stays open while its size + the next bucket stays under
+  20) → `A-B, C-F, G-O, P-R, S, T-Y` over the full table (gated by
+  the `chooser_menu_matches_the_c_sharp_letter_groups` unit test).
+  The chooser is now a `PopoverMenu` (one surface, submenus swap
+  inside it — Wayland-safe) whose big pages are CUSTOM widgets via
+  `add_child` (the GTK contract: a model item with a `custom`
+  attribute + an empty `submenu` link names the page) because model
+  pages cannot scroll; the pages are scrollers of CheckButton rows.
+  Per-column checkmarks ride one stateful `cols.col<id>` action per
+  column (states refreshed at every open so `win.toggle-column`
+  toggles between opens stay honest). The C# "Recent" submenu is
+  NOT ported (no LastTimeVisible tracking; the C# hides it while
+  empty). The column TABLE is now the full C# registration list
+  (91 entries, ComicBrowserControl.cs:755-843): Web, Linked, the
+  Book Price/Age/Store/Owner/Condition/Collection
+  Status/Location family, ISBN, Proposed Values, Gap Information,
+  Icons, Scan Information, Main Character/Team, Review,
+  Published (Regional), the 14 "Series:" stats columns, Actual
+  File Format (slow) — plus the property fixes (B&W →
+  BlackAndWhiteAsText, Manga → MangaAsText, Series complete
+  (lowercase, as in the C#) → SeriesCompleteAsText, Read →
+  HasBeenReadAsText). New cell-text arms in
+  `display_text::column_text` (`GetYesNoAsText` shape: Unknown →
+  empty; BookPriceAsText `{:.2}`/Unknown; ActualFileFormat through
+  `cr_io::formats::source_format`) and the "Series:" columns draw
+  LIVE against a lazily built per-series table
+  (`cr_engine::matcher::series::create` over the view's books —
+  the `ComicBooknistics.Create` shape; built before the draw loop,
+  cleared in set_books + append_books; the
+  `ComicBookSeriesStatistics.*AsText` formats incl. "N Page(s)",
+  "{n}%", "None" for gaps). Gap Information/Icons stay textless
+  (the C# draws images — recorded deviation; `is_text_column`
+  excludes ids 0/60/62/101). 491 tests; fmt/clippy green;
+  browserbar (D chooser-open+height=600+toggle, D2+D3 grouping),
+  statusbar (A-J2), workspace, commands (73/73), menubar probes
+  green. USER TEST = switch the browser to Detail: the text size
+  and row rhythm match CR once the saved 48 is dragged off the
+  slider (see (2)); rows alternate grey/white starting grey, the
+  selected row keeps the highlight; right-click the column header:
+  the 13 defaults, All (alphabetical), then A-B/C-F/G-O/P-R/S/T-Y;
+  enable "Series: Books" — the per-series counts fill.
 - **GROUP-HEADER ARROW = VECTOR TRIANGLE (2026-09-10, commit
   d8e83ed; user ask: "make the icon a triangle pointing right when
   collapsed; a click rotates it 90° to point down and the group
@@ -793,7 +874,7 @@ Update this section at the **end of every work session**. The next agent must kn
   while testing grouping (the crash, the 0 counts, the inverted
   double-click) — grouping is effectively user-exercised; the lamp
   + thumbnail parts still need the explicit test below. HEAD =
-  05c809e, 489 tests.
+  05c809e, 489 tests (491 after the Detail-view batch above).
   Open gaps: WebComicProvider, PDF/DjVu writers, the LICENSE file
   (Phase 11 packaging gap), the T14 per-list sort deviation,
   HEIF/AVIF decode. The Phase 11 PIPELINE is COMPLETE (the v0.0.283

@@ -32,6 +32,8 @@ use gtk4::{
 use cr_core::model::comic_book::ComicBook;
 use cr_core::xml::scalar::CrGuid;
 use cr_engine::image_pool::ImagePool;
+use cr_engine::matcher::book_view;
+use cr_engine::matcher::series::{self, SeriesKey, SeriesStatistics};
 
 use super::columns::{self, Column};
 use super::layout::{
@@ -42,6 +44,21 @@ use super::view_state::ViewState;
 
 /// The type-ahead buffer reset (`KeySearch`).
 const TYPE_AHEAD_RESET_MS: u64 = 2500;
+
+/// The Detail cell + header font (`base.View.Font` =
+/// `SystemFonts.IconTitleFont`, 9 pt ≈ 13 px on the Linux font
+/// stack; the C# `CoverViewItem.OnDraw` text uses the view font).
+const DETAIL_FONT_SIZE: f64 = 13.0;
+
+/// The Detail row band (`ThemeColors.DetailView.RowHighlight`):
+/// `Color.LightGray` blended at alpha 96 over the window base (the
+/// dark table swaps the target for RGB 72,72,72 — DarkThemeColorTable).
+const ROW_BAND_LIGHT: (f64, f64, f64) = (211.0 / 255.0, 211.0 / 255.0, 211.0 / 255.0);
+const ROW_BAND_DARK: (f64, f64, f64) = (72.0 / 255.0, 72.0 / 255.0, 72.0 / 255.0);
+const ROW_BAND_ALPHA: f64 = 96.0 / 255.0;
+
+/// The per-column cell inset (`rectangle.Inflate(-2, 0)`).
+const DETAIL_CELL_PAD: f64 = 2.0;
 
 /// The focus ring when the view does not hold focus (a neutral gray
 /// that reads on both themes — the palette colors cover the rest).
@@ -121,6 +138,11 @@ pub struct ItemViewState {
     /// `UpdateSelection`).
     band_snapshot: HashSet<CrGuid>,
     detail_columns: Vec<Column>,
+    /// The per-series statistics for the "Series:" columns (the C#
+    /// `StatsProvider.Getns` — the library's seriesStats cache). Built
+    /// lazily on the first stats-column draw over the view's books;
+    /// cleared on every book-set change.
+    series_stats: Option<HashMap<SeriesKey, SeriesStatistics>>,
     /// The live column drag (`resizeColumn`): the column id, the
     /// gesture-start x, and the width at start (the C# resize
     /// fields; the move applies the C# clamp math).
@@ -332,6 +354,7 @@ impl ItemView {
             band_start: (0.0, 0.0),
             band_snapshot: HashSet::new(),
             detail_columns: columns::default_columns(),
+            series_stats: None,
             resize: None,
             on_activate: None,
             on_selection_changed: None,
@@ -477,6 +500,7 @@ impl ItemView {
             s.detail_texts.clear();
             s.tile_texts.clear();
             s.tile_render.clear();
+            s.series_stats = None;
             s.band = None;
             let t3 = std::time::Instant::now();
             s.relayout(width);
@@ -509,6 +533,8 @@ impl ItemView {
             let mut s = self.state.borrow_mut();
             let filter = s.view.filter_clone();
             s.view.append_books(batch, filter);
+            // New books change the per-series aggregates.
+            s.series_stats = None;
             s.band = None;
             s.relayout(width);
         }
@@ -1696,7 +1722,7 @@ fn draw_frame(ctx: &cairo::Context, state: &Rc<RefCell<ItemViewState>>, window: 
         ctx.fill().ok();
         ctx.set_source_rgb(pal.fg.0, pal.fg.1, pal.fg.2);
         ctx.select_font_face("Sans", cairo::FontSlant::Normal, cairo::FontWeight::Normal);
-        ctx.set_font_size(12.0);
+        ctx.set_font_size(DETAIL_FONT_SIZE);
         // All visible columns — the same list the cells draw (the
         // image-only columns hold their slot).
         let visible: Vec<&Column> = s.detail_columns.iter().filter(|c| c.visible).collect();
@@ -1726,6 +1752,18 @@ fn draw_frame(ctx: &cairo::Context, state: &Rc<RefCell<ItemViewState>>, window: 
     // Items (culled to the window) — collected first, the draw
     // helpers mutate the thumb cache.
     let visible: Vec<layout::ItemRect> = visible_items(&s.layout, window).copied().collect();
+    // The "Series:" stat columns need the per-series aggregates —
+    // build once per book set (the C# `ComicBooknistics.Create` over
+    // the library books, built on the first stats access).
+    if s.config.mode == ItemViewMode::Detail
+        && s.series_stats.is_none()
+        && s.detail_columns
+            .iter()
+            .any(|c| c.visible && c.property.starts_with("SeriesStat"))
+    {
+        let books: Vec<&ComicBook> = s.view.books().iter().collect();
+        s.series_stats = Some(series::create(&books, &|b| book_view::proposed_cached(b)));
+    }
     for item in &visible {
         let book = s.view.book(item.display);
         let selected = s.view.is_selected(&book.id);
@@ -1746,7 +1784,15 @@ fn draw_frame(ctx: &cairo::Context, state: &Rc<RefCell<ItemViewState>>, window: 
                 draw_tile_item(ctx, &mut s, item.display, rect, selected, &pal);
             }
             ItemViewMode::Detail => {
-                draw_detail_item(ctx, &mut s, item.display, rect, selected, &pal);
+                draw_detail_item(
+                    ctx,
+                    &mut s,
+                    item.display,
+                    rect,
+                    selected,
+                    item.group_row,
+                    &pal,
+                );
             }
         }
 
@@ -1806,13 +1852,13 @@ fn draw_frame(ctx: &cairo::Context, state: &Rc<RefCell<ItemViewState>>, window: 
 
 /// `AutoSizeHeader` (`GetAutoHeaderSize`): the widest cell text over
 /// the DISPLAYED items + padding, clamped to the C# 0..10000. The
-/// scratch context measures with the cell font (Sans 12).
+/// scratch context measures with the cell font (Sans 13).
 fn autosize_column_state(state: &Rc<RefCell<ItemViewState>>, id: i32) -> f64 {
     let surface =
         cairo::ImageSurface::create(cairo::Format::ARgb32, 1, 1).expect("autosize scratch surface");
     let ctx = cairo::Context::new(&surface).expect("autosize scratch context");
     ctx.select_font_face("Sans", cairo::FontSlant::Normal, cairo::FontWeight::Normal);
-    ctx.set_font_size(12.0);
+    ctx.set_font_size(DETAIL_FONT_SIZE);
     let mut s = state.borrow_mut();
     let Some(idx) = s.detail_columns.iter().position(|c| c.id == id) else {
         return 0.0;
@@ -2169,15 +2215,33 @@ fn draw_detail_item(
     display: usize,
     rect: Rect,
     selected: bool,
+    group_row: usize,
     pal: &crate::theme::Palette,
 ) {
+    // The row band: even rows within their group, never the selected
+    // one (`drawInfo.GroupItem % 2 == 0 && !Selected` — the first row
+    // of each group bands). The C# row bounds span the full client
+    // width (`GetItemBounds` = (clientWidth, ItemRowHeight)).
+    if !selected && group_row.is_multiple_of(2) {
+        let luminance = pal.base.0 + pal.base.1 + pal.base.2;
+        let band = if luminance < 1.5 {
+            ROW_BAND_DARK
+        } else {
+            ROW_BAND_LIGHT
+        };
+        ctx.set_source_rgba(band.0, band.1, band.2, ROW_BAND_ALPHA);
+        let w = rect.w.max(s.config.view_width);
+        ctx.rectangle(rect.x, rect.y, w, rect.h);
+        ctx.fill().ok();
+    }
     let (tr, tg, tb) = if selected { pal.selected_fg } else { pal.fg };
     ctx.set_source_rgb(tr, tg, tb);
     ctx.select_font_face("Sans", cairo::FontSlant::Normal, cairo::FontWeight::Normal);
-    ctx.set_font_size(12.0);
+    ctx.set_font_size(DETAIL_FONT_SIZE);
     // The row's cell texts, cached per book (the same regex hazard
     // as the captions — the resolver's proposed fallback parses file
-    // names).
+    // names). The stats columns resolve LIVE against the series-stats
+    // table (it rides the whole book set, not the book).
     let visible: Vec<Column> = s
         .detail_columns
         .iter()
@@ -2205,23 +2269,103 @@ fn draw_detail_item(
         let Some(cell) = column_rects.get(i) else {
             break;
         };
-        let text = match column.name {
-            "Position" => (display + 1).to_string(),
-            _ => texts.get(i).cloned().unwrap_or_default(),
+        let text = if column.property.starts_with("SeriesStat") {
+            series_stat_text(s.series_stats.as_ref(), column, s.view.book(display))
+        } else {
+            match column.name {
+                "Position" => (display + 1).to_string(),
+                _ => texts.get(i).cloned().unwrap_or_default(),
+            }
         };
         if text.is_empty() {
             continue;
         }
-        let (tx, ty) = match column.alignment {
-            columns::ColumnAlignment::Far => {
-                // Right-align inside the cell (approximate: 0.55
-                // per char).
-                let w = text.len() as f64 * 6.6;
-                (cell.x + cell.w - w - 4.0, cell.y + cell.h * 0.75)
-            }
-            _ => (cell.x + 4.0, cell.y + cell.h * 0.75),
+        // Center the text in the cell (`LineAlignment.Center`) with
+        // the per-column alignment and the 2 px inset — the widths
+        // measured, not estimated (the old 6.6/char estimate drifts
+        // on proportional text).
+        let w = ctx.text_extents(&text).map(|e| e.width()).unwrap_or(0.0);
+        let tx = match column.alignment {
+            columns::ColumnAlignment::Far => cell.x + cell.w - DETAIL_CELL_PAD - w,
+            columns::ColumnAlignment::Center => cell.x + (cell.w - w) / 2.0,
+            columns::ColumnAlignment::Near => cell.x + DETAIL_CELL_PAD,
         };
-        ctx.move_to(tx, ty);
+        ctx.move_to(tx.max(cell.x), cell.y + cell.h * 0.75);
         ctx.show_text(&text).ok();
+    }
+}
+
+/// The "Series:" stat columns — the live text against the view's
+/// series aggregates (`StatsProvider.Getns` + the
+/// `ComicBookSeriesStatistics.*AsText` formats). The table is built
+/// before the draw loop (the row draw holds shared borrows only).
+fn series_stat_text(
+    table: Option<&HashMap<SeriesKey, SeriesStatistics>>,
+    column: &Column,
+    book: &ComicBook,
+) -> String {
+    let Some(table) = table else {
+        return String::new();
+    };
+    let key = SeriesKey::of(book, &book_view::proposed_cached(book));
+    let Some(stats) = table.get(&key) else {
+        return String::new();
+    };
+    match column.property {
+        "SeriesStatCountAsText" => stats.count.to_string(),
+        "SeriesStatPageCountAsText" | "SeriesStatPageReadCountAsText" => {
+            let n = if column.property == "SeriesStatPageCountAsText" {
+                stats.page_count
+            } else {
+                stats.page_read_count
+            };
+            // `ComicBook.FormatPages` ("{0} Page(s)" / Unknown).
+            if n > 0 {
+                format!("{n} Page(s)")
+            } else {
+                "Unknown".into()
+            }
+        }
+        "SeriesStatReadPercentageAsText" => format!("{}%", stats.read_percentage),
+        "SeriesStatMinNumberAsText" => stat_number(stats.first_number),
+        "SeriesStatMaxNumberAsText" => stat_number(stats.last_number),
+        "SeriesStatMinYearAsText" => format_year(stats.first_year),
+        "SeriesStatMaxYearAsText" => format_year(stats.last_year),
+        "SeriesStatAverageRating" => cr_core::xml::scalar::net_f32(stats.average_rating),
+        "SeriesStatAverageCommunityRating" => {
+            cr_core::xml::scalar::net_f32(stats.average_community_rating)
+        }
+        "SeriesStatGapCountAsText" => {
+            if stats.gap_count > 0 {
+                stats.gap_count.to_string()
+            } else {
+                "None".into()
+            }
+        }
+        "SeriesStatLastAddedTime" => cr_engine::display_text::date_text(&stats.last_added_time),
+        "SeriesStatLastOpenedTime" => cr_engine::display_text::date_text(&stats.last_opened_time),
+        "SeriesStatLastReleasedTime" => {
+            cr_engine::display_text::date_text(&stats.last_released_time)
+        }
+        _ => String::new(),
+    }
+}
+
+/// `MinNumberAsText`/`MaxNumberAsText`: a non-negative number renders,
+/// a negative (the un-numbered sentinel) stays empty.
+fn stat_number(n: f32) -> String {
+    if n >= 0.0 {
+        cr_core::xml::scalar::net_f32(n)
+    } else {
+        String::new()
+    }
+}
+
+/// `ComicBook.FormatYear`.
+fn format_year(year: i32) -> String {
+    if year != -1 {
+        year.to_string()
+    } else {
+        String::new()
     }
 }

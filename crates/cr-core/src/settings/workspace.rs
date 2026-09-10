@@ -56,7 +56,8 @@ pub struct BrowserViewState {
     pub thumb_height: i32,
     /// `ItemViewConfig.TileSize.Height`.
     pub tile_height: i32,
-    /// `ItemViewConfig.ItemRowHeight`.
+    /// `ItemViewConfig.ItemRowHeight` — 0 = unset (the runtime font
+    /// default applies; the C# apply guard is `>= 8`).
     pub row_height: i32,
     /// `ItemViewConfig.Columns`.
     pub columns: Vec<ColumnState>,
@@ -74,7 +75,7 @@ impl Default for BrowserViewState {
             sort_order: SortOrder::Ascending,
             thumb_height: 256,
             tile_height: 128,
-            row_height: 24,
+            row_height: 0,
             columns: Vec::new(),
         }
     }
