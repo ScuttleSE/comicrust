@@ -350,3 +350,36 @@ records in AGENTS.md):
 Phase 12 is CLOSED. The remaining watch-items (probe-gated, not
 user-visible failures): the rescrape fast path and the fileless
 cover render in daily use.
+
+## FIX ROUND 3 (2026-09-10, e2e9b65, the user-reported batch — ALL PASS)
+
+Nine items from the user's scrape/editor session, all implemented and
+user-tested ("all ok"). The full record lives in AGENTS.md; the
+scrape-relevant parts:
+
+1. **The settings surface** — the Comic Vine Scraper config is now a
+   PAGE of the Preferences dialog (`ScrapeConfigWidgets` in
+   `dialogs/scrape_config.rs`, shared with the standalone
+   `win.scrape-config` dialog); `show_preferences` gained the
+   initial-page parameter and the no-API-key scrape opens Preferences
+   on that page. Gate: `scrapeprefs_probe` (A default page, B the
+   scraper page on request, C the OK commit into settings.json).
+2. **The series pick dialog** — left-aligned 4-column rows (Series |
+   Year | Issues | Publisher + heading row; GtkLabel centers by
+   default, xalign 0 everywhere) and `activate_on_single_click(false)`
+   in BOTH pick dialogs — a single click only SELECTS, the commit is
+   double-click/Enter (the single-click `row_activated` commits of fix
+   round 2 WERE the reported "click immediately matches").
+3. **Show Issues** — `SeriesResult::Show` no longer auto-picks: the
+   engine's `choose_issue_ref` skips both shortcut auto-picks when the
+   dialog is forced (Show Issues / Confirm Issues) and passes the
+   matched issue as the hint; the wizard preselects the hint row.
+   Engine gate: `show_issues_forces_the_issue_dialog` +
+   `a_unique_issue_number_auto_picks_without_show_issues`.
+
+The editor fixes (the fileless custom-thumbnail cover in Properties,
+the double-height Plot Summary, the editable Custom tab) and the
+shared left-aligned `menu_item_button` for every context menu are
+AGENTS.md's record — the Custom tab also gained the per-book refill
+(it showed only the first book's values) and `library::try_session()`
+for the session-free probes.

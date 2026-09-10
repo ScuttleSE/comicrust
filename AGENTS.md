@@ -74,8 +74,10 @@ Update this section at the **end of every work session**. The next agent must kn
 ### State summary
 
 - **SCRAPER UX FIX ROUND 3 + EDITOR/PREFS FIXES (2026-09-10, the
-  user-reported batch):** nine items, all implemented; fmt/clippy/
-  484 tests green; gates `scrapeprefs_probe` (new) + the engine test
+  user-reported batch) — USER-TESTED, ALL PASS (same day, "all ok";
+  commit e2e9b65; the kickoff record is the FIX ROUND 3 section of
+  `docs/phase-12-kickoff.md`):** nine items; fmt/clippy/484 tests
+  green; gates `scrapeprefs_probe` (new) + the engine test
   `show_issues_forces_the_issue_dialog` (new). (1) The Comic Vine
   Scraper settings now live as a "Comic Vine Scraper" PAGE of the
   Preferences dialog — `dialogs/scrape_config.rs` gained
@@ -128,7 +130,7 @@ Update this section at the **end of every work session**. The next agent must kn
   fits long summaries. (f) Right-click menus are left-aligned. (g)
   Properties ▸ Custom edits values (edit one on two books, check
   the value survives prev/next and OK, an emptied value removes the
-  key).
+  key). RESULT: ALL PASS ("all ok", 2026-09-10).
 - **WRITE-BACK ON THE INFO WRITER WORKER (2026-09-10, follow-up to
   the export freeze):** `library::update_book_file` used to run
   `ComicProvider::open` + `store_info_scoped` (a full archive
@@ -465,9 +467,13 @@ Update this section at the **end of every work session**. The next agent must kn
   and the settings dialog worked on the first run. The rescrape fast
   path and the fileless cover render are probe-gated (scrape_probe,
   the pool tests) and stay watch-items for daily use.
-- **Phase:** PHASE 12 COMPLETE, USER-TESTED (2026-09-10, above)
-  besides the Phase 10 + Phase 11 blocks above
-  (2026-09-09). Phases 0-8 are COMPLETE
+- **Phase:** NO PHASE IS ACTIVE — the last active phase (12, the
+  Comic Vine Scraper) closed USER-TESTED 2026-09-10; the fix-round-3
+  batch (the user-reported nine: the Preferences scraper page, the
+  series columns + double-click, the forced issue dialog, the
+  fileless cover, the Summary height, the left-aligned menus, the
+  editable Custom tab) also passed its user test the same day
+  ("all ok", commit e2e9b65). Phases 0-8 are COMPLETE
   (every delivered task user-tested; the trail below carries the
   records). Phase 9 (the SQLite backend) is DEFERRED to
   `docs/backlog.md` with its full design intact. Open work is
@@ -483,28 +489,8 @@ Update this section at the **end of every work session**. The next agent must kn
   responsive window, progress ticks), and the write-back fix (edit
   a CBR/CB7 property + Update Book File(s) — responsive UI, write
   lands, the Files-to-update list clears). The Phase 12 scrape steps
-  passed their user test (see the Phase 12 block).
-- **Phase:** PHASE 12 COMPLETE, USER-TESTED (2026-09-10, above)
-  besides the Phase 10
-  + Phase 11 blocks above
-  (2026-09-09). Phases 0-8 are COMPLETE
-  (every delivered task user-tested; the trail below carries the
-  records). Phase 9 (the SQLite backend) is DEFERRED to
-  `docs/backlog.md` with its full design intact. Open work is
-  picked from `docs/backlog.md` and re-homed into a kickoff FIRST.
-  Open gaps: WebComicProvider, PDF/DjVu writers, the LICENSE file
-  (Phase 11 packaging gap), the T14 per-list sort deviation,
-  HEIF/AVIF decode. The Phase 11 PIPELINE is COMPLETE (the v0.0.283
-  release carries all 9 assets on both hosts); the install steps
-  (the kickoff user test) remain.
-  OPEN USER TESTS (2026-09-10, in test order): the Phase 10 steps
-  1-4 + 5-8 (the kickoff tail), the Phase 11 install steps (the
-  kickoff tail), the export-freeze fix (re-run a CBR→CBZ export —
-  responsive window, progress ticks), and the write-back fix (edit
-  a CBR/CB7 property + Update Book File(s) — responsive UI, write
-  lands, the Files-to-update list clears). The Phase 12 scrape steps
-  passed their user test (see the Phase 12 block) — the FIRST entry
-  of the earlier list is resolved.
+  AND the fix-round-3 batch passed their user tests (see the Phase 12
+  block + the SCRAPER UX FIX ROUND 3 block).
 - **(Phase 8 — CLOSED 2026-09-08 — the kickoff is
   `docs/phase-8-kickoff.md`; done so far: T3 (the
   CBL-import perf) + T10 first slice (the view-side proposed-parse
@@ -1390,7 +1376,7 @@ Update this section at the **end of every work session**. The next agent must kn
   Phases 0-5 are complete (their gates stay green). Open Phase 1
   gaps: WebComicProvider and the PDF/DjVu writers (tracked in
   `docs/phase-1-kickoff.md`).
-- **State:** `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` are green. 481 tests — 36 suites plus the cr-scrape suites (the Phase 8 perf gates: `reading_list_perf`, `view_perf`, `path_migration_perf`, `list_eval_perf`, `scan_perf`; the cr-ui probes are examples, not tests; the real-fixture parts skip in CI without the git-ignored `tests/testfiles/` files; the RAR round-trips skip without `CR_RAR_TESTS` + `rar`). CI runs on the `docker-runner-amd64` container runner (ADR-020) and is LIVE (it caught the 2026-09-09 group-gate flake — the runner + `comicrust-ci:latest` image work). The release tracks are `release.yaml` (rolling prerelease per push) and `tagged-release.yaml` (manual dispatch, stable release for an existing tag — ADR-021, 2026-09-03); `packaging.yaml` (Phase 11) attaches the source tarball, the Arch package, and the Flatpak bundle to a tagged release. First real tagged-release run (v0.0.273, 2026-09-09) exposed a latent env bug: the "Publish to GitHub mirror" step lacked `TAG` (the Gitea publish succeeded; the mirror step died on `set -u`) — fixed in commit 05483da.
+- **State:** `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` are green. 484 tests — 36 suites plus the cr-scrape suites (the Phase 8 perf gates: `reading_list_perf`, `view_perf`, `path_migration_perf`, `list_eval_perf`, `scan_perf`; the cr-ui probes are examples, not tests — the newest is `scrapeprefs_probe`; the real-fixture parts skip in CI without the git-ignored `tests/testfiles/` files; the RAR round-trips skip without `CR_RAR_TESTS` + `rar`). CI runs on the `docker-runner-amd64` container runner (ADR-020) and is LIVE (it caught the 2026-09-09 group-gate flake — the runner + `comicrust-ci:latest` image work). The release tracks are `release.yaml` (rolling prerelease per push) and `tagged-release.yaml` (manual dispatch, stable release for an existing tag — ADR-021, 2026-09-03); `packaging.yaml` (Phase 11) attaches the source tarball, the Arch package, and the .deb to a tagged release. First real tagged-release run (v0.0.273, 2026-09-09) exposed a latent env bug: the "Publish to GitHub mirror" step lacked `TAG` (the Gitea publish succeeded; the mirror step died on `set -u`) — fixed in commit 05483da.
 - **GitHub mirror (2026-09-06):** remote `github` = `git@github.com:ScuttleSE/comicrust.git` — a TRUE mirror (identical SHAs; `.gitea/` rides along but is inert there, GitHub Actions only reads `.github/workflows/`). After every origin push also `git push github main`; stable tags get pushed manually once; the `rolling` tag is CI-managed on BOTH sides (each release run deletes/recreates it) — never push it by hand. Both release workflows also publish the built tarball + sha256 to GitHub Releases through `.gitea/publish_github_release.sh` (build once on Gitea, assets on both); it needs the Gitea secret `MIRROR_RELEASE_TOKEN` (GitHub PAT with Contents read/write on ScuttleSE/comicrust; Gitea forbids a `GITHUB_` prefix) — unset secret = the step skips with a notice.
 - **Phase 0 gate status:** byte-stable ComicDb.xml round-trip proven on all three synthetic fixtures AND the real-world database `tests/realworld/ComicDb.xml` (255 books, 584 KB, 2026-09-02, user-approved commit).
 - **Phase 2 gate status:** every saved smart list in the real-world DB (a) binds to the matcher registry, (b) renders to a `Match` query string that re-parses and re-renders byte-identically, and (c) evaluates to the SAME book sets the C# cached in `CacheStorage` (Never Read = all 255, Files to update = the 3 dirty books, Reading/Read = empty). Evidence: `crates/cr-engine/tests/realworld_query.rs`.
@@ -1931,12 +1917,15 @@ The UI crate (Phase 3):
 | `crates/cr-ui/src/browser/pages_view.rs` | The Pages panel: the open comic's page grid, the current-page marker, double-click navigation. |
 | `crates/cr-ui/src/reader_shell.rs` | The reader shell: session tabs, undock/re-dock (the T5 toolbar rides via `set_undock_chrome`), bookmark navigation (`bookmark_nav`), page-rotation write-through, fullscreen chrome, reading-state write-back. |
 | `crates/cr-ui/src/dialogs/name_prompt.rs` | The name prompt (`SelectItemDialog.GetName` shape): caption + prefilled entry, used by Set Bookmark. |
-| `crates/cr-ui/src/dialogs/book_editor.rs` | The book editor (Properties…): Details/Plot/Catalog/Pages/Colors/Custom tabs, the proposed-value placeholders, the per-page edit menu, the Colors sliders, Apply/OK/Cancel commit points. |
+| `crates/cr-ui/src/dialogs/book_editor.rs` | The book editor (Properties…): Details/Plot/Catalog/Pages/Colors/Custom tabs (the Custom tab is the editable library-key grid — the C# `customValuesData` port), the proposed-value placeholders, the per-page edit menu, the Colors sliders, Apply/OK/Cancel commit points. |
+| `crates/cr-ui/src/dialogs/scrape.rs` | The Comic Vine Scraper wizard: the non-modal status window, the engine worker + the request pump, the modal search/series (4-column)/issue pick dialogs over channels. |
+| `crates/cr-ui/src/dialogs/scrape_config.rs` | The Comic Vine Scraper config widgets (`ScrapeConfigWidgets`) shared by the standalone dialog and the Preferences "Comic Vine Scraper" page. |
+| `crates/cr-ui/src/widgets.rs` | Small shared widget helpers (`menu_item_button` — the left-aligned context-menu row). |
 | `crates/cr-ui/src/dialogs/bulk_edit.rs` | The bulk editor (Edit…): a Set check per field, the common-value cue, only checked fields apply. |
 | `crates/cr-ui/src/dialogs/smart_list.rs` | The smart-list editor: Designer (matcher rows/groups with the type/operator/value/not combos + the structure menu) | Query (the rendered query text round-trip). |
 | `crates/cr-ui/src/dialogs/list_editor.rs` | The list editor for folders (name/notes/combine) and reading lists (name/notes/quick-open). |
 | `crates/cr-ui/src/dialogs/export.rs` | The export dialog: target/folder/format/compression/naming/page-format/quality + the flags, the inline progress, the session-persisted last settings. |
-| `crates/cr-ui/examples/` | The headless probes: `commands_probe` (69 actions + accels), `menubar_probe` (the T3 bar), `dynmenus_probe` (the T4 fills), `toolbar_probe` (the T5 strip + the dropdown OPEN gate), `browserbar_probe` (the T6 browser toolbar: OPEN gates, the read/scope filters, the column chooser open/height/toggle, the duplicate landing), `navpages_probe` (the T7 navigator/Pages toolbars: the dispatch, the search filter, the expand flip, the Views OPEN + radio), `tabstrip_probe` (the T9 workspace strip: open/close/+/select flows, the Pages visibility, the bold slot, the comic-tab re-click, the reader-click MinimalGui gate), `statusbar_probe` (the T8 bar: defaults, the info line, the slider resize/sync, the page click, the lamp flags, the MinimalGui action; REFUSES a non-isolated XDG), `workspace_probe` (the T14 persistence: the mutate → collect → Config.xml shape → the second-shell restore → the close-path save; REFUSES a non-isolated XDG pair), `menubarvis_probe` (the visibility evidence), `displaysettings_probe`, `smalldialogs_probe`, `icons_probe`, `editor_probe`, `writeback_probe`. |
+| `crates/cr-ui/examples/` | The headless probes: `commands_probe` (69 actions + accels), `menubar_probe` (the T3 bar), `dynmenus_probe` (the T4 fills), `toolbar_probe` (the T5 strip + the dropdown OPEN gate), `browserbar_probe` (the T6 browser toolbar: OPEN gates, the read/scope filters, the column chooser open/height/toggle, the duplicate landing), `navpages_probe` (the T7 navigator/Pages toolbars: the dispatch, the search filter, the expand flip, the Views OPEN + radio), `tabstrip_probe` (the T9 workspace strip: open/close/+/select flows, the Pages visibility, the bold slot, the comic-tab re-click, the reader-click MinimalGui gate), `statusbar_probe` (the T8 bar: defaults, the info line, the slider resize/sync, the page click, the lamp flags, the MinimalGui action; REFUSES a non-isolated XDG), `workspace_probe` (the T14 persistence: the mutate → collect → Config.xml shape → the second-shell restore → the close-path save; REFUSES a non-isolated XDG pair), `menubarvis_probe` (the visibility evidence), `displaysettings_probe`, `smalldialogs_probe`, `icons_probe`, `editor_probe`, `writeback_probe`, `scrape_probe` (the Phase 12 wizard), `scrapeconfig_probe` (the standalone scraper config dialog), `scrapeprefs_probe` (the Preferences scraper page: the default page, the initial-page open, the OK commit). |
 | `crates/cr-ui/src/settings/` | The Preferences dialog (`preferences.rs`) + the options builder (`options.rs`, the `FillPanelWithOptions` parity). |
 | `crates/cr-ui/src/workspace.rs` | The T14 persistence conversions: the C# member-name strings for the cr-ui display enums, `DisplayOptions` ↔ `DisplayState` (the picked color as `#rrggbb`), the `browser_view_state` readouts mapping. Unit-tested. |
 | `crates/cr-ui/src/pages.rs` | The page-entry merge (`merged_page_entries`): the provider count + the stored overlay — the reader and the editor both use it. |
