@@ -73,6 +73,68 @@ Update this section at the **end of every work session**. The next agent must kn
 
 ### State summary
 
+- **GROUP HEADERS + SCAN LAMP + THUMB OPTION (2026-09-10, commit
+  fc748a7; user batch: group headers/collapse in all views, the
+  animated scan lamp with Cancel scan, the thumbnail question, an
+  on-demand off switch), user test PENDING:** (1) GROUPING — the
+  port NEVER rendered group headers (nothing set
+  `LayoutConfig.groups_visible`; the Group menu bucketed items but
+  showed no header strips). Fixed to the C# shape:
+  `layout::groups_visible(config, view)` gates on the view's
+  grouper (the `AreGroupsVisible` port; `IsTopLayout` covers Detail,
+  so headers now show in EVERY mode while grouped), the header draw
+  RECORDS the arrow zone (`GroupRect.arrow` — the
+  `ArrowBounds` port, recorded at draw like the C#), the click
+  SPLITS arrow (toggle that group) from label (select ALL the
+  group's items — `ViewState::select_group_items`), and a
+  DOUBLE-click on the arrow expands/collapses ALL groups (the
+  direction = the clicked header's post-first-click state). The
+  Views drop gains `miExpandAllGroups` verbatim ("Collapse/Expand
+  all Groups", `win.toggle-groups`, enabled iff a grouper is set,
+  `ItemView::toggle_all_groups` → `ViewState::toggle_groups` — the
+  FIRST group's state decides the direction). Collapse flags stay
+  in-memory per view (carried across rebuilds by caption) — the
+  per-list DB `GroupsStatus` codec stays dead code (recorded
+  deviation). Gate: browserbar_probe D2 (ungrouped (1,0) + disabled
+  action, 3 series → toggle collapses/expands all) + view_state
+  unit tests. (2) SCAN LAMP — the C# lamp is an animated resx GIF
+  (`ScanAnimation.gif`); the port bundled it as 4 coalesced PNGs
+  (`cr-ui/assets/scan/frame-N.png`, shipped by BOTH release
+  workflows + the deb/arch `kind` loops) animated by a 120 ms timer
+  that runs ONLY while the lamp is visible (WinForms animates
+  status-label GIFs natively — recorded deviation). The lamp click
+  opens a small popover with ONE row, "Cancel scan" →
+  `library::abort_scan` (the user's ask; the C# lamp opens Tasks and
+  the abort lives in its scan row — the other two lamps keep
+  Tasks). Probe gates J/J2 in statusbar_probe: 4 frames, anim runs
+  only while visible, the menu maps, the row fires the abort hook.
+  PROBE TRAPS: the popover cannot map with a HIDDEN parent (the J
+  gate must leave the lamp visible) and the 1 s activity poll
+  re-hides an idle scan lamp on the second marks — keep the J2
+  reads clear of the whole-second marks. (3) THUMBNAILS — ANSWER:
+  they are ON-DEMAND ONLY (first grid draw → `queue_visible_thumbs`
+  → the ImagePool thumb queues → the disk cache under the SAME
+  `front_cover_thumbnail_key` the grid reads); a scan generates
+  NONE, and the backfill command ALREADY EXISTED (File ▸ Generate
+  Cover Thumbnails → the unlimited queue; the C#
+  `GenerateFrontCoverCache`). NEW: `GenerateThumbnailsOnDemand`
+  (PORT ADDITION, no C# counterpart — default true, Config.xml
+  key "GenerateThumbnailsOnDemand", Preferences ▸ Advanced ▸
+  Thumbnails row): off = `queue_visible_thumbs` loads only covers
+  the pool already has (`ImagePool::thumbnail_cached` = memory or
+  a header-only disk stat) and leaves placeholders for the rest —
+  a later backfill lands on the next draw. 489 tests; fmt/clippy
+  green; commands_probe + scanrefresh_probe (A-F) re-run green.
+  USER TEST = (a) Group by Series (Group menu) → header strips with
+  counts show in Thumbnail/Tile/Details; click the arrow collapses
+  that group, click the label selects its books, double-click the
+  arrow collapses/expands ALL; the Views menu row does the
+  collapse/expand-all and grays out without grouping. (b) Start a
+  scan → the status-bar lamp animates; click it → "Cancel scan"
+  stops the scan (books found so far stay). (c) Preferences ▸
+  Advanced, uncheck "Generate cover thumbnails on demand", OK,
+  restart → the grid shows placeholders until File ▸ Generate
+  Cover Thumbnails backfills; re-check restores the old behavior.
 - **EXIT MID-SCAN FIXED (2026-09-10, user report: "can't quit the
   app while the scan goes on — have to kill it via console; after
   restarting, the library was empty, nothing had been saved"):** two
@@ -650,7 +712,7 @@ Update this section at the **end of every work session**. The next agent must kn
   build.rs watches the git ref), the progressive fill + Abort
   Scanning (778bd44), the no-glitch incremental append (8822981),
   and the graceful exit mid-scan + the signal handling + the
-  done-before-pop fix (707950f). HEAD = 707950f, 486 tests.
+  done-before-pop fix (707950f). HEAD = fc748a7, 489 tests.
   Open gaps: WebComicProvider, PDF/DjVu writers, the LICENSE file
   (Phase 11 packaging gap), the T14 per-list sort deviation,
   HEIF/AVIF decode. The Phase 11 PIPELINE is COMPLETE (the v0.0.283
@@ -1554,7 +1616,7 @@ Update this section at the **end of every work session**. The next agent must kn
   Phases 0-5 are complete (their gates stay green). Open Phase 1
   gaps: WebComicProvider and the PDF/DjVu writers (tracked in
   `docs/phase-1-kickoff.md`).
-- **State:** `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` are green. 486 tests — 36 suites plus the cr-scrape suites (the Phase 8 perf gates: `reading_list_perf`, `view_perf`, `path_migration_perf`, `list_eval_perf`, `scan_perf`; the cr-ui probes are examples, not tests — the newest is `scanrefresh_probe` (gates A-F: the scan-land refresh, the re-scan idempotence, the mid-scan fill, the abort partial landing, the re-scan completion, the mid-add exit save — it REFUSES a non-isolated XDG pair and wipes it at start, the exit save pollutes it); the real-fixture parts skip in CI without the git-ignored `tests/testfiles/` files; the RAR round-trips skip without `CR_RAR_TESTS` + `rar`). CI runs on the `docker-runner-amd64` container runner (ADR-020) and is LIVE (it caught the 2026-09-09 group-gate flake — the runner + `comicrust-ci:latest` image work). The release tracks are `release.yaml` (rolling prerelease per push) and `tagged-release.yaml` (manual dispatch, stable release for an existing tag — ADR-021, 2026-09-03); `packaging.yaml` (Phase 11) attaches the source tarball, the Arch package, and the .deb to a tagged release. First real tagged-release run (v0.0.273, 2026-09-09) exposed a latent env bug: the "Publish to GitHub mirror" step lacked `TAG` (the Gitea publish succeeded; the mirror step died on `set -u`) — fixed in commit 05483da.
+- **State:** `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` are green. 489 tests — 36 suites plus the cr-scrape suites (the Phase 8 perf gates: `reading_list_perf`, `view_perf`, `path_migration_perf`, `list_eval_perf`, `scan_perf`; the cr-ui probes are examples, not tests — the newest are `statusbar_probe` gates J/J2 (the scan lamp: frames, the visible-only animation, the Cancel-scan menu map + the abort hook) and `browserbar_probe` gate D2 (the grouping: ungrouped (1,0) + the disabled action, 3 series → toggle-groups collapses/expands all); `scanrefresh_probe` (gates A-F: the scan-land refresh, the re-scan idempotence, the mid-scan fill, the abort partial landing, the re-scan completion, the mid-add exit save — it REFUSES a non-isolated XDG pair and wipes it at start, the exit save pollutes it); the real-fixture parts skip in CI without the git-ignored `tests/testfiles/` files; the RAR round-trips skip without `CR_RAR_TESTS` + `rar`). CI runs on the `docker-runner-amd64` container runner (ADR-020) and is LIVE (it caught the 2026-09-09 group-gate flake — the runner + `comicrust-ci:latest` image work). The release tracks are `release.yaml` (rolling prerelease per push) and `tagged-release.yaml` (manual dispatch, stable release for an existing tag — ADR-021, 2026-09-03); `packaging.yaml` (Phase 11) attaches the source tarball, the Arch package, and the .deb to a tagged release. First real tagged-release run (v0.0.273, 2026-09-09) exposed a latent env bug: the "Publish to GitHub mirror" step lacked `TAG` (the Gitea publish succeeded; the mirror step died on `set -u`) — fixed in commit 05483da.
 - **GitHub mirror (2026-09-06):** remote `github` = `git@github.com:ScuttleSE/comicrust.git` — a TRUE mirror (identical SHAs; `.gitea/` rides along but is inert there, GitHub Actions only reads `.github/workflows/`). After every origin push also `git push github main`; stable tags get pushed manually once; the `rolling` tag is CI-managed on BOTH sides (each release run deletes/recreates it) — never push it by hand. Both release workflows also publish the built tarball + sha256 to GitHub Releases through `.gitea/publish_github_release.sh` (build once on Gitea, assets on both); it needs the Gitea secret `MIRROR_RELEASE_TOKEN` (GitHub PAT with Contents read/write on ScuttleSE/comicrust; Gitea forbids a `GITHUB_` prefix) — unset secret = the step skips with a notice.
 - **Phase 0 gate status:** byte-stable ComicDb.xml round-trip proven on all three synthetic fixtures AND the real-world database `tests/realworld/ComicDb.xml` (255 books, 584 KB, 2026-09-02, user-approved commit).
 - **Phase 2 gate status:** every saved smart list in the real-world DB (a) binds to the matcher registry, (b) renders to a `Match` query string that re-parses and re-renders byte-identically, and (c) evaluates to the SAME book sets the C# cached in `CacheStorage` (Never Read = all 255, Files to update = the 3 dirty books, Reading/Read = empty). Evidence: `crates/cr-engine/tests/realworld_query.rs`.
