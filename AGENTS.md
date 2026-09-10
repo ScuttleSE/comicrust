@@ -643,12 +643,25 @@ Update this section at the **end of every work session**. The next agent must kn
   records). Phase 9 (the SQLite backend) is DEFERRED to
   `docs/backlog.md` with its full design intact. Open work is
   picked from `docs/backlog.md` and re-homed into a kickoff FIRST.
+  The 2026-09-10 SCAN SESSION (after Phase 12): five fix rounds on
+  the scan path, all in the state blocks above — the scan-land view
+  refresh (2fe9b23), the per-file progress + CR_TRACE logging + the
+  lazy interleaved walk (19ce25b), the frozen version marker (7f4d0c0,
+  build.rs watches the git ref), the progressive fill + Abort
+  Scanning (778bd44), the no-glitch incremental append (8822981),
+  and the graceful exit mid-scan + the signal handling + the
+  done-before-pop fix (707950f). HEAD = 707950f, 486 tests.
   Open gaps: WebComicProvider, PDF/DjVu writers, the LICENSE file
   (Phase 11 packaging gap), the T14 per-list sort deviation,
   HEIF/AVIF decode. The Phase 11 PIPELINE is COMPLETE (the v0.0.283
   release carries all 9 assets on both hosts); the install steps
   (the kickoff user test) remain.
-  OPEN USER TESTS (2026-09-10, in test order): the Phase 10 steps
+  OPEN USER TESTS (2026-09-10, in test order): the scan round (ALL
+  of it from this session — the user confirmed the progressive fill
+  + the no-glitch append "works now" on 2026-09-10; still open:
+  Tasks ▸ Abort Scanning on a real scan, and the graceful exit
+  mid-scan = close the window / Ctrl+C → exits promptly, the restart
+  shows the books found so far), the Phase 10 steps
   1-4 + 5-8 (the kickoff tail), the Phase 11 install steps (the
   kickoff tail), the export-freeze fix (re-run a CBR→CBZ export —
   responsive window, progress ticks), and the write-back fix (edit
@@ -1541,7 +1554,7 @@ Update this section at the **end of every work session**. The next agent must kn
   Phases 0-5 are complete (their gates stay green). Open Phase 1
   gaps: WebComicProvider and the PDF/DjVu writers (tracked in
   `docs/phase-1-kickoff.md`).
-- **State:** `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` are green. 484 tests — 36 suites plus the cr-scrape suites (the Phase 8 perf gates: `reading_list_perf`, `view_perf`, `path_migration_perf`, `list_eval_perf`, `scan_perf`; the cr-ui probes are examples, not tests — the newest is `scrapeprefs_probe`; the real-fixture parts skip in CI without the git-ignored `tests/testfiles/` files; the RAR round-trips skip without `CR_RAR_TESTS` + `rar`). CI runs on the `docker-runner-amd64` container runner (ADR-020) and is LIVE (it caught the 2026-09-09 group-gate flake — the runner + `comicrust-ci:latest` image work). The release tracks are `release.yaml` (rolling prerelease per push) and `tagged-release.yaml` (manual dispatch, stable release for an existing tag — ADR-021, 2026-09-03); `packaging.yaml` (Phase 11) attaches the source tarball, the Arch package, and the .deb to a tagged release. First real tagged-release run (v0.0.273, 2026-09-09) exposed a latent env bug: the "Publish to GitHub mirror" step lacked `TAG` (the Gitea publish succeeded; the mirror step died on `set -u`) — fixed in commit 05483da.
+- **State:** `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` are green. 486 tests — 36 suites plus the cr-scrape suites (the Phase 8 perf gates: `reading_list_perf`, `view_perf`, `path_migration_perf`, `list_eval_perf`, `scan_perf`; the cr-ui probes are examples, not tests — the newest is `scanrefresh_probe` (gates A-F: the scan-land refresh, the re-scan idempotence, the mid-scan fill, the abort partial landing, the re-scan completion, the mid-add exit save — it REFUSES a non-isolated XDG pair and wipes it at start, the exit save pollutes it); the real-fixture parts skip in CI without the git-ignored `tests/testfiles/` files; the RAR round-trips skip without `CR_RAR_TESTS` + `rar`). CI runs on the `docker-runner-amd64` container runner (ADR-020) and is LIVE (it caught the 2026-09-09 group-gate flake — the runner + `comicrust-ci:latest` image work). The release tracks are `release.yaml` (rolling prerelease per push) and `tagged-release.yaml` (manual dispatch, stable release for an existing tag — ADR-021, 2026-09-03); `packaging.yaml` (Phase 11) attaches the source tarball, the Arch package, and the .deb to a tagged release. First real tagged-release run (v0.0.273, 2026-09-09) exposed a latent env bug: the "Publish to GitHub mirror" step lacked `TAG` (the Gitea publish succeeded; the mirror step died on `set -u`) — fixed in commit 05483da.
 - **GitHub mirror (2026-09-06):** remote `github` = `git@github.com:ScuttleSE/comicrust.git` — a TRUE mirror (identical SHAs; `.gitea/` rides along but is inert there, GitHub Actions only reads `.github/workflows/`). After every origin push also `git push github main`; stable tags get pushed manually once; the `rolling` tag is CI-managed on BOTH sides (each release run deletes/recreates it) — never push it by hand. Both release workflows also publish the built tarball + sha256 to GitHub Releases through `.gitea/publish_github_release.sh` (build once on Gitea, assets on both); it needs the Gitea secret `MIRROR_RELEASE_TOKEN` (GitHub PAT with Contents read/write on ScuttleSE/comicrust; Gitea forbids a `GITHUB_` prefix) — unset secret = the step skips with a notice.
 - **Phase 0 gate status:** byte-stable ComicDb.xml round-trip proven on all three synthetic fixtures AND the real-world database `tests/realworld/ComicDb.xml` (255 books, 584 KB, 2026-09-02, user-approved commit).
 - **Phase 2 gate status:** every saved smart list in the real-world DB (a) binds to the matcher registry, (b) renders to a `Match` query string that re-parses and re-renders byte-identically, and (c) evaluates to the SAME book sets the C# cached in `CacheStorage` (Never Read = all 255, Files to update = the 3 dirty books, Reading/Read = empty). Evidence: `crates/cr-engine/tests/realworld_query.rs`.
@@ -2558,6 +2571,49 @@ Re-bless the `db-large.xml` snapshot after a deliberate model change: `CR_BLESS=
   workers exit; items stay queued for a snapshot) — after a stop,
   every state reads Waiting (the Running rule needs an active
   queue; test it as a pure function instead).
+
+### Lessons from the scan session (2026-09-10, do not re-learn these)
+
+- A build script that emits ANY `rerun-if-*` must declare EVERY
+  input that can move its output — including the git state a dev
+  build reads. `cr-ui/build.rs` declared only
+  `rerun-if-env-changed=VERSION` and the stamped commit count froze
+  at the last full rebuild (0.0.233 rode along through 70+ commits);
+  the fix watches `--absolute-git-dir` refs (HEAD + packed-refs +
+  refs/heads/<branch>).
+- A "did X happen" probe must settle past every boot-time deferred
+  fill before it dispatches — the navigator's boot selection
+  evaluates 200 ms after create (SELECT_DEBOUNCE_MS), and an
+  immediate dispatch passed the scan-land gate against the UNFIXED
+  code through that race. Settle (600 ms) first, then gate.
+- A per-batch view refresh is O(N²) per tick: 114 refreshes of a
+  10k-book view in one pump tick starved the main loop. The shape:
+  collect the tick's batches, extend the DB once, fire the view
+  hook ONCE per drain. The incremental append
+  (`ItemView::append_books` — extend + ONE rebuild, per-book caches
+  KEPT) measures 0.7-4.7 ms/tick at 10k books; a full `set_books`
+  per tick (caches cleared) is the visible glitch.
+- A scan's done callback must run BEFORE the queue pop: the next
+  scan takes the storage, and a refresh after the take evaluates
+  "0 books" and wipes the view between roots (the F-gate trace:
+  "evaluate 10002 books" immediately followed by "evaluate 0
+  books").
+- Exit paths STOP the scan first (`library::save()` aborts an
+  in-flight scan before the pump wait — the C# Scanner.Stop
+  order); waiting for a long scan hangs the window, and saving
+  mid-scan without the stop would write the taken, empty book list.
+- The C# `FileUtility.GetFiles` walk is a lazy generator — walk and
+  process interleave. An eager collect-then-process walk is a
+  silent window on huge trees; the lazy `walk_files` shape (per
+  folder: sorted files first riding progress + the processor, then
+  the subfolders) is the parity shape and gives live Tasks-line
+  movement.
+- A gated mid-scan scenario needs a fixture that is SLOW enough to
+  observe: zero-byte comic files scan between two poll ticks
+  (~0.05 ms/file in release); real one-page zips stretch the walk
+  (~0.3 ms/file). And an abort gate must have the fixture ADD
+  books — an abort of a RE-scan returns the full taken set, which
+  passes the assertion without proving anything.
 
 ### Blockers / open questions
 
