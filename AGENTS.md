@@ -153,8 +153,9 @@ Update this section at the **end of every work session**. The next agent must kn
   land root-level bare-named, stdin null) and the
   `store_info_scoped` CBR/RAR5 branch (one `rar a` call for the
   ComicInfo.xml/ComicBook.xml pairs, `with_book_info` scoping as
-  CB7; success reports changed). The app path
-  (`update_book_file`) surfaces "rar executable not found" through
+  CB7;   success reports changed). The app path
+  (`update_book_file_async` → the Info Writer worker) surfaces
+  "rar executable not found" through
   the existing Update-Book-Files error dialog; the queue path swallows
   (book stays in Files-to-update). `supports_update` stays FALSE for
   RAR (C# parity; only consumers are the write gate +
@@ -325,6 +326,12 @@ Update this section at the **end of every work session**. The next agent must kn
   HEIF/AVIF decode. The Phase 11 PIPELINE is COMPLETE (the v0.0.283
   release carries all 9 assets on both hosts); the install steps
   (the kickoff user test) remain.
+  OPEN USER TESTS (2026-09-10, in test order): the Phase 10 steps
+  1-4 + 5-8 (the kickoff tail), the Phase 11 install steps (the
+  kickoff tail), the export-freeze fix (re-run a CBR→CBZ export —
+  responsive window, progress ticks), and the write-back fix (edit
+  a CBR/CB7 property + Update Book File(s) — responsive UI, write
+  lands, the Files-to-update list clears).
 - **(Phase 8 — CLOSED 2026-09-08 — the kickoff is
   `docs/phase-8-kickoff.md`; done so far: T3 (the
   CBL-import perf) + T10 first slice (the view-side proposed-parse
@@ -1739,7 +1746,7 @@ The UI crate (Phase 3):
 | `crates/cr-ui/src/reader_window.rs` | Reader shell: session tabs (closable, Tab cycling), undock/re-dock, fullscreen chrome hide + reveal strip, MinimalGui, cursor auto-hide, reading-state write-back. |
 | `crates/cr-ui/assets/papers/` | Paper textures copied from the C# `Resources/Textures/Papers`. |
 | `crates/cr-image/src/error_assets.rs` | `CreateErrorPage`/`CreateErrorThumbnail` port with the bundled `ErrorPage.jpg` + `RedCross.png`. Unit-tested. |
-| `crates/cr-ui/src/library.rs` | The app session (`Program` statics): the Library open/save/scan wiring, the Settings + engine-config load/save, `apply_edited` (the editor commit + the dirty mark + the debounced file write), `update_book_file` (the write-back gates), list CRUD (new smart list/folder/id list, update, evaluate), QuickOpen lists, the last-export setting, `save_ini_keys` (the ini merge-writer — the theme persistence). |
+| `crates/cr-ui/src/library.rs` | The app session (`Program` statics): the Library open/save/scan wiring, the Settings + engine-config load/save, `apply_edited` (the editor commit + the dirty mark + the debounced file write), the file write-back on the Info Writer worker (`update_book_file_async` enqueue + `run_book_file_write` pure worker part + the 100 ms result pump), list CRUD (new smart list/folder/id list, update, evaluate), QuickOpen lists, the last-export setting, `save_ini_keys` (the ini merge-writer — the theme persistence). |
 | `crates/cr-ui/src/browser/shell.rs` | The browser window: navigator + ItemView + reader dock, the header commands, the context menu (open/reveal/edit/update-file/export/remove/properties), the quick search + the composed view filter (`compose_quick_filter`), view/sort/group/filter/scope actions, the Detail column chooser (`popup_column_chooser` — a plain popover), the dynamic menu fills (`dyn_fill`), the probe accessors (`state_*`/`toolbar_*`/`browserbar_*`). |
 | `crates/cr-ui/src/browser/menubar.rs` | The T3 custom menubar: the pure six-menu table (MenuNode Item/Sub/Sep/Dyn) + the popover widget (one-active-popover state machine, the Designer icon mapping) + the standalone `Dropdown` (`build_dropdown`) + the dynamic fill machinery (`set_dyn_fill`, `refresh_top`, per-slot map hooks) + the `menubar_visible` rule. |
 | `crates/cr-ui/src/browser/toolbar.rs` | The T5 reader toolbar: the nine-button strip (prev/next splits, layout/fit/zoom/rotate drops with state text, magnifier/fullscreen, Tools) + the `Dropdown` tables (PREV/NEXT/FIT/ZOOM/ROTATE/TOOLS); the bar rides the undock (docked home since T9: the tab strip's right host). |
