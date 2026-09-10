@@ -1509,6 +1509,21 @@ impl BrowserShell {
             });
         }
 
+        // The scan pump's per-batch view refresh: books appear in the
+        // Library as the scan walks (the C# scan events update the
+        // live view per file — `ComicBookCollection.Add` →
+        // `OnBookAdded`). A Weak capture — the hook never owns the
+        // shell.
+        library::set_scan_view_hook(Some(Box::new({
+            let state = Rc::downgrade(state);
+            move || {
+                if let Some(sh) = state.upgrade() {
+                    sh.refresh_view_from_list();
+                    sh.sync_enabled();
+                }
+            }
+        })));
+
         // The initial fill. The startup view: the BROWSER (the C#
         // `books.OpenCount == 0 && !ShowQuickOpen` shape,
         // MainForm.cs:3140) — the user decision 2026-09-07: the app

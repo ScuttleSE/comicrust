@@ -1,12 +1,17 @@
-//! Headless probe: the scan-land view refresh (the user report —
-//! File ▸ Scan Book Folders ran the scan, the Tasks dialog showed the
-//! Scanning line, but the Library stayed empty: the scan's done
-//! callback never refreshed the view). Gates the REAL paths:
+//! Headless probe: the scan-land view refresh + the progressive
+//! fill + the abort (the user reports — File ▸ Scan Book Folders
+//! ran the scan but the Library stayed empty; then "populate as we
+//! scan" + "what happens if the scan is aborted"). Gates the REAL
+//! paths:
 //! A. a fresh library shows 0 books in the grid,
 //! B. Scan Book Folders over a seeded watch root lands the scan and
 //!    the grid NOW shows the scanned books (the refresh ran),
-//! C. a second scan (idempotent re-scan) keeps the count (no dupes,
-//!    the refresh still runs).
+//! C. a second scan (idempotent re-scan) keeps the count (no dupes),
+//! D. a scan over a big folder fills the grid WHILE it walks (the
+//!    C# live-storage parity), and Abort Scanning stops the walk —
+//!    the books found so far stay (a partial landing, count < total),
+//! E. the re-scan after the abort completes the library (the stored
+//!    books refresh cheaply — nothing is redone).
 //! Run: Xvfb + `cargo run -p cr-ui --release --example scanrefresh_probe`
 //! with an isolated XDG pair.
 use gtk4::glib;
@@ -156,7 +161,8 @@ fn gate_c(shell: cr_ui::browser::shell::BrowserShell, _landed: u32) {
         let count = shell.state_grid_book_count();
         if !scanning && count == 2 {
             println!("C ok: re-scan keeps 2 books");
-            std::process::exit(0);
+            gate_d(&shell);
+            return glib::ControlFlow::Break;
         }
         if ticks.get() > 60 {
             panic!(
@@ -164,5 +170,114 @@ fn gate_c(shell: cr_ui::browser::shell::BrowserShell, _landed: u32) {
             );
         }
         glib::ControlFlow::Continue
+    });
+    let _ = &window;
+}
+
+/// D + E. The big-folder gates: the scan fills the grid WHILE it
+/// walks; Abort Scanning keeps the partial landing; the re-scan
+/// completes.
+const BIG_COUNT: usize = 10_000;
+
+fn gate_d(shell: &cr_ui::browser::shell::BrowserShell) {
+    // The big folder: zero-byte .cbz files (the comic check is the
+    // extension; the provider open fails fast — the walk cost is the
+    // gate's subject, not the decode).
+    let big = std::path::Path::new("/tmp/opencode/scanrefresh/big");
+    let _ = std::fs::remove_dir_all(big);
+    std::fs::create_dir_all(big).unwrap();
+    for i in 0..BIG_COUNT {
+        std::fs::write(big.join(format!("bulk{i:05}.cbz")), b"").unwrap();
+    }
+    {
+        let lib = cr_ui::library::session();
+        let mut l = lib.borrow_mut();
+        l.database_mut()
+            .watch_folders
+            .push(cr_core::database::list_items::WatchFolder {
+                folder: big.to_string_lossy().into_owned(),
+                watch: true,
+            });
+        l.mark_dirty();
+    }
+    let window = shell.window();
+    let _ = gtk4::prelude::WidgetExt::activate_action(&window, "win.scan-folders", None);
+    let ticks = Rc::new(Cell::new(0u32));
+    glib::timeout_add_local(std::time::Duration::from_millis(25), {
+        let shell = shell.clone();
+        move || {
+            ticks.set(ticks.get() + 1);
+            let scanning = cr_ui::library::is_scanning();
+            let count = shell.state_grid_book_count();
+            if scanning && count >= 5 {
+                // The grid filled WHILE the scan walks — the progressive
+                // fill works. Abort now (the Tasks "Abort Scanning").
+                println!("D ok: grid filled mid-scan ({count} books, scanning) — aborting");
+                cr_ui::library::abort_scan();
+                gate_d_wait(shell.clone(), 0);
+                return glib::ControlFlow::Break;
+            }
+            if !scanning {
+                panic!(
+                "D FAIL: the scan finished before the abort could fire (count {count}) — the fixture is too small"
+            );
+            }
+            if ticks.get() > 2000 {
+                panic!("D FAIL: no mid-scan fill observed (count {count}, still scanning)");
+            }
+            glib::ControlFlow::Continue
+        }
+    });
+}
+
+/// D tail: the abort lands — the partial count stays (< BIG_COUNT).
+fn gate_d_wait(shell: cr_ui::browser::shell::BrowserShell, ticks: u32) -> glib::ControlFlow {
+    let scanning = cr_ui::library::is_scanning();
+    let count = shell.state_grid_book_count();
+    if !scanning {
+        assert!(
+            count > 0 && count < BIG_COUNT + 2,
+            "D FAIL: after the abort the grid holds {count} books (expected a partial landing, 0 < count < {})",
+            BIG_COUNT + 2
+        );
+        println!("D ok: abort kept {count} of {} books", BIG_COUNT + 2);
+        gate_e(&shell);
+    } else if ticks > 200 {
+        panic!("D FAIL: the scan never landed after the abort (count {count})");
+    } else {
+        let shell2 = shell.clone();
+        glib::timeout_add_local(std::time::Duration::from_millis(50), move || {
+            gate_d_wait(shell2.clone(), ticks + 1)
+        });
+    }
+    glib::ControlFlow::Break
+}
+
+/// E: the re-scan after the abort completes the library.
+fn gate_e(shell: &cr_ui::browser::shell::BrowserShell) {
+    let window = shell.window();
+    let _ = gtk4::prelude::WidgetExt::activate_action(&window, "win.scan-folders", None);
+    let ticks = Rc::new(Cell::new(0u32));
+    glib::timeout_add_local(std::time::Duration::from_millis(50), {
+        let shell = shell.clone();
+        move || {
+            ticks.set(ticks.get() + 1);
+            let scanning = cr_ui::library::is_scanning();
+            let count = shell.state_grid_book_count();
+            if !scanning && count == BIG_COUNT + 2 {
+                println!(
+                    "E ok: the re-scan completed the library ({} books)",
+                    BIG_COUNT + 2
+                );
+                std::process::exit(0);
+            }
+            if ticks.get() > 400 {
+                panic!(
+                    "E FAIL: the re-scan after the abort landed (scanning={scanning}) but the grid shows {count} books (expected {})",
+                    BIG_COUNT + 2
+                );
+            }
+            glib::ControlFlow::Continue
+        }
     });
 }

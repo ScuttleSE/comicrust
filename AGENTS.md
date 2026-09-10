@@ -73,6 +73,39 @@ Update this section at the **end of every work session**. The next agent must kn
 
 ### State summary
 
+- **PROGRESSIVE SCAN FILL + SCAN ABORT (2026-09-10, user decisions
+  "we have to populate as we scan" + "what happens if the scan is
+  aborted — will the whole scan need to be re-done?"):** the C# adds
+  each scanned book to the LIVE storage (`ComicBookCollection.Add` →
+  `OnBookAdded`, ComicBookCollection.cs:37) and its Tasks scan row is
+  abortable ("Abort Scanning" → `Scanner.Stop(clearQueue: true)`,
+  QueueManager.cs:702-708; the volatile `abortScanning` checks per
+  walked file, ComicScanner.cs:130, and the abort SKIPS the
+  AutoRemove pass). The port now: `scan_sync_with_progress` gained
+  `stop: &dyn Fn() -> bool` (per-file, the walk STOPS — the bool
+  return propagates up the recursion) and `on_new:
+  &mut dyn FnMut(&ComicBook)` (per new book); the cr-ui worker ships
+  20-book batches over the same mpsc channel (enum `ScanWorkerMsg`),
+  the 100 ms pump appends them to the DB and fires the ONE view
+  refresh per tick through `SCAN_VIEW_HOOK` (the shell installs it at
+  create, a Weak capture; a PER-BATCH refresh is O(N²) per tick —
+  114 refreshes starved the main loop at 10k books, measured, fixed
+  to one-per-drain); `library::abort_scan()` drops the queued
+  requests + flags the worker (the Tasks "Abort Scanning" row + the
+  abort-all handler). ANSWER to the re-do question: NO — the books
+  found so far are IN the library; a re-scan refreshes stored paths
+  cheaply and only adds the rest. Gate: scanrefresh_probe grew
+  D/E (D: the grid fills mid-scan at 10k fake books then Abort
+  Scanning keeps 2300 of 10002; E: the re-scan completes at 10002,
+  the trace shows "added 7702 updated 2298" — the stored books just
+  refreshed); cr-engine `scan_stops_when_flagged_and_keeps_partial`
+  (the AutoRemove pass is SKIPPED on abort); the T13 test
+  `snapshot_lists_queues_in_csharp_order` flipped its scan-row
+  expectation to `Some(ABORT_SCAN)` (the C# parity — it pinned the
+  old not-abortable deviation). 486 tests; fmt/clippy green. USER
+  TEST = rebuild, scan a folder → books appear WHILE it walks; Tasks
+  ▸ Abort Scanning stops it with the found-so-far books kept; a
+  re-scan completes the library.
 - **FROZEN VERSION MARKER FIXED (2026-09-10, commit 7f4d0c0; user
   alarm "why does it say starting build 0.0.233"):** the binary the
   user ran WAS current (built 2026-09-10 18:54, HEAD 305/306) — only

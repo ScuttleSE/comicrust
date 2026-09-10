@@ -28,10 +28,47 @@ thread_local! {
     /// The location the in-flight scan walks (`Scanner.CurrentLocation`
     /// — the Tasks dialog's scan row).
     static SCAN_LOCATION: RefCell<String> = const { RefCell::new(String::new()) };
+    /// The in-flight scan's abort flag (`Scanner.Stop`'s volatile
+    /// `abortScanning`): set by `abort_scan` (the Tasks abort), read
+    /// per walked file by the worker.
+    static SCAN_STOP: RefCell<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>> =
+        const { RefCell::new(None) };
+    /// The per-batch view refresh (the C# scan events update the live
+    /// views): the shell installs it, the scan pump fires it when new
+    /// books land mid-scan.
+    static SCAN_VIEW_HOOK: RefCell<Option<Box<dyn Fn()>>> = const { RefCell::new(None) };
     /// The user settings (`Program.Settings` static). The GTK code
     /// reaches it through [`settings`].
     static SETTINGS: RefCell<Option<Rc<RefCell<cr_core::settings::Settings>>>> =
         const { RefCell::new(None) };
+}
+
+/// Installs the per-batch scan view refresh (the shell does this at
+/// creation; the hook must not own the shell — use a Weak capture).
+pub fn set_scan_view_hook(hook: Option<Box<dyn Fn()>>) {
+    SCAN_VIEW_HOOK.with(|cell| *cell.borrow_mut() = hook);
+}
+
+fn fire_scan_view_hook() {
+    SCAN_VIEW_HOOK.with(|cell| {
+        if let Some(hook) = cell.borrow().as_ref() {
+            hook();
+        }
+    });
+}
+
+/// `Scanner.Stop(clearQueue: true)` — the Tasks dialog's "Abort
+/// Scanning": drops the queued scan requests and flags the in-flight
+/// scan to stop at the next file. The books found so far stay (the
+/// batches already landed; the worker's partial storage merges back).
+pub fn abort_scan() {
+    SCAN_QUEUE.with(|q| q.borrow_mut().clear());
+    SCAN_STOP.with(|cell| {
+        if let Some(flag) = cell.borrow().as_ref() {
+            flag.store(true, std::sync::atomic::Ordering::Relaxed);
+        }
+    });
+    crate::trace::trace("scan abort requested");
 }
 
 /// Opens the library database at the default location (`Program`'s
@@ -308,9 +345,13 @@ pub fn add_folder_to_library(path: &Path, done: impl FnOnce(ScanResult) + 'stati
 /// dedicated low-priority "Book Scanner" thread; a synchronous scan
 /// freezes the UI on real libraries). The book storage moves to the
 /// worker and back over std mpsc; a `timeout_add_local` pump merges
-/// it (the ADR-019 pattern). While a scan runs, the database holds no
-/// books — lookups degrade to temporary books for the duration.
-/// Requests arriving mid-scan queue and run in arrival order.
+/// it (the ADR-019 pattern). New books ride incremental batches to
+/// the pump (the C# adds to the live storage per file — the view
+/// fills during the walk, `ComicBookCollection.Add` → `OnBookAdded`);
+/// the final storage merges at the landing. While a scan runs, the
+/// database holds the books found SO FAR — a re-scan refreshes stored
+/// paths cheaply instead of redoing them. Requests arriving mid-scan
+/// queue and run in arrival order.
 fn scan_async(location: String, done: impl FnOnce(ScanResult) + 'static) {
     let in_flight = SCAN_IN_FLIGHT.with(|cell| *cell.borrow());
     if in_flight {
@@ -322,8 +363,19 @@ fn scan_async(location: String, done: impl FnOnce(ScanResult) + 'static) {
     start_scan_worker(location, done);
 }
 
+/// Worker → pump messages: incremental new-book batches and the
+/// final merge.
+enum ScanWorkerMsg {
+    Batch(Vec<ComicBook>),
+    Done(Vec<ComicBook>, ScanResult),
+}
+
+/// Books per batch send (the pump appends + refreshes per tick; a
+/// book clones once for its batch, so the cost is O(N) total).
+const SCAN_BATCH_SIZE: usize = 20;
+
 /// Takes the book storage, runs the scan on a worker thread, and
-/// pumps the result back onto the UI thread.
+/// pumps batches + the result back onto the UI thread.
 fn start_scan_worker(location: String, done: impl FnOnce(ScanResult) + 'static) {
     let library = session();
     let books = {
@@ -339,30 +391,51 @@ fn start_scan_worker(location: String, done: impl FnOnce(ScanResult) + 'static) 
         force_refresh_info: false,
     }];
     let now = CrDateTime::now();
-    let (tx, rx) = std::sync::mpsc::channel::<(Vec<ComicBook>, ScanResult)>();
+    let (tx, rx) = std::sync::mpsc::channel::<ScanWorkerMsg>();
     // The per-file progress (the C# `currentLocation` per walked
     // file, ComicScanner.cs:125): the worker ships paths, the pump
     // moves SCAN_LOCATION — the Tasks "Scanning" line tracks the walk.
     let (ptx, prx) = std::sync::mpsc::channel::<String>();
+    // The abort flag (`Scanner.Stop`'s volatile `abortScanning`):
+    // `abort_scan` sets it, the worker checks per walked file.
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    SCAN_STOP.with(|cell| *cell.borrow_mut() = Some(std::sync::Arc::clone(&stop)));
     std::thread::Builder::new()
         .name("Book Scanner".into())
         .spawn(move || {
             let mut storage = books;
             let t = std::time::Instant::now();
             crate::trace::trace(format!("scan start '{location}'"));
-            let result =
-                cr_engine::scanner::scan_sync_with_progress(&mut storage, &items, &now, &mut |f| {
+            let mut batch: Vec<ComicBook> = Vec::new();
+            let result = cr_engine::scanner::scan_sync_with_progress(
+                &mut storage,
+                &items,
+                &now,
+                &mut |f: &Path| {
                     let _ = ptx.send(f.to_string_lossy().into_owned());
-                });
+                },
+                &|| stop.load(std::sync::atomic::Ordering::Relaxed),
+                &mut |book: &ComicBook| {
+                    batch.push(book.clone());
+                    if batch.len() >= SCAN_BATCH_SIZE {
+                        let _ = tx.send(ScanWorkerMsg::Batch(std::mem::take(&mut batch)));
+                    }
+                },
+            );
+            let aborted = stop.load(std::sync::atomic::Ordering::Relaxed);
+            if !batch.is_empty() {
+                let _ = tx.send(ScanWorkerMsg::Batch(batch));
+            }
             crate::trace::trace(format!(
-                "scan done '{location}' in {} ms: added {} updated {} moved {} removed {}",
+                "scan {} '{location}' in {} ms: added {} updated {} moved {} removed {}",
+                if aborted { "aborted" } else { "done" },
                 t.elapsed().as_millis(),
                 result.added.len(),
                 result.updated.len(),
                 result.moved.len(),
                 result.removed.len()
             ));
-            let _ = tx.send((storage, result));
+            let _ = tx.send(ScanWorkerMsg::Done(storage, result));
         })
         .expect("spawn Book Scanner");
 
@@ -392,45 +465,64 @@ fn start_scan_worker(location: String, done: impl FnOnce(ScanResult) + 'static) 
                 "scan progress: {seen_files} files, current '{current}'"
             ));
         }
-        // Bind the recv result before matching — a `while let`
-        // scrutinee borrow lives through the loop body.
-        let received = rx.try_recv();
-        match received {
-            Ok((books, result)) => {
-                {
+        // Drain the worker messages: batches append to the live database;
+        // ONE view refresh per tick after the whole drain (a per-batch
+        // refresh is O(N) per batch — O(N²) per tick starved the main
+        // loop at 10k books, measured). Done merges the final storage.
+        let mut landed = false;
+        loop {
+            let received = rx.try_recv();
+            match received {
+                Ok(ScanWorkerMsg::Batch(batch)) => {
                     let mut lib = library.borrow_mut();
-                    lib.database_mut().books = books;
-                    let changed = !result.added.is_empty()
-                        || !result.updated.is_empty()
-                        || !result.moved.is_empty()
-                        || !result.removed.is_empty();
-                    if changed {
-                        lib.mark_dirty();
+                    lib.database_mut().books.extend(batch);
+                    landed = true;
+                }
+                Ok(ScanWorkerMsg::Done(books, result)) => {
+                    {
+                        let mut lib = library.borrow_mut();
+                        lib.database_mut().books = books;
+                        let changed = !result.added.is_empty()
+                            || !result.updated.is_empty()
+                            || !result.moved.is_empty()
+                            || !result.removed.is_empty();
+                        if changed {
+                            lib.mark_dirty();
+                        }
                     }
+                    SCAN_IN_FLIGHT.with(|cell| *cell.borrow_mut() = false);
+                    SCAN_LOCATION.with(|cell| cell.borrow_mut().clear());
+                    SCAN_STOP.with(|cell| *cell.borrow_mut() = None);
+                    fire_scan_view_hook();
+                    // The queued requests run one at a time, in arrival
+                    // order (the C# scan queue).
+                    let next = SCAN_QUEUE.with(|q| q.borrow_mut().pop());
+                    if let Some((location, done_next)) = next {
+                        start_scan_worker(location, done_next);
+                    }
+                    if let Some(d) = done.take() {
+                        d(result);
+                    }
+                    return ControlFlow::Break;
                 }
-                SCAN_IN_FLIGHT.with(|cell| *cell.borrow_mut() = false);
-                SCAN_LOCATION.with(|cell| cell.borrow_mut().clear());
-                // The queued requests run one at a time, in arrival
-                // order (the C# scan queue).
-                let next = SCAN_QUEUE.with(|q| q.borrow_mut().pop());
-                if let Some((location, done_next)) = next {
-                    start_scan_worker(location, done_next);
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    SCAN_IN_FLIGHT.with(|cell| *cell.borrow_mut() = false);
+                    SCAN_LOCATION.with(|cell| cell.borrow_mut().clear());
+                    SCAN_STOP.with(|cell| *cell.borrow_mut() = None);
+                    if let Some(d) = done.take() {
+                        d(ScanResult::default());
+                    }
+                    return ControlFlow::Break;
                 }
-                if let Some(d) = done.take() {
-                    d(result);
-                }
-                ControlFlow::Break
+                Err(std::sync::mpsc::TryRecvError::Empty) => break,
             }
-            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
-                SCAN_IN_FLIGHT.with(|cell| *cell.borrow_mut() = false);
-                SCAN_LOCATION.with(|cell| cell.borrow_mut().clear());
-                if let Some(d) = done.take() {
-                    d(ScanResult::default());
-                }
-                ControlFlow::Break
-            }
-            Err(std::sync::mpsc::TryRecvError::Empty) => ControlFlow::Continue,
         }
+        if landed {
+            // The session borrow is dropped — the hook may evaluate
+            // the library.
+            fire_scan_view_hook();
+        }
+        ControlFlow::Continue
     });
 }
 

@@ -12,10 +12,10 @@
 //! the scan worker. The Update Web Comics / Device Sync queues are
 //! omitted (the ADR-024 omissions + the Phase 1 web-comic gap).
 //!
-//! Deviations (recorded): the port's scan worker cannot stop
-//! (`Scanner.Stop` unported — no abort for the scan row); the write
-//! rows show the file path (the C# shows the book caption); the list
-//! scroll position is not preserved across refreshes.
+//! Deviations (recorded): the write rows show the file path (the C#
+//! shows the book caption); the list scroll position is not preserved
+//! across refreshes. (The scan abort closed 2026-09-10 —
+//! `Scanner.Stop(clearQueue: true)` ported as `library::abort_scan`.)
 
 use std::path::Path;
 use std::sync::Arc;
@@ -64,6 +64,8 @@ impl PendingTasks {
 pub const ABORT_COVER: &str = "Abort Cover Generation";
 pub const ABORT_UPDATE: &str = "Abort Update";
 pub const ABORT_EXPORT: &str = "Abort Export";
+/// The scan row (`scanComicAbortText`, QueueManager.cs:679).
+pub const ABORT_SCAN: &str = "Abort Scanning";
 
 /// The snapshot sources (`QueueManager.GetQueues` inputs).
 pub struct TaskSnapshot<'a> {
@@ -244,7 +246,7 @@ pub fn pending_tasks(snapshot: &TaskSnapshot) -> Vec<PendingTasks> {
             "Scanning",
             vec![format!("Scanning '{location}'")],
             true,
-            None,
+            Some(ABORT_SCAN),
         );
     }
     out
@@ -390,8 +392,8 @@ pub fn show_tasks_dialog(parent: &impl IsA<gtk4::Window>, pool: Arc<ImagePool>) 
 
     // Abort all (`btAbort_Click`): every abortable queue drops its
     // pending items. The ported aborts: the cover-generation queue,
-    // the export queue, and the pending file writes. The scan row is
-    // not abortable (the recorded deviation).
+    // the export queue, the pending file writes, and the scan
+    // (`Scanner.Stop(clearQueue: true)`, QueueManager.cs:707).
     {
         let pool = Arc::clone(&pool);
         let refresh = std::rc::Rc::clone(&refresh);
@@ -403,6 +405,7 @@ pub fn show_tasks_dialog(parent: &impl IsA<gtk4::Window>, pool: Arc<ImagePool>) 
                 .export_comics_queue
                 .clear();
             crate::library::clear_pending_writes();
+            crate::library::abort_scan();
             refresh();
         });
     }
@@ -532,10 +535,11 @@ mod tests {
             "Write information to Book file '/books/b.cbz'"
         );
         assert_eq!(blocks[6].tasks[0].state, RUNNING);
-        // The scan row.
+        // The scan row (abortable — QueueManager.cs:705, "Abort
+        // Scanning" → `Scanner.Stop(clearQueue: true)`).
         assert_eq!(blocks[8].tasks[0].text, "Scanning '/watch/root'");
-        assert_eq!(blocks[8].abort, None);
-        // The abortable set: cover + write (export is empty).
+        assert_eq!(blocks[8].abort, Some(ABORT_SCAN));
+        // The abortable set: cover + write + scan (export is empty).
         assert_eq!(total_pending(&blocks), 3 + 1 + 1 + 1);
     }
 
