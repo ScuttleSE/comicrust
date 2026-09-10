@@ -59,6 +59,22 @@ Update this section at the **end of every work session**. The next agent must kn
 
 ### State summary
 
+- **EXPORT FREEZE FIXED (2026-09-10, user report: exporting a
+  CBR froze the app):** the export dialog's OK handler ran the
+  WHOLE conversion inline on the GTK main thread
+  (`crates/cr-ui/src/dialogs/export.rs` — decode + re-encode +
+  zip write per page; the C# runs it through the background
+  QueueManager). Now the `export_book`/`export_books_combined`
+  loop runs on a worker thread, progress lands over a std mpsc
+  channel drained by a 50 ms `glib::timeout_add_local` pump, and
+  `export_post_process` stays on the MAIN thread (it touches the
+  library session thread-locals). Per-book stop flag
+  (`Arc<AtomicBool>`) preserves the C# break-on-first-error rule;
+  the dialog ignores close/cancel while the worker runs (a closed
+  dialog cannot cancel the worker; the C# modal progress has no
+  cancel path either). fmt/clippy/408 tests green; user test =
+  re-run the CBR→CBZ export (window stays responsive, progress
+  label updates, result lands as before).
 - **CI GROUP-PERF FLAKE FIXED (2026-09-09, commit 9a759fd):** the
   `group_pass_5000_books_stays_scalar_fast` gate failed in CI
   (18.16 s vs the 15 s budget; locally reproduced 13.76 s with a

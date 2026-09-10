@@ -17,8 +17,10 @@
 //! the export_user_presets block joins when the settings schema
 //! grows lists).
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc, Mutex};
 
 use gtk4::prelude::*;
 use gtk4::{
@@ -26,10 +28,26 @@ use gtk4::{
     Orientation, SpinButton,
 };
 
+use gtk4::glib;
+use gtk4::glib::ControlFlow;
+
 use cr_io::export::{
     export_book, export_books_combined, main_extension_for_format, target_path, ExportCompression,
     ExportNaming, ExportSetting, ExportTarget, StoragePageType,
 };
+
+/// One worker-to-UI message (the background export pump).
+enum ExportMsg {
+    Progress(String),
+    /// One export group finished; `index` picks the group's key book
+    /// (0 for a combined run).
+    GroupDone {
+        index: usize,
+        out_path: std::path::PathBuf,
+    },
+    ExportError(String),
+    Finished,
+}
 
 /// The OK result: the settings the user settled on (the caller
 /// persists them as the session default).
@@ -48,6 +66,7 @@ pub fn show_export_dialog(
     setting: ExportSetting,
     on_done: impl Fn(Option<ExportDialogResult>) + 'static,
 ) {
+    let on_done = Rc::new(on_done);
     if books.is_empty() {
         return;
     }
@@ -332,15 +351,26 @@ pub fn show_export_dialog(
         });
     }
 
-    // OK: run the export synchronously with progress (a local
-    // export is fast; the C# queue's parallel machinery is not
-    // needed — the progress label feeds per page).
+    // OK: the export runs on a WORKER thread (the C# QueueManager
+    // background conversion — a synchronous run blocked the GTK main
+    // loop and froze the window for the whole CBR->CBZ conversion).
+    // The worker sends progress + per-group output paths over a
+    // channel; the main-thread pump updates the labels and runs the
+    // post-processing (it touches the library session, so it stays
+    // on the main thread). The C# breaks the loop on the first
+    // post-processing error — the worker watches a stop flag the
+    // pump sets when one lands.
     let done = Rc::new(RefCell::new(false));
+    // True while the background export runs — the dialog must not
+    // close mid-run (a closed dialog cannot cancel the worker, and
+    // the post-processing still touches the library).
+    let running = Rc::new(Cell::new(false));
     {
         let setting_rc = Rc::clone(&setting_rc);
         let progress_label = progress_label.clone();
         let error_label = error_label.clone();
         let done = Rc::clone(&done);
+        let running = Rc::clone(&running);
         let books = books.clone();
         dialog.connect_response(move |dlg, response| {
             if done.replace(true) {
@@ -350,65 +380,149 @@ pub fn show_export_dialog(
                 gtk4::ResponseType::Ok => {
                     let s = setting_rc.borrow().clone();
                     let total = books.len();
-                    let mut errors: Vec<String> = Vec::new();
                     // The export lamp flag (the C# lamp reads
-                    // `QueueManager.IsInComicConversion`; the port's
-                    // export is synchronous — the flag drives the
-                    // lamp between runs, recorded deviation).
+                    // `QueueManager.IsInComicConversion`; the flag
+                    // spans the whole background run now).
                     crate::library::set_export_active(true);
-                    if s.combine {
-                        progress_label.set_text("Exporting combined file…");
-                        match export_books_combined(&s, &books, &captions, &|done, total| {
-                            progress_label.set_text(&format!("Exporting… page {done}/{total}"));
-                        }) {
-                            Ok((_pages, out_path)) => {
-                                if let Err(err) =
-                                    crate::library::export_post_process(&s, &books, &out_path)
-                                {
-                                    errors.push(err);
+                    running.set(true);
+
+                    let (tx, rx) = std::sync::mpsc::channel::<ExportMsg>();
+                    let post_errors: Arc<Mutex<Vec<String>>> = Arc::default();
+                    let stop = Arc::new(AtomicBool::new(false));
+
+                    let worker_books = books.clone();
+                    let worker_captions = captions.clone();
+                    let worker_s = s.clone();
+                    let worker_tx = tx.clone();
+                    let worker_stop = Arc::clone(&stop);
+                    std::thread::spawn(move || {
+                        let send_progress = |tx: &mpsc::Sender<ExportMsg>, text: String| {
+                            let _ = tx.send(ExportMsg::Progress(text));
+                        };
+                        if worker_s.combine {
+                            send_progress(&worker_tx, "Exporting combined file…".into());
+                            match export_books_combined(
+                                &worker_s,
+                                &worker_books,
+                                &worker_captions,
+                                &|done, total| {
+                                    let _ = worker_tx.send(ExportMsg::Progress(format!(
+                                        "Exporting… page {done}/{total}"
+                                    )));
+                                },
+                            ) {
+                                Ok((_pages, out_path)) => {
+                                    let _ =
+                                        worker_tx.send(ExportMsg::GroupDone { index: 0, out_path });
+                                }
+                                Err(err) => {
+                                    let _ = worker_tx.send(ExportMsg::ExportError(err.to_string()));
                                 }
                             }
-                            Err(err) => errors.push(err.to_string()),
-                        }
-                    } else {
-                        for (i, book) in books.iter().enumerate() {
-                            progress_label.set_text(&format!("Exporting {}/{}…", i + 1, total));
-                            match export_book(&s, book, &captions[i], i, &|done, total| {
-                                progress_label.set_text(&format!(
-                                    "Exporting {}/{} — page {done}/{total}",
-                                    i + 1,
-                                    total
-                                ));
-                            }) {
-                                Ok((_pages, out_path)) => {
-                                    if let Err(err) = crate::library::export_post_process(
-                                        &s,
-                                        std::slice::from_ref(book),
-                                        &out_path,
-                                    ) {
-                                        errors.push(err);
+                        } else {
+                            for (i, book) in worker_books.iter().enumerate() {
+                                if worker_stop.load(Ordering::Relaxed) {
+                                    break;
+                                }
+                                send_progress(
+                                    &worker_tx,
+                                    format!("Exporting {}/{}…", i + 1, total),
+                                );
+                                match export_book(
+                                    &worker_s,
+                                    book,
+                                    &worker_captions[i],
+                                    i,
+                                    &|done, total| {
+                                        let _ = worker_tx.send(ExportMsg::Progress(format!(
+                                            "Exporting {}/{} — page {done}/{total}",
+                                            i + 1,
+                                            total
+                                        )));
+                                    },
+                                ) {
+                                    Ok((_pages, out_path)) => {
+                                        let _ = worker_tx
+                                            .send(ExportMsg::GroupDone { index: i, out_path });
+                                    }
+                                    Err(err) => {
+                                        let _ =
+                                            worker_tx.send(ExportMsg::ExportError(err.to_string()));
                                         break;
                                     }
                                 }
-                                Err(err) => {
-                                    errors.push(err.to_string());
-                                    break;
+                            }
+                        }
+                        let _ = worker_tx.send(ExportMsg::Finished);
+                    });
+                    drop(tx);
+
+                    // The main-thread pump: drain the channel, run the
+                    // post-processing per group, finish on `Finished`.
+                    let post_errors_pump = Arc::clone(&post_errors);
+                    let stop_pump = Arc::clone(&stop);
+                    let books_pump = books.clone();
+                    let s_pump = s.clone();
+                    let progress_label = progress_label.clone();
+                    let error_label = error_label.clone();
+                    let done = Rc::clone(&done);
+                    let running = Rc::clone(&running);
+                    let dlg_pump = dlg.clone();
+                    let on_done_pump = on_done.clone();
+                    glib::timeout_add_local(std::time::Duration::from_millis(50), move || {
+                        while let Ok(msg) = rx.try_recv() {
+                            match msg {
+                                ExportMsg::Progress(text) => progress_label.set_text(&text),
+                                ExportMsg::ExportError(err) => {
+                                    post_errors_pump.lock().unwrap().push(err);
+                                    stop_pump.store(true, Ordering::Relaxed);
+                                }
+                                ExportMsg::GroupDone { index, out_path } => {
+                                    let group: &[cr_core::model::comic_book::ComicBook] =
+                                        if s_pump.combine {
+                                            &books_pump
+                                        } else {
+                                            std::slice::from_ref(&books_pump[index])
+                                        };
+                                    if let Err(err) = crate::library::export_post_process(
+                                        &s_pump, group, &out_path,
+                                    ) {
+                                        post_errors_pump.lock().unwrap().push(err);
+                                        stop_pump.store(true, Ordering::Relaxed);
+                                    }
+                                }
+                                ExportMsg::Finished => {
+                                    crate::library::set_export_active(false);
+                                    running.set(false);
+                                    let errors = post_errors_pump.lock().unwrap().clone();
+                                    if errors.is_empty() {
+                                        dlg_pump.close();
+                                        on_done_pump(Some(ExportDialogResult {
+                                            setting: s_pump.clone(),
+                                        }));
+                                    } else {
+                                        error_label.set_text(&format!(
+                                            "Export failed: {}",
+                                            errors.join("; ")
+                                        ));
+                                        error_label.set_visible(true);
+                                        progress_label.set_text("");
+                                        done.replace(false);
+                                    }
+                                    return ControlFlow::Break;
                                 }
                             }
                         }
-                    }
-                    crate::library::set_export_active(false);
-                    if errors.is_empty() {
-                        dlg.close();
-                        on_done(Some(ExportDialogResult { setting: s }));
-                    } else {
-                        error_label.set_text(&format!("Export failed: {}", errors.join("; ")));
-                        error_label.set_visible(true);
-                        progress_label.set_text("");
-                        done.replace(false);
-                    }
+                        ControlFlow::Continue
+                    });
                 }
                 _ => {
+                    if running.get() {
+                        // Ignore close attempts during the export (the
+                        // C# modal progress has no cancel path either).
+                        done.replace(false);
+                        return;
+                    }
                     dlg.close();
                     on_done(None);
                 }
