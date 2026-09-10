@@ -9,6 +9,8 @@ fancy-regex = "0.14"
 regex = "1"
 serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
+thiserror = { workspace = true }
+ureq = { version = "2", default-features = false, features = ["tls", "gzip"] }
 
 [lints]
 workspace = true

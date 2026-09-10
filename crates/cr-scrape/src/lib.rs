@@ -13,5 +13,6 @@
 //! requires a user-supplied key.
 
 pub mod config;
+pub mod cv;
 pub mod fnameparser;
 pub mod utils;
