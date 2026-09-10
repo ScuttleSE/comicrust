@@ -252,3 +252,68 @@ remain open in parallel.
   replaced by `log`-crate-style debug envs if needed, not ported.
 - Rating scraping (SCRAPE_RATING) is slow-by-design in the C# (an
   extra query per issue); port verbatim behind the same advanced flag.
+## Close-out (2026-09-10, agent)
+
+**IMPLEMENTED: T1-T9, fmt/clippy/481 tests green.** Commits 8aa5196
+(T1), 6fd1d54 (T2), 0cedd54 (T3), 435edd5 (T4), 7664c26 (T5),
+2a4a2f4 (T6), 88d85c5 (T7), 4155208 (T8), plus this close-out (T9).
+
+- T1: `crates/cr-scrape` scaffold; `fnameparser.rs` gated by the
+  plugin's own 218-case vector file (218/218; the real Python module
+  was validated under CPython with clr/log/utils stubs first —
+  `/tmp/opencode/cvspy/`). `config.rs`: the ~33 basic fields with the
+  C# JSON key names, the 16-form advanced KEY=VALUE parser, XDG
+  plugin dir, ONE settings.json.
+- T2: `cv/` — models (key-only Eq/Hash ref sets), the throttled
+  retrying client, the four endpoints (`format=json`), URL decode,
+  the cvinfo magic file, the search-term cleanup, session caches,
+  the verbatim imprints table. 10 mock-server tests + natural-key
+  vectors.
+- T3: BookData — the read side (Shadow values + filename fallback)
+  and the full update() massage rules; 23 tests.
+- T4: the matching layer — 8x8 average hash, MatchScore,
+  filter_series_refs, the automatcher with the trade-paperback
+  bail-out; three end-to-end automatcher tests over a mock server.
+- T5: the engine loop with the ScrapeUi request/response protocol;
+  the series-details cache follows C# parity (always the dedicated
+  volume query).
+- T6: the config dialog (`dialogs/scrape_config.rs`) gated by
+  `scrapeconfig_probe`.
+- T7: the wizard (`dialogs/scrape.rs` — the non-modal status window,
+  worker thread, modal search/series/issue dialogs over channels,
+  per-book commit) + the shell wiring (context menu,
+  `win.scrape-books`, `win.scrape-config`) + `scrape_probe`.
+- T8: fileless-book custom thumbnails — the one base touch: the
+  pool's custom-thumb dir + AddCustomThumbnail parity + the render
+  branch; `front_cover_thumbnail_key` keys through the C#
+  `GetThumbnailKey` ordering (the locator for fileless books, the
+  provider index + stored rotation for linked books); the item view
+  now keys through `front_cover_thumbnail_key`. The `ThumbInstaller`
+  seam keeps the engine pool-free.
+- T9: the README scraping section + the attribution + this record.
+
+USER TEST (the remaining step, at the end of this kickoff):
+1. Start comicrust (`cargo run -p cr-app --release --`), select one
+   or more library books, right-click -> "Scrape from Comic Vine…"
+   (or the toolbar button).
+2. On the first run, paste your free ComicVine API key in File ▸
+   Comic Vine Scraper Settings…; confirm the checkboxes persist
+   across a restart.
+3. Scrape a book whose series Comic Vine knows: the details land
+   (series, number, writer, summary, dates), the Notes line reads
+   "Scraped metadata from ComicVine [CVDBnnnn].", and the grid
+   refreshes.
+4. Rescrape the same book: the previous choice is reused with no
+   dialogs (fast rescrape).
+5. Scrape a book whose series is ambiguous: the series dialog lists
+   the matches sorted by score; pick one and confirm the scrape.
+6. Scrape a fileless book (New Comic…): after the scrape the grid
+   shows the ComicVine cover instead of the FilelessMarker icon.
+7. The UI stays responsive during the run (the scrape delay of 1 s
+   between books; the Cancel button ends the run cleanly).
+
+Recorded deviations (all pre-declared in Omissions): no legacy
+profile import; no File ▸ Automation submenu or editor hook or
+F1-F12 shortcuts; no alt-cover browsing in the issue dialog (the
+C# `session_data_map` alt-cover choice); the welcome dialog rides
+the config dialog (the key check happens at scrape start).

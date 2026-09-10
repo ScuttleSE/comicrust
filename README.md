@@ -33,6 +33,12 @@ The core application is complete and ready for daily use. Work continues on poli
 - Export comics to CBZ or CBT.
 - Create and restore backups of the library.
 
+**Scraping**
+
+- Scrape book details from [Comic Vine](https://comicvine.gamespot.com/api/) (the native port of the Comic Vine Scraper add-on; see ADR-031).
+- Set it up under File ▸ Comic Vine Scraper Settings… (or the toolbar button): register at comicvine.gamespot.com/api for a free API key and paste it in. Choose which fields each scrape fills, how overwrites behave, and optional KEY=VALUE advanced rules (ignored publishers and search terms, publisher aliases, imprint mappings).
+- Scraped books remember their series: a rescrape reuses the previous choice, auto-scrape matches covers by a perceptual hash, and the browser shows the scraped cover for fileless entries.
+
 ## Supported formats
 
 | Comic format | Read | Write metadata back |
@@ -158,7 +164,7 @@ Point it at your ComicRack profile folder (on Windows `%APPDATA%\cYo\ComicRack C
 
 ## Differences from ComicRack CE
 
-- Python plugins do not run. Some popular script features exist as built-in commands instead (for example "New Comic…" and "New fileless Book Series…").
+- Python plugins do not run. Some popular script features exist as built-in commands instead (for example "New Comic…" and "New fileless Book Series…"). The Comic Vine Scraper is a native port (see ADR-031).
 - No remote server and no Android app sync.
 - English only. The translation files of the original are not loaded yet.
 - Web comics (`.cbw`) are not supported yet.
@@ -171,5 +177,7 @@ See [AGENTS.md](AGENTS.md) for the project status and the [docs](docs/) folder f
 ## Credits and license
 
 ComicRack was created by Markus Eisenstöck (cYo) and continued as [Community Edition](https://github.com/maforget/ComicRackCE) by maforget and contributors. comicrust uses the CE source as its behavioral specification. All credit for the original design belongs there.
+
+The Comic Vine Scraper port is based on the add-on by Cory Banack (`https://github.com/cbanack/comic-vine-scraper`), Apache 2.0.
 
 The project has no license yet. The decision is deliberate and planned (see `docs/decisions.md`, ADR-009).

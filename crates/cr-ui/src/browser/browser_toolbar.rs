@@ -284,6 +284,19 @@ impl BrowserToolbar {
         layouts_btn.set_sensitive(false);
         bar.append(&layouts_btn);
 
+        // tsScrape (Phase 12): the Comic Vine Scraper wizard over the
+        // selection — the C# browser toolbar hosts image-bearing
+        // Automation commands as split buttons.
+        let (scrape_btn, _) = tool_button("comicvinescraper", "", "Scrape from Comic Vine…");
+        {
+            let window = window.clone();
+            scrape_btn.connect_clicked(move |_| {
+                let _ =
+                    gtk4::prelude::WidgetExt::activate_action(&window, "win.scrape-books", None);
+            });
+        }
+        bar.append(&scrape_btn);
+
         let sep2 = gtk4::Separator::new(gtk4::Orientation::Horizontal);
         sep2.set_margin_top(4);
         sep2.set_margin_bottom(4);

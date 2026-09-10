@@ -315,43 +315,80 @@ Update this section at the **end of every work session**. The next agent must kn
   gtk4 jq` (Arch does not split dev packages — gtk4 carries the
   headers). USER TEST = the 5 steps at the end of the kickoff
   (needs a tagged release + a workflow run).
-- **PHASE 12 ACTIVE (2026-09-10) — NATIVE MODULES I: COMIC VINE
-  SCRAPER** (the kickoff is `docs/phase-12-kickoff.md`; the modularity
-  pattern is ADR-031: one crate per plugin, engine on a worker thread
-  behind a message protocol, plugin-local config, enumerated minimal
-  base touchpoints). User decisions locked (2026-09-10): C#-parity
-  wizard flow; plugin-local `settings.json`; no legacy profile import;
+- **PHASE 12 COMPLETE, USER TEST PENDING (2026-09-10) — NATIVE
+  MODULES I: COMIC VINE SCRAPER** (the kickoff is
+  `docs/phase-12-kickoff.md`; the modularity pattern is ADR-031: one
+  crate per plugin, engine on a worker thread behind a message
+  protocol, plugin-local config, enumerated minimal base
+  touchpoints). User decisions locked (2026-09-10): C#-parity wizard
+  flow; plugin-local `settings.json`; no legacy profile import;
   context menu + toolbar button only; fileless-book covers DISPLAY
   (the T8 `type://` render path is the one base touch);
-  `format=json` + ureq. T1 COMPLETE (fmt/clippy/424 tests green):
-  `crates/cr-scrape` scaffolded (deps cr-core, fancy-regex, regex,
-  serde, serde_json; Apache-2.0 attribution header); `fnameparser.rs`
-  — the full `extract()`/`regex()` port (re.match anchoring via
-  `\A`-anchored plain captures, the two fixed-length lookbehinds, the
-  `V2003` year form, bracket-range years, the 2000AD/Beano/#year
-  exceptions, rightmost-number-is-the-issue, Python float formatting,
-  the blank-series fallback); the plugin's own 218-case
-  `test_fnameparser.data` is the gate
-  (`crates/cr-scrape/tests/`, committed fixture) — 218/218 green;
-  VALIDATION METHOD that paid off: the real Python module runs under
-  CPython with tiny clr/log/utils stubs (`/tmp/opencode/cvspy/`) —
-  it passed all 218 cases, so the data file IS the spec; one
-  hand-trace contradiction ("- #5 - v2003" → no year) resolved by it
-  (RULE2 drops the title part, taking the year with it).
-  `config.rs`: `Configuration` (~33 basic fields, C# defaults, serde
-  JSON with the C# key names — `updateNotes`/`updateTags` are the
-  persisted names of rescrape_notes/tags), the advanced-settings
-  string parser (16 KEY=VALUE forms incl. SCRAPE_DELAY clamp 2..3600
-  with default 1, PUBLISHER_ALIAS/IMPRINT arrow parsing,
-  ALT_SEARCH_REGEX compile-check), load/save into ONE
-  `settings.json` under `~/.config/comicrust/plugins/comic-vine-scraper`
-  (the advanced text is a field — changed from the kickoff's
-  advanced.txt); `advanced` is private + `advanced()` accessor —
-  serde skips it and both mutation paths reparse (the pure serde
-  round-trip leaves it unparsed by design). 13 config unit tests +
-  the regex()/failed-regex-cache tests. NEXT: T2 (the `cv/` data
-  layer: ureq client, models, 4 endpoints, mock-server tests).
-- **Phase:** PHASE 12 ACTIVE (2026-09-10, above) besides the Phase 10
+  `format=json` + ureq. ALL TASKS T1-T9 IMPLEMENTED (fmt/clippy/481
+  tests green; commits 8aa5196, 6fd1d54, 0cedd54, 435edd5, 7664c26,
+  2a4a2f4, 88d85c5, 4155208):
+  - T1: `crates/cr-scrape` (deps cr-core, cr-image, fancy-regex,
+    regex, serde, serde_json, ureq; Apache-2.0 attribution header);
+    `fnameparser.rs` — the full `extract()`/`regex()` port gated by
+    the plugin's own 218-case `test_fnameparser.data` (218/218;
+    the real Python module was validated under CPython with
+    clr/log/utils stubs first, `/tmp/opencode/cvspy/` — the data
+    file IS the spec). `config.rs`: `Configuration` (~33 basic
+    fields, C# defaults, serde JSON with the C# key names —
+    `updateNotes`/`updateTags` are the persisted names of
+    rescrape_notes/tags), the advanced-settings string parser (16
+    KEY=VALUE forms incl. SCRAPE_DELAY clamp 2..3600 with default 1,
+    PUBLISHER_ALIAS/IMPRINT arrow parsing, ALT_SEARCH_REGEX
+    compile-check), load/save into ONE settings.json under
+    `~/.config/comicrust/plugins/comic-vine-scraper`; `advanced` is
+    private + `advanced()` accessor — serde skips it and both
+    mutation paths reparse.
+  - T2-T9: `cv/` (models with key-only Eq/Hash ref sets, the 1100 ms
+    throttled + retried client, the four endpoints in `format=json`,
+    the 4050-/4000- URL decode, the cvinfo magic file, search-term
+    cleanup, the verbatim imprints table); `bookdata.rs` (the read
+    side with Shadow values + the filename fallback, the full
+    update() massage rules, key tags + CVDBSKIP + the Scraped-
+    metadata Notes line, publisher/imprint conversions); `matching/`
+    (8x8 average hash, MatchScore, filters, the automatcher with the
+    trade-paperback bail-out); the engine loop (BookStatus, fast
+    rescrape, skip tag, cvinfo file, delayed requeue, ScrapeUi
+    protocol); the config dialog (`scrapeconfig_probe`); the wizard
+    (`dialogs/scrape.rs`: the non-modal status window, worker
+    thread, modal search/series/issue dialogs over channels,
+    per-book `apply_edited` commit, prior_series.json persistence,
+    `win.scrape-books`/`win.scrape-config`, the context-menu item,
+    the toolbar button with the bundled plugin icon); fileless-book
+    custom thumbnails (the pool's custom-thumb dir +
+    AddCustomThumbnail parity + the Resource/'custom' render branch;
+    `front_cover_thumbnail_key` keys through the C# GetThumbnailKey
+    ordering; the item view keys through it now; the ThumbInstaller
+    seam keeps the engine pool-free). Gates: 218/218 fnameparser
+    vectors, 10 mock-server CV tests, 23 bookdata tests, 9 matching
+    tests, 6 engine tests, 2 pool tests, scrapeconfig_probe,
+    scrape_probe. USER TEST = the 7 steps at the end of the kickoff.
+- **Phase:** PHASE 12 COMPLETE, USER TEST PENDING (2026-09-10, above)
+  besides the Phase 10 + Phase 11 blocks above
+  (2026-09-09). Phases 0-8 are COMPLETE
+  (every delivered task user-tested; the trail below carries the
+  records). Phase 9 (the SQLite backend) is DEFERRED to
+  `docs/backlog.md` with its full design intact. Open work is
+  picked from `docs/backlog.md` and re-homed into a kickoff FIRST.
+  Open gaps: WebComicProvider, PDF/DjVu writers, the LICENSE file
+  (Phase 11 packaging gap), the T14 per-list sort deviation,
+  HEIF/AVIF decode. The Phase 11 PIPELINE is COMPLETE (the v0.0.283
+  release carries all 9 assets on both hosts); the install steps
+  (the kickoff user test) remain.
+  OPEN USER TESTS (2026-09-10, in test order): the Phase 12 scrape
+  steps (the kickoff tail — scrape a book, rescrape it, the fileless
+  cover, responsiveness), the Phase 10 steps
+  1-4 + 5-8 (the kickoff tail), the Phase 11 install steps (the
+  kickoff tail), the export-freeze fix (re-run a CBR→CBZ export —
+  responsive window, progress ticks), and the write-back fix (edit
+  a CBR/CB7 property + Update Book File(s) — responsive UI, write
+  lands, the Files-to-update list clears).
+- **Phase:** PHASE 12 COMPLETE, USER TEST PENDING (2026-09-10, above)
+  besides the Phase 10
   + Phase 11 blocks above
   (2026-09-09). Phases 0-8 are COMPLETE
   (every delivered task user-tested; the trail below carries the
@@ -363,12 +400,15 @@ Update this section at the **end of every work session**. The next agent must kn
   HEIF/AVIF decode. The Phase 11 PIPELINE is COMPLETE (the v0.0.283
   release carries all 9 assets on both hosts); the install steps
   (the kickoff user test) remain.
-  OPEN USER TESTS (2026-09-10, in test order): the Phase 10 steps
+  OPEN USER TESTS (2026-09-10, in test order): the Phase 12 scrape
+  steps (the kickoff tail — scrape a book, rescrape it, the fileless
+  cover, responsiveness), the Phase 10 steps
   1-4 + 5-8 (the kickoff tail), the Phase 11 install steps (the
   kickoff tail), the export-freeze fix (re-run a CBR→CBZ export —
   responsive window, progress ticks), and the write-back fix (edit
   a CBR/CB7 property + Update Book File(s) — responsive UI, write
-  lands, the Files-to-update list clears).
+  lands, the Files-to-update list clears). The FIRST entry (Phase 12)
+  supersedes the list below it when times conflict.
 - **(Phase 8 — CLOSED 2026-09-08 — the kickoff is
   `docs/phase-8-kickoff.md`; done so far: T3 (the
   CBL-import perf) + T10 first slice (the view-side proposed-parse
@@ -1254,7 +1294,7 @@ Update this section at the **end of every work session**. The next agent must kn
   Phases 0-5 are complete (their gates stay green). Open Phase 1
   gaps: WebComicProvider and the PDF/DjVu writers (tracked in
   `docs/phase-1-kickoff.md`).
-- **State:** `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` are green. 424 tests — 36 suites plus the new cr-scrape suites (the Phase 8 perf gates: `reading_list_perf`, `view_perf`, `path_migration_perf`, `list_eval_perf`, `scan_perf`; the cr-ui probes are examples, not tests; the real-fixture parts skip in CI without the git-ignored `tests/testfiles/` files; the RAR round-trips skip without `CR_RAR_TESTS` + `rar`). CI runs on the `docker-runner-amd64` container runner (ADR-020) and is LIVE (it caught the 2026-09-09 group-gate flake — the runner + `comicrust-ci:latest` image work). The release tracks are `release.yaml` (rolling prerelease per push) and `tagged-release.yaml` (manual dispatch, stable release for an existing tag — ADR-021, 2026-09-03); `packaging.yaml` (Phase 11) attaches the source tarball, the Arch package, and the Flatpak bundle to a tagged release. First real tagged-release run (v0.0.273, 2026-09-09) exposed a latent env bug: the "Publish to GitHub mirror" step lacked `TAG` (the Gitea publish succeeded; the mirror step died on `set -u`) — fixed in commit 05483da.
+- **State:** `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` are green. 481 tests — 36 suites plus the cr-scrape suites (the Phase 8 perf gates: `reading_list_perf`, `view_perf`, `path_migration_perf`, `list_eval_perf`, `scan_perf`; the cr-ui probes are examples, not tests; the real-fixture parts skip in CI without the git-ignored `tests/testfiles/` files; the RAR round-trips skip without `CR_RAR_TESTS` + `rar`). CI runs on the `docker-runner-amd64` container runner (ADR-020) and is LIVE (it caught the 2026-09-09 group-gate flake — the runner + `comicrust-ci:latest` image work). The release tracks are `release.yaml` (rolling prerelease per push) and `tagged-release.yaml` (manual dispatch, stable release for an existing tag — ADR-021, 2026-09-03); `packaging.yaml` (Phase 11) attaches the source tarball, the Arch package, and the Flatpak bundle to a tagged release. First real tagged-release run (v0.0.273, 2026-09-09) exposed a latent env bug: the "Publish to GitHub mirror" step lacked `TAG` (the Gitea publish succeeded; the mirror step died on `set -u`) — fixed in commit 05483da.
 - **GitHub mirror (2026-09-06):** remote `github` = `git@github.com:ScuttleSE/comicrust.git` — a TRUE mirror (identical SHAs; `.gitea/` rides along but is inert there, GitHub Actions only reads `.github/workflows/`). After every origin push also `git push github main`; stable tags get pushed manually once; the `rolling` tag is CI-managed on BOTH sides (each release run deletes/recreates it) — never push it by hand. Both release workflows also publish the built tarball + sha256 to GitHub Releases through `.gitea/publish_github_release.sh` (build once on Gitea, assets on both); it needs the Gitea secret `MIRROR_RELEASE_TOKEN` (GitHub PAT with Contents read/write on ScuttleSE/comicrust; Gitea forbids a `GITHUB_` prefix) — unset secret = the step skips with a notice.
 - **Phase 0 gate status:** byte-stable ComicDb.xml round-trip proven on all three synthetic fixtures AND the real-world database `tests/realworld/ComicDb.xml` (255 books, 584 KB, 2026-09-02, user-approved commit).
 - **Phase 2 gate status:** every saved smart list in the real-world DB (a) binds to the matcher registry, (b) renders to a `Match` query string that re-parses and re-renders byte-identically, and (c) evaluates to the SAME book sets the C# cached in `CacheStorage` (Never Read = all 255, Files to update = the 3 dirty books, Reading/Read = empty). Evidence: `crates/cr-engine/tests/realworld_query.rs`.
