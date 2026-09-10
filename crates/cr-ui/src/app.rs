@@ -97,7 +97,15 @@ pub fn run(args: Vec<String>) {
         // (`remove_missing: false` — vanished files flag as missing).
         glib::timeout_add_local(std::time::Duration::from_secs(1), || {
             for root in library::take_watch_folder_rescans() {
-                library::add_folder_to_library(Path::new(&root), |_| {});
+                library::add_folder_to_library(Path::new(&root), |_| {
+                    // The scan landed: the browser re-evaluates (the
+                    // C# scan events update the live view).
+                    if let Some(shell) =
+                        BROWSER.with(|cell| cell.borrow().as_ref().map(|s| s.clone()))
+                    {
+                        shell.refresh_after_data_change();
+                    }
+                });
             }
             glib::ControlFlow::Continue
         });

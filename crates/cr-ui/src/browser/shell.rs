@@ -698,22 +698,19 @@ impl BrowserShell {
     }
 
     /// The refresh after a direct database mutation outside the
-    /// normal view flow (the path-migration apply): the ItemView
-    /// re-evaluates, the navigator tree refills, the action states +
-    /// status panels re-sync.
+    /// normal view flow (the path-migration apply, the scan lands):
+    /// the ItemView re-evaluates, the navigator tree refills, the
+    /// action states + status panels re-sync.
     pub fn refresh_after_data_change(&self) {
         let t = std::time::Instant::now();
         self.state.refresh_view_from_list();
-        crate::trace::trace(format!("path-migration refresh: view {:?}", t.elapsed()));
+        crate::trace::trace(format!("data-change refresh: view {:?}", t.elapsed()));
         self.state
             .navigator
             .refill(&library::comic_lists_snapshot());
-        crate::trace::trace(format!(
-            "path-migration refresh: +navigator {:?}",
-            t.elapsed()
-        ));
+        crate::trace::trace(format!("data-change refresh: +navigator {:?}", t.elapsed()));
         self.state.sync_enabled();
-        crate::trace::trace(format!("path-migration refresh: total {:?}", t.elapsed()));
+        crate::trace::trace(format!("data-change refresh: total {:?}", t.elapsed()));
     }
 
     /// The grid's current view state (display-order checks + probes).
@@ -3633,7 +3630,7 @@ impl ShellState {
                 }
             });
         });
-        self.add_simple(&group, "scan-folders", |_sh| {
+        self.add_simple(&group, "scan-folders", |sh| {
             // `StartFullScan`: re-scan every watch-folder root (the
             // C# `QueueManager.StartScan(all,
             // RemoveMissingFilesOnFullScan)`; the remove-missing flag
@@ -3651,7 +3648,16 @@ impl ShellState {
                 if root.is_empty() {
                     continue;
                 }
-                library::add_folder_to_library(Path::new(&root), |_| {});
+                // The scan lands on the pump — refresh there (the C#
+                // scan events update the live view; the port merges
+                // the storage once at landing).
+                let weak = Rc::downgrade(sh);
+                library::add_folder_to_library(Path::new(&root), move |_| {
+                    if let Some(sh) = weak.upgrade() {
+                        sh.refresh_view_from_list();
+                        sh.sync_enabled();
+                    }
+                });
             }
         });
         self.add_simple(&group, "update-book-files", |_| {
