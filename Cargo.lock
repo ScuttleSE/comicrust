@@ -474,6 +474,7 @@ dependencies = [
  "cr-engine",
  "cr-image",
  "cr-io",
+ "cr-scrape",
  "gtk4",
  "zip",
 ]

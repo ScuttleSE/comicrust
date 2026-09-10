@@ -9,6 +9,7 @@ cr-core.workspace = true
 cr-io.workspace = true
 cr-image.workspace = true
 cr-engine.workspace = true
+cr-scrape.workspace = true
 gtk4 = { version = "0.11", features = ["v4_6", "v4_10"] }
 chrono.workspace = true
 
