@@ -16,4 +16,5 @@ pub mod bookdata;
 pub mod config;
 pub mod cv;
 pub mod fnameparser;
+pub mod matching;
 pub mod utils;

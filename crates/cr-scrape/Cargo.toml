@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 cr-core = { path = "../cr-core" }
+cr-image = { path = "../cr-image" }
 chrono = { workspace = true }
 fancy-regex = "0.14"
 regex = "1"
@@ -15,3 +16,6 @@ ureq = { version = "2", default-features = false, features = ["tls", "gzip"] }
 
 [lints]
 workspace = true
+
+[dev-dependencies]
+image = { workspace = true }

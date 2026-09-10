@@ -453,7 +453,9 @@ version = "0.1.0"
 dependencies = [
  "chrono",
  "cr-core",
+ "cr-image",
  "fancy-regex",
+ "image",
  "regex",
  "serde",
  "serde_json",
