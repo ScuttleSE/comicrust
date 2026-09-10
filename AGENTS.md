@@ -388,6 +388,20 @@ Update this section at the **end of every work session**. The next agent must kn
   scrape (CR_SCRAPE_DEBUG=1 shows every query); LESSON: when a port
   changes the wire format (xml -> json), re-derive the fixture
   shapes from the LIVE API, never from the C# dom shapes.
+  FIX ROUND 2 (2026-09-10, commit 3cd8051, user report "clicked the
+  correct series, then nothing" — the log ended at '100 series
+  found' with no issue fetch): ROOT CAUSE — the pick dialogs only
+  committed through their BUTTONS; a row click merely selected it,
+  so the engine sat blocked in request_series. FIX:
+  connect_row_activated commits the row (double-click/Enter) in
+  BOTH dialogs, behind a one-shot finish shared with the button
+  paths. SAME REPORT exposed the frozen-status gap: the issue-list
+  fetch for a 1000-issue series runs ~11 throttled pages with the
+  label stuck — the C# per-page callbacks (callback_function
+  (matches, expected) / (ratio)) are now ported
+  (SeriesProgressFn/IssueProgressFn) and the status line shows
+  'Searching... N results' / 'Loading issues... N%'. CR_SCRAPE_DEBUG
+  logs the dialog presentation + every user choice. 482 tests.
 - **Phase:** PHASE 12 COMPLETE, USER TEST PENDING (2026-09-10, above)
   besides the Phase 10 + Phase 11 blocks above
   (2026-09-09). Phases 0-8 are COMPLETE
