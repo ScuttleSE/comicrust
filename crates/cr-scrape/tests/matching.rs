@@ -134,7 +134,6 @@ fn filter_series_refs_by_publisher_year_and_threshold() {
 // ==========================================================================
 // the automatcher end to end
 
-
 fn start_mock(series_count: usize) -> String {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();

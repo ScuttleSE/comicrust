@@ -14,7 +14,7 @@ use regex::Regex;
 use std::sync::LazyLock;
 
 use crate::config::Configuration;
-use crate::cv::models::Issue;
+use crate::cv::models::{Issue, IssueRef, SeriesRef};
 use crate::fnameparser;
 
 /// The magic skip flag (database independent): marks a book to never
@@ -893,6 +893,94 @@ fn shadow_volume(book: &ComicBook) -> i32 {
         book.info.volume
     } else {
         cr_core::model::comic_name_info::from_file_path_configured(&book.file_path).volume
+    }
+}
+
+impl BookData {
+    /// The unique series key (the C# `ComicBook.__unique_series_s`):
+    /// identical for books that appear to be from the same series.
+    /// The hash part folds the directory (unless `ignore_folders`)
+    /// and the volume year.
+    pub fn unique_series(&self, ignore_folders: bool) -> String {
+        static NON_WORD: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\W+").unwrap());
+        let mut sname = self.series.clone();
+        if !sname.is_empty() && !self.format.is_empty() {
+            sname = format!("{}{}", sname, self.format);
+        }
+        sname = NON_WORD.replace_all(&sname, "").to_lowercase();
+
+        let svolume = if sname.is_empty() {
+            String::new()
+        } else if self.volume_year > 0 {
+            self.volume_year.to_string()
+        } else {
+            String::new()
+        };
+        // an unnamed book falls back to a unique id so it never
+        // groups with another unnamed comic
+        if sname.is_empty() {
+            sname = format!("uniqueid-{}", self.path);
+        }
+
+        // by default, books in different directories are different series
+        let location = match self.path.rfind(['/', '\\']) {
+            Some(i) => self.path[..i].to_string(),
+            None => String::new(),
+        };
+        let hash_text = if ignore_folders {
+            svolume
+        } else {
+            format!("{location}{svolume}")
+        };
+        let hash = if hash_text.is_empty() {
+            String::new()
+        } else {
+            let digest = crate::utils::fnv1a(&hash_text).to_be_bytes();
+            digest[..5]
+                .iter()
+                .map(|b| format!("{b:02X}"))
+                .collect::<String>()
+        };
+        format!("{sname}{hash}")
+    }
+
+    /// The magic CVDBSKIP flag: never scrape this book again.
+    pub fn skip_tagged(&self) -> bool {
+        let tagstring = self.tags.join(", ");
+        let lower_tag = tagstring.to_lowercase();
+        let lower_notes = self.notes.to_lowercase();
+        lower_tag.contains(&CVDBSKIP.to_lowercase()) || lower_notes.contains(CVDBSKIP)
+    }
+
+    /// Rebuilds the IssueRef from a previous scrape (the `CVDB<n>` tag
+    /// in Tags/Notes, or the comicvine_issue custom value). The C#
+    /// `__extract_issue_ref`.
+    pub fn extract_issue_ref(&self) -> Option<IssueRef> {
+        if self.skip_tagged() {
+            return None;
+        }
+        let tagstring = self.tags.join(", ");
+        let key = parse_key_tag(&tagstring)
+            .or_else(|| parse_key_tag(&self.notes))
+            .or_else(|| self.issue_key.trim().parse().ok())?;
+        Some(IssueRef::new(&self.issue_num, key, &self.title, None))
+    }
+
+    /// The sparse series ref from a previous scrape (the C#
+    /// `__extract_series_ref`).
+    pub fn extract_series_ref(&self) -> Option<SeriesRef> {
+        let key: i64 = self.series_key.trim().parse().ok()?;
+        Some(SeriesRef::sparse(key))
+    }
+
+    /// The display caption (the file name, or the series for a
+    /// fileless book — the C# log line shape).
+    pub fn caption(&self) -> String {
+        if self.path.is_empty() {
+            format!("{} #{}", self.series, self.issue_num)
+        } else {
+            basename(&self.path).to_string()
+        }
     }
 }
 

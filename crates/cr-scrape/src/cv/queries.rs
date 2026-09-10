@@ -633,11 +633,12 @@ fn parse_issue(dom: &Value, client: &CvClient) -> Result<Issue, CvError> {
 }
 
 /// `__issue_parse_series_details`: volume year + publisher for the
-/// series, cached per session.
+/// series, always through the dedicated details query (the C#
+/// `field_list` parse relies on it), cached per session.
 fn series_details(
     client: &CvClient,
     series_id: i64,
-    results: &Value,
+    _results: &Value,
 ) -> Result<(i32, String), CvError> {
     if let Some(cached) = client
         .series_details_cache
@@ -650,48 +651,31 @@ fn series_details(
     }
     let mut volume_year = -1;
     let mut publisher = String::new();
-
-    // the issue dom already carries the volume object; missing
-    // start_year/publisher fall back to the dedicated details query
-    let volume = results.pointer("/volume");
-    let mut start_year = volume
-        .and_then(|v| v.get("start_year"))
+    let mut query = client.base_query();
+    query.push((
+        "field_list",
+        "name,start_year,publisher,image,count_of_issues,id".to_string(),
+    ));
+    let dom = client.get_dom(&format!("/volume/4050-{series_id}/"), &query)?;
+    if dom.get("results").is_none() {
+        return Err(CvError::BadResponse(format!(
+            "can't get details about series {series_id}"
+        )));
+    }
+    if let Some(y) = dom
+        .pointer("/results/start_year")
         .and_then(Value::as_str)
-        .map(String::from);
-    let mut pub_name = volume
-        .and_then(|v| v.get("publisher"))
+        .and_then(|s| s.parse().ok())
+    {
+        volume_year = y;
+    }
+    if let Some(p) = dom
+        .pointer("/results/publisher")
         .filter(|p| p.as_object().is_some_and(|o| o.len() > 1))
         .and_then(|p| p.get("name"))
         .and_then(Value::as_str)
-        .map(String::from);
-    if start_year.is_none() || pub_name.is_none() {
-        let mut query = client.base_query();
-        query.push((
-            "field_list",
-            "name,start_year,publisher,image,count_of_issues,id".to_string(),
-        ));
-        let dom = client.get_dom(&format!("/volume/4050-{series_id}/"), &query)?;
-        if dom.get("results").is_none() {
-            return Err(CvError::BadResponse(format!(
-                "can't get details about series {series_id}"
-            )));
-        }
-        start_year = dom
-            .pointer("/results/start_year")
-            .and_then(Value::as_str)
-            .map(String::from);
-        pub_name = dom
-            .pointer("/results/publisher")
-            .filter(|p| p.as_object().is_some_and(|o| o.len() > 1))
-            .and_then(|p| p.get("name"))
-            .and_then(Value::as_str)
-            .map(String::from);
-    }
-    if let Some(y) = start_year.as_deref().and_then(parse_year_loose) {
-        volume_year = y;
-    }
-    if let Some(p) = pub_name {
-        publisher = p;
+    {
+        publisher = p.to_string();
     }
     client
         .series_details_cache
@@ -700,12 +684,6 @@ fn series_details(
         .insert(series_id, (volume_year, publisher.clone()));
     Ok((volume_year, publisher))
 }
-
-/// The `start_year` parse for the details path (`int(...)` guarded).
-fn parse_year_loose(s: &str) -> Option<i32> {
-    s.parse::<i32>().ok()
-}
-
 /// `__issue_parse_story_credits`: story arcs (crossovers), characters,
 /// teams, locations — each a list of `{name}` objects.
 fn parse_story_credits(results: &Value, issue: &mut Issue) {

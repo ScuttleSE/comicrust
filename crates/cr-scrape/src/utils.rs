@@ -256,3 +256,14 @@ fn find_whole_word(haystack: &str, needle: &str) -> Option<usize> {
 fn is_word_char(c: char) -> bool {
     c.is_alphanumeric() || c == '_'
 }
+
+/// FNV-1a 64-bit (the app's standard non-crypto digest; used for the
+/// session-unique series keys).
+pub fn fnv1a(text: &str) -> u64 {
+    let mut hash: u64 = 0xcbf29ce484222325;
+    for b in text.as_bytes() {
+        hash ^= u64::from(*b);
+        hash = hash.wrapping_mul(0x00000100000001b3);
+    }
+    hash
+}

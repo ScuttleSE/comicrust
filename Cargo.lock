@@ -454,6 +454,7 @@ dependencies = [
  "chrono",
  "cr-core",
  "cr-image",
+ "cr-io",
  "fancy-regex",
  "image",
  "regex",

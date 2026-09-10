@@ -190,6 +190,11 @@ fn issue_refs_list_and_issue_details() {
             status: 200,
             body: ISSUE_DETAILS,
         },
+        Canned {
+            path: "/volume/4050-",
+            status: 200,
+            body: VOLUME_DETAILS,
+        },
     ];
     let (base, _guard) = serve(CANNED);
     let mut cv = client_for(&base);
@@ -282,17 +287,24 @@ const VOLUME_DETAILS: &str = r#"{
   "error": "OK", "number_of_total_results": 1, "status_code": 1,
   "results": {"id": 40501, "name": "Batman", "start_year": "1940",
               "count_of_issues": 900,
-              "publisher": {"id": 10, "name": "DC Comics"},
+              "publisher": {"id": 10, "name": "Vertigo"},
               "image": {"small_url": "http://img/bat-small.jpg"}}
 }"#;
 
 #[test]
 fn series_details_cache_and_imprint_resolution() {
-    static CANNED: &[Canned] = &[Canned {
-        path: "/issue/4000-",
-        status: 200,
-        body: ISSUE_DETAILS,
-    }];
+    static CANNED: &[Canned] = &[
+        Canned {
+            path: "/issue/4000-",
+            status: 200,
+            body: ISSUE_DETAILS,
+        },
+        Canned {
+            path: "/volume/4050-",
+            status: 200,
+            body: VOLUME_DETAILS,
+        },
+    ];
     let (base, _guard) = serve(CANNED);
     let cv = client_for(&base);
     let issue_ref = IssueRef::new("½", 400011, "", None);
