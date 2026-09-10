@@ -1,9 +1,11 @@
-//! The Comic Vine Scraper configuration dialog — the C#
+//! The Comic Vine Scraper configuration widgets — the C#
 //! `configform.py` port. The API key entry, the scrape-field
-//! checkboxes, the behavior checkboxes, and the OK/Cancel response.
-//! OK commits the edited [`Configuration`] through the caller's
-//! callback; Cancel discards. The `done` Cell guards the re-entrant
-//! close response (the dialog lesson from Phase 5).
+//! checkboxes, the behavior checkboxes, and the advanced
+//! KEY=VALUE text. The same widget set serves TWO surfaces: the
+//! standalone dialog (`show_scrape_config`, the plugin's own
+//! config form) and the Comic Vine Scraper page of the Preferences
+//! dialog. Both commit through [`ScrapeConfigWidgets::collect`];
+//! OK commits, Cancel discards.
 
 use gtk4::prelude::*;
 use gtk4::{CheckButton, Dialog, Entry, Grid, Label, ScrolledWindow, TextView};
@@ -142,6 +144,110 @@ const BEHAVIOR_FLAGS: &[Flag] = &[
     ),
 ];
 
+/// The config-form widget set (shared by the standalone dialog and
+/// the Preferences page). `collect` reads the widgets back into a
+/// `Configuration` (the OK path).
+pub struct ScrapeConfigWidgets {
+    /// The layout grid (margins free — the host adds its own).
+    pub grid: Grid,
+    base: Configuration,
+    api_entry: Entry,
+    checks: Vec<CheckButton>,
+    advanced_view: TextView,
+}
+
+impl ScrapeConfigWidgets {
+    /// Builds the widgets prefilled from `config`.
+    pub fn build(config: &Configuration) -> Self {
+        let grid = Grid::new();
+        grid.set_row_spacing(4);
+        grid.set_column_spacing(8);
+
+        // the API key
+        let api_entry = Entry::builder().text(&config.api_key).hexpand(true).build();
+        grid.attach(&Label::new(Some("API Key")), 0, 0, 1, 1);
+        grid.attach(&api_entry, 1, 0, 1, 1);
+
+        // the checkbox grid: the scrape fields, then the behavior flags
+        let mut checks: Vec<CheckButton> = Vec::new();
+        for (row, (label, read, _)) in SCRAPE_FLAGS.iter().chain(BEHAVIOR_FLAGS.iter()).enumerate()
+        {
+            let check = CheckButton::with_label(label);
+            check.set_active(read(config));
+            let column = (row % 2) as i32;
+            let grid_row = (row as i32) / 2 + 1;
+            grid.attach(&check, column, grid_row, 1, 1);
+            checks.push(check);
+        }
+        // Check All / Uncheck All over the SCRAPE checkboxes (the C#
+        // ConfigForm buttons)
+        let check_all = gtk4::Button::with_label("Check All");
+        let uncheck_all = gtk4::Button::with_label("Uncheck All");
+        {
+            let checks = checks.clone();
+            let count = SCRAPE_FLAGS.len();
+            check_all.connect_clicked(move |_| {
+                for check in checks.iter().take(count) {
+                    check.set_active(true);
+                }
+            });
+        }
+        {
+            let checks = checks.clone();
+            let count = SCRAPE_FLAGS.len();
+            uncheck_all.connect_clicked(move |_| {
+                for check in checks.iter().take(count) {
+                    check.set_active(false);
+                }
+            });
+        }
+        let buttons_row = (SCRAPE_FLAGS.len() as i32) / 2 + 2;
+        grid.attach(&check_all, 0, buttons_row, 1, 1);
+        grid.attach(&uncheck_all, 1, buttons_row, 1, 1);
+
+        // the advanced settings text, verbatim
+        let advanced_view = TextView::builder().monospace(true).build();
+        advanced_view.buffer().set_text(&config.advanced_settings);
+        let advanced_scroll = ScrolledWindow::builder()
+            .child(&advanced_view)
+            .vexpand(true)
+            .height_request(90)
+            .build();
+        grid.attach(
+            &Label::new(Some("Advanced settings (KEY=VALUE lines)")),
+            0,
+            buttons_row + 1,
+            2,
+            1,
+        );
+        grid.attach(&advanced_scroll, 0, buttons_row + 2, 2, 1);
+
+        ScrapeConfigWidgets {
+            grid,
+            base: config.clone(),
+            api_entry,
+            checks,
+            advanced_view,
+        }
+    }
+
+    /// Reads the widgets back into a `Configuration` (the OK path:
+    /// the API key, the flags, and the advanced text reparse).
+    pub fn collect(&self) -> Configuration {
+        let mut result = self.base.clone();
+        result.api_key = self.api_entry.text().trim().to_string();
+        for (row, (_, _, write)) in SCRAPE_FLAGS.iter().chain(BEHAVIOR_FLAGS.iter()).enumerate() {
+            write(&mut result, self.checks[row].is_active());
+        }
+        let buf = self.advanced_view.buffer();
+        let text = buf
+            .text(&buf.start_iter(), &buf.end_iter(), false)
+            .to_string();
+        result.set_advanced_settings(&text);
+        result
+    }
+}
+
 /// Opens the modal config dialog. `on_done` runs once with the
 /// committed settings (OK) or `None` (Cancel).
 pub fn show_scrape_config(
@@ -149,8 +255,6 @@ pub fn show_scrape_config(
     config: &Configuration,
     on_done: impl Fn(Option<Configuration>) + 'static,
 ) {
-    // the owned copy the response closure can capture
-    let config = config.clone();
     let dialog = Dialog::builder()
         .title("Comic Vine Scraper Settings")
         .transient_for(parent)
@@ -165,69 +269,8 @@ pub fn show_scrape_config(
     content.set_margin_end(8);
     content.set_spacing(6);
 
-    let grid = Grid::new();
-    grid.set_row_spacing(4);
-    grid.set_column_spacing(8);
-
-    // the API key
-    let api_entry = Entry::builder().text(&config.api_key).hexpand(true).build();
-    grid.attach(&Label::new(Some("API Key")), 0, 0, 1, 1);
-    grid.attach(&api_entry, 1, 0, 1, 1);
-
-    // the checkbox grid: the scrape fields, then the behavior flags
-    let mut checks: Vec<CheckButton> = Vec::new();
-    for (row, (label, read, _)) in SCRAPE_FLAGS.iter().chain(BEHAVIOR_FLAGS.iter()).enumerate() {
-        let check = CheckButton::with_label(label);
-        check.set_active(read(&config));
-        let column = (row % 2) as i32;
-        let grid_row = (row as i32) / 2 + 1;
-        grid.attach(&check, column, grid_row, 1, 1);
-        checks.push(check);
-    }
-    // Check All / Uncheck All over the SCRAPE checkboxes (the C#
-    // ConfigForm buttons)
-    let check_all = gtk4::Button::with_label("Check All");
-    let uncheck_all = gtk4::Button::with_label("Uncheck All");
-    {
-        let checks = checks.clone();
-        let count = SCRAPE_FLAGS.len();
-        check_all.connect_clicked(move |_| {
-            for check in checks.iter().take(count) {
-                check.set_active(true);
-            }
-        });
-    }
-    {
-        let checks = checks.clone();
-        let count = SCRAPE_FLAGS.len();
-        uncheck_all.connect_clicked(move |_| {
-            for check in checks.iter().take(count) {
-                check.set_active(false);
-            }
-        });
-    }
-    let buttons_row = (SCRAPE_FLAGS.len() as i32) / 2 + 2;
-    grid.attach(&check_all, 0, buttons_row, 1, 1);
-    grid.attach(&uncheck_all, 1, buttons_row, 1, 1);
-
-    // the advanced settings text, verbatim
-    let advanced_view = TextView::builder().monospace(true).build();
-    advanced_view.buffer().set_text(&config.advanced_settings);
-    let advanced_scroll = ScrolledWindow::builder()
-        .child(&advanced_view)
-        .vexpand(true)
-        .height_request(90)
-        .build();
-    grid.attach(
-        &Label::new(Some("Advanced settings (KEY=VALUE lines)")),
-        0,
-        buttons_row + 1,
-        2,
-        1,
-    );
-    grid.attach(&advanced_scroll, 0, buttons_row + 2, 2, 1);
-
-    content.append(&grid);
+    let widgets = ScrapeConfigWidgets::build(config);
+    content.append(&widgets.grid);
     dialog.add_button("OK", gtk4::ResponseType::Ok);
     dialog.add_button("Cancel", gtk4::ResponseType::Cancel);
 
@@ -238,22 +281,8 @@ pub fn show_scrape_config(
             if done.replace(true) {
                 return;
             }
-            let ok = response == gtk4::ResponseType::Ok;
-            let result = if ok {
-                let mut result = config.clone();
-                result.api_key = api_entry_text(&api_entry);
-                for (row, (_, read, write)) in
-                    SCRAPE_FLAGS.iter().chain(BEHAVIOR_FLAGS.iter()).enumerate()
-                {
-                    let _ = read;
-                    write(&mut result, checks[row].is_active());
-                }
-                let buf = advanced_view.buffer();
-                let text = buf
-                    .text(&buf.start_iter(), &buf.end_iter(), false)
-                    .to_string();
-                result.set_advanced_settings(&text);
-                Some(result)
+            let result = if response == gtk4::ResponseType::Ok {
+                Some(widgets.collect())
             } else {
                 None
             };
@@ -262,8 +291,4 @@ pub fn show_scrape_config(
         });
     }
     dialog.present();
-}
-
-fn api_entry_text(entry: &Entry) -> String {
-    entry.text().trim().to_string()
 }

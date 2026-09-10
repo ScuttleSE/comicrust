@@ -17,6 +17,7 @@ pub mod reader_shell;
 pub mod settings;
 pub mod theme;
 pub mod trace;
+pub mod widgets;
 pub mod workspace;
 
 /// Boots the GTK application. `args` are the command-line arguments

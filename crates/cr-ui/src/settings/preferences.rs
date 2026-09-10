@@ -31,9 +31,15 @@ use cr_core::settings::settings::{
     MINIMUM_MEMORY_PAGE_CACHE_COUNT, MINIMUM_MEMORY_THUMBNAIL_CACHE_MB,
 };
 
-/// Opens the modal Preferences dialog. `on_ok` runs after the commit
-/// (the host re-applies the live settings).
-pub fn show_preferences(parent: &impl IsA<gtk4::Window>, on_ok: impl Fn() + 'static) {
+/// Opens the modal Preferences dialog. `initial` selects the page
+/// shown on open (the page name, e.g. `Some("scraper")` for the
+/// Comic Vine Scraper entry). `on_ok` runs after the commit (the
+/// host re-applies the live settings).
+pub fn show_preferences(
+    parent: &impl IsA<gtk4::Window>,
+    initial: Option<&str>,
+    on_ok: impl Fn() + 'static,
+) {
     let session: SettingsRef = library::settings();
     // OK/Cancel semantics: edit a clone, commit on OK.
     let working: SettingsRef = Rc::new(RefCell::new(session.borrow().clone()));
@@ -76,6 +82,25 @@ pub fn show_preferences(parent: &impl IsA<gtk4::Window>, on_ok: impl Fn() + 'sta
     // ----- Advanced (the cache sizes + file update flow) -----
     stack.add_titled(&build_advanced_page(&working), Some("advanced"), "Advanced");
 
+    // ----- Comic Vine Scraper (the plugin Configuration; the C#
+    // plugin carries its own config form) -----
+    let scraper = crate::dialogs::scrape_config::ScrapeConfigWidgets::build(
+        &cr_scrape::config::Configuration::load(&cr_scrape::config::default_config_dir()),
+    );
+    {
+        let page = GtkBox::new(Orientation::Vertical, 6);
+        page.set_margin_top(8);
+        page.set_margin_bottom(8);
+        page.set_margin_start(8);
+        page.set_margin_end(8);
+        page.append(&scraper.grid);
+        stack.add_titled(&wrap_scroll(&page), Some("scraper"), "Comic Vine Scraper");
+    }
+
+    if let Some(name) = initial {
+        stack.set_visible_child_name(name);
+    }
+
     let paned = gtk4::Paned::new(Orientation::Horizontal);
     paned.set_start_child(Some(&sidebar));
     paned.set_position(170);
@@ -96,6 +121,10 @@ pub fn show_preferences(parent: &impl IsA<gtk4::Window>, on_ok: impl Fn() + 'sta
             behavior_panel.retrieve(&working_commit);
             *session.borrow_mut() = working_commit.borrow().clone();
             library::save_settings();
+            // The scraper page commits its plugin settings.json on OK
+            // (Cancel discards).
+            let config = scraper.collect();
+            let _ = config.save(&cr_scrape::config::default_config_dir());
             on_ok();
         }
         dlg.close();
@@ -124,7 +153,7 @@ pub fn show_preferences(parent: &impl IsA<gtk4::Window>, on_ok: impl Fn() + 'sta
     dialog.present();
 }
 
-fn wrap_scroll(w: &GtkBox) -> ScrolledWindow {
+fn wrap_scroll(w: &impl IsA<gtk4::Widget>) -> ScrolledWindow {
     ScrolledWindow::builder()
         .child(w)
         .hscrollbar_policy(gtk4::PolicyType::Never)

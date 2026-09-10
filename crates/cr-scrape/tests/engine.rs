@@ -27,6 +27,9 @@ struct FakeUi {
     finished: Vec<(String, BookStatus)>,
     scraped: Vec<ComicBook>,
     no_issues: Vec<String>,
+    /// The issue-dialog calls: (the hint's issue number, the force
+    /// flag) — the forced-dialog gate reads these.
+    issue_dialogs: Vec<(Option<String>, bool)>,
 }
 
 impl ScrapeUi for FakeUi {
@@ -46,9 +49,11 @@ impl ScrapeUi for FakeUi {
         _caption: &str,
         _series: &SeriesRef,
         _issues: &[IssueRef],
-        _hint: Option<&IssueRef>,
-        _force: bool,
+        hint: Option<&IssueRef>,
+        force: bool,
     ) -> IssueResult {
+        self.issue_dialogs
+            .push((hint.map(|h| h.issue_num.clone()), force));
         self.issue_answers.pop().unwrap_or(IssueResult::Skip)
     }
     fn no_issues_available(&mut self, series_name: &str) {
@@ -279,6 +284,99 @@ fn user_skip_and_permskip_mark_the_book() {
     // the book is reported unscraped -> skipped
     assert_eq!((scraped, skipped), (0, 1));
     assert!(ui.scraped.is_empty());
+}
+
+#[test]
+fn show_issues_forces_the_issue_dialog() {
+    // "Show Issues" on the series dialog must bring up the issue
+    // list even when the book's number matches exactly one issue
+    // (the user report: the forced dialog auto-picked instead). The
+    // matched issue preselects (the hint).
+    let (base, book) = interactive_fixture();
+    let mut ui = FakeUi {
+        series_answers: vec![SeriesResult::Show(
+            SeriesRef::new(40501, "Batman", 1940, "DC Comics", 900, None).unwrap(),
+        )],
+        issue_answers: vec![IssueResult::Ok(IssueRef::new(
+            "12",
+            400011,
+            "The Court of Owls",
+            None,
+        ))],
+        ..Default::default()
+    };
+    let mut cv = client_for(&base);
+    let (scraped, skipped) = engine(Configuration::default()).scrape(vec![book], &mut ui, &mut cv);
+
+    assert_eq!((scraped, skipped), (1, 0));
+    assert_eq!(ui.issue_dialogs.len(), 1);
+    assert!(ui.issue_dialogs[0].1, "the dialog must be forced");
+    assert_eq!(
+        ui.issue_dialogs[0].0.as_deref(),
+        Some("12"),
+        "the matched issue preselects"
+    );
+    assert_eq!(ui.scraped.len(), 1);
+}
+
+#[test]
+fn a_unique_issue_number_auto_picks_without_show_issues() {
+    // The default confirm path: a unique number resolves WITHOUT the
+    // dialog (the auto-match the Show button must not take).
+    let (base, book) = interactive_fixture();
+    let mut ui = FakeUi {
+        series_answers: vec![SeriesResult::Ok(
+            SeriesRef::new(40501, "Batman", 1940, "DC Comics", 900, None).unwrap(),
+        )],
+        ..Default::default()
+    };
+    let mut cv = client_for(&base);
+    let (scraped, _skipped) = engine(Configuration::default()).scrape(vec![book], &mut ui, &mut cv);
+
+    assert_eq!(scraped, 1);
+    assert!(
+        ui.issue_dialogs.is_empty(),
+        "no issue dialog for a unique number"
+    );
+}
+
+/// The shared interactive-scrape fixture: one series with issue #12
+/// plus the details route.
+fn interactive_fixture() -> (String, ComicBook) {
+    let search_body = r#"{
+      "number_of_total_results": 1, "number_of_page_results": 1, "status_code": 1,
+      "results": [
+        {"id": 40501, "name": "Batman", "start_year": "1940",
+         "publisher": {"id": 10, "name": "DC Comics"},
+         "count_of_issues": 900, "image": {"small_url": ""}}]}"#;
+    let issues_body = r#"{
+        "number_of_total_results": 1, "number_of_page_results": 1, "status_code": 1,
+        "results": [
+            {"id": 400011, "issue_number": "12", "name": "The Court of Owls",
+             "image": {"small_url": ""}}]}"#;
+    let details_body = r#"{
+        "number_of_total_results": 1, "status_code": 1,
+        "results": {"id": "400011", "name": "The Court of Owls",
+            "issue_number": "12",
+            "cover_date": "2011-05-14",
+            "volume": {"id": "40501", "name": "Batman", "start_year": "1940"},
+            "image": {"small_url": ""}}}"#;
+    let volume_body = r#"{
+        "number_of_total_results": 1, "status_code": 1,
+        "results": {"id": 40501, "name": "Batman", "start_year": "1940",
+                    "publisher": {"id": 10, "name": "DC Comics"}}}"#;
+    let base = start_mock(&[
+        ("/search/", search_body.to_string()),
+        ("/issues/", issues_body.to_string()),
+        ("/issue/4000-", details_body.to_string()),
+        ("/volume/4050-", volume_body.to_string()),
+    ]);
+    let book = ComicBook {
+        file_path: "Comics/Batman 12 (2011).cbz".into(),
+        enable_proposed: true,
+        ..Default::default()
+    };
+    (base, book)
 }
 
 #[test]

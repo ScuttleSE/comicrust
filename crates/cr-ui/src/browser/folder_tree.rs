@@ -495,9 +495,8 @@ fn rebuild_favorites(tree: &Rc<FolderTree>, pop: &Popover) {
             .file_name()
             .map(|n| n.to_string_lossy().into_owned())
             .unwrap_or_else(|| path.clone());
-        let b = gtk4::Button::new();
+        let b = crate::widgets::menu_item_button(&label);
         b.add_css_class("flat");
-        b.set_label(&label);
         b.set_tooltip_text(Some(path));
         let t = t.clone();
         let p = path.clone();

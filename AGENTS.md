@@ -73,6 +73,62 @@ Update this section at the **end of every work session**. The next agent must kn
 
 ### State summary
 
+- **SCRAPER UX FIX ROUND 3 + EDITOR/PREFS FIXES (2026-09-10, the
+  user-reported batch):** nine items, all implemented; fmt/clippy/
+  484 tests green; gates `scrapeprefs_probe` (new) + the engine test
+  `show_issues_forces_the_issue_dialog` (new). (1) The Comic Vine
+  Scraper settings now live as a "Comic Vine Scraper" PAGE of the
+  Preferences dialog — `dialogs/scrape_config.rs` gained
+  `ScrapeConfigWidgets` (build/collect) shared by the standalone
+  config dialog (`win.scrape-config`, still probed by
+  scrapeconfig_probe) and the Preferences page (the page loads the
+  plugin settings.json on open, collects + saves it on OK, Cancel
+  discards); `show_preferences(parent, initial_page, on_ok)` gained
+  the initial-page parameter and `open_scrape`'s no-API-key path
+  opens Preferences on that page (Some("scraper")) instead of the
+  standalone dialog. (2)+(3) The series pick dialog rows are
+  left-aligned 4-column grids (Series | Year | Issues | Publisher,
+  with a heading row; GtkLabel centers text by default — xalign 0
+  everywhere). (4) Both pick dialogs set
+  `activate_on_single_click(false)` — a single click only SELECTS;
+  the commit is double-click/Enter (the single-click
+  row-activated commits was the reported "click immediately
+  matches"). (5) `SeriesResult::Show` no longer auto-picks: the
+  engine's `choose_issue_ref` skips BOTH shortcut auto-picks when
+  the dialog is forced (Show Issues / Confirm Issues) and passes
+  the matched issue as the hint; the UI preselects the hint row
+  (PickIssueRequest carries it). (6) The book editor's cover shows
+  a fileless book's CUSTOM thumbnail now (`queue_cover` queues
+  `front_cover_thumbnail_key` for fileless books — the same
+  `custom:\\` resource the grid renders; the "Unknown" page label
+  stays, C# parity for a book without page metadata). (7) The Plot
+  tab Summary box is double height (90 → 180). (8) The context
+  menus left-align: new `cr_ui::widgets::menu_item_button`
+  (frameless + left-aligned label — GtkButton centers its label)
+  used by the book, folder and navigator context menus, the editor
+  Pages menu, and the favorites dropdown rows. (9) Properties ▸
+  Custom is EDITABLE (the C# `customValuesData` grid): one row per
+  library-wide key (the union of all books' custom keys,
+  case-insensitive, sorted; dotted script keys hidden unless
+  `ShowCustomScriptValues` but kept for the save), the value
+  editable, "Add Value…" adds a new-key row; save rebuilds
+  `custom_values_store` (non-empty key AND value → set, empty
+  value → delete, case-insensitive last-wins — the
+  `SetCustomValueInStore` shape); the grid refills per book on
+  prev/next (it previously showed only the FIRST book's values —
+  fixed); `library::try_session()` added (the editor tolerates the
+  session-free probes).
+  USER TEST (release build): (a) Scrape with no API key →
+  Preferences opens on the Comic Vine Scraper page; set the key, OK,
+  scrape works; reopen Preferences ▸ Comic Vine Scraper to confirm
+  the settings persist. (b) The series list shows columns and a
+  double-click commits. (c) "Show Issues" opens the issue list with
+  the number preselected. (d) A scraped fileless book shows its
+  cover in Properties (not a black box). (e) The Plot Summary box
+  fits long summaries. (f) Right-click menus are left-aligned. (g)
+  Properties ▸ Custom edits values (edit one on two books, check
+  the value survives prev/next and OK, an emptied value removes the
+  key).
 - **WRITE-BACK ON THE INFO WRITER WORKER (2026-09-10, follow-up to
   the export freeze):** `library::update_book_file` used to run
   `ComicProvider::open` + `store_info_scoped` (a full archive

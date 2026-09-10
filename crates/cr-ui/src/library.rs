@@ -235,6 +235,12 @@ pub fn session() -> Rc<RefCell<Library>> {
     })
 }
 
+/// The session when one is initialized (the library-wide key walks
+/// tolerate the session-free probes; the C# static would NRE).
+pub fn try_session() -> Option<Rc<RefCell<Library>>> {
+    SESSION.with(|cell| cell.borrow().clone())
+}
+
 /// The database path shown in diagnostics.
 pub fn database_file() -> std::path::PathBuf {
     session().borrow().file().to_path_buf()

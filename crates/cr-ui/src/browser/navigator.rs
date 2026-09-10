@@ -32,8 +32,8 @@ use gtk4::gdk;
 use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::{
-    Align, Button, Entry, GestureClick, Popover, ScrolledWindow, TreeIter, TreeSelection,
-    TreeStore, TreeView, TreeViewColumn,
+    Button, Entry, GestureClick, Popover, ScrolledWindow, TreeIter, TreeSelection, TreeStore,
+    TreeView, TreeViewColumn,
 };
 
 use cr_core::database::list_items::ComicListItem;
@@ -654,9 +654,7 @@ impl Navigator {
         let add_item = |box_: &gtk4::Box, label: &str, command: ListCommand| {
             let nav = nav.clone();
             let popover = popover.clone();
-            let button = Button::with_label(label);
-            button.set_has_frame(false);
-            button.set_halign(Align::Fill);
+            let button = crate::widgets::menu_item_button(label);
             button.connect_clicked(move |_| {
                 popover.popdown();
                 if let Some(n) = nav.upgrade() {

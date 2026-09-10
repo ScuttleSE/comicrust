@@ -34,6 +34,8 @@ struct PickIssueRequest {
     caption: String,
     series: SeriesRef,
     issues: Vec<IssueRef>,
+    /// The auto-identified issue the list preselects (the C# hint).
+    hint: Option<IssueRef>,
     force: bool,
 }
 
@@ -125,7 +127,7 @@ impl ScrapeUi for ChannelUi {
         caption: &str,
         series: &SeriesRef,
         issues: &[IssueRef],
-        _hint: Option<&IssueRef>,
+        hint: Option<&IssueRef>,
         force: bool,
     ) -> IssueResult {
         let _ = self
@@ -134,6 +136,7 @@ impl ScrapeUi for ChannelUi {
                 caption: caption.to_string(),
                 series: series.clone(),
                 issues: issues.to_vec(),
+                hint: hint.cloned(),
                 force,
             })));
         match self.answer_rx.recv() {
@@ -233,11 +236,13 @@ fn ask_search_terms(
     content.set_margin_start(8);
     content.set_margin_end(8);
     content.set_spacing(6);
-    content.append(&Label::new(Some(&format!(
-        "No series matched for {caption}."
-    ))));
+    let caption_label = Label::new(Some(&format!("No series matched for {caption}.")));
+    caption_label.set_xalign(0.0);
+    content.append(&caption_label);
     if !failed.is_empty() {
-        content.append(&Label::new(Some(&format!("Failed terms: {failed}"))));
+        let failed_label = Label::new(Some(&format!("Failed terms: {failed}")));
+        failed_label.set_xalign(0.0);
+        content.append(&failed_label);
     }
     let entry = gtk4::Entry::new();
     entry.set_activates_default(true);
@@ -260,29 +265,55 @@ fn ask_search_terms(
     dialog
 }
 
-/// The series row text (the C# SeriesForm list text).
-fn series_row_text(series_ref: &SeriesRef) -> String {
-    let year = if series_ref.volume_year > 0 {
-        format!(" ({})", series_ref.volume_year)
-    } else {
-        String::new()
-    };
-    let publisher = if series_ref.publisher.is_empty() {
-        String::new()
-    } else {
-        format!(" \u{2014} {}", series_ref.publisher)
-    };
-    format!(
-        "{}{} [{} issues]{}",
-        series_ref.series_name(),
-        year,
-        series_ref.issue_count,
-        publisher
-    )
+/// A left-aligned label in a fixed-width column (the C# ListView
+/// cell shape; GtkLabel centers its text by default).
+fn cell_label(text: &str, width_chars: i32, ellipsize: bool, expand: bool) -> Label {
+    let label = Label::new(Some(text));
+    label.set_halign(gtk4::Align::Start);
+    label.set_xalign(0.0);
+    if width_chars > 0 {
+        label.set_width_chars(width_chars);
+    }
+    if ellipsize {
+        label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+    }
+    if expand {
+        label.set_hexpand(true);
+    }
+    label
+}
+
+/// The column widths of the series row (name expands, the three
+/// value columns hold their width so the columns align across rows).
+fn series_grid(texts: [&str; 4], header: bool) -> gtk4::Grid {
+    let grid = gtk4::Grid::new();
+    grid.set_column_spacing(12);
+    let name = cell_label(texts[0], 0, true, true);
+    if header {
+        name.add_css_class("heading");
+    }
+    let year = cell_label(texts[1], 6, false, false);
+    if header {
+        year.add_css_class("heading");
+    }
+    let issues = cell_label(texts[2], 9, false, false);
+    if header {
+        issues.add_css_class("heading");
+    }
+    let publisher = cell_label(texts[3], 24, true, false);
+    if header {
+        publisher.add_css_class("heading");
+    }
+    grid.attach(&name, 0, 0, 1, 1);
+    grid.attach(&year, 1, 0, 1, 1);
+    grid.attach(&issues, 2, 0, 1, 1);
+    grid.attach(&publisher, 3, 0, 1, 1);
+    grid
 }
 
 /// The C# SeriesForm: the series selection with the Search Again /
-/// Skip / Cancel outcomes. OK resolves through the selection.
+/// Skip / Cancel outcomes. OK resolves through the selection; a row
+/// commits on DOUBLE-click / Enter (single-click only selects).
 fn ask_series(
     parent: &impl IsA<gtk4::Window>,
     caption: &str,
@@ -294,7 +325,7 @@ fn ask_series(
         .title("Scrape: pick the series")
         .transient_for(parent)
         .modal(true)
-        .default_width(520)
+        .default_width(640)
         .default_height(420)
         .build();
     let content = dialog.content_area();
@@ -303,15 +334,39 @@ fn ask_series(
     content.set_margin_start(8);
     content.set_margin_end(8);
     content.set_spacing(6);
-    content.append(&Label::new(Some(&format!(
+    let headline = Label::new(Some(&format!(
         "{caption}: {} series match \u{201C}{terms}\u{201D}",
         refs.len()
-    ))));
+    )));
+    headline.set_xalign(0.0);
+    content.append(&headline);
 
+    // The column header row (the C# ListView headers), then one row
+    // per series: the name, the start year, the issue count and the
+    // publisher in separate columns.
+    content.append(&series_grid(
+        ["Series", "Year", "Issues", "Publisher"],
+        true,
+    ));
     let list = gtk4::ListBox::new();
+    list.set_activate_on_single_click(false);
+    list.set_selection_mode(gtk4::SelectionMode::Single);
     for series_ref in refs {
         let row = ListBoxRow::new();
-        row.set_child(Some(&Label::new(Some(&series_row_text(series_ref)))));
+        let year = if series_ref.volume_year > 0 {
+            format!("({})", series_ref.volume_year)
+        } else {
+            String::new()
+        };
+        row.set_child(Some(&series_grid(
+            [
+                series_ref.series_name(),
+                &year,
+                &series_ref.issue_count.to_string(),
+                &series_ref.publisher,
+            ],
+            false,
+        )));
         row.set_tooltip_text(Some(&format!("series key {}", series_ref.series_key)));
         list.append(&row);
     }
@@ -347,7 +402,7 @@ fn ask_series(
     });
     cr_scrape::log::debug("displaying the series selection dialog");
     // Double-click / Enter on a row commits it as the selection (the
-    // C# SeriesForm list activate).
+    // C# SeriesForm list activate; single-click only selects).
     {
         let finish = std::rc::Rc::clone(&finish);
         let refs = std::rc::Rc::clone(&refs);
@@ -416,12 +471,14 @@ fn issue_row_text(issue_ref: &IssueRef) -> String {
 }
 
 /// The C# IssueForm: the issue selection with the Back / Skip /
-/// Cancel outcomes. OK resolves through the selection.
+/// Cancel outcomes. OK resolves through the selection; a row commits
+/// on DOUBLE-click / Enter (single-click only selects).
 fn ask_issue(
     parent: &impl IsA<gtk4::Window>,
     caption: &str,
     series: &SeriesRef,
     issues: &[IssueRef],
+    hint: Option<&IssueRef>,
     force: bool,
     answer: &std::sync::mpsc::Sender<UiAnswer>,
 ) -> Dialog {
@@ -443,17 +500,33 @@ fn ask_issue(
     content.set_margin_start(8);
     content.set_margin_end(8);
     content.set_spacing(6);
-    content.append(&Label::new(Some(&format!(
+    let headline = Label::new(Some(&format!(
         "{caption} in {} ({} issues)",
         series.series_name(),
         issues.len()
-    ))));
+    )));
+    headline.set_xalign(0.0);
+    content.append(&headline);
 
     let list = gtk4::ListBox::new();
+    list.set_activate_on_single_click(false);
+    list.set_selection_mode(gtk4::SelectionMode::Single);
     for issue_ref in issues {
         let row = ListBoxRow::new();
-        row.set_child(Some(&Label::new(Some(&issue_row_text(issue_ref)))));
+        let text = Label::new(Some(&issue_row_text(issue_ref)));
+        text.set_xalign(0.0);
+        row.set_child(Some(&text));
         list.append(&row);
+    }
+    // The auto-identified issue preselects (the C# hint row).
+    if let Some(hint) = hint {
+        let index = issues
+            .iter()
+            .position(|r| r.issue_key == hint.issue_key)
+            .and_then(|i| list.row_at_index(i as i32));
+        if let Some(row) = index {
+            list.select_row(Some(&row));
+        }
     }
     let scroll = gtk4::ScrolledWindow::builder()
         .child(&list)
@@ -692,6 +765,7 @@ pub fn show_scrape_dialog(
                         &payload.caption,
                         &payload.series,
                         &payload.issues,
+                        payload.hint.as_ref(),
                         payload.force,
                         &answer_tx_pump,
                     );

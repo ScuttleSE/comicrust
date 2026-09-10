@@ -2568,8 +2568,9 @@ impl ShellState {
     }
 
     /// The scrape wizard over the selection (`cvs_scrape`): no API
-    /// key opens the config dialog first (the C# aborts the scrape
-    /// when the key is still missing).
+    /// key opens Preferences on the Comic Vine Scraper page (the key
+    /// entry lives there; the C# aborts the scrape when the key is
+    /// still missing).
     fn open_scrape(self: &Rc<ShellState>) {
         let ids = self.item_view.selection_ids();
         if ids.is_empty() {
@@ -2582,7 +2583,13 @@ impl ShellState {
         let config =
             cr_scrape::config::Configuration::load(&cr_scrape::config::default_config_dir());
         if !config.has_api_key() {
-            self.show_scrape_config();
+            let window = self.window.clone();
+            let state = Rc::downgrade(self);
+            crate::settings::preferences::show_preferences(&window, Some("scraper"), move || {
+                if let Some(sh) = state.upgrade() {
+                    sh.sync_enabled();
+                }
+            });
             return;
         }
         let state = Rc::downgrade(self);
@@ -3024,7 +3031,7 @@ impl ShellState {
     fn show_preferences(self: &Rc<ShellState>) {
         let window = self.window.clone();
         let state = Rc::downgrade(self);
-        crate::settings::preferences::show_preferences(&window, move || {
+        crate::settings::preferences::show_preferences(&window, None, move || {
             if let Some(sh) = state.upgrade() {
                 sh.reader.apply_settings_to_open_views();
                 let size = cr_ui_settings().borrow().quick_open_thumbnail_size as f64;
@@ -4555,9 +4562,7 @@ fn show_context_menu(state: &std::rc::Weak<ShellState>, target: Option<CrGuid>, 
         let popover = popover.clone();
         let state = state.clone();
         let window = window.clone();
-        let button = Button::with_label(label);
-        button.set_has_frame(false);
-        button.set_halign(gtk4::Align::Fill);
+        let button = crate::widgets::menu_item_button(label);
         button.connect_clicked(move |_| {
             popover.popdown();
             let Some(sh) = state.upgrade() else {
@@ -4875,9 +4880,7 @@ fn show_folder_context_menu(
         let popover = popover.clone();
         let state = state.clone();
         let window = window.clone();
-        let button = Button::with_label(label);
-        button.set_has_frame(false);
-        button.set_halign(gtk4::Align::Fill);
+        let button = crate::widgets::menu_item_button(label);
         button.connect_clicked(move |_| {
             popover.popdown();
             let Some(sh) = state.upgrade() else {

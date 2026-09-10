@@ -638,27 +638,30 @@ impl ScrapeEngine {
         }
 
         // 3. the issue number may be in the list: an ambiguous number
-        //    (the same number twice) forces the dialog
+        //    (the same number twice) forces the dialog. A FORCED
+        //    dialog (Show Issues / Confirm Issues) never auto-picks —
+        //    the user asked for the issue list; the single match
+        //    becomes the preselected row (the C# hint).
+        let mut hint: Option<IssueRef> = None;
         if !issue_num.is_empty() {
             let matches: Vec<&IssueRef> = issue_refs
                 .iter()
                 .filter(|r| natural_key(&r.issue_num) == natural_key(&issue_num))
                 .collect();
-            if matches.len() == 1 {
+            if matches.len() == 1 && !force {
                 return IssueResult::Ok(matches[0].clone());
             }
-            if matches.len() > 1 {
-                // the same issue number appears more than once: pick
-            }
+            hint = matches.first().map(|r| (*r).clone());
         }
 
-        // 4. no number, one issue: the only choice
-        if issue_num.is_empty() && issue_refs.len() == 1 {
+        // 4. no number, one issue: the only choice (the forced dialog
+        //    still shows the list)
+        if issue_num.is_empty() && issue_refs.len() == 1 && !force {
             return IssueResult::Ok(issue_refs[0].clone());
         }
 
         // 5. the dialog decides
-        ui.request_issue(&caption, series_ref, issue_refs, None, force)
+        ui.request_issue(&caption, series_ref, issue_refs, hint.as_ref(), force)
     }
 }
 

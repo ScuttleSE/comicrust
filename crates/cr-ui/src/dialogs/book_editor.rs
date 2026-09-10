@@ -420,9 +420,40 @@ struct Fields {
     rating: Option<Entry>,
     community_rating: Option<Entry>,
     color_sliders: Vec<gtk4::Scale>,
+    /// The Custom-tab rows (the C# `customValuesData` grid).
+    custom_rows: Rc<RefCell<Vec<CustomRow>>>,
 }
 
 type FieldsRef = Rc<RefCell<Fields>>;
+
+/// A Custom-tab row key: the library-wide keys are FIXED (the C#
+/// grid builds its rows from `Program.Database.CustomValues`); a
+/// user-added row edits the key (the C# new-row placeholder).
+enum CustomName {
+    Fixed(String),
+    Editable(Entry),
+}
+
+/// One Custom-tab row: the key plus the editable value entry.
+struct CustomRow {
+    name: CustomName,
+    value: Entry,
+}
+
+impl CustomRow {
+    /// The row's key text (trimmed).
+    fn key(&self) -> String {
+        match &self.name {
+            CustomName::Fixed(s) => s.clone(),
+            CustomName::Editable(e) => e.text().trim().to_string(),
+        }
+    }
+
+    /// The row's value text (trimmed).
+    fn value(&self) -> String {
+        self.value.text().trim().to_string()
+    }
+}
 
 /// Opens the editor for `books` (clones of the library books; the
 /// commit callback runs per save point).
@@ -689,7 +720,9 @@ pub fn show(
             grid.attach(&label, 0, i as i32, 1, 1);
             let tv = TextView::new();
             tv.set_wrap_mode(gtk4::WrapMode::Word);
-            tv.set_height_request(if *caption == "Summary" { 90 } else { 56 });
+            // The Summary box is double height (the user report: most
+            // plot summaries scroll at the C#-sized box).
+            tv.set_height_request(if *caption == "Summary" { 180 } else { 56 });
             tv.set_hexpand(true);
             let scroll = ScrolledWindow::builder().child(&tv).build();
             grid.attach(&scroll, 1, i as i32, 1, 1);
@@ -824,44 +857,114 @@ pub fn show(
         notebook.append_page(&scroll, Some(&Label::new(Some("Colors"))));
     }
 
-    // ----- Custom tab (checkpoint-1 subset: the book's own values) -----
+    // ----- Custom tab (the C# `customValuesData` grid: one row per
+    // library-wide key, the value editable) -----
+    let fill_custom: Rc<dyn Fn(&ComicBook)>;
     {
         let page = GtkBox::new(Orientation::Vertical, 6);
         page.set_margin_top(8);
         page.set_margin_bottom(8);
         page.set_margin_start(8);
         page.set_margin_end(8);
-        page.append(&Label::new(Some(
-            "Custom values are read-only in this checkpoint; the \
-             library-wide key editor joins with the file write-back \
-             step.",
-        )));
         let list = gtk4::ListBox::new();
         page.append(&list);
-        let state2 = Rc::clone(&state);
-        let fill = move || {
+        let add = Button::with_label("Add Value…");
+        add.set_halign(Align::Start);
+        page.append(&add);
+
+        let custom_rows = Rc::clone(&fields.borrow().custom_rows);
+        let append_row = {
+            let list = list.clone();
+            let rows = Rc::clone(&custom_rows);
+            Rc::new(move |key: &str, value: &str| {
+                let (name_widget, name): (gtk4::Widget, CustomName) = if key.is_empty() {
+                    // A user-added row: the key edits (the C# grid's
+                    // new-row placeholder).
+                    let entry = Entry::new();
+                    entry.set_placeholder_text(Some("Name"));
+                    let widget: gtk4::Widget = entry.clone().upcast();
+                    (widget, CustomName::Editable(entry))
+                } else {
+                    let label = Label::new(Some(key));
+                    label.set_halign(Align::Start);
+                    label.set_width_chars(20);
+                    let widget: gtk4::Widget = label.clone().upcast();
+                    (widget, CustomName::Fixed(key.to_string()))
+                };
+                let value_entry = Entry::new();
+                value_entry.set_text(value);
+                value_entry.set_hexpand(true);
+                let row = gtk4::ListBoxRow::new();
+                let box_ = GtkBox::new(Orientation::Horizontal, 8);
+                box_.append(&name_widget);
+                box_.append(&value_entry);
+                row.set_child(Some(&box_));
+                // The script-internal keys (containing '.') stay out
+                // of the view unless the extended setting shows them
+                // (the C# `Rows[index].Visible` rule). The row stays
+                // in the model so a save never drops the stored value.
+                let show_script =
+                    cr_core::settings::ExtendedSettings::global().show_custom_script_values;
+                if key.contains('.') && !show_script {
+                    row.set_visible(false);
+                }
+                list.append(&row);
+                rows.borrow_mut().push(CustomRow {
+                    name,
+                    value: value_entry,
+                });
+            })
+        };
+        {
+            let append_row = Rc::clone(&append_row);
+            add.connect_clicked(move |_| append_row("", ""));
+        }
+
+        // The fill: one row per library-wide key (the union of the
+        // custom keys over ALL library books — the C#
+        // `Program.Database.CustomValues` set), plus this book's own
+        // keys; sorted by key; the value prefilled from the book.
+        fill_custom = Rc::new(move |book: &ComicBook| {
+            custom_rows.borrow_mut().clear();
             while let Some(c) = list.first_child() {
                 list.remove(&c);
             }
-            let book = current_book(&state2);
-            for (k, v) in
+            // Case-insensitive key union (the C# set is
+            // OrdinalIgnoreCase); the display key is the first seen.
+            let mut keys: Vec<(String, String)> = Vec::new(); // (lowercase, display)
+            let push = |key: &str, keys: &mut Vec<(String, String)>| {
+                let lower = key.to_lowercase();
+                if !keys.iter().any(|(l, _)| *l == lower) {
+                    keys.push((lower, key.to_string()));
+                }
+            };
+            {
+                let books: Option<Vec<ComicBook>> =
+                    crate::library::try_session().map(|lib| lib.borrow().database().books.clone());
+                for b in books.iter().flatten() {
+                    for (k, _) in
+                        cr_core::model::comic_book::values_store::decode(&b.custom_values_store)
+                    {
+                        push(&k, &mut keys);
+                    }
+                }
+            }
+            for (k, _) in
                 cr_core::model::comic_book::values_store::decode(&book.custom_values_store)
             {
-                let row = gtk4::ListBoxRow::new();
-                let box_ = GtkBox::new(Orientation::Horizontal, 8);
-                let name = Label::new(Some(&k));
-                name.set_halign(Align::Start);
-                name.set_width_chars(20);
-                let value = Label::new(Some(&v));
-                value.set_halign(Align::Start);
-                value.set_hexpand(true);
-                box_.append(&name);
-                box_.append(&value);
-                row.set_child(Some(&box_));
-                list.append(&row);
+                push(&k, &mut keys);
             }
-        };
-        fill();
+            keys.sort_by(|a, b| a.0.cmp(&b.0));
+            for (_, key) in keys {
+                let value =
+                    cr_core::model::comic_book::values_store::decode(&book.custom_values_store)
+                        .into_iter()
+                        .find(|(k, _)| k.eq_ignore_ascii_case(&key))
+                        .map(|(_, v)| v)
+                        .unwrap_or_default();
+                append_row(&key, &value);
+            }
+        });
         notebook.append_page(&page, Some(&Label::new(Some("Custom"))));
     }
 
@@ -885,6 +988,7 @@ pub fn show(
         let lbl_type = lbl_type.clone();
         let lbl_path = lbl_path.clone();
         let pages_widgets = pages_widgets.clone();
+        let fill_custom = Rc::clone(&fill_custom);
         move || {
             let book = {
                 let mut s = state.borrow_mut();
@@ -1019,7 +1123,9 @@ pub fn show(
                     scale.set_value(v as f64);
                 }
             }
-            // The cover + preview + the pages list.
+            // The cover + preview + the pages list + the Custom rows
+            // (the grid rebuilds per book — the C# SetDataToEditor).
+            fill_custom(&book);
             queue_cover(&state, &book);
             queue_preview(&state, &book);
             rebuild_pages_list(&pages_widgets, &state);
@@ -1077,6 +1183,27 @@ pub fn show(
                     let parsed = date_from_text(&entry.text(), d);
                     let _ = registry::set(book, prop, &PropValue::Date(parsed));
                 }
+            }
+            // The Custom rows rebuild the store (the C#
+            // `comic.CustomValuesStore = valueStoreString`): a row
+            // with a non-empty key AND value sets the pair; an empty
+            // value deletes (the `SetCustomValueInStore` shape). A
+            // case-insensitive duplicate keeps the LAST row (the C#
+            // ValuesStore.Add overwrite).
+            {
+                let mut pairs: Vec<(String, String)> = Vec::new();
+                for row in f.custom_rows.borrow().iter() {
+                    let key = row.key();
+                    let value = row.value();
+                    if key.is_empty() || value.is_empty() {
+                        continue;
+                    }
+                    match pairs.iter_mut().find(|(k, _)| k.eq_ignore_ascii_case(&key)) {
+                        Some(slot) => slot.1 = value,
+                        None => pairs.push((key, value)),
+                    }
+                }
+                book.custom_values_store = cr_core::model::comic_book::values_store::encode(&pairs);
             }
             book.color_adjustment = adjustment;
             on_commit(&s.books[s.current].clone());
@@ -1202,13 +1329,32 @@ fn draw_fitted(ctx: &cairo::Context, surface: &Option<cairo::ImageSurface>, w: i
 
 /// `SetCoverThumbnailImage`: the front-cover thumbnail through the
 /// thumb queue (`GetThumbnail(onlyMemory)` → queue + callback, the
-/// ADR-019 pattern). A fileless book (no file path) has no cover —
-/// the C# shows the blank cover area, so skip the queue entirely.
+/// ADR-019 pattern). A fileless book shows its CUSTOM thumbnail (the
+/// C# `GetThumbnailKey` `custom:\\<key>` resource); a fileless book
+/// without one shows the blank cover area.
 fn queue_cover(state: &StateRef, book: &ComicBook) {
-    let path = book.file_path.clone();
-    if path.is_empty() {
+    if book.file_path.is_empty() {
+        let Some(custom) = book.custom_thumbnail_key.clone() else {
+            return;
+        };
+        let key = cr_engine::image_pool::front_cover_thumbnail_key(book);
+        let key_text = format!("cover:custom:{custom}");
+        state.borrow_mut().pending_cover = Some(key_text.clone());
+        let tx = Arc::clone(&state.borrow().msg_tx);
+        let pool = Arc::clone(&state.borrow().pool);
+        let render = Arc::clone(&pool);
+        pool.add_thumb_to_queue(key, None, move |k| {
+            let bytes = render.render_thumbnail(k);
+            let _ = tx.lock().map(|tx| {
+                tx.send(EditorMsg::Cover {
+                    key_text: key_text.clone(),
+                    bytes,
+                })
+            });
+        });
         return;
     }
+    let path = book.file_path.clone();
     let page = book
         .info
         .front_cover_page_index()
@@ -1606,9 +1752,7 @@ fn show_page_menu(state: &StateRef, widgets: &PagesWidgets, index: usize, x: f64
         state: &StateRef,
         after: &Rc<dyn Fn()>,
     ) {
-        let button = Button::with_label(label);
-        button.set_has_frame(false);
-        button.set_halign(Align::Fill);
+        let button = crate::widgets::menu_item_button(label);
         let popover = popover.clone();
         let after = Rc::clone(after);
         let state = Rc::clone(state);
