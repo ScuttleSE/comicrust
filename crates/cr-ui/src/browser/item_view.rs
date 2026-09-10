@@ -1649,24 +1649,40 @@ fn draw_frame(ctx: &cairo::Context, state: &Rc<RefCell<ItemViewState>>, window: 
         ctx.rectangle(rect.x, rect.y, rect.w, rect.h);
         ctx.fill().ok();
         ctx.set_source_rgb(pal.fg.0, pal.fg.1, pal.fg.2);
+        // The disclosure TRIANGLE (the C# `groupCollapsedImage` /
+        // `groupExpandedImage` bitmaps, drawn as vector geometry —
+        // the font glyphs render inconsistently across systems):
+        // RIGHT = collapsed, DOWN = expanded. One arrow click
+        // "rotates" it 90° — the toggle collapses/expands.
+        const ARROW: f64 = 12.0;
+        let ax = rect.x + 8.0;
+        let ay = rect.y + (rect.h - ARROW) / 2.0;
+        let half = ARROW / 2.0;
+        if *collapsed {
+            // Apex at the right edge.
+            ctx.move_to(ax, ay);
+            ctx.line_to(ax, ay + ARROW);
+            ctx.line_to(ax + ARROW, ay + half);
+        } else {
+            // Apex at the bottom edge (the collapsed triangle
+            // rotated 90° clockwise).
+            ctx.move_to(ax, ay);
+            ctx.line_to(ax + ARROW, ay);
+            ctx.line_to(ax + half, ay + ARROW);
+        }
+        ctx.close_path();
+        ctx.fill().ok();
+        // The arrow hit zone: the triangle square + slack, the full
+        // header height (like the C# bitmap bounds, but an easier
+        // target).
+        if let Some(gh) = s.layout.group_headers.get_mut(*gi) {
+            gh.arrow = Rect::new(ax - 4.0, rect.y, ARROW + 12.0, rect.h);
+        }
         ctx.select_font_face("Sans", cairo::FontSlant::Normal, cairo::FontWeight::Normal);
         ctx.set_font_size(13.0 * 1.15);
-        let collapsed_mark = if *collapsed { "▸" } else { "▾" };
-        let arrow_w = ctx
-            .text_extents(collapsed_mark)
-            .map(|e| e.width())
-            .unwrap_or(12.0);
-        // The arrow zone: the glyph + slack (a small glyph in a tall
-        // strip — the full header height is the hit height, like the
-        // C# bitmap bounds).
-        if let Some(gh) = s.layout.group_headers.get_mut(*gi) {
-            gh.arrow = Rect::new(rect.x + 4.0, rect.y, arrow_w + 8.0, rect.h);
-        }
         let baseline = rect.y + rect.h * 0.68;
-        ctx.move_to(rect.x + 8.0, baseline);
-        ctx.show_text(collapsed_mark).ok();
         let text = format!("{caption} ({count})");
-        ctx.move_to(rect.x + 8.0 + arrow_w + 6.0, baseline);
+        ctx.move_to(ax + ARROW + 8.0, baseline);
         ctx.show_text(&text).ok();
     }
 
