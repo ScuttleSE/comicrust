@@ -4543,7 +4543,10 @@ fn show_context_menu(state: &std::rc::Weak<ShellState>, target: Option<CrGuid>, 
                 "update-file" => {
                     // The manual write (the C# `AddBookToFileUpdate(cb,
                     // alwaysWrite: true)`): the UpdateComicFiles gate
-                    // still applies.
+                    // still applies. The writes ride the Info Writer
+                    // worker; the batch collector reports when the
+                    // last write lands (the C# queue parity — the UI
+                    // never blocks on an archive rewrite).
                     let selection = sh.item_view.view_state().selection_snapshot();
                     let mut ids: Vec<CrGuid> = selection.into_iter().collect();
                     if let Some(id) = target {
@@ -4551,23 +4554,50 @@ fn show_context_menu(state: &std::rc::Weak<ShellState>, target: Option<CrGuid>, 
                             ids.push(id);
                         }
                     }
-                    let mut errors: Vec<String> = Vec::new();
-                    let mut written = 0usize;
-                    for id in &ids {
-                        match library::update_book_file(id, true) {
-                            Ok(true) => written += 1,
-                            Ok(false) => {}
-                            Err(e) => errors.push(e),
-                        }
+                    if ids.is_empty() {
+                        return;
                     }
-                    if let Some(last) = errors.last() {
-                        show_error_dialog(
-                            &sh.app,
-                            "Update Book Files",
-                            &format!("{}/{} written. Last error: {}", written, ids.len(), last),
+                    let total = ids.len();
+                    let remaining = std::rc::Rc::new(std::cell::Cell::new(total));
+                    let written = std::rc::Rc::new(std::cell::Cell::new(0usize));
+                    let errors = std::rc::Rc::new(std::cell::RefCell::new(Vec::<String>::new()));
+                    let sh_w = std::rc::Rc::downgrade(&sh);
+                    for id in &ids {
+                        let remaining = std::rc::Rc::clone(&remaining);
+                        let written = std::rc::Rc::clone(&written);
+                        let errors = std::rc::Rc::clone(&errors);
+                        let sh_w = sh_w.clone();
+                        library::update_book_file_async(
+                            id,
+                            true,
+                            Some(Box::new(move |result| {
+                                match result {
+                                    Ok(true) => written.set(written.get() + 1),
+                                    Ok(false) => {}
+                                    Err(e) => errors.borrow_mut().push(e),
+                                }
+                                if remaining.get() == 1 {
+                                    // The last write of the batch.
+                                    if let Some(sh) = sh_w.upgrade() {
+                                        let errs = errors.borrow();
+                                        if let Some(last) = errs.last() {
+                                            show_error_dialog(
+                                                &sh.app,
+                                                "Update Book Files",
+                                                &format!(
+                                                    "{}/{} written. Last error: {last}",
+                                                    written.get(),
+                                                    total
+                                                ),
+                                            );
+                                        }
+                                        sh.refresh_view_from_list();
+                                    }
+                                }
+                                remaining.set(remaining.get() - 1);
+                            })),
                         );
                     }
-                    sh.refresh_view_from_list();
                 }
                 "export" => {
                     // The export dialog over the selection (the C#

@@ -51,6 +51,20 @@ These rules are absolute. Break none of them. If you break them, you waste the u
 - Write all communication and documentation in Simplified Technical English (ASD-STE100).
 - Use the asd-ste100 skill for new text and for rewrites.
 
+### Rule 6: Never block the GTK main thread
+- Any new operation that can take real time (archive I/O, a
+  `7z`/`rar`/`gio` subprocess, a big scan or DB pass, image decode)
+  MUST run on a worker thread. The established shape: clone the
+  needed data on the main thread, run the work on a `std::thread`,
+  ship results over a std mpsc channel, drain with a
+  `glib::timeout_add_local` pump (100-500 ms), and apply
+  library/session changes back on the MAIN thread (the session is
+  thread-local). Existing precedents: the Book Scanner
+  (`scan_async`), the export dialog worker, the Info Writer
+  (`update_book_file_async`), the cache-event pump, the folder scan.
+  GTK widget handles (Rc) and `Box<dyn FnOnce>` callbacks are NOT
+  Send — they stay on the main-thread side of the channel.
+
 ---
 
 ## Current status (KEEP UPDATED)
@@ -59,6 +73,32 @@ Update this section at the **end of every work session**. The next agent must kn
 
 ### State summary
 
+- **WRITE-BACK ON THE INFO WRITER WORKER (2026-09-10, follow-up to
+  the export freeze):** `library::update_book_file` used to run
+  `ComicProvider::open` + `store_info_scoped` (a full archive
+  rewrite; a `7z`/`rar` subprocess for CB7/CBR) + `refresh_file_info`
+  inline on the GTK main thread from THREE sites: the "Update Book
+  File(s)" context action, the 100 ms debounced editor-commit timer,
+  and `update_all_book_files` (one write per loop tick). Now:
+  `run_book_file_write` (pure, Send, session-free — also the test
+  seam) runs on a persistent "Info Writer" thread with a
+  Mutex/Condvar VecDeque queue + dedup by book id (a re-request
+  replaces the queued clone — the C# ProcessingQueue semantics); the
+  enqueue side (`update_book_file_async(id, always_write, on_done)`)
+  keeps the gates + the book clone on the main thread; a 100 ms
+  pump applies results (file properties + the full info carry, the
+  dirty-flag clear guarded by a PRISTINE info snapshot — the
+  post-refresh times always differ, so the guard compares against
+  the pre-refresh clone and a re-edited book keeps its dirty flag
+  for the editor's re-schedule) and fires the per-book callbacks
+  (they stay main-thread — Rc callbacks are not Send; the channel
+  ships only the outcome). The menu action collects the batch and
+  shows the error dialog + refresh when the LAST write lands (the
+  report is asynchronous now — C# queue parity). writeback_probe
+  green (edit lands in the archive, flag cleared); fmt/clippy/408
+  tests green; user test = edit a property of a CBR/CB7 book and
+  run Update Book File(s) (UI stays responsive; the write lands in
+  the file; the "Files to update" list clears).
 - **EXPORT FREEZE FIXED (2026-09-10, user report: exporting a
   CBR froze the app):** the export dialog's OK handler ran the
   WHOLE conversion inline on the GTK main thread

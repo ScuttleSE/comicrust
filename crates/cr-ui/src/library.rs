@@ -870,14 +870,50 @@ pub fn insert_new_book(book: &ComicBook) -> bool {
     true
 }
 
-// ---------- The file write-back (the C# `QueueManager.AddBookToFileUpdate`) ----------
+// ---------- The file write-back (the C# `WriteComicBookInfoFileQueue`) ----------
+
+/// One completion callback (NOT Send — it stays on the main thread;
+/// the worker only ships the result over the channel and the pump
+/// runs it here).
+type WriteCallback = Box<dyn FnOnce(Result<bool, String>)>;
 
 thread_local! {
     /// The debounced write timers (one per book id; the C# keeps a
     /// 100 ms `Timer` per book so batched property edits write once).
     static WRITE_TIMERS: RefCell<std::collections::HashMap<CrGuid, glib::SourceId>> =
         RefCell::new(std::collections::HashMap::new());
+    /// The per-book completion callbacks.
+    static WRITE_CALLBACKS: RefCell<std::collections::HashMap<CrGuid, Vec<WriteCallback>>> =
+        RefCell::new(std::collections::HashMap::new());
 }
+
+/// One queued write: the book CLONE at enqueue time (the worker never
+/// touches the session) plus the settings snapshot the writer needs.
+struct WriteJob {
+    book: ComicBook,
+    update_book_files: bool,
+}
+
+/// The pending-write queue (the C# `ProcessingQueue` shape: the
+/// workers claim inside the lock, a re-request for a pending book
+/// REPLACES the queued clone — latest data wins).
+static WRITE_QUEUE: std::sync::Mutex<std::collections::VecDeque<WriteJob>> =
+    std::sync::Mutex::new(std::collections::VecDeque::new());
+static WRITE_CV: std::sync::Condvar = std::sync::Condvar::new();
+static WRITE_TX: std::sync::OnceLock<std::sync::mpsc::Sender<(CrGuid, WriteResult)>> =
+    std::sync::OnceLock::new();
+
+/// What the worker ships back: the outcome, the post-write book
+/// (refreshed file properties, dirty flag cleared), and the info
+/// snapshot taken BEFORE the write's file-properties refresh — the
+/// pump's re-edit guard compares the slot against THIS (the
+/// post-refresh info always differs from the slot's stored times).
+struct WriteOutcome {
+    written: bool,
+    book: ComicBook,
+    pristine_info: cr_core::model::comic_info::ComicInfo,
+}
+type WriteResult = Result<WriteOutcome, String>;
 
 /// Schedules the (debounced) automatic file write for one book — the
 /// `AutoUpdateComicsFiles` path. The gates run again when the timer
@@ -900,7 +936,7 @@ fn schedule_book_write(id: &CrGuid, always_write: bool) {
             WRITE_TIMERS.with(|c| {
                 c.borrow_mut().remove(&id);
             });
-            let _ = update_book_file(&id, always_write);
+            update_book_file_async(&id, always_write, None);
             glib::ControlFlow::Break
         });
         timers.insert(id, source);
@@ -913,10 +949,10 @@ fn schedule_book_write(id: &CrGuid, always_write: bool) {
 /// FileInfoRetrieved, UpdateComicFiles, AutoUpdate || alwaysWrite,
 /// then `ComicInfoIsDirty || (UpdateComicBookFiles &&
 /// ComicBookIsDirty)`) — only the "Files to update" books write.
-/// The writes drain one per main-loop tick so the UI keeps drawing
-/// (the C# funnels them through the WriteComicBookInfoFileQueue).
+/// The writes funnel through the Info Writer worker (the C#
+/// `WriteComicBookInfoFileQueue`).
 pub fn update_all_book_files() {
-    let dirty: std::collections::VecDeque<CrGuid> = {
+    let dirty: Vec<CrGuid> = {
         let lib = session();
         let l = lib.borrow();
         l.database()
@@ -926,32 +962,15 @@ pub fn update_all_book_files() {
             .map(|b| b.id)
             .collect()
     };
-    if dirty.is_empty() {
-        return;
+    for id in dirty {
+        update_book_file_async(&id, true, None);
     }
-    let mut queue = dirty;
-    glib::timeout_add_local(std::time::Duration::from_millis(0), move || {
-        match queue.pop_front() {
-            Some(id) => {
-                let _ = update_book_file(&id, true);
-                glib::ControlFlow::Continue
-            }
-            None => glib::ControlFlow::Break,
-        }
-    });
 }
 
-/// `QueueManager.AddBookToFileUpdate` + `WriteInfoToFileWithCacheUpdate`
-/// for one library book: the settings gates, the metadata write into
-/// the file (ComicInfo.xml, plus ComicBook.xml when
-/// `UpdateComicBookFiles` is on), the file-properties refresh, and
-/// the dirty-flag clear. Returns whether a write happened.
-///
-/// `always_write` is the manual command path (the C#
-/// `AddBookToFileUpdate(cb, alwaysWrite: true)`): it bypasses the
-/// `AutoUpdateComicsFiles` setting but still honors
-/// `UpdateComicFiles`.
-pub fn update_book_file(id: &CrGuid, always_write: bool) -> Result<bool, String> {
+/// The enqueue side of [`update_book_file_async`]: the settings
+/// gates + the book clone (MAIN thread — the session thread-locals
+/// live here), then the job joins the worker queue.
+fn enqueue_book_write(id: &CrGuid, always_write: bool, on_done: Option<WriteCallback>) {
     let settings = settings();
     let (update_files, auto_update, update_book_files) = {
         let s = settings.borrow();
@@ -963,41 +982,186 @@ pub fn update_book_file(id: &CrGuid, always_write: bool) -> Result<bool, String>
     };
     // `AddBookToFileUpdate` gates.
     if !update_files || !(auto_update || always_write) {
-        return Ok(false);
+        if let Some(done) = on_done {
+            done(Ok(false));
+        }
+        return;
     }
 
-    let mut book = {
+    let book = {
         let lib = session();
         let mut l = lib.borrow_mut();
         let Some(book) = l.database_mut().books.iter_mut().find(|b| b.id == *id) else {
-            return Ok(false);
+            if let Some(done) = on_done {
+                done(Ok(false));
+            }
+            return;
         };
         // Only a dirty book writes (`ComicInfoIsDirty || ...`).
         if !book.comic_info_is_dirty {
-            return Ok(false);
+            if let Some(done) = on_done {
+                done(Ok(false));
+            }
+            return;
         }
         book.clone()
     };
-    if !Path::new(&book.file_path).exists() {
+
+    if let Some(done) = on_done {
+        WRITE_CALLBACKS.with(|c| {
+            c.borrow_mut().entry(*id).or_default().push(done);
+        });
+    }
+    ensure_write_worker();
+    let mut queue = WRITE_QUEUE.lock().unwrap();
+    // The dedup: a re-request for a PENDING book replaces the queued
+    // clone (the latest data wins; the callbacks stay).
+    if let Some(job) = queue.iter_mut().find(|j| j.book.id == *id) {
+        job.book = book;
+        job.update_book_files = update_book_files;
+        return;
+    }
+    queue.push_back(WriteJob {
+        book,
+        update_book_files,
+    });
+    drop(queue);
+    WRITE_CV.notify_one();
+}
+
+/// `QueueManager.AddBookToFileUpdate` + `WriteInfoToFileWithCacheUpdate`
+/// for one library book, on the INFO WRITER worker: the settings gates
+/// run here on the main thread, the metadata write into the file
+/// (ComicInfo.xml, plus ComicBook.xml when `UpdateComicBookFiles` is
+/// on), the file-properties refresh, and the dirty-flag clear run on
+/// the worker (the C# write queue — a synchronous run froze the UI on
+/// CB7/CBR books: a full archive rewrite, possibly a `7z`/`rar`
+/// subprocess). `on_done` runs on the MAIN thread when the write
+/// lands: `Ok(true)` written, `Ok(false)` gated/no-op, `Err` failed.
+///
+/// The pump applies the refreshed book into the library slot only
+/// when the slot was NOT re-edited since the enqueue (the info still
+/// matches the clone); a re-edited book keeps its dirty flag and the
+/// editor's re-schedule writes it again.
+pub fn update_book_file_async(id: &CrGuid, always_write: bool, on_done: Option<WriteCallback>) {
+    enqueue_book_write(id, always_write, on_done);
+}
+
+/// The pure (Send, session-free) write: provider open + the scoped
+/// metadata store + the file-properties refresh + the dirty-flag
+/// clear. Returns the written flag, the post-write book, and the
+/// info snapshot taken BEFORE the refresh (the pump's re-edit
+/// baseline). Runs on the worker; also the unit-test seam.
+pub fn run_book_file_write(
+    book: &mut ComicBook,
+    update_book_files: bool,
+) -> Result<(bool, ComicBook, cr_core::model::comic_info::ComicInfo), String> {
+    if book.file_path.is_empty() || !Path::new(&book.file_path).exists() {
         return Err(format!("file not found: {}", book.file_path));
     }
-
     let provider =
         cr_io::ComicProvider::open(Path::new(&book.file_path)).map_err(|e| e.to_string())?;
-    let written = cr_io::write::store_info_scoped(&provider, &book, update_book_files)
+    let written = cr_io::write::store_info_scoped(&provider, book, update_book_files)
         .map_err(|e| e.to_string())?;
     if written {
-        // `RefreshFileProperties` + the dirty-flag clear.
-        crate::library::refresh_file_info(&mut book);
+        // The pristine snapshot BEFORE `RefreshFileProperties` (the
+        // refresh rewrites the file times/size).
+        let pristine_info = book.info.clone();
+        refresh_file_info(book);
         book.comic_info_is_dirty = false;
-        let lib = session();
-        let mut l = lib.borrow_mut();
-        if let Some(slot) = l.database_mut().books.iter_mut().find(|b| b.id == *id) {
-            *slot = book;
-            l.mark_dirty();
-        }
+        Ok((written, book.clone(), pristine_info))
+    } else {
+        Ok((false, book.clone(), book.info.clone()))
     }
-    Ok(written)
+}
+
+/// Spawns the Info Writer thread + the result pump once (the first
+/// enqueue starts them; both live for the process).
+fn ensure_write_worker() {
+    static STARTED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    if STARTED.set(()).is_err() {
+        return;
+    }
+    let (tx, rx) = std::sync::mpsc::channel::<(CrGuid, WriteResult)>();
+    let _ = WRITE_TX.set(tx);
+    std::thread::Builder::new()
+        .name("Info Writer".into())
+        .spawn(move || loop {
+            let job = {
+                let mut queue = WRITE_QUEUE.lock().unwrap();
+                loop {
+                    if let Some(job) = queue.pop_front() {
+                        break job;
+                    }
+                    queue = WRITE_CV.wait(queue).unwrap();
+                }
+            };
+            let mut book = job.book;
+            let id = book.id;
+            let result = match run_book_file_write(&mut book, job.update_book_files) {
+                Ok((written, book, pristine_info)) => Ok(WriteOutcome {
+                    written,
+                    book,
+                    pristine_info,
+                }),
+                Err(e) => Err(e),
+            };
+            if let Some(tx) = WRITE_TX.get() {
+                let _ = tx.send((id, result));
+            }
+        })
+        .expect("spawn Info Writer");
+
+    // The main-thread pump: apply the result into the library slot
+    // (with the re-edit guard), run the per-book callbacks.
+    let library = session();
+    glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
+        loop {
+            // Bind the recv result before matching — a `while let`
+            // scrutinee borrow lives through the loop body.
+            let received = rx.try_recv();
+            let Ok((id, result)) = received else {
+                break;
+            };
+            if let Ok(outcome) = &result {
+                if outcome.written {
+                    let mut l = library.borrow_mut();
+                    if let Some(slot) = l.database_mut().books.iter_mut().find(|b| b.id == id) {
+                        // The re-edit guard: the slot's info changed
+                        // since the enqueue clone → the write is
+                        // stale; keep the dirty flag (the editor's
+                        // re-schedule writes it again). The
+                        // comparison runs against the PRISTINE
+                        // snapshot (the post-refresh times always
+                        // differ from the stored ones).
+                        let stale = slot.info != outcome.pristine_info;
+                        slot.file_modified_time = outcome.book.file_modified_time;
+                        slot.file_creation_time = outcome.book.file_creation_time;
+                        slot.file_size = outcome.book.file_size;
+                        slot.file_is_missing = outcome.book.file_is_missing;
+                        if !stale {
+                            // Full refresh carry (the newly learned
+                            // page count included) — the old inline
+                            // path replaced the whole slot.
+                            slot.info = outcome.book.info.clone();
+                            slot.comic_info_is_dirty = false;
+                        }
+                        l.mark_dirty();
+                    }
+                }
+            }
+            // The callback result carries only the written flag / the
+            // error (the caller never needs the book).
+            let cb_result = result.as_ref().map(|o| o.written).map_err(|e| e.clone());
+            let callbacks = WRITE_CALLBACKS.with(|c| c.borrow_mut().remove(&id));
+            if let Some(cbs) = callbacks {
+                for cb in cbs {
+                    cb(cb_result.clone());
+                }
+            }
+        }
+        glib::ControlFlow::Continue
+    });
 }
 
 /// `ShellFile.DeleteFile` parity — the recycle bin via `gio trash`
