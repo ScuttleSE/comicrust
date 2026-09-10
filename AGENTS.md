@@ -73,6 +73,32 @@ Update this section at the **end of every work session**. The next agent must kn
 
 ### State summary
 
+- **GROUP COLLAPSE: COUNTS + DOUBLE-CLICK DIRECTION FIXED
+  (2026-09-10, commit 6b4016d; user report: "when I collapse grouped
+  by series, all series have 0 titles, and I can't expand just one
+  of them"):** two bugs. (1) The header count read
+  `group.items.len()`, and the rebuild EMPTIES a collapsed group's
+  items — every collapsed header showed "(0)". The C# header keeps
+  `Items` attached while collapsed
+  (`GroupHeaderInformation.ItemCount`); the port now carries
+  `Group.count` (the TRUE bucket size, set on EVERY rebuild) and the
+  draw shows it. (2) The double-click direction was INVERTED: the C#
+  fires the single-click toggle on BOTH MouseUps before the
+  DoubleClick event, so the clicked header is back at its ORIGINAL
+  state when the all-toggle reads it — net: every group takes the
+  OPPOSITE of the clicked header's original state (double-click a
+  collapsed arrow = expand ALL; the user's double-clicks collapsed
+  everything). The port fires the toggle ONCE (press n=1), so the
+  n=2 all-toggle must apply the POST-first-click state directly
+  (`set_all_collapsed(collapsed)`), not its negation. GATE:
+  browserbar_probe D3 is now a press-sequence MACHINE (one press per
+  150 ms tick — the draw between presses re-records the arrow
+  zones; a one-shot timer installs the repeating machine, a
+  repeating timer with a long interval does NOT start it early):
+  label select, single-click collapse AND expand of one group, both
+  double-click directions, counts surviving a collapse-all;
+  view_state unit tests pin the counts. 489 tests; fmt/clippy
+  green; statusbar (J/J2), commands, scanrefresh (A-F) green.
 - **GROUP-HEADER CRASH FIXED + GROUPER PERSISTENCE (2026-09-10,
   commit 9606815; user report: "when I grouped by series it
   segfaulted" — `RefCell already borrowed` at item_view.rs:1068 in
@@ -745,7 +771,7 @@ Update this section at the **end of every work session**. The next agent must kn
   build.rs watches the git ref), the progressive fill + Abort
   Scanning (778bd44), the no-glitch incremental append (8822981),
   and the graceful exit mid-scan + the signal handling + the
-  done-before-pop fix (707950f). HEAD = 9606815, 489 tests.
+  done-before-pop fix (707950f). HEAD = 6b4016d, 489 tests.
   Open gaps: WebComicProvider, PDF/DjVu writers, the LICENSE file
   (Phase 11 packaging gap), the T14 per-list sort deviation,
   HEIF/AVIF decode. The Phase 11 PIPELINE is COMPLETE (the v0.0.283
