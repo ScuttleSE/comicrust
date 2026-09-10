@@ -12,6 +12,7 @@
 //! API (`https://comicvine.gamespot.com/api/`) is a free service that
 //! requires a user-supplied key.
 
+pub mod bookdata;
 pub mod config;
 pub mod cv;
 pub mod fnameparser;

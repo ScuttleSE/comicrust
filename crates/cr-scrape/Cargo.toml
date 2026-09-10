@@ -5,6 +5,7 @@ edition.workspace = true
 
 [dependencies]
 cr-core = { path = "../cr-core" }
+chrono = { workspace = true }
 fancy-regex = "0.14"
 regex = "1"
 serde = { workspace = true, features = ["derive"] }

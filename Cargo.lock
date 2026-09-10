@@ -451,6 +451,7 @@ dependencies = [
 name = "cr-scrape"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "cr-core",
  "fancy-regex",
  "regex",
