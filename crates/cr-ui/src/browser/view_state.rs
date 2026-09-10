@@ -111,8 +111,13 @@ impl SortChain {
 pub struct Group {
     pub caption: String,
     pub collapsed: bool,
+    /// The TRUE item count (the header always shows it — the C#
+    /// `GroupHeaderInformation.ItemCount`, which stays attached to
+    /// collapsed headers).
+    pub count: usize,
     /// Item indexes into `ViewState::display_order` — the items of
-    /// this group in sort order.
+    /// this group in sort order. EMPTY for a collapsed group (the
+    /// items drop from placement; the count above stays).
     pub items: Vec<usize>,
 }
 
@@ -393,7 +398,9 @@ impl ViewState {
 
         // Sort inside each bucket (the chained comparer), then
         // append to the display order. Collapsed groups keep their
-        // header and drop their items.
+        // header and drop their items from PLACEMENT — but keep the
+        // TRUE item count (the C# header keeps `Items` attached;
+        // `ItemCount` shows the real number while collapsed).
         self.groups.clear();
         for bucket in buckets {
             let mut items = bucket.items;
@@ -420,12 +427,14 @@ impl ViewState {
                 self.groups.push(Group {
                     caption: bucket.caption,
                     collapsed: true,
+                    count: items.len(),
                     items: Vec::new(),
                 });
             } else {
                 self.groups.push(Group {
                     caption: bucket.caption,
                     collapsed: false,
+                    count: items.len(),
                     items: (self.display_order.len()..self.display_order.len() + items.len())
                         .collect(),
                 });
@@ -705,6 +714,7 @@ mod tests {
 
     /// `ItemView.ExpandGroups` / `ToggleGroups` (the Collapse/Expand
     /// all Groups command) + the collapse carry across a rebuild.
+    /// Collapsed groups keep the TRUE count (the header shows it).
     #[test]
     fn collapse_all_and_toggle_follow_the_first_group() {
         let mut view = ViewState::new(vec![
@@ -713,12 +723,24 @@ mod tests {
             book("Superman", 1.0, 3),
         ]);
         view.set_grouper(Some("Series"));
+        assert_eq!(
+            view.groups().iter().map(|g| g.count).collect::<Vec<_>>(),
+            [2, 1]
+        );
         view.set_collapsed(1, true);
         assert!(view.any_collapsed());
+        // The collapsed group keeps its count (the header shows it).
+        assert_eq!(view.groups()[1].count, 1);
         // ToggleGroups: first group expanded → collapse ALL.
         view.toggle_groups();
         assert!(view.groups().iter().all(|g| g.collapsed));
         assert_eq!(view.len(), 0, "every item is hidden");
+        // ... and the counts SURVIVE the collapse (the "0 titles"
+        // report: the header shows the real number while collapsed).
+        assert_eq!(
+            view.groups().iter().map(|g| g.count).collect::<Vec<_>>(),
+            [2, 1]
+        );
         // ToggleGroups again: first collapsed → expand ALL.
         view.toggle_groups();
         assert!(view.groups().iter().all(|g| !g.collapsed));

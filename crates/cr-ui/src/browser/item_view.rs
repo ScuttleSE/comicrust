@@ -763,10 +763,17 @@ impl ItemView {
     /// The group-header press paths (`OnMouseClickGroupHeader` +
     /// `OnMouseDoubleClickGroupHeader`): `n == 1` — the ARROW toggles
     /// that group's collapse, the LABEL selects ALL the group's items;
-    /// `n > 1` — the ARROW expands/collapses ALL groups (the
-    /// direction = the clicked header's post-first-click state), the
+    /// `n > 1` — the ARROW expands/collapses ALL groups; the
     /// LABEL toggles that group. Returns false when the point is not
     /// on a header (the caller falls through to the item hit).
+    ///
+    /// Double-click direction: the C# fires the single-click toggle
+    /// on BOTH MouseUps before the DoubleClick event, so the clicked
+    /// header is back at its ORIGINAL state when the all-toggle
+    /// reads it — the net effect is every group taking the OPPOSITE
+    /// of the clicked group's original state. The port fires the
+    /// single toggle once (press n=1), so the all-toggle applies the
+    /// POST-first-click state (= the negated original) directly.
     ///
     /// The header hit reads through a HOISTED borrow: a borrow inside
     /// the `if let` SCRUTINEE lives until the end of the whole
@@ -797,7 +804,9 @@ impl ItemView {
             };
             let mut s = state.borrow_mut();
             if arrow {
-                s.view.set_all_collapsed(!collapsed);
+                // `collapsed` = the post-first-click state = the
+                // NEGATED original; the C# net applies that to ALL.
+                s.view.set_all_collapsed(collapsed);
             } else {
                 s.view.set_collapsed(group, !collapsed);
             }
@@ -989,6 +998,18 @@ impl ItemView {
             .iter()
             .filter(|g| g.collapsed)
             .count()
+    }
+
+    /// The per-group TRUE counts (the probe — the collapsed headers
+    /// keep showing them).
+    pub fn group_counts(&self) -> Vec<usize> {
+        self.state
+            .borrow()
+            .view
+            .groups()
+            .iter()
+            .map(|g| g.count)
+            .collect()
     }
 
     /// Reveals/hides a Detail column (the header column chooser —
@@ -1620,13 +1641,7 @@ fn draw_frame(ctx: &cairo::Context, state: &Rc<RefCell<ItemViewState>>, window: 
         .filter(|gh| gh.rect.intersects(&window))
         .map(|gh| {
             let g = &s.view.groups()[gh.group];
-            (
-                gh.group,
-                gh.rect,
-                g.collapsed,
-                g.caption.clone(),
-                g.items.len(),
-            )
+            (gh.group, gh.rect, g.collapsed, g.caption.clone(), g.count)
         })
         .collect();
     for (gi, rect, collapsed, caption, count) in &headers {

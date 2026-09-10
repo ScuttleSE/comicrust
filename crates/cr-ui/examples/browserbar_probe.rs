@@ -289,54 +289,125 @@ fn main() {
         //     arrow press toggles ONE group; the double-click (n=2)
         //     expands/collapses ALL; the label selects the group's
         //     items.
-        glib::timeout_add_local(std::time::Duration::from_millis(2800), {
+        // D3. The group-header CLICK paths through the REAL press
+        //     handler (the group-by-series crash: the double-click
+        //     borrow_mut collided with the scrutinee borrow). One
+        //     press per 150 ms tick — the draw between presses
+        //     re-records the arrow zones (the real app always has
+        //     frames between presses). Gates: the label select, the
+        //     single-click collapse/expand of ONE group, both
+        //     double-click directions (the C# net: every group takes
+        //     the OPPOSITE of the clicked header's ORIGINAL state),
+        //     and the TRUE counts on collapsed headers.
+        {
             let shell = shell.clone();
-            move || {
-                shell.state_dispatch_param("win.group-by", "Series");
-                // The arrow zone is RECORDED BY THE DRAW — settle one
-                // paint cycle before reading it.
-                glib::timeout_add_local(std::time::Duration::from_millis(400), {
-                    let shell = shell.clone();
-                    move || {
-                        let (ax, ay, aw, ah) = shell.state_group_arrow_zone(0);
-                        if aw <= 0.0 {
-                            let groups = shell.state_grid_groups();
-                            println!(
-                                "D3 arrow-zone not recorded groups={groups:?} (draw pending) — gate inconclusive"
-                            );
-                            return glib::ControlFlow::Break;
+            let step = std::rc::Rc::new(std::cell::Cell::new(0u32));
+            let log: std::rc::Rc<std::cell::RefCell<Vec<String>>> =
+                std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+            let zone: std::rc::Rc<std::cell::Cell<(f64, f64, f64, f64)>> =
+                std::rc::Rc::new(std::cell::Cell::new((0.0, 0.0, 0.0, 0.0)));
+            let print_log = log.clone();
+            glib::timeout_add_local(std::time::Duration::from_millis(2800), {
+                let shell = shell.clone();
+                move || {
+                    shell.state_dispatch_param("win.group-by", "Series");
+                    glib::ControlFlow::Break
+                }
+            });
+            glib::timeout_add_local(std::time::Duration::from_millis(3300), move || {
+                glib::timeout_add_local(
+                    std::time::Duration::from_millis(150),
+                    {
+                        let shell = shell.clone();
+                        let step = step.clone();
+                        let log = log.clone();
+                        let zone = zone.clone();
+                        move || {
+                            let s = step.get();
+                            step.set(s + 1);
+                            let (ax, ay, aw, ah) = shell.state_group_arrow_zone(0);
+                            if s == 0 {
+                                if aw <= 0.0 {
+                                    log.borrow_mut().push(
+                                        "arrow-zone not recorded (draw pending) — INCONCLUSIVE"
+                                            .into(),
+                                    );
+                                    return glib::ControlFlow::Break;
+                                }
+                                zone.set((ax, ay, aw, ah));
+                                return glib::ControlFlow::Continue;
+                            }
+                            let (ax, ay, aw, ah) = zone.get();
+                            let cx = ax + aw / 2.0;
+                            let cy = ay + ah / 2.0;
+                            let lx = ax + aw + 30.0;
+                            match s {
+                                1 => {
+                                    // The label zone while EXPANDED:
+                                    // selects the group's items (group
+                                    // 0 = 1 book).
+                                    let hit = shell.state_group_press(1, lx, cy);
+                                    log.borrow_mut().push(format!(
+                                        "label hit={hit} selected={}",
+                                        shell.state_grid_selection_len()
+                                    ));
+                                }
+                                2 => {
+                                    let hit = shell.state_group_press(1, cx, cy);
+                                    log.borrow_mut().push(format!(
+                                        "arrow1 hit={hit} collapsed={} (expect 1)",
+                                        shell.state_grid_groups().1
+                                    ));
+                                }
+                                3 => {
+                                    shell.state_group_press(1, cx, cy);
+                                    log.borrow_mut().push(format!(
+                                        "arrow1 again collapsed={} (expect 0 — expand just one)",
+                                        shell.state_grid_groups().1
+                                    ));
+                                }
+                                4 => {
+                                    shell.state_group_press(1, cx, cy);
+                                }
+                                5 => {
+                                    shell.state_group_press(2, cx, cy);
+                                    log.borrow_mut().push(format!(
+                                        "dbl on EXPANDED collapsed={} counts={:?} (expect 3 + the true counts)",
+                                        shell.state_grid_groups().1,
+                                        shell.state_group_counts()
+                                    ));
+                                }
+                                6 => {
+                                    shell.state_group_press(1, cx, cy);
+                                }
+                                7 => {
+                                    shell.state_group_press(2, cx, cy);
+                                    log.borrow_mut().push(format!(
+                                        "dbl on COLLAPSED collapsed={} (expect 0)",
+                                        shell.state_grid_groups().1
+                                    ));
+                                    shell.state_dispatch_param("win.group-by", "");
+                                    log.borrow_mut().push("DONE".into());
+                                    return glib::ControlFlow::Break;
+                                }
+                                _ => return glib::ControlFlow::Break,
+                            }
+                            glib::ControlFlow::Continue
                         }
-                        let cx = ax + aw / 2.0;
-                        let cy = ay + ah / 2.0;
-                        // The label zone (right of the arrow) while
-                        // EXPANDED: selects the group's items (group 0
-                        // holds 1 book). The collapsed-group label
-                        // select is a recorded deviation (the port's
-                        // collapsed groups drop their items; the C#
-                        // keeps them attached).
-                        let lx = ax + aw + 30.0;
-                        let hit3 = shell.state_group_press(1, lx, cy);
-                        let selected = shell.state_grid_selection_len();
-                        // Single press on the arrow: ONE group collapses.
-                        let hit1 = shell.state_group_press(1, cx, cy);
-                        let (_, collapsed_one) = shell.state_grid_groups();
-                        // Double-click second press on the arrow: ALL groups
-                        // (direction = the header's post-first-click state —
-                        // group 0 is collapsed now, so this EXPANDS all).
-                        let hit2 = shell.state_group_press(2, cx, cy);
-                        let (_, collapsed_after_dbl) = shell.state_grid_groups();
-                        shell.state_dispatch("win.toggle-groups");
-                        let (_, collapsed_all) = shell.state_grid_groups();
-                        shell.state_dispatch_param("win.group-by", "");
-                        println!(
-                            "D3 hit3={hit3} selected={selected} hit1={hit1} collapsed-one={collapsed_one} hit2={hit2} collapsed-after-dbl={collapsed_after_dbl} collapsed-all={collapsed_all} (expect true/1/true/1/true/0/3 — the n=2 press must NOT panic)"
-                        );
-                        glib::ControlFlow::Break
-                    }
-                });
+                    },
+                );
                 glib::ControlFlow::Break
-            }
-        });
+            });
+            glib::timeout_add_local(std::time::Duration::from_millis(5400), {
+                let log = print_log;
+                move || {
+                    for line in log.borrow().iter() {
+                        println!("D3 {line}");
+                    }
+                    glib::ControlFlow::Break
+                }
+            });
+        }
 
         // E. The Duplicate List drop: the folder rows, then the
         //    duplicate lands in the chosen folder.
@@ -373,7 +444,7 @@ fn main() {
                 glib::ControlFlow::Break
             }
         });
-        glib::timeout_add_local(std::time::Duration::from_millis(3800), {
+        glib::timeout_add_local(std::time::Duration::from_millis(5700), {
             let app = app.clone();
             move || {
                 println!("PROBE COMPLETE");

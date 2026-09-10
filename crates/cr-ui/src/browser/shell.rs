@@ -1690,6 +1690,12 @@ impl BrowserShell {
         (groups, collapsed)
     }
 
+    /// Probe: the per-group TRUE counts (the collapsed-header count
+    /// gate).
+    pub fn state_group_counts(&self) -> Vec<usize> {
+        self.state.item_view.group_counts()
+    }
+
     /// Probe: a REAL group-header press through the click path
     /// (the group-collapse crash gate).
     pub fn state_group_press(&self, n: u32, x: f64, y: f64) -> bool {
