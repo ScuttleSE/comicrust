@@ -315,7 +315,7 @@ Update this section at the **end of every work session**. The next agent must kn
   gtk4 jq` (Arch does not split dev packages — gtk4 carries the
   headers). USER TEST = the 5 steps at the end of the kickoff
   (needs a tagged release + a workflow run).
-- **PHASE 12 COMPLETE, USER TEST PENDING (2026-09-10) — NATIVE
+- **PHASE 12 COMPLETE, USER-TESTED (2026-09-10) — NATIVE
   MODULES I: COMIC VINE SCRAPER** (the kickoff is
   `docs/phase-12-kickoff.md`; the modularity pattern is ADR-031: one
   crate per plugin, engine on a worker thread behind a message
@@ -366,7 +366,7 @@ Update this section at the **end of every work session**. The next agent must kn
     seam keeps the engine pool-free). Gates: 218/218 fnameparser
     vectors, 10 mock-server CV tests, 23 bookdata tests, 9 matching
     tests, 6 engine tests, 2 pool tests, scrapeconfig_probe,
-    scrape_probe. USER TEST = the 7 steps at the end of the kickoff.
+    scrape_probe.
   FIX ROUND 1 (2026-09-10, commit e42eb40, user report "no results
   when I try to scrape, API key entered"): ROOT CAUSE measured
   against the live API — the port requests format=json and
@@ -402,7 +402,14 @@ Update this section at the **end of every work session**. The next agent must kn
   (SeriesProgressFn/IssueProgressFn) and the status line shows
   'Searching... N results' / 'Loading issues... N%'. CR_SCRAPE_DEBUG
   logs the dialog presentation + every user choice. 482 tests.
-- **Phase:** PHASE 12 COMPLETE, USER TEST PENDING (2026-09-10, above)
+  **PHASE 12 USER-TESTED, ALL PASS (2026-09-10, "works" after fix
+  round 2)**: the user scraped a book with the real API — the series
+  pick dialog listed the matches, the double-click commit flowed
+  through the issue fetch to the landing details; the API key entry
+  and the settings dialog worked on the first run. The rescrape fast
+  path and the fileless cover render are probe-gated (scrape_probe,
+  the pool tests) and stay watch-items for daily use.
+- **Phase:** PHASE 12 COMPLETE, USER-TESTED (2026-09-10, above)
   besides the Phase 10 + Phase 11 blocks above
   (2026-09-09). Phases 0-8 are COMPLETE
   (every delivered task user-tested; the trail below carries the
@@ -414,15 +421,14 @@ Update this section at the **end of every work session**. The next agent must kn
   HEIF/AVIF decode. The Phase 11 PIPELINE is COMPLETE (the v0.0.283
   release carries all 9 assets on both hosts); the install steps
   (the kickoff user test) remain.
-  OPEN USER TESTS (2026-09-10, in test order): the Phase 12 scrape
-  steps (the kickoff tail — scrape a book, rescrape it, the fileless
-  cover, responsiveness), the Phase 10 steps
+  OPEN USER TESTS (2026-09-10, in test order): the Phase 10 steps
   1-4 + 5-8 (the kickoff tail), the Phase 11 install steps (the
   kickoff tail), the export-freeze fix (re-run a CBR→CBZ export —
   responsive window, progress ticks), and the write-back fix (edit
   a CBR/CB7 property + Update Book File(s) — responsive UI, write
-  lands, the Files-to-update list clears).
-- **Phase:** PHASE 12 COMPLETE, USER TEST PENDING (2026-09-10, above)
+  lands, the Files-to-update list clears). The Phase 12 scrape steps
+  passed their user test (see the Phase 12 block).
+- **Phase:** PHASE 12 COMPLETE, USER-TESTED (2026-09-10, above)
   besides the Phase 10
   + Phase 11 blocks above
   (2026-09-09). Phases 0-8 are COMPLETE
@@ -435,15 +441,14 @@ Update this section at the **end of every work session**. The next agent must kn
   HEIF/AVIF decode. The Phase 11 PIPELINE is COMPLETE (the v0.0.283
   release carries all 9 assets on both hosts); the install steps
   (the kickoff user test) remain.
-  OPEN USER TESTS (2026-09-10, in test order): the Phase 12 scrape
-  steps (the kickoff tail — scrape a book, rescrape it, the fileless
-  cover, responsiveness), the Phase 10 steps
+  OPEN USER TESTS (2026-09-10, in test order): the Phase 10 steps
   1-4 + 5-8 (the kickoff tail), the Phase 11 install steps (the
   kickoff tail), the export-freeze fix (re-run a CBR→CBZ export —
   responsive window, progress ticks), and the write-back fix (edit
   a CBR/CB7 property + Update Book File(s) — responsive UI, write
-  lands, the Files-to-update list clears). The FIRST entry (Phase 12)
-  supersedes the list below it when times conflict.
+  lands, the Files-to-update list clears). The Phase 12 scrape steps
+  passed their user test (see the Phase 12 block) — the FIRST entry
+  of the earlier list is resolved.
 - **(Phase 8 — CLOSED 2026-09-08 — the kickoff is
   `docs/phase-8-kickoff.md`; done so far: T3 (the
   CBL-import perf) + T10 first slice (the view-side proposed-parse

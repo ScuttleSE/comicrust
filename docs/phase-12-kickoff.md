@@ -317,3 +317,36 @@ profile import; no File ▸ Automation submenu or editor hook or
 F1-F12 shortcuts; no alt-cover browsing in the issue dialog (the
 C# `session_data_map` alt-cover choice); the welcome dialog rides
 the config dialog (the key check happens at scrape start).
+
+## USER TEST RESULT (2026-09-10, ALL PASS)
+
+**USER-TESTED, ALL PASS** ("works" after two fix rounds). The user
+scraped with the real ComicVine API: the series pick dialog listed
+the matches, the double-click commit flowed through the issue fetch
+to the landing details, and the API key entry + the settings dialog
+worked on the first run.
+
+Fix rounds against the test runs (both root causes measured, both
+records in AGENTS.md):
+
+1. **e42eb40 — zero results with a valid key**: the port requests
+   `format=json` and ComicVine's JSON carries `results` as a FLAT
+   array; my mocks had encoded the C# XML dom shape
+   (`results.volume`), so every real response parsed as empty.
+   `result_items()` now accepts both shapes; the fixtures carry the
+   real shape. LESSON: when a port changes the wire format, derive
+   the fixture shapes from the LIVE API, never from the C# DOM
+   shapes. `CR_SCRAPE_DEBUG=1` logs every query/decision (key
+   redacted); `ScrapeUi::error` surfaces query failures in the
+   status line.
+2. **3cd8051** ("clicked the correct series, then nothing"): the
+   pick dialogs only committed through their buttons — a row click
+   merely selected it. `connect_row_activated` commits the row
+   (double-click/Enter) in both dialogs, behind a one-shot finish.
+   The issue-list fetch now streams per-page progress ("Loading
+   issues… N%") instead of freezing through an ASM-sized fetch
+   (~11 throttled pages).
+
+Phase 12 is CLOSED. The remaining watch-items (probe-gated, not
+user-visible failures): the rescrape fast path and the fileless
+cover render in daily use.
