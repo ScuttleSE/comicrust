@@ -783,25 +783,42 @@ Update this section at the **end of every work session**. The next agent must kn
   build.rs watches the git ref), the progressive fill + Abort
   Scanning (778bd44), the no-glitch incremental append (8822981),
   and the graceful exit mid-scan + the signal handling + the
-  done-before-pop fix (707950f). HEAD = 6b4016d, 489 tests.
+  done-before-pop fix (707950f). The 2026-09-10 GROUP/LAMP/THUMB
+  SESSION (immediately after, same day, in the state blocks at the
+  top): the group headers + the animated scan lamp + the on-demand
+  thumbnail switch batch (fc748a7), the group-header double-click
+  RefCell abort + the grouper persistence (9606815), the collapsed
+  counts + the double-click direction (6b4016d), the vector
+  disclosure triangle (d8e83ed). The user drove three fix rounds
+  while testing grouping (the crash, the 0 counts, the inverted
+  double-click) — grouping is effectively user-exercised; the lamp
+  + thumbnail parts still need the explicit test below. HEAD =
+  05c809e, 489 tests.
   Open gaps: WebComicProvider, PDF/DjVu writers, the LICENSE file
   (Phase 11 packaging gap), the T14 per-list sort deviation,
   HEIF/AVIF decode. The Phase 11 PIPELINE is COMPLETE (the v0.0.283
   release carries all 9 assets on both hosts); the install steps
   (the kickoff user test) remain.
-  OPEN USER TESTS (2026-09-10, in test order): the scan round (ALL
-  of it from this session — the user confirmed the progressive fill
-  + the no-glitch append "works now" on 2026-09-10; still open:
-  Tasks ▸ Abort Scanning on a real scan, and the graceful exit
-  mid-scan = close the window / Ctrl+C → exits promptly, the restart
-  shows the books found so far), the Phase 10 steps
-  1-4 + 5-8 (the kickoff tail), the Phase 11 install steps (the
-  kickoff tail), the export-freeze fix (re-run a CBR→CBZ export —
-  responsive window, progress ticks), and the write-back fix (edit
-  a CBR/CB7 property + Update Book File(s) — responsive UI, write
-  lands, the Files-to-update list clears). The Phase 12 scrape steps
-  AND the fix-round-3 batch passed their user tests (see the Phase 12
-  block + the SCRAPER UX FIX ROUND 3 block).
+  OPEN USER TESTS (2026-09-10, in test order): the GROUP/LAMP/THUMB
+  batch (grouping end-to-end after the fixes: Group by Series in
+  Thumbnail/Tile/Details → header strips with TRUE counts,
+  single-click the disclosure triangle collapses/expands ONE group,
+  double-click collapses/expands ALL, the Views-menu row does the
+  collapse/expand-all and grays out without grouping; the scan lamp
+  animates while scanning and its click opens the "Cancel scan"
+  menu; Preferences ▸ Advanced ▸ Thumbnails off → placeholders until
+  File ▸ Generate Cover Thumbnails backfills), the scan round (the
+  user confirmed the progressive fill + the no-glitch append "works
+  now" on 2026-09-10; still open: Tasks ▸ Abort Scanning on a real
+  scan, and the graceful exit mid-scan = close the window / Ctrl+C →
+  exits promptly, the restart shows the books found so far), the
+  Phase 10 steps 1-4 + 5-8 (the kickoff tail), the Phase 11 install
+  steps (the kickoff tail), the export-freeze fix (re-run a CBR→CBZ
+  export — responsive window, progress ticks), and the write-back
+  fix (edit a CBR/CB7 property + Update Book File(s) — responsive
+  UI, write lands, the Files-to-update list clears). The Phase 12
+  scrape steps AND the fix-round-3 batch passed their user tests
+  (see the Phase 12 block + the SCRAPER UX FIX ROUND 3 block).
 - **(Phase 8 — CLOSED 2026-09-08 — the kickoff is
   `docs/phase-8-kickoff.md`; done so far: T3 (the
   CBL-import perf) + T10 first slice (the view-side proposed-parse
@@ -1687,7 +1704,7 @@ Update this section at the **end of every work session**. The next agent must kn
   Phases 0-5 are complete (their gates stay green). Open Phase 1
   gaps: WebComicProvider and the PDF/DjVu writers (tracked in
   `docs/phase-1-kickoff.md`).
-- **State:** `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` are green. 489 tests — 36 suites plus the cr-scrape suites (the Phase 8 perf gates: `reading_list_perf`, `view_perf`, `path_migration_perf`, `list_eval_perf`, `scan_perf`; the cr-ui probes are examples, not tests — the newest are `statusbar_probe` gates J/J2 (the scan lamp: frames, the visible-only animation, the Cancel-scan menu map + the abort hook) and `browserbar_probe` gate D2 (the grouping: ungrouped (1,0) + the disabled action, 3 series → toggle-groups collapses/expands all); `scanrefresh_probe` (gates A-F: the scan-land refresh, the re-scan idempotence, the mid-scan fill, the abort partial landing, the re-scan completion, the mid-add exit save — it REFUSES a non-isolated XDG pair and wipes it at start, the exit save pollutes it); the real-fixture parts skip in CI without the git-ignored `tests/testfiles/` files; the RAR round-trips skip without `CR_RAR_TESTS` + `rar`). CI runs on the `docker-runner-amd64` container runner (ADR-020) and is LIVE (it caught the 2026-09-09 group-gate flake — the runner + `comicrust-ci:latest` image work). The release tracks are `release.yaml` (rolling prerelease per push) and `tagged-release.yaml` (manual dispatch, stable release for an existing tag — ADR-021, 2026-09-03); `packaging.yaml` (Phase 11) attaches the source tarball, the Arch package, and the .deb to a tagged release. First real tagged-release run (v0.0.273, 2026-09-09) exposed a latent env bug: the "Publish to GitHub mirror" step lacked `TAG` (the Gitea publish succeeded; the mirror step died on `set -u`) — fixed in commit 05483da.
+- **State:** `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` are green. 489 tests — 36 suites plus the cr-scrape suites (the Phase 8 perf gates: `reading_list_perf`, `view_perf`, `path_migration_perf`, `list_eval_perf`, `scan_perf`; the cr-ui probes are examples, not tests — the newest are `statusbar_probe` gates J/J2 (the scan lamp: frames, the visible-only animation, the Cancel-scan menu map + the abort hook) and `browserbar_probe` gates D2+D3 (the grouping: ungrouped (1,0) + the disabled action + toggle-groups; the D3 press-sequence machine drives the REAL group-header press paths — label select, single-click collapse/expand of one group, both double-click directions, the true counts on collapsed headers); `scanrefresh_probe` (gates A-F: the scan-land refresh, the re-scan idempotence, the mid-scan fill, the abort partial landing, the re-scan completion, the mid-add exit save — it REFUSES a non-isolated XDG pair and wipes it at start, the exit save pollutes it); the real-fixture parts skip in CI without the git-ignored `tests/testfiles/` files; the RAR round-trips skip without `CR_RAR_TESTS` + `rar`). CI runs on the `docker-runner-amd64` container runner (ADR-020) and is LIVE (it caught the 2026-09-09 group-gate flake — the runner + `comicrust-ci:latest` image work). The release tracks are `release.yaml` (rolling prerelease per push) and `tagged-release.yaml` (manual dispatch, stable release for an existing tag — ADR-021, 2026-09-03); `packaging.yaml` (Phase 11) attaches the source tarball, the Arch package, and the .deb to a tagged release. First real tagged-release run (v0.0.273, 2026-09-09) exposed a latent env bug: the "Publish to GitHub mirror" step lacked `TAG` (the Gitea publish succeeded; the mirror step died on `set -u`) — fixed in commit 05483da.
 - **GitHub mirror (2026-09-06):** remote `github` = `git@github.com:ScuttleSE/comicrust.git` — a TRUE mirror (identical SHAs; `.gitea/` rides along but is inert there, GitHub Actions only reads `.github/workflows/`). After every origin push also `git push github main`; stable tags get pushed manually once; the `rolling` tag is CI-managed on BOTH sides (each release run deletes/recreates it) — never push it by hand. Both release workflows also publish the built tarball + sha256 to GitHub Releases through `.gitea/publish_github_release.sh` (build once on Gitea, assets on both); it needs the Gitea secret `MIRROR_RELEASE_TOKEN` (GitHub PAT with Contents read/write on ScuttleSE/comicrust; Gitea forbids a `GITHUB_` prefix) — unset secret = the step skips with a notice.
 - **Phase 0 gate status:** byte-stable ComicDb.xml round-trip proven on all three synthetic fixtures AND the real-world database `tests/realworld/ComicDb.xml` (255 books, 584 KB, 2026-09-02, user-approved commit).
 - **Phase 2 gate status:** every saved smart list in the real-world DB (a) binds to the matcher registry, (b) renders to a `Match` query string that re-parses and re-renders byte-identically, and (c) evaluates to the SAME book sets the C# cached in `CacheStorage` (Never Read = all 255, Files to update = the 3 dirty books, Reading/Read = empty). Evidence: `crates/cr-engine/tests/realworld_query.rs`.
@@ -2411,6 +2428,13 @@ Re-bless the `db-large.xml` snapshot after a deliberate model change: `CR_BLESS=
   (`let v = self.state.borrow().x;` then branch on `v`). Same for
   bodies that call further borrowing methods (pan threshold,
   click dispatch). Sweep: `rg "if (self|view)\.state\.borrow"`.
+  The sweep MISSES the scrutinee-ARGUMENT shape —
+  `if let Some(g) = hit_group_header(&state.borrow().layout, ...)`
+  keeps the borrow through the branch too, and a `borrow_mut` inside
+  panicked (the 2026-09-10 group-double-click crash). A borrow hides
+  anywhere in the condition/scrutinee EXPRESSION, not just as the
+  direct condition; hoist those the same way (the fixed shape:
+  `let group_hit = { let s = state.borrow(); hit_group_header(&s.layout, ...) };`).
 - Headless smoke tests: Xvfb + `import -window root` screenshot
   diffs, `xdotool key`. `xdotool click 4/5` does NOT produce scroll
   events under GTK/X11 (the wheel path is only user-testable). GTK
@@ -2747,6 +2771,37 @@ Re-bless the `db-large.xml` snapshot after a deliberate model change: `CR_BLESS=
   (~0.3 ms/file). And an abort gate must have the fixture ADD
   books — an abort of a RE-scan returns the full taken set, which
   passes the assertion without proving anything.
+
+### Lessons from the group/lamp session (2026-09-10, do not re-learn these)
+
+- `ItemView::set_books` replaces the whole `ViewState` — EVERY piece
+  of live view config that must survive a refresh must be cloned out
+  and re-applied (the filter was; the GROUPER was not, and every
+  list refresh silently ungrouped the view). When adding state to
+  `ViewState`, audit `set_books` in the same change.
+- The C# `GroupHeaderInformation` keeps `Items` attached to a
+  COLLAPSED header (`ItemCount` shows the true number); the port
+  drops collapsed items, so the header needs its own `count` field —
+  never derive the header count from the placement list.
+- The C# fires the group single-click toggle on BOTH MouseUps of a
+  double-click before `DoubleClick` runs, so the all-toggle reads the
+  clicked header's ORIGINAL state (net: every group takes the
+  opposite of the original). A port that fires the toggle once per
+  press must apply the POST-first-click state in the n=2 handler —
+  its negation is the inverted direction.
+- A popover cannot MAP from a hidden parent: the scan-lamp gate must
+  leave the lamp visible before `popup()`, and the 1 s activity poll
+  re-hides an idle lamp on the whole-second marks — keep the probe
+  reads clear of the second marks.
+- A probe press-sequence gate needs one press per tick (a
+  one-shot timer installs the repeating machine) — the draw between
+  presses re-records the arrow zones; a repeating timer with a LONG
+  interval does not start the machine early, and presses in ONE tick
+  see zeroed zones.
+- The app never set `groups_visible` — a config flag with a correct
+  default that nothing writes is a dead feature; when a C# property
+  gates a render (`AreGroupsVisible`), wire the port's setter path
+  in the same task that adds the draw.
 
 ### Blockers / open questions
 
