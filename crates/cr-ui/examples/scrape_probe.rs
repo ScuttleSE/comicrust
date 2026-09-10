@@ -147,6 +147,7 @@ fn main() {
             &config,
             vec![book],
             Some(mock_base.clone()),
+            None,
             move |done| {
                 if let Some(summary) = done {
                     summaries.borrow_mut().push(summary);
@@ -228,6 +229,7 @@ fn main() {
             &config,
             vec![book_no_key],
             Some(mock_base.clone()),
+            None,
             move |done| {
                 if let Some(summary) = done {
                     summaries.borrow_mut().push(summary);

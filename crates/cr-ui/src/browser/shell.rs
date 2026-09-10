@@ -2592,6 +2592,7 @@ impl ShellState {
             &config,
             books,
             None,
+            Some(Arc::clone(&self.pool)),
             move |_summary| {
                 if let Some(sh) = state.upgrade() {
                     sh.refresh_view_from_list();

@@ -102,6 +102,8 @@ pub struct ImagePoolConfig {
     /// `Settings.MemoryThumbCacheSizeMB` bytes; items capped at
     /// `MEMORY_THUMBNAIL_CACHE_SIZE` (8192).
     pub thumb_memory_bytes: usize,
+    /// The `CustomThumbnails` folder (`Paths::custom_thumbnail_path`).
+    pub custom_thumb_dir: Option<PathBuf>,
 }
 
 impl Default for ImagePoolConfig {
@@ -115,6 +117,7 @@ impl Default for ImagePoolConfig {
             thumb_cache_enabled: true,
             page_memory_count: DEFAULT_PAGE_COUNT,
             thumb_memory_bytes: DEFAULT_THUMB_SIZE,
+            custom_thumb_dir: None,
         }
     }
 }
@@ -134,6 +137,9 @@ pub struct ImagePool {
     pub page_disk: Option<Arc<DiskCache>>,
     /// Thumbnail disk cache (`thumbs.DiskCache`).
     pub thumb_disk: Option<Arc<DiskCache>>,
+    /// The `CustomThumbnails` folder (one file per custom thumb; the
+    /// C# `CustomThumbnailFolder`).
+    custom_thumb_dir: Option<PathBuf>,
     /// `PageCached`/`ThumbnailCached` sink (`set_event_tx`).
     event_tx: Mutex<Option<CacheEventTx>>,
 }
@@ -231,6 +237,7 @@ impl ImagePool {
             ))),
             page_disk,
             thumb_disk,
+            custom_thumb_dir: config.custom_thumb_dir.clone(),
             event_tx: Mutex::new(None),
         }
     }
@@ -453,6 +460,26 @@ impl ImagePool {
         pool.get(hash).cloned()
     }
 
+    /// `ImagePool.AddCustomThumbnail`: stores the image as a 512px
+    /// thumbnail under a GUID name in the custom folder and returns
+    /// the key text (the C# stores the guid; `GetThumbnailKey` wraps
+    /// it as `custom:\\<guid>`).
+    pub fn add_custom_thumbnail(&self, image: &cr_image::Image) -> Option<String> {
+        let dir = self.custom_thumb_dir.as_ref()?;
+        let text = cr_core::xml::scalar::CrGuid::new_random().to_d_string();
+        let thumb = thumbnail_from_image(image, (image.width, image.height)).ok()?;
+        std::fs::create_dir_all(dir).ok()?;
+        std::fs::write(dir.join(&text), thumb.to_bytes()).ok()?;
+        Some(text)
+    }
+
+    /// `ImagePool.RemoveCustomThumbnail`.
+    pub fn remove_custom_thumbnail(&self, key: &str) {
+        if let Some(dir) = &self.custom_thumb_dir {
+            let _ = std::fs::remove_file(dir.join(key));
+        }
+    }
+
     /// The worker render chain for a thumbnail: render the page, build
     /// the 512px JPEG q60 thumbnail, cache to disk and memory.
     pub fn render_thumbnail(&self, key: &ThumbnailKey) -> Option<Vec<u8>> {
@@ -471,17 +498,38 @@ impl ImagePool {
                 return Some(bytes);
             }
         }
-        let page_key = PageKey::new(key.key.clone(), BitmapAdjustment::default());
-        let img = self.render_page(&page_key)?;
-        let original = (img.width, img.height);
-        let thumb = thumbnail_from_image(&img, original).ok()?;
-        let bytes = thumb.to_bytes();
+        let bytes = self.produce_thumbnail(key)?;
+        let original = (0u32, 0u32);
+        let _ = original;
         if let Some(disk) = &self.thumb_disk {
             let _ = disk.write(hash, &text, &bytes);
         }
         if let Ok(mut pool) = self.thumbs.lock() {
             let _ = pool.lock_item(hash, || Ok((bytes.clone(), bytes.len())));
         }
+        Some(bytes)
+    }
+
+    /// The produce half of `render_thumbnail`: the custom-thumbnail
+    /// resource loads its file; everything else renders the page.
+    fn produce_thumbnail(&self, key: &ThumbnailKey) -> Option<Vec<u8>> {
+        if let cr_image::keys::ThumbnailSource::Resource {
+            resource_type,
+            resource_location,
+        } = &key.source_kind
+        {
+            if resource_type == "custom" {
+                let dir = self.custom_thumb_dir.as_ref()?;
+                return std::fs::read(dir.join(resource_location)).ok();
+            }
+            // the unknown-resource locator renders nothing (the C#
+            // `resource:\\Unknown` for fileless books without a thumb)
+            return None;
+        }
+        let page_key = PageKey::new(key.key.clone(), BitmapAdjustment::default());
+        let img = self.render_page(&page_key)?;
+        let original = (img.width, img.height);
+        let thumb = thumbnail_from_image(&img, original).ok()?;
         // `ThumbnailCached` (the memory-cache ItemAdded event).
         let tx = self.event_tx.lock().ok().and_then(|s| s.clone());
         if let Some(tx) = tx {
@@ -492,7 +540,7 @@ impl ImagePool {
                 height: original.1,
             });
         }
-        Some(bytes)
+        Some(thumb.to_bytes())
     }
 }
 
@@ -599,13 +647,31 @@ pub fn disk_cache_dir(dir: &Path) -> PathBuf {
     dir.to_path_buf()
 }
 
-/// `ComicBook.GetFrontCoverThumbnailKey` — the thumbnail key for the
-/// book's front cover: the cover PAGE index translates back to its
-/// PROVIDER image index (`TranslatePageToImageIndex`), and the
-/// stored page rotation rides along (`GetThumbnailKey` parity).
-/// Books without page metadata keep the historical key (index 0,
-/// no rotation) — `FrontCoverPageIndex` defaults to 0.
+/// `ComicBook.GetThumbnailKey` — the thumbnail key for the
+/// book's front cover. A fileless book with a custom thumbnail
+/// shows that (`resource` locator `custom:\\<key>`); file-backed
+/// books key on the cover PAGE index, which translates back to
+/// its PROVIDER image index (`TranslatePageToImageIndex`), and
+/// the stored page rotation rides along (`GetThumbnailKey`
+/// parity). Books without page metadata keep the historical key
+/// (index 0, no rotation) — `FrontCoverPageIndex` defaults to 0.
 pub fn front_cover_thumbnail_key(book: &ComicBook) -> ThumbnailKey {
+    // The C# `GetThumbnailKey`: fileless books show the custom
+    // thumbnail when one is set (`custom:\\<key>`); a linked book
+    // never uses it.
+    if book.file_path.is_empty() {
+        if let Some(custom) = &book.custom_thumbnail_key {
+            let key = ImageKey::new(
+                "custom",
+                format!("custom:\\\\{custom}"),
+                0,
+                0,
+                0,
+                ImageRotation::None,
+            );
+            return ThumbnailKey::with_locator(key);
+        }
+    }
     let page = book.info.front_cover_page_index().max(0) as usize;
     let image_index = book
         .info

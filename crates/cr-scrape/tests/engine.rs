@@ -71,11 +71,20 @@ fn engine(config: Configuration) -> ScrapeEngine {
 }
 
 fn start_mock(routes: &[(&str, String)]) -> String {
+    start_mock_bytes(
+        &routes
+            .iter()
+            .map(|(p, b)| (*p, b.clone().into_bytes()))
+            .collect::<Vec<_>>(),
+    )
+}
+
+fn start_mock_bytes(routes: &[(&str, Vec<u8>)]) -> String {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
     let routes: Vec<(String, Vec<u8>)> = routes
         .iter()
-        .map(|(p, b)| (p.to_string(), b.clone().into_bytes()))
+        .map(|(p, b)| (p.to_string(), b.clone()))
         .collect();
     std::thread::spawn(move || {
         for stream in listener.incoming() {
@@ -266,4 +275,105 @@ fn user_skip_and_permskip_mark_the_book() {
     // the book is reported unscraped -> skipped
     assert_eq!((scraped, skipped), (0, 1));
     assert!(ui.scraped.is_empty());
+}
+
+#[test]
+fn thumbnails_install_for_fileless_books() {
+    // A fileless book scrapes interactively (one series, one issue);
+    // the injected installer receives the downloaded cover bytes and
+    // the clone carries the custom-thumbnail key. File-backed books
+    // never install (C# parity).
+    let cover: Vec<u8> = vec![0x89, b'P', b'N', b'G', 1, 2, 3];
+    // The listener binds first so the fixtures can reference the
+    // mock's cover url.
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let base = format!("http://127.0.0.1:{port}");
+    let cover_url = format!("{base}/cover.png");
+    let search_body = r#"{
+      "number_of_total_results": 1, "number_of_page_results": 1, "status_code": 1,
+      "results": {"volume": [
+        {"id": 40501, "name": "Batman", "start_year": "1940",
+         "publisher": {"id": 10, "name": "DC Comics"},
+         "count_of_issues": 900, "image": {"small_url": ""}}]}}"#;
+    let issues_body = r#"{
+        "number_of_total_results": 1, "number_of_page_results": 1, "status_code": 1,
+        "results": {"issue": [
+            {"id": 400011, "issue_number": "12", "name": "The Court of Owls",
+             "image": {"small_url": ""}}]}}"#;
+    let details_body = format!(
+        r#"{{
+        "number_of_total_results": 1, "status_code": 1,
+        "results": {{"id": "400011", "name": "The Court of Owls",
+            "issue_number": "12",
+            "cover_date": "2011-05-14",
+            "volume": {{"id": "40501", "name": "Batman", "start_year": "1940"}},
+            "image": {{"small_url": "{cover_url}"}}}}}}"#
+    );
+    let volume_body = r#"{
+        "number_of_total_results": 1, "status_code": 1,
+        "results": {"id": 40501, "name": "Batman", "start_year": "1940",
+                    "publisher": {"id": 10, "name": "DC Comics"}}}"#;
+
+    let search_body = search_body.to_string();
+    let issues_body = issues_body.to_string();
+    let details_body = details_body.to_string();
+    let volume_body = volume_body.to_string();
+    let cover_for_server = cover.clone();
+    std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { break };
+            let mut buf = [0u8; 8192];
+            let len = stream.read(&mut buf).unwrap_or(0);
+            let request = String::from_utf8_lossy(&buf[..len]).to_string();
+            let path = request.lines().next().unwrap_or("");
+            let body: Vec<u8> = if path.contains("/cover.png") {
+                cover_for_server.clone()
+            } else if path.contains("/issue/4000-") {
+                details_body.as_bytes().to_vec()
+            } else if path.contains("/issues/") {
+                issues_body.as_bytes().to_vec()
+            } else if path.contains("/volume/") {
+                volume_body.as_bytes().to_vec()
+            } else {
+                search_body.as_bytes().to_vec()
+            };
+            let head = format!(
+                "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                body.len()
+            );
+            let _ = stream.write_all(head.as_bytes());
+            let _ = stream.write_all(&body);
+        }
+    });
+
+    // The fileless book: no file path, no stored metadata (the
+    // C# "fileless" placeholder).
+    let book = ComicBook {
+        file_path: String::new(),
+        ..Default::default()
+    };
+
+    let mut ui = FakeUi {
+        term_answers: vec![Some("batman".into())],
+        series_answers: vec![SeriesResult::Ok(
+            SeriesRef::new(40501, "Batman", 1940, "DC Comics", 900, None).unwrap(),
+        )],
+        ..Default::default()
+    };
+    let mut cv = client_for(&base);
+    let mut engine = engine(Configuration::default());
+    let cover = cover.clone();
+    engine.thumb_installer = Some(Arc::new(move |downloaded: &[u8]| {
+        assert_eq!(downloaded, &cover[..], "the cover bytes downloaded");
+        Some("guid-1".into())
+    }));
+    let (_scraped, _skipped) = engine.scrape(vec![book], &mut ui, &mut cv);
+
+    assert_eq!(ui.scraped.len(), 1);
+    let thumb_key = ui.scraped[0]
+        .custom_thumbnail_key
+        .clone()
+        .expect("the thumb key installed");
+    assert_eq!(thumb_key, "guid-1");
 }

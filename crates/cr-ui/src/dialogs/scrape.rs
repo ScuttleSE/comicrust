@@ -124,12 +124,14 @@ impl ScrapeUi for ChannelUi {
         _hint: Option<&IssueRef>,
         force: bool,
     ) -> IssueResult {
-        let _ = self.tx.send(UiRequest::PickIssue(Box::new(PickIssueRequest {
-            caption: caption.to_string(),
-            series: series.clone(),
-            issues: issues.to_vec(),
-            force,
-        })));
+        let _ = self
+            .tx
+            .send(UiRequest::PickIssue(Box::new(PickIssueRequest {
+                caption: caption.to_string(),
+                series: series.clone(),
+                issues: issues.to_vec(),
+                force,
+            })));
         match self.answer_rx.recv() {
             Ok(UiAnswer::Issue(r)) => r,
             _ => IssueResult::Cancel,
@@ -455,6 +457,7 @@ pub fn show_scrape_dialog(
     config: &Configuration,
     books: Vec<ComicBook>,
     base_url: Option<String>,
+    pool: Option<Arc<cr_engine::image_pool::ImagePool>>,
     on_done: impl Fn(Option<ScrapeSummary>) + 'static,
     on_scraped: impl Fn() + 'static,
 ) {
@@ -532,7 +535,17 @@ pub fn show_scrape_dialog(
                 None => CvClient::new(&worker_config.api_key),
             };
             let mut cv = Cv::new(client);
-            let engine = ScrapeEngine::new(worker_config, worker_stop, prior);
+            let mut engine = ScrapeEngine::new(worker_config, worker_stop, prior);
+            // The fileless-book custom-thumbnail install (the C#
+            // `SetCustomBookThumbnail` path): the pool writes the
+            // 512px thumb under a GUID key.
+            if let Some(pool) = &pool {
+                let pool = Arc::clone(pool);
+                engine.thumb_installer = Some(Arc::new(move |bytes: &[u8]| {
+                    let image = cr_image::decode(bytes).ok()?;
+                    pool.add_custom_thumbnail(&image)
+                }));
+            }
             let (scraped, skipped) = engine.scrape(books, &mut ui, &mut cv);
             let chosen = engine.chosen();
             let _ = done_tx.send(UiRequest::Done {

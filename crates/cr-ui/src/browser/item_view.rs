@@ -32,7 +32,6 @@ use gtk4::{
 use cr_core::model::comic_book::ComicBook;
 use cr_core::xml::scalar::CrGuid;
 use cr_engine::image_pool::ImagePool;
-use cr_image::keys::{ImageKey, ThumbnailKey};
 
 use super::columns::{self, Column};
 use super::layout::{
@@ -206,26 +205,25 @@ impl ItemViewState {
     }
 
     /// Queues cover loads for the visible items (`AddToTop` — the
-    /// demanded thumbs skip the line).
+    /// demanded thumbs skip the line). Keys ride
+    /// `front_cover_thumbnail_key` (the C# `GetThumbnailKey`): the
+    /// custom thumbnail for fileless books, the cover page index for
+    /// file-backed ones.
     fn queue_visible_thumbs(&mut self, window: Rect) {
-        let wanted: Vec<(CrGuid, String)> = visible_items(&self.layout, window)
-            .filter_map(|item| {
-                let book = self.view.book(item.display);
-                if self.queued.contains(&book.id) {
-                    return None;
-                }
-                Some((book.id, book.file_path.clone()))
-            })
-            .collect();
-        for (id, path) in wanted {
+        let wanted: Vec<(CrGuid, cr_core::model::comic_book::ComicBook)> =
+            visible_items(&self.layout, window)
+                .filter_map(|item| {
+                    let book = self.view.book(item.display);
+                    if self.queued.contains(&book.id) {
+                        return None;
+                    }
+                    Some((book.id, book.clone()))
+                })
+                .collect();
+        for (id, book) in wanted {
             self.queued.insert(id);
             self.pending_thumbs += 1;
-            let key = ThumbnailKey::new(ImageKey::from_file(
-                path.clone(),
-                std::path::Path::new(&path),
-                0,
-                cr_core::model::enums::ImageRotation::None,
-            ));
+            let key = cr_engine::image_pool::front_cover_thumbnail_key(&book);
             let pool = Arc::clone(&self.pool);
             let tx = self.thumb_tx.clone();
             self.pool.add_thumb_to_queue(key.clone(), None, move |k| {

@@ -153,6 +153,7 @@ fn config_construction_wires_disk_caches_and_memory_capacities() {
         thumb_cache_enabled: true,
         page_memory_count: 25,
         thumb_memory_bytes: 32 * 1024 * 1024,
+        custom_thumb_dir: None,
     };
     let pool = Arc::new(ImagePool::with_config(&config));
     // The budgets and enable flags land on the disk caches.
@@ -289,4 +290,64 @@ fn warm_up_reuses_disk_entries() {
     assert!(wait_for(std::time::Duration::from_secs(5), || !pool
         .slow_thumbnail_queue_unlimited
         .is_active()));
+}
+
+#[test]
+fn fileless_custom_thumbnails_install_and_render() {
+    use cr_core::model::comic_book::ComicBook;
+    // The pool with a custom-thumb dir; a decoded cover goes in, the
+    // file lands under the GUID key, and the render branch serves it.
+    let dir = temp_dir("custom-thumbs");
+    let config = cr_engine::image_pool::ImagePoolConfig {
+        custom_thumb_dir: Some(dir.clone()),
+        ..cr_engine::image_pool::ImagePoolConfig::default()
+    };
+    let pool = Arc::new(ImagePool::with_config(&config));
+
+    // a real 1x1 PNG (the helper from above)
+    let png = png_pixel(160);
+    let image = cr_image::decode(&png).unwrap();
+    let key = pool.add_custom_thumbnail(&image).expect("installed");
+    assert!(dir.join(&key).is_file(), "the thumb file exists");
+
+    // the C# `GetThumbnailKey`: a fileless book with a custom thumb
+    // keys on the `custom:\\<key>` resource locator
+    let book = ComicBook {
+        file_path: String::new(),
+        custom_thumbnail_key: Some(key.clone()),
+        ..ComicBook::default()
+    };
+    let tkey = cr_engine::image_pool::front_cover_thumbnail_key(&book);
+    assert!(matches!(
+        tkey.source_kind,
+        cr_image::keys::ThumbnailSource::Resource { ref resource_type, .. }
+            if resource_type == "custom"
+    ));
+
+    // the render branch serves the stored bytes; a second call hits
+    // the memory pool with the same bytes
+    let bytes = pool.render_thumbnail(&tkey).expect("custom thumb bytes");
+    let again = pool.render_thumbnail(&tkey).expect("cached");
+    assert_eq!(bytes, again);
+
+    // a fileless book WITHOUT a custom thumb keys on the unknown
+    // resource and renders nothing
+    let plain = ComicBook::default();
+    let unknown = cr_engine::image_pool::front_cover_thumbnail_key(&plain);
+    assert_eq!(pool.render_thumbnail(&unknown), None);
+}
+
+#[test]
+fn linked_books_never_use_the_custom_thumbnail_key() {
+    use cr_core::model::comic_book::ComicBook;
+    let book = ComicBook {
+        file_path: "/comics/a.cbz".into(),
+        custom_thumbnail_key: Some("stale".into()),
+        ..ComicBook::default()
+    };
+    let tkey = cr_engine::image_pool::front_cover_thumbnail_key(&book);
+    assert!(matches!(
+        tkey.source_kind,
+        cr_image::keys::ThumbnailSource::File
+    ));
 }

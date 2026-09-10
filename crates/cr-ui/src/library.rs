@@ -157,6 +157,7 @@ pub fn image_pool_config() -> cr_engine::image_pool::ImagePoolConfig {
         thumb_cache_enabled: s.thumb_cache_enabled,
         page_memory_count: clamp_page,
         thumb_memory_bytes: s.memory_thumb_cache_size_mb.max(0) as usize * 1024 * 1024,
+        custom_thumb_dir: Some(paths.custom_thumbnail_path),
     }
 }
 

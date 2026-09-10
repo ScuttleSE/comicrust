@@ -106,6 +106,12 @@ pub type ScrapeSummary = (usize, usize);
 
 /// The scrape engine. `stop` is shared with the UI: setting it
 /// cancels the whole scrape at the next check (the C# `cancel`).
+/// The custom-thumbnail installer the UI injects: stores the
+/// downloaded cover bytes and returns the key text (the C#
+/// `ImagePool.AddCustomThumbnail`; the engine stays image-pool-free,
+/// ADR-031).
+pub type ThumbInstaller = Arc<dyn Fn(&[u8]) -> Option<String> + Send + Sync>;
+
 pub struct ScrapeEngine {
     pub config: Configuration,
     pub stop: Arc<AtomicBool>,
@@ -117,6 +123,9 @@ pub struct ScrapeEngine {
     /// `MatchScore.record_choice` collection; the wizard persists
     /// them into prior_series.json at Done).
     chosen: std::sync::Mutex<Vec<String>>,
+    /// The injected custom-thumbnail installer (the C#
+    /// `App.SetCustomBookThumbnail` path).
+    pub thumb_installer: Option<ThumbInstaller>,
 }
 
 /// One cache entry per resolved series (the C# `ScrapedSeries`).
@@ -154,6 +163,7 @@ impl ScrapeEngine {
             prior_series,
             scrape_delay_override: None,
             chosen: std::sync::Mutex::new(Vec::new()),
+            thumb_installer: None,
         }
     }
 
@@ -297,7 +307,7 @@ impl ScrapeEngine {
                 let slow = self.config.advanced().update_rating;
                 match cv.query_issue(&issue_ref, slow) {
                     Ok(issue) => {
-                        self.apply_issue(book, &issue, ui);
+                        self.apply_issue(book, &issue, cv, ui);
                         return BookStatus::Scraped;
                     }
                     Err(_) => return BookStatus::Delayed, // retry manually later
@@ -440,7 +450,7 @@ impl ScrapeEngine {
                     let slow = self.config.advanced().update_rating;
                     match cv.query_issue(&issue_ref, slow) {
                         Ok(issue) => {
-                            self.apply_issue(book, &issue, ui);
+                            self.apply_issue(book, &issue, cv, ui);
                             return BookStatus::Scraped;
                         }
                         Err(_) => return BookStatus::Delayed,
@@ -480,7 +490,7 @@ impl ScrapeEngine {
     /// The copy step (the C# `book.update(issue)`): the massage rules
     /// run, the fields land in the comic clone, and the UI gets the
     /// finished book.
-    fn apply_issue(&self, book: &mut Book, issue: &Issue, ui: &mut dyn ScrapeUi) {
+    fn apply_issue(&self, book: &mut Book, issue: &Issue, cv: &mut Cv, ui: &mut dyn ScrapeUi) {
         let now = now_text();
         book.data.update(
             issue,
@@ -489,7 +499,40 @@ impl ScrapeEngine {
             None, // the session alt-cover choice rides T7
         );
         book.data.apply_to(&mut book.comic);
+        self.install_thumbnail(book, issue, cv);
         ui.book_scraped(&book.comic);
+    }
+
+    /// The fileless-book thumbnail install (the C#
+    /// `PluginBookData.update` cover-url branch): only fileless books,
+    /// only when the prefs ask for it, never over a preserved thumb.
+    fn install_thumbnail(&self, book: &mut Book, issue: &Issue, cv: &mut Cv) {
+        let config = &self.config;
+        // Only FILELESS books install a custom thumbnail (an empty
+        // path); the C# never touches a linked book's cover.
+        if !config.download_thumbs || !book.data.path.is_empty() {
+            return;
+        }
+        if book.comic.custom_thumbnail_key.is_some() && config.preserve_thumbs {
+            return;
+        }
+        let url = if !book.data.cover_url.is_empty() {
+            Some(book.data.cover_url.clone())
+        } else {
+            issue.image_urls.first().cloned()
+        };
+        let Some(url) = url else {
+            return;
+        };
+        let Some(installer) = &self.thumb_installer else {
+            return;
+        };
+        let Some(bytes) = cv.query_image(&url) else {
+            return;
+        };
+        if let Some(key) = installer(&bytes) {
+            book.comic.custom_thumbnail_key = Some(key);
+        }
     }
 
     /// `__wait_until_ready`: the per-book scrape delay, cancellable.
