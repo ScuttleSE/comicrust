@@ -2551,6 +2551,60 @@ impl ShellState {
         crate::dialogs::bulk_edit::show(&self.window, books, commit);
     }
 
+    /// The Comic Vine Scraper config dialog (`cvs_config`): OK saves
+    /// the settings into the plugin dir.
+    fn show_scrape_config(self: &Rc<ShellState>) {
+        let config =
+            cr_scrape::config::Configuration::load(&cr_scrape::config::default_config_dir());
+        let state = Rc::downgrade(self);
+        crate::dialogs::scrape_config::show_scrape_config(&self.window, &config, move |result| {
+            if let Some(config) = result {
+                let _ = config.save(&cr_scrape::config::default_config_dir());
+                if let Some(sh) = state.upgrade() {
+                    sh.sync_enabled();
+                }
+            }
+        });
+    }
+
+    /// The scrape wizard over the selection (`cvs_scrape`): no API
+    /// key opens the config dialog first (the C# aborts the scrape
+    /// when the key is still missing).
+    fn open_scrape(self: &Rc<ShellState>) {
+        let ids = self.item_view.selection_ids();
+        if ids.is_empty() {
+            return;
+        }
+        let books = Self::books_by_ids(&ids);
+        if books.is_empty() {
+            return;
+        }
+        let config =
+            cr_scrape::config::Configuration::load(&cr_scrape::config::default_config_dir());
+        if !config.has_api_key() {
+            self.show_scrape_config();
+            return;
+        }
+        let state = Rc::downgrade(self);
+        let state2 = Rc::downgrade(self);
+        crate::dialogs::scrape::show_scrape_dialog(
+            &self.window,
+            &config,
+            books,
+            None,
+            move |_summary| {
+                if let Some(sh) = state.upgrade() {
+                    sh.refresh_view_from_list();
+                }
+            },
+            move || {
+                if let Some(sh) = state2.upgrade() {
+                    sh.refresh_view_from_list();
+                }
+            },
+        );
+    }
+
     /// `SetRating(n)` over the selection (the My Rating menu).
     fn set_rating(&self, rating: f32) {
         let ids = self.item_view.selection_ids();
@@ -3598,6 +3652,10 @@ impl ShellState {
         // The Tasks dialog (the C# `ShowPendingTasks`; the lamps and
         // the menu open the same single instance).
         self.add_simple(&group, "tasks", ShellState::show_tasks);
+        // The Comic Vine Scraper (Phase 12): the config dialog and
+        // the scrape wizard over the selection.
+        self.add_simple(&group, "scrape-config", ShellState::show_scrape_config);
+        self.add_simple(&group, "scrape-books", ShellState::open_scrape);
         // generate-thumbnails — the C# `CacheThumbnails` queue
         // command: one unlimited-queue warm-up job per library book
         // (the worker skips covers already in the thumbnail disk
@@ -4647,6 +4705,10 @@ fn show_context_menu(state: &std::rc::Weak<ShellState>, target: Option<CrGuid>, 
                         },
                     );
                 }
+                "scrape" => {
+                    // The Comic Vine Scraper wizard over the selection.
+                    sh.open_scrape();
+                }
                 "remove" => {
                     // The C# remove flow asks: remove from the list
                     // only, or from the Library, and whether to move
@@ -4746,6 +4808,7 @@ fn show_context_menu(state: &std::rc::Weak<ShellState>, target: Option<CrGuid>, 
     add_item(&box_, "Edit…", "edit");
     add_item(&box_, "Update Book File(s)", "update-file");
     add_item(&box_, "Export…", "export");
+    add_item(&box_, "Scrape from Comic Vine…", "scrape");
     add_item(&box_, "Remove from Library", "remove");
     add_item(&box_, "Properties…", "properties");
     popover.set_child(Some(&box_));

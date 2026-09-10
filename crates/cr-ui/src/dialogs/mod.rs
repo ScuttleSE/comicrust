@@ -11,6 +11,7 @@ pub mod name_prompt;
 pub mod new_book_series;
 pub mod path_migration;
 pub mod quick_rating;
+pub mod scrape;
 pub mod scrape_config;
 pub mod smart_list;
 pub mod tasks;

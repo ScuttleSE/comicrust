@@ -113,6 +113,10 @@ pub struct ScrapeEngine {
     pub prior_series: std::collections::HashSet<String>,
     /// The test seam: overrides the configured scrape delay.
     pub scrape_delay_override: Option<Duration>,
+    /// The series keys the user chose this run (the C#
+    /// `MatchScore.record_choice` collection; the wizard persists
+    /// them into prior_series.json at Done).
+    chosen: std::sync::Mutex<Vec<String>>,
 }
 
 /// One cache entry per resolved series (the C# `ScrapedSeries`).
@@ -149,7 +153,14 @@ impl ScrapeEngine {
             stop,
             prior_series,
             scrape_delay_override: None,
+            chosen: std::sync::Mutex::new(Vec::new()),
         }
+    }
+
+    /// The series keys the user chose this run (for
+    /// `prior_series.json` persistence).
+    pub fn chosen(&self) -> Vec<String> {
+        self.chosen.lock().unwrap().clone()
     }
 
     fn cancelled(&self) -> bool {
@@ -422,6 +433,10 @@ impl ScrapeEngine {
                     run.cache.remove(&key); // back to the series dialog
                 }
                 IssueResult::Ok(issue_ref) => {
+                    self.chosen
+                        .lock()
+                        .unwrap()
+                        .push(series_ref.series_key.to_string());
                     let slow = self.config.advanced().update_rating;
                     match cv.query_issue(&issue_ref, slow) {
                         Ok(issue) => {
