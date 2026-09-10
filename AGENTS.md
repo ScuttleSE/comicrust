@@ -73,6 +73,34 @@ Update this section at the **end of every work session**. The next agent must kn
 
 ### State summary
 
+- **SCAN PROGRESS + LOGGING (2026-09-10, follow-up to the scan-land
+  fix; user report: "it says scanning but no progress, the library
+  totally empty, as if the app is doing nothing — logging before you
+  dream something up"):** three evidence facts. (1) The C# updates
+  `Scanner.CurrentLocation` PER WALKED FILE (ComicScanner.cs:125,
+  before the File.Exists check) — the Tasks "Scanning" line is
+  supposed to move through the walk; the port set the location once
+  at start (the root) and never again. (2) The C# walk is a LAZY
+  generator (`FileUtility.GetFiles` yield-recursion,
+  FileUtility.cs:63) — walk and process interleave; the port walked
+  the WHOLE tree eagerly before processing any file (a huge tree =
+  a fully silent window). (3) The port had zero logging on the scan
+  path. FIX: `scan_sync_with_progress` in `cr-engine/src/scanner.rs`
+  — the eager `collect_files` became the lazy `walk_files` (per
+  folder: sorted files first riding `progress` + the processor, then
+  the subfolders — the same order), the per-file decision extracted
+  as `process_file`; the cr-ui Book Scanner worker ships walked paths
+  over a second mpsc channel, the 100 ms pump drains it and moves
+  `SCAN_LOCATION` (the Tasks line now tracks the walk) and CR_TRACEs
+  "scan progress: N files, current '<path>'"; the worker traces
+  "scan start '<location>'" and "scan done '<location>' in X ms:
+  added/updated/moved/removed". Gate: `progress_fires_per_walked_file`
+  (cr-engine) + scanrefresh_probe re-run green; 485 tests. USER TEST
+  = run `CR_TRACE=1 comicrust 2>&1 | tee scan.log` from a terminal,
+  scan the folder, then either the Tasks line visibly advances or
+  the scan.log tail pins WHERE it sits (a stalled "current '<file>'"
+  = the suspect file; no progress lines at all = the walk/mount is
+  the slow part; "scan done" + a landing = a different bug).
 - **SCAN-LAND VIEW REFRESH FIXED (2026-09-10, commit 2fe9b23; user
   report: fresh config + a watch folder + File ▸ Scan Book Folders →
   the Tasks dialog showed the "Scanning '<path>'" line but the

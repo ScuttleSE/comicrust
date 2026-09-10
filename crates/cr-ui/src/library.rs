@@ -12,9 +12,7 @@ use cr_core::database::comic_database::OpenStatus;
 use cr_core::model::comic_book::ComicBook;
 use cr_core::xml::scalar::{CrDateTime, CrGuid};
 use cr_engine::library::Library;
-use cr_engine::scanner::{
-    refresh_file_info, refresh_file_info_basic, scan_sync, ScanItem, ScanResult,
-};
+use cr_engine::scanner::{refresh_file_info, refresh_file_info_basic, ScanItem, ScanResult};
 use glib::ControlFlow;
 use gtk4::glib;
 
@@ -324,7 +322,7 @@ fn scan_async(location: String, done: impl FnOnce(ScanResult) + 'static) {
     start_scan_worker(location, done);
 }
 
-/// Takes the book storage, runs `scan_sync` on a worker thread, and
+/// Takes the book storage, runs the scan on a worker thread, and
 /// pumps the result back onto the UI thread.
 fn start_scan_worker(location: String, done: impl FnOnce(ScanResult) + 'static) {
     let library = session();
@@ -335,18 +333,35 @@ fn start_scan_worker(location: String, done: impl FnOnce(ScanResult) + 'static) 
         std::mem::take(&mut lib.database_mut().books)
     };
     let items = [ScanItem {
-        location,
+        location: location.clone(),
         all: true,
         remove_missing: false,
         force_refresh_info: false,
     }];
     let now = CrDateTime::now();
     let (tx, rx) = std::sync::mpsc::channel::<(Vec<ComicBook>, ScanResult)>();
+    // The per-file progress (the C# `currentLocation` per walked
+    // file, ComicScanner.cs:125): the worker ships paths, the pump
+    // moves SCAN_LOCATION — the Tasks "Scanning" line tracks the walk.
+    let (ptx, prx) = std::sync::mpsc::channel::<String>();
     std::thread::Builder::new()
         .name("Book Scanner".into())
         .spawn(move || {
             let mut storage = books;
-            let result = scan_sync(&mut storage, &items, &now);
+            let t = std::time::Instant::now();
+            crate::trace::trace(format!("scan start '{location}'"));
+            let result =
+                cr_engine::scanner::scan_sync_with_progress(&mut storage, &items, &now, &mut |f| {
+                    let _ = ptx.send(f.to_string_lossy().into_owned());
+                });
+            crate::trace::trace(format!(
+                "scan done '{location}' in {} ms: added {} updated {} moved {} removed {}",
+                t.elapsed().as_millis(),
+                result.added.len(),
+                result.updated.len(),
+                result.moved.len(),
+                result.removed.len()
+            ));
             let _ = tx.send((storage, result));
         })
         .expect("spawn Book Scanner");
@@ -354,7 +369,29 @@ fn start_scan_worker(location: String, done: impl FnOnce(ScanResult) + 'static) 
     // The once-completion callback rides an Option (the pump closure
     // is FnMut — it cannot move `done` out).
     let mut done = Some(done);
+    let mut seen_files: usize = 0;
     glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
+        // Drain the progress channel first: the last walked file
+        // becomes the live scan location (the Tasks line + the
+        // CR_TRACE evidence). Bind the recv result before matching —
+        // a `while let` scrutinee borrow lives through the loop body.
+        loop {
+            let progress = prx.try_recv();
+            match progress {
+                Ok(path) => {
+                    seen_files += 1;
+                    SCAN_LOCATION.with(|cell| *cell.borrow_mut() = path);
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty)
+                | Err(std::sync::mpsc::TryRecvError::Disconnected) => break,
+            }
+        }
+        if seen_files > 0 {
+            let current = SCAN_LOCATION.with(|cell| cell.borrow().clone());
+            crate::trace::trace(format!(
+                "scan progress: {seen_files} files, current '{current}'"
+            ));
+        }
         // Bind the recv result before matching — a `while let`
         // scrutinee borrow lives through the loop body.
         let received = rx.try_recv();

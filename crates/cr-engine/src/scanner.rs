@@ -167,8 +167,10 @@ fn folder_action(path: &Path) -> (bool, bool) {
     )
 }
 
-/// `FileUtility.GetFiles`: files first, then (when recursing) subfolders.
-fn collect_files(folder: &Path, all: bool, out: &mut Vec<PathBuf>) {
+/// `FileUtility.GetFiles`: per folder — files first (sorted), then
+/// (when recursing) the subfolders; each file rides `progress` then
+/// `f` as it is met (the lazy generator shape).
+fn walk_files(folder: &Path, all: bool, progress: &mut dyn FnMut(&Path), f: &mut dyn FnMut(&Path)) {
     let (ignore_folder, ignore_sub_folders) = folder_action(folder);
     if ignore_folder {
         return;
@@ -180,13 +182,14 @@ fn collect_files(folder: &Path, all: bool, out: &mut Vec<PathBuf>) {
     entries.sort();
     for path in &entries {
         if path.is_file() {
-            out.push(path.clone());
+            progress(path);
+            f(path);
         }
     }
     if all && !ignore_sub_folders {
         for path in &entries {
             if path.is_dir() {
-                collect_files(path, all, out);
+                walk_files(path, all, progress, f);
             }
         }
     }
@@ -198,59 +201,32 @@ fn file_name_without_extension(path: &str) -> String {
 
 /// One synchronous scan pass over the storage (`ComicScanner.
 /// ScanFolderQueue` body). `storage` is the database book list.
-pub fn scan_sync(storage: &mut Vec<ComicBook>, items: &[ScanItem], now: &CrDateTime) -> ScanResult {
+/// `progress` fires per walked file BEFORE the scan decision — the
+/// C# sets `currentLocation = Path.GetFullPath(scanFile)` per file
+/// (ComicScanner.cs:125), which is what the Tasks dialog's Scanning
+/// line tracks. The walk interleaves with the processing (the C#
+/// `FileUtility.GetFiles` is a lazy generator, FileUtility.cs:63) —
+/// a huge tree shows progress during the walk, not only after.
+pub fn scan_sync_with_progress(
+    storage: &mut Vec<ComicBook>,
+    items: &[ScanItem],
+    now: &CrDateTime,
+    progress: &mut dyn FnMut(&Path),
+) -> ScanResult {
     let mut result = ScanResult::default();
     for item in items {
-        let mut files: Vec<PathBuf> = Vec::new();
         let root = PathBuf::from(&item.location);
         if root.is_file() {
-            files.push(root.clone());
+            progress(&root);
+            if let Some(file_str) = root.to_str() {
+                process_file(storage, &mut result, file_str, item, now);
+            }
         } else if root.is_dir() {
-            collect_files(&root, item.all, &mut files);
-        }
-        for file in files {
-            let Some(file_str) = file.to_str() else {
-                continue;
-            };
-            // The C# factory rejects files no reader supports.
-            if !is_comic_file(&file) {
-                continue;
-            }
-            // 1. Already stored: refresh the file info.
-            if let Some(book) = storage
-                .iter_mut()
-                .find(|b| b.file_path.eq_ignore_ascii_case(file_str))
-            {
-                refresh_file_info(book);
-                if item.force_refresh_info {
-                    // ForceRefresh re-reads the info chain; the port
-                    // refreshes size/times/page count (info reload is
-                    // the cr-io info chain and stays a caller concern).
+            walk_files(&root, item.all, progress, &mut |file: &Path| {
+                if let Some(file_str) = file.to_str() {
+                    process_file(storage, &mut result, file_str, item, now);
                 }
-                result.updated.push(file_str.to_string());
-                continue;
-            }
-            // 2. Renamed/recovered file: same name+size, stored file gone.
-            let name = file_name_without_extension(file_str);
-            let size = std::fs::metadata(&file)
-                .map(|m| m.len() as i64)
-                .unwrap_or(0);
-            let candidate = storage.iter_mut().find(|b| {
-                file_name_without_extension(&b.file_path) == name
-                    && b.file_size == size
-                    && !std::fs::metadata(&b.file_path).is_ok()
             });
-            if let Some(book) = candidate {
-                let old = book.file_path.clone();
-                book.file_path = file_str.to_string();
-                refresh_file_info(book);
-                result.moved.push((old, file_str.to_string()));
-                continue;
-            }
-            // 3. New book.
-            let book = create_book(file_str, now);
-            result.added.push(file_str.to_string());
-            storage.push(book);
         }
     }
     // AutoRemove: drop linked books whose file vanished.
@@ -266,6 +242,61 @@ pub fn scan_sync(storage: &mut Vec<ComicBook>, items: &[ScanItem], now: &CrDateT
         *storage = kept;
     }
     result
+}
+
+/// [`scan_sync_with_progress`] without the per-file callback.
+pub fn scan_sync(storage: &mut Vec<ComicBook>, items: &[ScanItem], now: &CrDateTime) -> ScanResult {
+    scan_sync_with_progress(storage, items, now, &mut |_| {})
+}
+
+/// The per-file scan decision (`OnProcessScannedFile`): refresh an
+/// already-stored book, recover a moved file, or add a new book.
+fn process_file(
+    storage: &mut Vec<ComicBook>,
+    result: &mut ScanResult,
+    file_str: &str,
+    item: &ScanItem,
+    now: &CrDateTime,
+) {
+    // The C# factory rejects files no reader supports.
+    if !is_comic_file(Path::new(file_str)) {
+        return;
+    }
+    // 1. Already stored: refresh the file info.
+    if let Some(book) = storage
+        .iter_mut()
+        .find(|b| b.file_path.eq_ignore_ascii_case(file_str))
+    {
+        refresh_file_info(book);
+        if item.force_refresh_info {
+            // ForceRefresh re-reads the info chain; the port
+            // refreshes size/times/page count (info reload is
+            // the cr-io info chain and stays a caller concern).
+        }
+        result.updated.push(file_str.to_string());
+        return;
+    }
+    // 2. Renamed/recovered file: same name+size, stored file gone.
+    let name = file_name_without_extension(file_str);
+    let size = std::fs::metadata(file_str)
+        .map(|m| m.len() as i64)
+        .unwrap_or(0);
+    let candidate = storage.iter_mut().find(|b| {
+        file_name_without_extension(&b.file_path) == name
+            && b.file_size == size
+            && !std::fs::metadata(&b.file_path).is_ok()
+    });
+    if let Some(book) = candidate {
+        let old = book.file_path.clone();
+        book.file_path = file_str.to_string();
+        refresh_file_info(book);
+        result.moved.push((old, file_str.to_string()));
+        return;
+    }
+    // 3. New book.
+    let book = create_book(file_str, now);
+    result.added.push(file_str.to_string());
+    storage.push(book);
 }
 
 /// Scans directly into a `ComicDatabase` (the `ComicBookFactory.Storage`
@@ -357,5 +388,29 @@ mod tests {
         let mut storage = Vec::new();
         scan_sync(&mut storage, &items, &now);
         assert_eq!(storage.len(), 1, "subfolder must be ignored");
+    }
+
+    #[test]
+    fn progress_fires_per_walked_file() {
+        let dir = temp_dir("progress");
+        std::fs::write(dir.join("a.cbz"), b"z").unwrap();
+        std::fs::write(dir.join("notes.txt"), b"skip").unwrap();
+        let now = CrDateTime::min_value();
+        let items = vec![ScanItem {
+            location: dir.to_string_lossy().into(),
+            all: true,
+            remove_missing: false,
+            force_refresh_info: false,
+        }];
+        let mut storage = Vec::new();
+        let mut seen: Vec<String> = Vec::new();
+        scan_sync_with_progress(&mut storage, &items, &now, &mut |f| {
+            seen.push(f.to_string_lossy().into_owned())
+        });
+        // Both walked files (pre-filter — the C# currentLocation
+        // tracks the walk, not the decisions).
+        assert_eq!(seen.len(), 2, "{seen:?}");
+        assert!(seen.iter().any(|p| p.ends_with("a.cbz")));
+        assert!(seen.iter().any(|p| p.ends_with("notes.txt")));
     }
 }
