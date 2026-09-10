@@ -73,6 +73,39 @@ Update this section at the **end of every work session**. The next agent must kn
 
 ### State summary
 
+- **GROUP-HEADER CRASH FIXED + GROUPER PERSISTENCE (2026-09-10,
+  commit 9606815; user report: "when I grouped by series it
+  segfaulted" — `RefCell already borrowed` at item_view.rs:1068 in
+  the pressed trampoline → `panic in a function that cannot unwind`
+  → SIGABRT):** two bugs. (1) The crash — the header hit read
+  `state.borrow()` inside the `if let` SCRUTINEE ARGUMENT
+  (`if let Some(group) = hit_group_header(&state.borrow().layout,
+  ...)`), so the borrow lived to the END of the if/else (the
+  edition-2021 temporaries lesson) and the branch's `borrow_mut`
+  panicked; the recorded sweep regex (`if (self|view)\.state\.borrow`)
+  does NOT match this shape — the borrow hides in a scrutinee call
+  ARGUMENT. FIX: both press paths (single + double click) now run
+  through `ItemView::handle_group_header_press` with every borrow
+  hoisted into `let` blocks; the gesture routes through it. NEW
+  PROBE SEAM: `probe_group_press(n, x, y)` + `probe_group_arrow_zone`
+  drive the REAL press paths headlessly — browserbar_probe D3 gates
+  the label select (expanded), the arrow toggle, the n=2
+  expand-all-no-panic, and toggle-groups (the arrow zone is recorded
+  by the DRAW — the gate settles one paint cycle before reading it;
+  a zero zone = inconclusive). (2) FOUND THROUGH THE GATE:
+  `ItemView::set_books` carried only the FILTER across the book-set
+  swap and silently dropped the GROUPER — every list refresh (scan
+  landing, duplicate, rating commit) ungrouped the view (the C#
+  keeps `ItemGrouper` on the ItemView across `FillBookList`); the
+  port now re-applies it like the filter. Recorded deviation: the
+  C# selects a COLLAPSED group's items on a label click (its headers
+  keep the items attached — `GroupHeaderInformation.Items`); the
+  port's collapsed groups drop their items
+  (`ViewState::rebuild` pushes `items: Vec::new()`), so that select
+  is a no-op — a model-level difference left as-is (a restructure to
+  C#-shape = collapsed items in display_order with layout-skipped
+  placement). 489 tests; fmt/clippy green; browserbar (D2+D3),
+  statusbar (J/J2), commands, scanrefresh (A-F) probes green.
 - **GROUP HEADERS + SCAN LAMP + THUMB OPTION (2026-09-10, commit
   fc748a7; user batch: group headers/collapse in all views, the
   animated scan lamp with Cancel scan, the thumbnail question, an
@@ -712,7 +745,7 @@ Update this section at the **end of every work session**. The next agent must kn
   build.rs watches the git ref), the progressive fill + Abort
   Scanning (778bd44), the no-glitch incremental append (8822981),
   and the graceful exit mid-scan + the signal handling + the
-  done-before-pop fix (707950f). HEAD = fc748a7, 489 tests.
+  done-before-pop fix (707950f). HEAD = 9606815, 489 tests.
   Open gaps: WebComicProvider, PDF/DjVu writers, the LICENSE file
   (Phase 11 packaging gap), the T14 per-list sort deviation,
   HEIF/AVIF decode. The Phase 11 PIPELINE is COMPLETE (the v0.0.283
