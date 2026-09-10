@@ -17,5 +17,6 @@ pub mod config;
 pub mod cv;
 pub mod engine;
 pub mod fnameparser;
+pub mod log;
 pub mod matching;
 pub mod utils;

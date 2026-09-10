@@ -70,6 +70,10 @@ enum UiRequest {
     Progress {
         text: String,
     },
+    /// A scrape-path error the user should see (the run continues).
+    Error {
+        text: String,
+    },
     Done {
         scraped: usize,
         skipped: usize,
@@ -168,6 +172,12 @@ impl ScrapeUi for ChannelUi {
             ProgressKind::IssueList => format!("Loading issues… {}%", (value * 100.0) as u32),
         };
         let _ = self.tx.send(UiRequest::Progress { text });
+    }
+
+    fn error(&mut self, message: &str) {
+        let _ = self.tx.send(UiRequest::Error {
+            text: message.to_string(),
+        });
     }
 }
 
@@ -618,6 +628,10 @@ pub fn show_scrape_dialog(
                 }
                 UiRequest::Progress { text } => {
                     progress_pump.set_text(&text);
+                }
+                UiRequest::Error { text } => {
+                    progress_pump.set_text(&format!("⚠ {text}"));
+                    crate::trace::trace(format!("scrape error: {text}"));
                 }
                 UiRequest::Done {
                     scraped,

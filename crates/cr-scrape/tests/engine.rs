@@ -64,6 +64,10 @@ impl ScrapeUi for FakeUi {
         self.scraped.push(book.clone());
     }
     fn progress(&mut self, _kind: cr_scrape::engine::ProgressKind, _value: f64) {}
+
+    fn error(&mut self, message: &str) {
+        self.no_issues.push(format!("ERROR: {message}"));
+    }
 }
 
 fn engine(config: Configuration) -> ScrapeEngine {
@@ -177,15 +181,15 @@ fn a_skip_tagged_book_never_reaches_the_database() {
 fn interactive_scrape_lands_the_details() {
     let search_body = r#"{
       "number_of_total_results": 1, "number_of_page_results": 1, "status_code": 1,
-      "results": {"volume": [
+      "results": [
         {"id": 40501, "name": "Batman", "start_year": "1940",
          "publisher": {"id": 10, "name": "DC Comics"},
-         "count_of_issues": 900, "image": {"small_url": ""}}]}}"#;
+         "count_of_issues": 900, "image": {"small_url": ""}}]}"#;
     let issues_body = r#"{
         "number_of_total_results": 1, "number_of_page_results": 1, "status_code": 1,
-        "results": {"issue": [
+        "results": [
             {"id": 400011, "issue_number": "12", "name": "The Court of Owls",
-             "image": {"small_url": ""}}]}}"#;
+             "image": {"small_url": ""}}]}"#;
     let details_body = r#"{
         "number_of_total_results": 1, "status_code": 1,
         "results": {"id": "400011", "name": "The Court of Owls",
@@ -292,15 +296,15 @@ fn thumbnails_install_for_fileless_books() {
     let cover_url = format!("{base}/cover.png");
     let search_body = r#"{
       "number_of_total_results": 1, "number_of_page_results": 1, "status_code": 1,
-      "results": {"volume": [
+      "results": [
         {"id": 40501, "name": "Batman", "start_year": "1940",
          "publisher": {"id": 10, "name": "DC Comics"},
-         "count_of_issues": 900, "image": {"small_url": ""}}]}}"#;
+         "count_of_issues": 900, "image": {"small_url": ""}}]}"#;
     let issues_body = r#"{
         "number_of_total_results": 1, "number_of_page_results": 1, "status_code": 1,
-        "results": {"issue": [
+        "results": [
             {"id": 400011, "issue_number": "12", "name": "The Court of Owls",
-             "image": {"small_url": ""}}]}}"#;
+             "image": {"small_url": ""}}]}"#;
     let details_body = format!(
         r#"{{
         "number_of_total_results": 1, "status_code": 1,

@@ -99,6 +99,9 @@ pub trait ScrapeUi: Send {
     /// Search progress (matches so far, expected calls) and issue-
     /// list progress (0..1).
     fn progress(&mut self, kind: ProgressKind, value: f64);
+    /// A scrape-path error the user should see (a query failure, an
+    /// API status). The run continues — the book resolves later.
+    fn error(&mut self, message: &str);
 }
 
 /// The scrape result counts (the C# `__status`: [scraped, skipped]).
@@ -189,6 +192,12 @@ impl ScrapeEngine {
             scraped: 0,
             remaining: books.len(),
         };
+        crate::log::debug(&format!(
+            "scrape starts: {} book(s), fast-rescrape {}, autochoose {}",
+            books.len(),
+            self.config.fast_rescrape,
+            self.config.autochoose_series
+        ));
 
         // 1. wrap the books and sort: the fast rescrapes first, then
         //    by series + padded issue number (the C# __sort_books)
@@ -219,6 +228,9 @@ impl ScrapeEngine {
             }
 
             let caption = books[i].data.caption();
+            crate::log::debug(&format!(
+                "scraping next book: {caption} (delayed: {delayed})"
+            ));
             ui.book_started(&caption, books.len() - i);
 
             // 2b. keep scraping that book until scraped, skipped, or
@@ -297,6 +309,7 @@ impl ScrapeEngine {
 
         // 1. the skip tag: silently skip
         if book.data.skip_tagged() {
+            crate::log::debug("found the CVDBSKIP tag: skipping the book");
             return BookStatus::Skipped;
         }
 
@@ -304,13 +317,22 @@ impl ScrapeEngine {
         //    previous scrape
         if fast_rescrape {
             if let Some(issue_ref) = book.issue_ref() {
+                crate::log::debug(&format!(
+                    "rescraping: the book identifies its issue as {issue_ref}"
+                ));
                 let slow = self.config.advanced().update_rating;
                 match cv.query_issue(&issue_ref, slow) {
                     Ok(issue) => {
                         self.apply_issue(book, &issue, cv, ui);
                         return BookStatus::Scraped;
                     }
-                    Err(_) => return BookStatus::Delayed, // retry manually later
+                    Err(err) => {
+                        crate::log::debug(&format!("fast rescrape of {issue_ref} failed: {err}"));
+                        ui.error(&format!(
+                            "Rescrape query failed: {err} (the book retries at the end)"
+                        ));
+                        return BookStatus::Delayed; // retry manually later
+                    }
                 }
             }
         }
@@ -338,6 +360,7 @@ impl ScrapeEngine {
 
         // 3c. the auto-scrape algorithm (cover matching)
         if !run.cache.contains_key(&key) && autoscrape {
+            crate::log::debug("trying to match the book automatically\u{2026}");
             match self.auto_match(book, cv) {
                 Ok(Some(series_ref)) => {
                     run.cache
@@ -370,8 +393,18 @@ impl ScrapeEngine {
                 &mut || self.cancelled(),
             ) {
                 Ok(refs) => refs,
-                Err(_) => return BookStatus::Unscraped,
+                Err(err) => {
+                    crate::log::debug(&format!(
+                        "series search for \u{201C}{terms}\u{201D} failed: {err}"
+                    ));
+                    ui.error(&format!("Series search failed: {err}"));
+                    return BookStatus::Unscraped;
+                }
             };
+            crate::log::debug(&format!(
+                "search for \u{201C}{terms}\u{201D}: {} series found",
+                refs.len()
+            ));
             if refs.is_empty() {
                 return BookStatus::Unscraped; // the search dialog retries manually
             }
@@ -443,6 +476,7 @@ impl ScrapeEngine {
                     run.cache.remove(&key); // back to the series dialog
                 }
                 IssueResult::Ok(issue_ref) => {
+                    crate::log::debug(&format!("issue resolved: {issue_ref}"));
                     self.chosen
                         .lock()
                         .unwrap()
@@ -453,7 +487,15 @@ impl ScrapeEngine {
                             self.apply_issue(book, &issue, cv, ui);
                             return BookStatus::Scraped;
                         }
-                        Err(_) => return BookStatus::Delayed,
+                        Err(err) => {
+                            crate::log::debug(&format!(
+                                "issue details for {issue_ref} failed: {err}"
+                            ));
+                            ui.error(&format!(
+                                "Issue query failed: {err} (the book retries at the end)"
+                            ));
+                            return BookStatus::Delayed;
+                        }
                     }
                 }
             }

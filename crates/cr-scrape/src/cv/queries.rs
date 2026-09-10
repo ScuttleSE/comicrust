@@ -197,7 +197,10 @@ impl Cv {
             .get("number_of_total_results")
             .and_then(Value::as_i64)
             .unwrap_or(0);
-        if num_results <= 0 || dom.pointer("/results/volume").is_none() {
+        crate::log::debug(&format!(
+            "search \u{201C}{terms}\u{201D} page 1: {num_results} total results"
+        ));
+        if num_results <= 0 || result_items(&dom, "volume").is_empty() {
             return Ok(refs);
         }
         let num_results = num_results as usize;
@@ -331,7 +334,15 @@ impl Cv {
                 .and_then(Value::as_i64)
                 .unwrap_or(0);
             if num_results == 1 {
-                return Ok(dom.pointer("/results/issue").map(issue_to_issueref));
+                // JSON: `results` is the issue object itself (the C#
+                // XML dom had the `results.issue` wrapper).
+                let found = match dom.get("results") {
+                    Some(single) if single.get("id").is_some() => Some(issue_to_issueref(single)),
+                    _ => result_items(&dom, "issue")
+                        .first()
+                        .map(|i| issue_to_issueref(i)),
+                };
+                return Ok(found);
             }
             if num_results != 0 || attempts > 3 {
                 return Ok(None);
@@ -448,15 +459,28 @@ fn parse_year_trailing(s: &str) -> Option<i32> {
     s.trim_end_matches(['-', ' ']).parse::<i32>().ok()
 }
 
-fn collect_volumes(dom: &Value, refs: &mut Vec<SeriesRef>, seen: &mut BTreeSet<i64>, max: usize) {
-    let Some(volumes) = dom.pointer("/results/volume") else {
-        return;
+/// The result items of a list endpoint. The JSON API returns
+/// `results` as a FLAT array (search, the filtered issues list); the
+/// C# XML dom wrapped the elements in a container (`results.volume`).
+/// Both shapes parse — the flat array is the real one.
+fn result_items<'a>(dom: &'a Value, key: &str) -> Vec<&'a Value> {
+    let results = match dom.get("results") {
+        Some(results) => results,
+        None => return Vec::new(),
     };
-    let list: Vec<&Value> = match volumes {
+    match results {
         Value::Array(items) => items.iter().collect(),
-        single => vec![single],
-    };
-    for volume in list {
+        // the XML-shape tolerance: {"results": {"volume": [...]}}
+        wrapper => match wrapper.get(key) {
+            Some(Value::Array(items)) => items.iter().collect(),
+            Some(single) => vec![single],
+            None => Vec::new(),
+        },
+    }
+}
+
+fn collect_volumes(dom: &Value, refs: &mut Vec<SeriesRef>, seen: &mut BTreeSet<i64>, max: usize) {
+    for volume in result_items(dom, "volume") {
         if refs.len() >= max {
             break;
         }
@@ -469,14 +493,7 @@ fn collect_volumes(dom: &Value, refs: &mut Vec<SeriesRef>, seen: &mut BTreeSet<i
 }
 
 fn collect_issues(dom: &Value, refs: &mut Vec<IssueRef>, seen: &mut BTreeSet<i64>) {
-    let Some(issues) = dom.pointer("/results/issue") else {
-        return;
-    };
-    let list: Vec<&Value> = match issues {
-        Value::Array(items) => items.iter().collect(),
-        single => vec![single],
-    };
-    for issue in list {
+    for issue in result_items(dom, "issue") {
         let reference = issue_to_issueref(issue);
         if seen.insert(reference.issue_key) {
             refs.push(reference);

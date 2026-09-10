@@ -116,10 +116,24 @@ impl CvClient {
         for (k, v) in query {
             request = request.query(k, v);
         }
-        let response = request
-            .call()
-            .map_err(|e| CvError::Connection(url.clone(), transport_message(&e)))?;
+        // the request line without the API key
+        let logged: Vec<String> = query
+            .iter()
+            .map(|(k, v)| {
+                if *k == "api_key" {
+                    format!("api_key=<redacted len={}>", v.len())
+                } else {
+                    format!("{k}={v}")
+                }
+            })
+            .collect();
+        crate::log::debug(&format!("GET {path}?{}", logged.join("&")));
+        let response = request.call().map_err(|e| {
+            crate::log::debug(&format!("GET {path} transport error: {e}"));
+            CvError::Connection(url.clone(), transport_message(&e))
+        })?;
         let status = response.status();
+        crate::log::debug(&format!("GET {path} -> HTTP {status}"));
         if status != 200 {
             return Err(CvError::Connection(
                 url,
@@ -156,13 +170,22 @@ impl CvClient {
                 "comicvine query returned an empty document: {path}"
             )));
         }
-        let dom: Value = serde_json::from_str(&body)
-            .map_err(|e| CvError::BadResponse(format!("bad JSON from {path}: {e}")))?;
+        let dom: Value = serde_json::from_str(&body).map_err(|e| {
+            crate::log::debug(&format!(
+                "GET {path} bad JSON: {e} (body starts {})",
+                &body[..body.len().min(120)]
+            ));
+            CvError::BadResponse(format!("bad JSON from {path}: {e}"))
+        })?;
         let status = dom
             .get("status_code")
             .and_then(Value::as_i64)
             .ok_or_else(|| CvError::BadResponse("empty comicvine dom: see bug 194".to_string()))?;
         if status != 1 {
+            crate::log::debug(&format!(
+                "GET {path} API status {status}: {}",
+                dom.get("error").and_then(Value::as_str).unwrap_or("?")
+            ));
             return Err(CvError::Status(
                 status,
                 dom.get("error").and_then(Value::as_str).map(String::from),
@@ -186,17 +209,28 @@ impl CvClient {
     fn get_bytes_once(&self, url: &str) -> Option<Vec<u8>> {
         self.wait_until_ready();
         let ua = self.user_agent();
-        let response = self.agent.get(url).set("User-Agent", &ua).call().ok()?;
+        let response = self
+            .agent
+            .get(url)
+            .set("User-Agent", &ua)
+            .call()
+            .map_err(|e| {
+                crate::log::debug(&format!("GET image {url} transport error: {e}"));
+                e
+            })
+            .ok()?;
         if response.status() != 200 {
+            crate::log::debug(&format!("GET image {url} -> HTTP {}", response.status()));
             return None;
         }
         let mut bytes = Vec::new();
         use std::io::Read;
-        response
+        let read = response
             .into_reader()
             .take(64 * 1024 * 1024)
             .read_to_end(&mut bytes)
             .ok()?;
+        crate::log::debug(&format!("GET image {url} -> {read} bytes"));
         Some(bytes)
     }
 

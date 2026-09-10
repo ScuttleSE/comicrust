@@ -66,24 +66,24 @@ const SEARCH_PAGE_1: &str = r#"{
   "error": "OK", "limit": 100, "offset": 0,
   "number_of_page_results": 2, "number_of_total_results": 2,
   "status_code": 1,
-  "results": {"volume": [
+  "results": [
     {"id": 40501, "name": "Batman", "start_year": "1940",
      "publisher": {"id": 10, "name": "DC Comics"},
      "count_of_issues": 900, "image": {"small_url": "http://img/batman-small.jpg"}},
     {"id": 40502, "name": "Batman &amp; Robin", "start_year": "2009- ",
      "publisher": null, "count_of_issues": 25, "image": {}}
-  ]}
+  ]
 }"#;
 
 const ISSUE_LIST: &str = r#"{
   "error": "OK", "number_of_total_results": 2, "number_of_page_results": 1,
   "status_code": 1,
-  "results": {"issue": [
+  "results": [
     {"id": 400001, "issue_number": "1", "name": "The Crossing",
      "image": {"small_url": "http://img/i1-small.jpg"}},
     {"id": 400011, "issue_number": "1½", "name": "½ Special",
      "image": {"medium_url": "http://img/i11-medium.jpg"}}
-  ]},
+  ],
   "detail": "ok"
 }"#;
 
@@ -251,8 +251,8 @@ fn issue_ref_lookup_with_alternate_number_ladder() {
         status: 200,
         body: r#"{
           "error": "OK", "number_of_total_results": 1, "status_code": 1,
-          "results": {"issue": {"id": 400011, "issue_number": "0½",
-                                "name": "Half", "image": {}}}
+          "results": [{"id": 400011, "issue_number": "0½",
+                       "name": "Half", "image": {}}]
         }"#,
     }];
     let (base, _guard) = serve(CANNED);
@@ -398,4 +398,29 @@ fn cleanup_terms_follow_the_python_rules() {
         cleanup_search_terms("O'Malley, Part #2!", false),
         "o'malley part 2"
     );
+}
+
+#[test]
+fn the_xml_shaped_results_wrapper_still_parses() {
+    // Tolerance: the C# XML dom wrapped the list elements
+    // (`results.volume`); a canned response in that shape parses the
+    // same way (the flat array is the real JSON form).
+    static CANNED: &[Canned] = &[Canned {
+        path: "/search/",
+        status: 200,
+        body: r#"{
+          "error": "OK", "number_of_total_results": 1, "status_code": 1,
+          "results": {"volume": {"id": 40501, "name": "Wrapped",
+                                 "start_year": "1940", "count_of_issues": 900,
+                                 "publisher": {"id": 10, "name": "DC Comics"},
+                                 "image": {}}}
+        }"#,
+    }];
+    let (base, _guard) = serve(CANNED);
+    let mut cv = client_for(&base);
+    let refs = cv
+        .query_series_refs("wrapped", &[], 100, &mut no_cancel)
+        .unwrap();
+    assert_eq!(refs.len(), 1);
+    assert_eq!(refs[0].series_name(), "Wrapped");
 }
