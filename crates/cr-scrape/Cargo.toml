@@ -1,0 +1,14 @@
+[package]
+name = "cr-scrape"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+cr-core = { path = "../cr-core" }
+fancy-regex = "0.14"
+regex = "1"
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+
+[lints]
+workspace = true

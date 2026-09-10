@@ -442,6 +442,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "cr-scrape"
+version = "0.1.0"
+dependencies = [
+ "cr-core",
+ "fancy-regex",
+ "regex",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "cr-ui"
 version = "0.1.0"
 dependencies = [
