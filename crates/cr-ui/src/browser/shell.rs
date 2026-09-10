@@ -1690,7 +1690,18 @@ impl BrowserShell {
         (groups, collapsed)
     }
 
-    /// The grid's selection length (the probe).
+    /// Probe: a REAL group-header press through the click path
+    /// (the group-collapse crash gate).
+    pub fn state_group_press(&self, n: u32, x: f64, y: f64) -> bool {
+        self.state.item_view.probe_group_press(n, x, y)
+    }
+
+    /// Probe: the recorded arrow zone of one group header.
+    pub fn state_group_arrow_zone(&self, group: usize) -> (f64, f64, f64, f64) {
+        self.state.item_view.probe_group_arrow_zone(group)
+    }
+
+    /// Probe: the grid's selection length.
     pub fn state_grid_selection_len(&self) -> usize {
         self.state.item_view.selection_len()
     }

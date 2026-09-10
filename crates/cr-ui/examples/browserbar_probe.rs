@@ -283,6 +283,61 @@ fn main() {
             }
         });
 
+        // D3. The group-header CLICK paths through the REAL press
+        //     handler (the group-by-series crash: the double-click
+        //     borrow_mut collided with the scrutinee borrow). The
+        //     arrow press toggles ONE group; the double-click (n=2)
+        //     expands/collapses ALL; the label selects the group's
+        //     items.
+        glib::timeout_add_local(std::time::Duration::from_millis(2800), {
+            let shell = shell.clone();
+            move || {
+                shell.state_dispatch_param("win.group-by", "Series");
+                // The arrow zone is RECORDED BY THE DRAW — settle one
+                // paint cycle before reading it.
+                glib::timeout_add_local(std::time::Duration::from_millis(400), {
+                    let shell = shell.clone();
+                    move || {
+                        let (ax, ay, aw, ah) = shell.state_group_arrow_zone(0);
+                        if aw <= 0.0 {
+                            let groups = shell.state_grid_groups();
+                            println!(
+                                "D3 arrow-zone not recorded groups={groups:?} (draw pending) — gate inconclusive"
+                            );
+                            return glib::ControlFlow::Break;
+                        }
+                        let cx = ax + aw / 2.0;
+                        let cy = ay + ah / 2.0;
+                        // The label zone (right of the arrow) while
+                        // EXPANDED: selects the group's items (group 0
+                        // holds 1 book). The collapsed-group label
+                        // select is a recorded deviation (the port's
+                        // collapsed groups drop their items; the C#
+                        // keeps them attached).
+                        let lx = ax + aw + 30.0;
+                        let hit3 = shell.state_group_press(1, lx, cy);
+                        let selected = shell.state_grid_selection_len();
+                        // Single press on the arrow: ONE group collapses.
+                        let hit1 = shell.state_group_press(1, cx, cy);
+                        let (_, collapsed_one) = shell.state_grid_groups();
+                        // Double-click second press on the arrow: ALL groups
+                        // (direction = the header's post-first-click state —
+                        // group 0 is collapsed now, so this EXPANDS all).
+                        let hit2 = shell.state_group_press(2, cx, cy);
+                        let (_, collapsed_after_dbl) = shell.state_grid_groups();
+                        shell.state_dispatch("win.toggle-groups");
+                        let (_, collapsed_all) = shell.state_grid_groups();
+                        shell.state_dispatch_param("win.group-by", "");
+                        println!(
+                            "D3 hit3={hit3} selected={selected} hit1={hit1} collapsed-one={collapsed_one} hit2={hit2} collapsed-after-dbl={collapsed_after_dbl} collapsed-all={collapsed_all} (expect true/1/true/1/true/0/3 — the n=2 press must NOT panic)"
+                        );
+                        glib::ControlFlow::Break
+                    }
+                });
+                glib::ControlFlow::Break
+            }
+        });
+
         // E. The Duplicate List drop: the folder rows, then the
         //    duplicate lands in the chosen folder.
         glib::timeout_add_local(std::time::Duration::from_millis(2900), {

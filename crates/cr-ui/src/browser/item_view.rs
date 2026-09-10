@@ -451,19 +451,26 @@ impl ItemView {
         ItemViewWidgets { scroller, view: iv }
     }
 
-    /// Replaces the book set (a library selection change).
+    /// Replaces the book set (a library selection change). The
+    /// FILTER and the GROUPER survive the swap (the C# keeps both on
+    /// the ItemView across refreshes — `FillBookList` re-creates the
+    /// items, never the view config).
     pub fn set_books(&self, books: Vec<ComicBook>) {
         let width = self.state.borrow().config.view_width;
         let t0 = std::time::Instant::now();
         {
             let mut s = self.state.borrow_mut();
             let filter = s.view.filter_clone();
+            let grouper = s.view.grouper();
             let t1 = std::time::Instant::now();
             s.view = ViewState::new(books);
             crate::trace::trace(format!("set_books: ViewState::new {:?}", t1.elapsed()));
             let t2 = std::time::Instant::now();
             s.view.set_filter(filter);
             crate::trace::trace(format!("set_books: set_filter {:?}", t2.elapsed()));
+            if grouper.is_some() {
+                s.view.set_grouper(grouper);
+            }
             s.thumbs.clear();
             s.queued.clear();
             s.captions.clear();
@@ -753,6 +760,74 @@ impl ItemView {
             .unwrap_or((x, y))
     }
 
+    /// The group-header press paths (`OnMouseClickGroupHeader` +
+    /// `OnMouseDoubleClickGroupHeader`): `n == 1` — the ARROW toggles
+    /// that group's collapse, the LABEL selects ALL the group's items;
+    /// `n > 1` — the ARROW expands/collapses ALL groups (the
+    /// direction = the clicked header's post-first-click state), the
+    /// LABEL toggles that group. Returns false when the point is not
+    /// on a header (the caller falls through to the item hit).
+    ///
+    /// The header hit reads through a HOISTED borrow: a borrow inside
+    /// the `if let` SCRUTINEE lives until the end of the whole
+    /// if/else statement (the edition-2021 temporaries lesson) and
+    /// collided with the `borrow_mut` below — the group-by-series
+    /// double-click crash.
+    fn handle_group_header_press(
+        state: &Rc<RefCell<ItemViewState>>,
+        canvas: &DrawingArea,
+        n: u32,
+        x: f64,
+        y: f64,
+    ) -> bool {
+        let group_hit = {
+            let s = state.borrow();
+            hit_group_header(&s.layout, x, y)
+        };
+        let Some(group) = group_hit else {
+            return false;
+        };
+        if n > 1 {
+            let (arrow, collapsed) = {
+                let s = state.borrow();
+                (
+                    hit_group_arrow(&s.layout, group, x, y),
+                    s.view.groups()[group].collapsed,
+                )
+            };
+            let mut s = state.borrow_mut();
+            if arrow {
+                s.view.set_all_collapsed(!collapsed);
+            } else {
+                s.view.set_collapsed(group, !collapsed);
+            }
+            s.relayout(canvas.width() as f64);
+            drop(s);
+            update_size_request(state, canvas);
+            canvas.queue_draw();
+            return true;
+        }
+        let mut s = state.borrow_mut();
+        if hit_group_arrow(&s.layout, group, x, y) {
+            let collapsed = !s.view.groups()[group].collapsed;
+            s.view.set_collapsed(group, collapsed);
+            s.relayout(canvas.width() as f64);
+            drop(s);
+            update_size_request(state, canvas);
+            canvas.queue_draw();
+            return true;
+        }
+        s.view.select_group_items(group);
+        s.band = None;
+        drop(s);
+        // The selection callback re-enters the shell (the status
+        // panels) — fire OUTSIDE the state borrow (the RefCell
+        // double-borrow lesson).
+        state.borrow().notify_selection();
+        canvas.queue_draw();
+        true
+    }
+
     /// The Detail header right-click (the column chooser; the C#
     /// `autoHeaderContextMenuStrip_Opening`).
     pub fn connect_header_context<F: Fn(f64, f64) + 'static>(&self, f: F) {
@@ -795,6 +870,25 @@ impl ItemView {
     /// (the context-menu probe).
     pub fn probe_context(&self, x: f64, y: f64) {
         Self::emit_context(&self.state, &self.canvas, x, y);
+    }
+
+    /// The probe path: a REAL left press (`n` = 1 single, 2 the
+    /// double-click's second press) through the shared group-header
+    /// handler. Returns whether the point hit a group header.
+    pub fn probe_group_press(&self, n: u32, x: f64, y: f64) -> bool {
+        Self::handle_group_header_press(&self.state, &self.canvas, n, x, y)
+    }
+
+    /// The recorded arrow zone of one group header (the draw records
+    /// it — zero until the first paint).
+    pub fn probe_group_arrow_zone(&self, group: usize) -> (f64, f64, f64, f64) {
+        let s = self.state.borrow();
+        s.layout
+            .group_headers
+            .iter()
+            .find(|g| g.group == group)
+            .map(|g| (g.arrow.x, g.arrow.y, g.arrow.w, g.arrow.h))
+            .unwrap_or((0.0, 0.0, 0.0, 0.0))
     }
 
     /// Takes the keyboard focus onto the grid (the window-activation
@@ -1051,30 +1145,12 @@ impl ItemView {
             // click-to-focus — the Phase 3 lesson).
             canvas.grab_focus();
             if n != 1 {
-                // Double-click on a group header (`OnMouseDoubleClick
-                // GroupHeader`): the ARROW expands/collapses ALL
-                // groups — the direction is the clicked header's
-                // post-first-click state (the single click of the
-                // sequence already toggled it); the LABEL toggles
-                // that group again.
-                if let Some(group) = hit_group_header(&state.borrow().layout, x, y) {
-                    let (arrow, collapsed) = {
-                        let s = state.borrow();
-                        (
-                            hit_group_arrow(&s.layout, group, x, y),
-                            s.view.groups()[group].collapsed,
-                        )
-                    };
-                    let mut s = state.borrow_mut();
-                    if arrow {
-                        s.view.set_all_collapsed(!collapsed);
-                    } else {
-                        s.view.set_collapsed(group, !collapsed);
-                    }
-                    s.relayout(canvas.width() as f64);
-                    drop(s);
-                    update_size_request(&state, &canvas);
-                    canvas.queue_draw();
+                // The group-header double-click first (`OnMouseDoubleClick
+                // GroupHeader`): the ARROW expands/collapses ALL groups —
+                // the direction is the clicked header's post-first-click
+                // state (the single click of the sequence already toggled
+                // it); the LABEL toggles that group again.
+                if Self::handle_group_header_press(&state, &canvas, n as u32, x, y) {
                     return;
                 }
                 // Double-click: a header separator auto-sizes the
@@ -1109,28 +1185,16 @@ impl ItemView {
                     return;
                 }
             }
-            let mut s = state.borrow_mut();
+            let s = state.borrow_mut();
             let hit = hit_test(&s.layout, x, y);
-            if let Some(group) = hit_group_header(&s.layout, x, y) {
-                // `OnMouseClickGroupHeader`: the ARROW toggles the
-                // group's collapse; the LABEL selects ALL the group's
-                // items (no collapse).
-                if hit_group_arrow(&s.layout, group, x, y) {
-                    let collapsed = !s.view.groups()[group].collapsed;
-                    s.view.set_collapsed(group, collapsed);
-                    s.relayout(canvas.width() as f64);
-                    drop(s);
-                    update_size_request(&state, &canvas);
-                    canvas.queue_draw();
-                    return;
-                }
-                s.view.select_group_items(group);
-                s.band = None;
-                drop(s);
-                state.borrow().notify_selection();
-                canvas.queue_draw();
+            drop(s);
+            // The group-header click (`OnMouseClickGroupHeader`): the
+            // ARROW toggles the group's collapse; the LABEL selects
+            // ALL the group's items (no collapse).
+            if Self::handle_group_header_press(&state, &canvas, n as u32, x, y) {
                 return;
             }
+            let mut s = state.borrow_mut();
             match hit {
                 Some(display) => {
                     let id = s.view.book_id(display);
