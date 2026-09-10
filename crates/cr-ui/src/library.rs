@@ -19,6 +19,9 @@ use gtk4::glib;
 /// One queued scan request: the location and the completion callback.
 type QueuedScan = (String, Box<dyn FnOnce(ScanResult)>);
 
+/// The shell's per-batch view refresh (a Weak capture lives inside).
+type ScanViewHook = Box<dyn Fn(&[ComicBook])>;
+
 thread_local! {
     static SESSION: RefCell<Option<Rc<RefCell<Library>>>> = const { RefCell::new(None) };
     /// One scan at a time (the C# scan queue): requests arriving
@@ -35,8 +38,11 @@ thread_local! {
         const { RefCell::new(None) };
     /// The per-batch view refresh (the C# scan events update the live
     /// views): the shell installs it, the scan pump fires it when new
-    /// books land mid-scan.
-    static SCAN_VIEW_HOOK: RefCell<Option<Box<dyn Fn()>>> = const { RefCell::new(None) };
+    /// books land mid-scan. The slice carries the tick's new books
+    /// (the incremental append); an EMPTY slice means the landing
+    /// (the full refresh).
+    static SCAN_VIEW_HOOK: RefCell<Option<ScanViewHook>> =
+        const { RefCell::new(None) };
     /// The user settings (`Program.Settings` static). The GTK code
     /// reaches it through [`settings`].
     static SETTINGS: RefCell<Option<Rc<RefCell<cr_core::settings::Settings>>>> =
@@ -45,14 +51,14 @@ thread_local! {
 
 /// Installs the per-batch scan view refresh (the shell does this at
 /// creation; the hook must not own the shell — use a Weak capture).
-pub fn set_scan_view_hook(hook: Option<Box<dyn Fn()>>) {
+pub fn set_scan_view_hook(hook: Option<ScanViewHook>) {
     SCAN_VIEW_HOOK.with(|cell| *cell.borrow_mut() = hook);
 }
 
-fn fire_scan_view_hook() {
+fn fire_scan_view_hook(batch: &[ComicBook]) {
     SCAN_VIEW_HOOK.with(|cell| {
         if let Some(hook) = cell.borrow().as_ref() {
-            hook();
+            hook(batch);
         }
     });
 }
@@ -469,16 +475,17 @@ fn start_scan_worker(location: String, done: impl FnOnce(ScanResult) + 'static) 
         // ONE view refresh per tick after the whole drain (a per-batch
         // refresh is O(N) per batch — O(N²) per tick starved the main
         // loop at 10k books, measured). Done merges the final storage.
-        let mut landed = false;
+        let mut tick_batch: Vec<ComicBook> = Vec::new();
         loop {
             let received = rx.try_recv();
             match received {
                 Ok(ScanWorkerMsg::Batch(batch)) => {
-                    let mut lib = library.borrow_mut();
-                    lib.database_mut().books.extend(batch);
-                    landed = true;
+                    tick_batch.extend(batch);
                 }
                 Ok(ScanWorkerMsg::Done(books, result)) => {
+                    // Late batches ride the final storage — the landing
+                    // merge replaces the appends wholesale.
+                    tick_batch.clear();
                     {
                         let mut lib = library.borrow_mut();
                         lib.database_mut().books = books;
@@ -493,7 +500,7 @@ fn start_scan_worker(location: String, done: impl FnOnce(ScanResult) + 'static) 
                     SCAN_IN_FLIGHT.with(|cell| *cell.borrow_mut() = false);
                     SCAN_LOCATION.with(|cell| cell.borrow_mut().clear());
                     SCAN_STOP.with(|cell| *cell.borrow_mut() = None);
-                    fire_scan_view_hook();
+                    fire_scan_view_hook(&[]);
                     // The queued requests run one at a time, in arrival
                     // order (the C# scan queue).
                     let next = SCAN_QUEUE.with(|q| q.borrow_mut().pop());
@@ -517,10 +524,14 @@ fn start_scan_worker(location: String, done: impl FnOnce(ScanResult) + 'static) 
                 Err(std::sync::mpsc::TryRecvError::Empty) => break,
             }
         }
-        if landed {
+        if !tick_batch.is_empty() {
+            {
+                let mut lib = library.borrow_mut();
+                lib.database_mut().books.extend(tick_batch.iter().cloned());
+            }
             // The session borrow is dropped — the hook may evaluate
             // the library.
-            fire_scan_view_hook();
+            fire_scan_view_hook(&tick_batch);
         }
         ControlFlow::Continue
     });
@@ -878,6 +889,27 @@ pub fn rename_list(id: &CrGuid, name: &str) {
         base.name = Some(name.to_string());
         l.mark_dirty();
     }
+}
+
+/// Is this list id the Library root (the all-books list)? The scan
+/// batches take the incremental-append path only for it.
+pub fn is_library_list(id: &CrGuid) -> bool {
+    fn walk(items: &[cr_core::database::list_items::ComicListItem], id: &CrGuid) -> bool {
+        items.iter().any(|i| {
+            if i.base().id == *id {
+                return matches!(i, cr_core::database::list_items::ComicListItem::Library(_));
+            }
+            match i {
+                cr_core::database::list_items::ComicListItem::Folder(folder) => {
+                    walk(&folder.items, id)
+                }
+                _ => false,
+            }
+        })
+    }
+    let lib = session();
+    let l = lib.borrow();
+    walk(&l.database().comic_lists, id)
 }
 
 /// `RemoveListOrFolder` — the Library root is protected.

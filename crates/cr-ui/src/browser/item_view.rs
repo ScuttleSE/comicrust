@@ -473,6 +473,33 @@ impl ItemView {
         self.notify_and_redraw();
     }
 
+    /// Appends books WITHOUT dropping the per-book caches (the scan
+    /// batches: existing books' display data is unchanged — thumbs,
+    /// captions and tile/detail texts stay; only the new books
+    /// compute on first draw). `set_books` remains the full-swap path
+    /// (list switches, edits).
+    pub fn append_books(&self, batch: Vec<ComicBook>) {
+        if batch.is_empty() {
+            return;
+        }
+        let width = self.state.borrow().config.view_width;
+        let t0 = std::time::Instant::now();
+        let added = batch.len();
+        {
+            let mut s = self.state.borrow_mut();
+            let filter = s.view.filter_clone();
+            s.view.append_books(batch, filter);
+            s.band = None;
+            s.relayout(width);
+        }
+        self.update_size_request();
+        self.notify_and_redraw();
+        crate::trace::trace(format!(
+            "append_books: +{added} books in {:?}",
+            t0.elapsed()
+        ));
+    }
+
     pub fn connect_activate<F: Fn(&CrGuid) + 'static>(&self, f: F) {
         self.state.borrow_mut().on_activate = Some(Box::new(f));
     }

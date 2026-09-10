@@ -230,6 +230,15 @@ impl ViewState {
         self.rebuild();
     }
 
+    /// Appends books and re-applies the filter in ONE rebuild (the
+    /// scan batches — the C# ItemView inserts new items incrementally
+    /// instead of replacing the set).
+    pub fn append_books(&mut self, batch: Vec<ComicBook>, filter: Option<Matcher>) {
+        self.books.extend(batch);
+        self.filter = filter;
+        self.rebuild();
+    }
+
     pub fn set_filter(&mut self, filter: Option<Matcher>) {
         self.filter = filter;
         self.rebuild();

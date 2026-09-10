@@ -332,6 +332,25 @@ impl ShellState {
         self.stack.set_visible_child_name("quickopen");
     }
 
+    /// The scan pump's incremental append: returns false when the view
+    /// does not show the Library root (the caller falls back to the
+    /// full list refresh — smart lists re-evaluate on it).
+    fn append_scan_batch(&self, batch: &[ComicBook]) -> bool {
+        let id = *self.current_list.borrow();
+        let Some(id) = id else {
+            return false;
+        };
+        if !library::is_library_list(&id) {
+            return false;
+        }
+        let selected = self.item_view.selection_ids();
+        self.item_view.append_books(batch.to_vec());
+        if !selected.is_empty() {
+            self.item_view.reselect(&selected);
+        }
+        true
+    }
+
     fn refresh_view_from_list(&self) {
         let id = *self.current_list.borrow();
         if let Some(id) = id {
@@ -1512,13 +1531,18 @@ impl BrowserShell {
         // The scan pump's per-batch view refresh: books appear in the
         // Library as the scan walks (the C# scan events update the
         // live view per file — `ComicBookCollection.Add` →
-        // `OnBookAdded`). A Weak capture — the hook never owns the
-        // shell.
+        // `OnBookAdded`). An EMPTY slice = the landing (the full
+        // refresh); a batch = the incremental append (the per-book
+        // caches survive — a full set_books rebuild every tick was
+        // the "glitching" report). A Weak capture — the hook never
+        // owns the shell.
         library::set_scan_view_hook(Some(Box::new({
             let state = Rc::downgrade(state);
-            move || {
+            move |batch: &[ComicBook]| {
                 if let Some(sh) = state.upgrade() {
-                    sh.refresh_view_from_list();
+                    if batch.is_empty() || !sh.append_scan_batch(batch) {
+                        sh.refresh_view_from_list();
+                    }
                     sh.sync_enabled();
                 }
             }

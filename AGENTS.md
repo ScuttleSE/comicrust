@@ -73,6 +73,27 @@ Update this section at the **end of every work session**. The next agent must kn
 
 ### State summary
 
+- **SCAN-GLITCH FIXED — INCREMENTAL APPEND (2026-09-10, user report
+  "while it scans it periodically redraws the entire view — looks
+  like the app is glitching"):** the progressive-fill hook ran the
+  FULL refresh per tick (100 ms) — `set_books` clears EVERY per-book
+  cache (thumbs/captions/detail/tile) and rebuilds the whole
+  ViewState; at 10k books that is hundreds of ms of recompute per
+  tick, 10×/s — the visible glitch. FIX: an incremental append path —
+  `ViewState::append_books(batch, filter)` (extend + ONE rebuild) +
+  `ItemView::append_books` (the set_books shape WITHOUT the cache
+  clears — the C# ItemView inserts items incrementally) + the hook
+  payload: `ScanViewHook = Fn(&[ComicBook])`, the pump collects the
+  tick's batches and fires ONCE with them, `&[]` = the landing (the
+  full refresh); `ShellState::append_scan_batch` takes the append
+  path only when the view shows the Library root
+  (`library::is_library_list` — smart lists keep the full refresh);
+  the selection reselects after the rebuild. MEASURED (release,
+  scanrefresh_probe, 10k books): the mid-scan tick is 0.7-4.7 ms
+  (`append_books: +N books in T ms` trace) — was a full-rebuild
+  storm. 486 tests; fmt/clippy green; the probe gates A-E green.
+  USER TEST = scan a big folder on the Library view: books stream
+  in WITHOUT the periodic full redraw.
 - **PROGRESSIVE SCAN FILL + SCAN ABORT (2026-09-10, user decisions
   "we have to populate as we scan" + "what happens if the scan is
   aborted — will the whole scan need to be re-done?"):** the C# adds
