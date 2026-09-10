@@ -73,6 +73,24 @@ Update this section at the **end of every work session**. The next agent must kn
 
 ### State summary
 
+- **FROZEN VERSION MARKER FIXED (2026-09-10, commit 7f4d0c0; user
+  alarm "why does it say starting build 0.0.233"):** the binary the
+  user ran WAS current (built 2026-09-10 18:54, HEAD 305/306) — only
+  the version STRING was stale. ROOT CAUSE: `cr-ui/build.rs` emitted
+  `cargo:rerun-if-env-changed=VERSION` and nothing else; ANY
+  rerun-if-* directive disables cargo's default "rerun when any
+  package file changes", so the build script's output (the stamped
+  `COMICRUST_VERSION`) was cached since its last full rebuild at
+  commit 233 (2026-09-04) and rode along through 70+ commits of
+  incremental rebuilds. FIX: `watch_head()` declares the git-dir
+  refs as build-script inputs (`git rev-parse --absolute-git-dir`
+  → rerun-if-changed on HEAD + packed-refs + refs/heads/<branch>;
+  missing files watch fine — a later creation counts as a change).
+  Measured: the next build after the fix commit stamps 0.0.307, a
+  no-op rebuild keeps it. LESSON: a build script that emits any
+  rerun-if-* must declare EVERY input that can move its output —
+  including the git state a dev build reads. The marker is now the
+  honest "which binary" proof it was built to be.
 - **SCAN PROGRESS + LOGGING (2026-09-10, follow-up to the scan-land
   fix; user report: "it says scanning but no progress, the library
   totally empty, as if the app is doing nothing — logging before you
