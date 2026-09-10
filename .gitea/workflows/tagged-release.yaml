@@ -103,6 +103,7 @@ jobs:
           cp -r crates/cr-ui/assets/papers dist/assets/papers
           cp -r crates/cr-ui/assets/backgrounds dist/assets/backgrounds
           cp -r crates/cr-ui/assets/icons dist/assets/icons
+          cp -r crates/cr-ui/assets/scan dist/assets/scan
           tar -czf "$asset" -C dist comicrust assets
           sha256sum "$asset" > "${asset}.sha256"
           echo "packaged: $asset"

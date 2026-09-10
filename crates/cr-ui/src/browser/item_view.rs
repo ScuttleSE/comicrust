@@ -35,8 +35,8 @@ use cr_engine::image_pool::ImagePool;
 
 use super::columns::{self, Column};
 use super::layout::{
-    self, hit_group_header, hit_test, page_step_display, relative_item, visible_items, ItemLayout,
-    ItemViewMode, LayoutConfig, Rect,
+    self, hit_group_arrow, hit_group_header, hit_test, page_step_display, relative_item,
+    visible_items, ItemLayout, ItemViewMode, LayoutConfig, Rect,
 };
 use super::view_state::ViewState;
 
@@ -209,7 +209,15 @@ impl ItemViewState {
     /// `front_cover_thumbnail_key` (the C# `GetThumbnailKey`): the
     /// custom thumbnail for fileless books, the cover page index for
     /// file-backed ones.
+    ///
+    /// With `GenerateThumbnailsOnDemand` OFF (a port addition — the
+    /// C# always generates on demand), only already-cached covers
+    /// load; the rest stay placeholders until File ▸ Generate Cover
+    /// Thumbnails backfills the cache.
     fn queue_visible_thumbs(&mut self, window: Rect) {
+        let on_demand = crate::library::settings()
+            .borrow()
+            .generate_thumbnails_on_demand;
         let wanted: Vec<(CrGuid, cr_core::model::comic_book::ComicBook)> =
             visible_items(&self.layout, window)
                 .filter_map(|item| {
@@ -221,9 +229,14 @@ impl ItemViewState {
                 })
                 .collect();
         for (id, book) in wanted {
+            let key = cr_engine::image_pool::front_cover_thumbnail_key(&book);
+            if !on_demand && !self.pool.thumbnail_cached(&key) {
+                // The cover stays a placeholder; not marked queued so
+                // a later backfill lands on the next draw.
+                continue;
+            }
             self.queued.insert(id);
             self.pending_thumbs += 1;
-            let key = cr_engine::image_pool::front_cover_thumbnail_key(&book);
             let pool = Arc::clone(&self.pool);
             let tx = self.thumb_tx.clone();
             self.pool.add_thumb_to_queue(key.clone(), None, move |k| {
@@ -845,6 +858,45 @@ impl ItemView {
         self.canvas.queue_draw();
     }
 
+    /// `ItemView.ToggleGroups` (the Collapse/Expand all Groups
+    /// command): the first group's state decides the direction.
+    pub fn toggle_all_groups(&self) {
+        let width = self.state.borrow().config.view_width;
+        {
+            let mut s = self.state.borrow_mut();
+            s.view.toggle_groups();
+            s.relayout(width);
+        }
+        self.update_size_request();
+        self.canvas.queue_draw();
+    }
+
+    /// `AreGroupsVisible` (the Views-menu enable gate): a grouper
+    /// is set.
+    pub fn has_groups(&self) -> bool {
+        self.state.borrow().view.grouper().is_some()
+    }
+
+    /// Whether ANY group is collapsed (the probe).
+    pub fn any_group_collapsed(&self) -> bool {
+        self.state.borrow().view.any_collapsed()
+    }
+
+    /// The group + collapsed counts (the probe gates).
+    pub fn group_count(&self) -> usize {
+        self.state.borrow().view.groups().len()
+    }
+
+    pub fn collapsed_count(&self) -> usize {
+        self.state
+            .borrow()
+            .view
+            .groups()
+            .iter()
+            .filter(|g| g.collapsed)
+            .count()
+    }
+
     /// Reveals/hides a Detail column (the header column chooser —
     /// `HeaderMenuItemClicked`).
     pub fn toggle_column_visible(&self, id: i32) {
@@ -999,6 +1051,32 @@ impl ItemView {
             // click-to-focus — the Phase 3 lesson).
             canvas.grab_focus();
             if n != 1 {
+                // Double-click on a group header (`OnMouseDoubleClick
+                // GroupHeader`): the ARROW expands/collapses ALL
+                // groups — the direction is the clicked header's
+                // post-first-click state (the single click of the
+                // sequence already toggled it); the LABEL toggles
+                // that group again.
+                if let Some(group) = hit_group_header(&state.borrow().layout, x, y) {
+                    let (arrow, collapsed) = {
+                        let s = state.borrow();
+                        (
+                            hit_group_arrow(&s.layout, group, x, y),
+                            s.view.groups()[group].collapsed,
+                        )
+                    };
+                    let mut s = state.borrow_mut();
+                    if arrow {
+                        s.view.set_all_collapsed(!collapsed);
+                    } else {
+                        s.view.set_collapsed(group, !collapsed);
+                    }
+                    s.relayout(canvas.width() as f64);
+                    drop(s);
+                    update_size_request(&state, &canvas);
+                    canvas.queue_draw();
+                    return;
+                }
                 // Double-click: a header separator auto-sizes the
                 // column first (`OnDoubleClickColumnHeaderSeperator`),
                 // otherwise it activates the focused book.
@@ -1034,11 +1112,22 @@ impl ItemView {
             let mut s = state.borrow_mut();
             let hit = hit_test(&s.layout, x, y);
             if let Some(group) = hit_group_header(&s.layout, x, y) {
-                let collapsed = !s.view.groups()[group].collapsed;
-                s.view.set_collapsed(group, collapsed);
-                s.relayout(canvas.width() as f64);
+                // `OnMouseClickGroupHeader`: the ARROW toggles the
+                // group's collapse; the LABEL selects ALL the group's
+                // items (no collapse).
+                if hit_group_arrow(&s.layout, group, x, y) {
+                    let collapsed = !s.view.groups()[group].collapsed;
+                    s.view.set_collapsed(group, collapsed);
+                    s.relayout(canvas.width() as f64);
+                    drop(s);
+                    update_size_request(&state, &canvas);
+                    canvas.queue_draw();
+                    return;
+                }
+                s.view.select_group_items(group);
+                s.band = None;
                 drop(s);
-                update_size_request(&state, &canvas);
+                state.borrow().notify_selection();
                 canvas.queue_draw();
                 return;
             }
@@ -1456,21 +1545,49 @@ fn draw_frame(ctx: &cairo::Context, state: &Rc<RefCell<ItemViewState>>, window: 
     s.queue_visible_thumbs(window);
     let queued_thumbs = s.pump_needed();
 
-    // Group headers (Top layout).
-    for gh in &s.layout.group_headers {
-        if !gh.rect.intersects(&window) {
-            continue;
-        }
-        let group = &s.view.groups()[gh.group];
+    // Group headers (all modes while a grouper is set — the C#
+    // `IsTopLayout` covers Detail too). The draw RECORDS the arrow
+    // zone (`GroupHeaderInformation.ArrowBounds`) for the click
+    // split: arrow toggles, label selects the group's items.
+    let headers: Vec<(usize, Rect, bool, String, usize)> = s
+        .layout
+        .group_headers
+        .iter()
+        .filter(|gh| gh.rect.intersects(&window))
+        .map(|gh| {
+            let g = &s.view.groups()[gh.group];
+            (
+                gh.group,
+                gh.rect,
+                g.collapsed,
+                g.caption.clone(),
+                g.items.len(),
+            )
+        })
+        .collect();
+    for (gi, rect, collapsed, caption, count) in &headers {
         ctx.set_source_rgb(pal.window_bg.0, pal.window_bg.1, pal.window_bg.2);
-        ctx.rectangle(gh.rect.x, gh.rect.y, gh.rect.w, gh.rect.h);
+        ctx.rectangle(rect.x, rect.y, rect.w, rect.h);
         ctx.fill().ok();
         ctx.set_source_rgb(pal.fg.0, pal.fg.1, pal.fg.2);
         ctx.select_font_face("Sans", cairo::FontSlant::Normal, cairo::FontWeight::Normal);
         ctx.set_font_size(13.0 * 1.15);
-        let collapsed_mark = if group.collapsed { "▸ " } else { "▾ " };
-        let text = format!("{collapsed_mark}{} ({})", group.caption, group.items.len());
-        ctx.move_to(gh.rect.x + 8.0, gh.rect.y + gh.rect.h * 0.68);
+        let collapsed_mark = if *collapsed { "▸" } else { "▾" };
+        let arrow_w = ctx
+            .text_extents(collapsed_mark)
+            .map(|e| e.width())
+            .unwrap_or(12.0);
+        // The arrow zone: the glyph + slack (a small glyph in a tall
+        // strip — the full header height is the hit height, like the
+        // C# bitmap bounds).
+        if let Some(gh) = s.layout.group_headers.get_mut(*gi) {
+            gh.arrow = Rect::new(rect.x + 4.0, rect.y, arrow_w + 8.0, rect.h);
+        }
+        let baseline = rect.y + rect.h * 0.68;
+        ctx.move_to(rect.x + 8.0, baseline);
+        ctx.show_text(collapsed_mark).ok();
+        let text = format!("{caption} ({count})");
+        ctx.move_to(rect.x + 8.0 + arrow_w + 6.0, baseline);
         ctx.show_text(&text).ok();
     }
 

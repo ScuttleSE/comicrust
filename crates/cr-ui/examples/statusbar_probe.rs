@@ -236,6 +236,64 @@ let _shell = shell.clone();
             }
         });
 
+        // J. The scan lamp: the bundled ScanAnimation frames load,
+        //    the frame timer runs ONLY while the lamp shows, and the
+        //    click opens the Cancel-scan menu whose row fires the
+        //    abort hook (the user-requested menu; the C# lamp opens
+        //    Tasks and the abort lives in its scan row).
+        glib::timeout_add_local(std::time::Duration::from_millis(7300), {
+            let bar = bar.clone();
+            move || {
+                let frames = bar.scan_frame_count();
+                bar.update_lamps(true, false, false);
+                let visible_on = bar.lamp_visible("scan");
+                let anim_on = bar.scan_anim_running();
+                bar.update_lamps(false, false, false);
+                let anim_off = bar.scan_anim_running();
+                println!(
+                    "J frames={frames} scan-on={visible_on} anim-on={anim_on} anim-off={anim_off} (expect 4/true/true/false)"
+                );
+                glib::ControlFlow::Break
+            }
+        });
+        glib::timeout_add_local(std::time::Duration::from_millis(7700), {
+            let bar = bar.clone();
+            move || {
+                // The lamp must SHOW for the popover to map (an
+                // invisible parent cannot host a mapped popover).
+                bar.update_lamps(true, false, false);
+                let fired = std::rc::Rc::new(std::cell::Cell::new(false));
+                let flag = fired.clone();
+                bar.connect_cancel_scan(move || flag.set(true));
+                bar.click_scan_lamp();
+                // +250 keeps the reads clear of the 1 s activity
+                // poll (it re-hides an idle scan lamp on the second
+                // marks and unmaps the popover with it).
+                glib::timeout_add_local(std::time::Duration::from_millis(250), {
+                    let bar = bar.clone();
+                    let fired = fired.clone();
+                    move || {
+                        let menu_open = bar.cancel_menu_visible();
+                        bar.click_cancel_scan();
+                        glib::timeout_add_local(std::time::Duration::from_millis(150), {
+                            let bar = bar.clone();
+                            let fired = fired.clone();
+                            move || {
+                                println!(
+                                    "J2 menu-open={menu_open} menu-closed={} cancel-fired={} (expect true/true/true)",
+                                    !bar.cancel_menu_visible(),
+                                    fired.get(),
+                                );
+                                glib::ControlFlow::Break
+                            }
+                        });
+                        glib::ControlFlow::Break
+                    }
+                });
+                glib::ControlFlow::Break
+            }
+        });
+
         // I. The boot-configure re-entrancy gate (the 2026-09-06
         //    boot crash): a persisted workspace size applied, then
         //    a list selection — the selection notify syncs the
@@ -343,7 +401,7 @@ let _shell = shell.clone();
             });
         }
 
-        glib::timeout_add_local(std::time::Duration::from_millis(9500), {
+        glib::timeout_add_local(std::time::Duration::from_millis(10500), {
             let app = app.clone();
             move || {
                 println!("PROBE COMPLETE");

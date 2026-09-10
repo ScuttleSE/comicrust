@@ -21,11 +21,15 @@ use super::menubar::{self, Dropdown, MenuNode};
 use MenuNode::{Dyn, Item, Sep};
 
 /// The Views drop (`tbbView.DropDownItems`): the three view radios,
-/// the read-state filter radios, the comic-type checks, duplicates.
+/// the group expand/collapse command, the read-state filter radios,
+/// the comic-type checks, duplicates (the Designer order — the
+/// C# rows sit between Details and Show All).
 pub const VIEWS: &[MenuNode] = &[
     Item("T&humbnails", "win.view-mode::thumbnail", "", "ThumbView"),
     Item("&Tiles", "win.view-mode::tile", "", "TileView"),
     Item("&Details", "win.view-mode::detail", "", "DetailView"),
+    Sep,
+    Item("Collapse/Expand all Groups", "win.toggle-groups", "", ""),
     Sep,
     Item("Show All", "win.view-filter::all", "", ""),
     Item("Show not Read", "win.view-filter::unread", "", ""),

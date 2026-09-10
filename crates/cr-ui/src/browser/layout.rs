@@ -130,7 +130,11 @@ impl Default for LayoutConfig {
             column_widths: Vec::new(),
             header_visible: true,
             header_height: DEFAULT_HEADER_HEIGHT,
-            groups_visible: false,
+            // Headers show whenever a grouper is set (the C#
+            // `AreGroupsVisible` = IsTopLayout && GroupDisplayEnabled
+            // && ItemGrouper != null; GroupDisplayEnabled is always
+            // true for the browser and IsTopLayout covers Detail).
+            groups_visible: true,
             group_header_height: DEFAULT_GROUP_HEADER_HEIGHT,
         }
     }
@@ -151,6 +155,10 @@ pub struct ItemRect {
 pub struct GroupRect {
     pub group: usize,
     pub rect: Rect,
+    /// The expand/collapse arrow zone, RECORDED BY THE DRAW (the C#
+    /// `GroupHeaderInformation.ArrowBounds` — recorded in
+    /// `OnDrawGroupHeader` the same way). Zero until the first draw.
+    pub arrow: Rect,
 }
 
 /// The computed layout (`itemInfos` + `displayedGroups` +
@@ -202,8 +210,10 @@ pub fn header_visible(config: &LayoutConfig) -> bool {
     config.header_visible && config.mode == ItemViewMode::Detail
 }
 
-fn groups_visible(config: &LayoutConfig) -> bool {
-    config.groups_visible
+fn groups_visible(config: &LayoutConfig, view: &ViewState) -> bool {
+    // `ItemView.AreGroupsVisible`: the config switch AND a grouper
+    // (the C# `ItemGrouper != null`).
+    config.groups_visible && view.grouper().is_some()
 }
 
 /// `CalcItemPositions`: the flow layout over the expanded items with
@@ -250,10 +260,11 @@ pub fn compute(view: &ViewState, config: &LayoutConfig) -> ItemLayout {
 
     for (group_index, group) in view.groups().iter().enumerate() {
         // Group header: full-width strip before the group's items.
-        if groups_visible(config) {
+        if groups_visible(config, view) {
             layout.group_headers.push(GroupRect {
                 group: group_index,
                 rect: Rect::new(0.0, y, config.view_width, config.group_header_height),
+                arrow: Rect::default(),
             });
             y += config.group_header_height;
         }
@@ -358,13 +369,24 @@ pub fn hit_test(layout: &ItemLayout, x: f64, y: f64) -> Option<usize> {
         .map(|item| item.display)
 }
 
-/// The group header under a point (arrow/text toggle hit).
+/// The group header under a point.
 pub fn hit_group_header(layout: &ItemLayout, x: f64, y: f64) -> Option<usize> {
     layout
         .group_headers
         .iter()
         .find(|g| g.rect.contains(x, y))
         .map(|g| g.group)
+}
+
+/// `OnMouseClickGroupHeader`'s arrow test: the recorded arrow zone of
+/// ONE header (the C# `ArrowBounds.Contains(pt)`; the rest of the
+/// header strip is the label zone).
+pub fn hit_group_arrow(layout: &ItemLayout, group: usize, x: f64, y: f64) -> bool {
+    layout
+        .group_headers
+        .iter()
+        .find(|g| g.group == group)
+        .is_some_and(|g| g.arrow.contains(x, y))
 }
 
 /// `GetRelativeItem`: one step left/right = ±1 column, up/down =
@@ -570,6 +592,32 @@ mod tests {
         let placed: Vec<usize> = layout.items.iter().flatten().map(|i| i.display).collect();
         assert_eq!(placed.len(), 3, "the collapsed group's item is hidden");
         assert!(view.groups()[0].collapsed);
+    }
+
+    /// The C# `AreGroupsVisible` gates headers on a grouper
+    /// (`ItemGrouper != null`) and `IsTopLayout` covers Detail —
+    /// headers show in EVERY mode while grouped, never while
+    /// ungrouped.
+    #[test]
+    fn group_headers_show_in_detail_and_never_ungrouped() {
+        let mut view = ViewState::new((0..4).map(book).collect());
+        view.set_grouper(Some("Series"));
+        let config = LayoutConfig {
+            mode: ItemViewMode::Detail,
+            view_width: 600.0,
+            header_visible: true,
+            ..Default::default()
+        };
+        let layout = compute(&view, &config);
+        assert_eq!(layout.group_headers.len(), 4);
+        // The rows still place under their headers (the header is a
+        // full-width strip inside the flow).
+        let rows: Vec<&ItemRect> = layout.items.iter().flatten().collect();
+        assert_eq!(rows.len(), 4);
+        // Ungrouped: no headers at all.
+        let plain = ViewState::new((0..3).map(book).collect());
+        let layout = compute(&plain, &config);
+        assert!(layout.group_headers.is_empty());
     }
 
     #[test]

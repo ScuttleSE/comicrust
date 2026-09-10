@@ -255,6 +255,34 @@ fn main() {
             }
         });
 
+        // D2. Grouping (the user-reported gap): the Views drop
+        //     carries "Collapse/Expand all Groups"; headers show in
+        //     EVERY mode while a grouper is set, the action
+        //     collapses/expands all, and the command disables
+        //     without a grouper.
+        glib::timeout_add_local(std::time::Duration::from_millis(2700), {
+            let shell = shell.clone();
+            move || {
+                shell.state_dispatch_param("win.view-mode", "detail");
+                let ungrouped = shell.state_grid_groups();
+                let enabled_ungrouped = shell.state_action_enabled("toggle-groups");
+                shell.state_dispatch_param("win.group-by", "Series");
+                let (groups, collapsed0) = shell.state_grid_groups();
+                let enabled = shell.state_action_enabled("toggle-groups");
+                shell.state_dispatch("win.toggle-groups");
+                let (_, collapsed_all) = shell.state_grid_groups();
+                shell.state_dispatch("win.toggle-groups");
+                let (_, collapsed_back) = shell.state_grid_groups();
+                shell.state_dispatch_param("win.group-by", "");
+                let ungrouped_again = shell.state_grid_groups();
+                println!(
+                    "D2 ungrouped={ungrouped:?} enabled-ungrouped={enabled_ungrouped} groups={groups} collapsed0={collapsed0} enabled={enabled} collapsed-all={collapsed_all} collapsed-back={collapsed_back} ungrouped-again={ungrouped_again:?} (expect (1,0)/false/3/0/true/3/0/(1,0) — the ungrouped view keeps ONE empty-caption bucket, headers stay hidden; Alpha/Beta/Gamma are three series)"
+                );
+                shell.state_dispatch_param("win.view-mode", "thumbnail");
+                glib::ControlFlow::Break
+            }
+        });
+
         // E. The Duplicate List drop: the folder rows, then the
         //    duplicate lands in the chosen folder.
         glib::timeout_add_local(std::time::Duration::from_millis(2900), {

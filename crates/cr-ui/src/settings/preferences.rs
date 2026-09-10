@@ -486,6 +486,20 @@ fn build_advanced_page(settings: &SettingsRef) -> GtkBox {
     }
     page.append(&row);
 
+    // PORT ADDITION (no C# counterpart): the on-demand cover
+    // generation switch — off = the grid loads cached covers only,
+    // File ▸ Generate Cover Thumbnails backfills the cache.
+    page.append(&section_label("Thumbnails"));
+    let on_demand = CheckButton::with_label("Generate cover thumbnails on demand");
+    on_demand.set_active(settings.borrow().generate_thumbnails_on_demand);
+    {
+        let settings = Rc::clone(settings);
+        on_demand.connect_toggled(move |c| {
+            settings.borrow_mut().generate_thumbnails_on_demand = c.is_active();
+        });
+    }
+    page.append(&on_demand);
+
     page.append(&section_label("Book File Updates"));
     // The C# `OnIdle` chain: the extra/auto boxes enable only when
     // the main update box is checked, and uncheck with it.

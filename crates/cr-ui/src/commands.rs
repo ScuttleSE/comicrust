@@ -86,6 +86,9 @@ pub const COMMANDS: &[CommandSpec] = &[
     cmd("preferences", &["<Control>F9"]),
     // Browse
     cmd("toggle-browser", &["F3"]),
+    // The browser toolbar's Views drop carries it (`miExpandAllGroups`,
+    // enabled iff groups are visible); the C# binds no accelerator.
+    cmd("toggle-groups", &[]),
     cmd("view-library", &["F6"]),
     cmd("view-pages", &["F8"]),
     cmd("sidebar", &["<Shift>F6"]),

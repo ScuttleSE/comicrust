@@ -6,12 +6,21 @@
 //! `TrackCurrentPage`), the page count, and the thumbnail-size
 //! slider (`ToolStripThumbSize` → a GtkScale driving `SetItemSize`).
 //! The C# server-activity panel is omitted (no remote server).
+//!
+//! The scan lamp carries the C# `ScanAnimation.gif` frames (bundled
+//! as PNGs — the resx GIFs were not bundled in T2) animated by a
+//! timer while visible (WinForms animates status-label GIFs
+//! natively — a recorded deviation), and its click opens a small
+//! menu with "Cancel scan" (`library::abort_scan` — the C# lamp
+//! opens the Tasks dialog; the abort lives in the Tasks scan row
+//! there).
 
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
+use gtk4::gio;
 use gtk4::prelude::*;
-use gtk4::{glib, Image, Label, Scale};
+use gtk4::{gdk, glib, Image, Label, Popover, Scale};
 
 use crate::icon;
 
@@ -98,12 +107,25 @@ pub fn page_text(page: Option<usize>) -> String {
 type LampFn = Box<dyn Fn()>;
 type SliderFn = Box<dyn Fn(f64)>;
 
+/// The scan-lamp animation step (the GIF's frame cadence; WinForms
+/// plays the resx GIF at the file's own delays — the port steps
+/// evenly).
+const SCAN_ANIM_MS: u64 = 120;
+
 struct Inner {
     widget: gtk4::Box,
     info: Label,
     lamp_export: gtk4::Button,
     lamp_write: gtk4::Button,
     lamp_scan: gtk4::Button,
+    /// The animated scan frames (`ScanAnimation.gif` coalesced);
+    /// empty = the static PNG fallback.
+    scan_frames: Vec<gdk::Texture>,
+    scan_image: Image,
+    scan_frame: Cell<usize>,
+    anim: RefCell<Option<glib::SourceId>>,
+    scan_menu: Popover,
+    scan_cancel: gtk4::Button,
     book: Label,
     page_button: gtk4::Button,
     page_label: Label,
@@ -115,6 +137,7 @@ struct Inner {
     /// Scroll; GTK's value-changed fires for programmatic sets too).
     slider_syncing: Cell<bool>,
     on_lamp_click: RefCell<Option<LampFn>>,
+    on_cancel_scan: RefCell<Option<LampFn>>,
     on_page_click: RefCell<Option<LampFn>>,
     on_slider_change: RefCell<Option<SliderFn>>,
 }
@@ -147,6 +170,26 @@ fn icon_image(icon_name: &str) -> Image {
         Some(path) => Image::from_file(&path),
         None => Image::new(),
     }
+}
+
+/// The coalesced `ScanAnimation.gif` frames (the C# resx animation,
+/// extracted to `assets/scan/frame-N.png`; the resx GIFs were not
+/// bundled in T2). Stops at the first missing frame.
+fn scan_frames() -> Vec<gdk::Texture> {
+    let mut frames = Vec::new();
+    for i in 0..u32::MAX {
+        let Some(path) = crate::assets::find(&format!("scan/frame-{i}.png")) else {
+            break;
+        };
+        match gdk::Texture::from_file(&gio::File::for_path(&path)) {
+            Ok(texture) => frames.push(texture),
+            Err(_) => break,
+        }
+        if i > 63 {
+            break; // a run-loop guard, not a real bound
+        }
+    }
+    frames
 }
 
 /// One sunken panel (`Border3DStyle.SunkenOuter` → the
@@ -185,18 +228,45 @@ impl StatusBar {
         info.set_hexpand(true);
         widget.append(&info);
 
-        // 2. The activity lamps (image-only, hidden unless active,
-        //    click → the Tasks dialog from T13). The C# order in the
-        //    strip: backup, device-sync, export, read-info,
-        //    write-info, page, scan — the port shows the ported
-        //    activities: export, write, scan.
+        // 2. The activity lamps (image-only, hidden unless active).
+        //    The C# order in the strip: backup, device-sync, export,
+        //    read-info, write-info, page, scan — the port shows the
+        //    ported activities: export, write, scan. The scan lamp
+        //    animates the bundled ScanAnimation frames and opens the
+        //    Cancel-scan menu on click (the other lamps open Tasks).
         let lamp_export = lamp_button("Export.png", "Exporting comics...");
         let lamp_write = lamp_button("UpdateBig.png", "Writing info data to files...");
-        let lamp_scan = lamp_button("Scan.png", "A scan is running...");
+        let scan_frames = scan_frames();
+        let scan_image = match scan_frames.first() {
+            Some(texture) => Image::from_paintable(Some(texture)),
+            None => icon_image("Scan.png"),
+        };
+        let lamp_scan = gtk4::Button::new();
+        lamp_scan.set_has_frame(false);
+        lamp_scan.set_child(Some(&scan_image));
+        lamp_scan.set_tooltip_text(Some("A scan is running..."));
         for lamp in [&lamp_export, &lamp_write, &lamp_scan] {
             lamp.add_css_class("status-panel");
             widget.append(lamp);
         }
+
+        // The scan lamp's menu: one "Cancel scan" row (the C# abort
+        // lives in the Tasks dialog's scan row; the user asked for
+        // the direct menu on the lamp). Parented to the LAMP (the
+        // popover-before-toplevel lesson) and positioned above the
+        // bar.
+        let scan_menu = Popover::new();
+        scan_menu.set_position(gtk4::PositionType::Top);
+        scan_menu.set_autohide(true);
+        let menu_box = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+        menu_box.set_margin_top(4);
+        menu_box.set_margin_bottom(4);
+        menu_box.set_margin_start(2);
+        menu_box.set_margin_end(2);
+        let cancel = crate::widgets::menu_item_button("Cancel scan");
+        menu_box.append(&cancel);
+        scan_menu.set_child(Some(&menu_box));
+        scan_menu.set_parent(&lamp_scan);
 
         // 3. The data-source light (the local XML database is always
         //    connected — the C# `DataSourceConnected.png` state).
@@ -254,6 +324,12 @@ impl StatusBar {
                 lamp_export,
                 lamp_write,
                 lamp_scan,
+                scan_frames,
+                scan_image,
+                scan_frame: Cell::new(0),
+                anim: RefCell::new(None),
+                scan_menu,
+                scan_cancel: cancel,
                 book,
                 page_button,
                 page_label,
@@ -262,6 +338,7 @@ impl StatusBar {
                 slider,
                 slider_syncing: Cell::new(false),
                 on_lamp_click: RefCell::new(None),
+                on_cancel_scan: RefCell::new(None),
                 on_page_click: RefCell::new(None),
                 on_slider_change: RefCell::new(None),
             }),
@@ -271,17 +348,31 @@ impl StatusBar {
     }
 
     fn wire(&self) {
-        // The lamps all open the Tasks dialog (the C#
+        // The export/write lamps open the Tasks dialog (the C#
         // `ShowPendingTasks` handlers; the export lamp shows the
-        // errors dialog first — T13).
-        for lamp in [
-            &self.inner.lamp_export,
-            &self.inner.lamp_write,
-            &self.inner.lamp_scan,
-        ] {
+        // errors dialog first — T13). The SCAN lamp opens the
+        // Cancel-scan menu instead.
+        for lamp in [&self.inner.lamp_export, &self.inner.lamp_write] {
             let inner = Rc::clone(&self.inner);
             lamp.connect_clicked(move |_| {
                 if let Some(f) = inner.on_lamp_click.borrow().as_ref() {
+                    f();
+                }
+            });
+        }
+        {
+            let inner = Rc::clone(&self.inner);
+            self.inner.lamp_scan.connect_clicked(move |_| {
+                if !inner.scan_menu.is_visible() {
+                    inner.scan_menu.popup();
+                }
+            });
+        }
+        {
+            let inner = Rc::clone(&self.inner);
+            self.inner.scan_cancel.connect_clicked(move |_| {
+                inner.scan_menu.popdown();
+                if let Some(f) = inner.on_cancel_scan.borrow().as_ref() {
                     f();
                 }
             });
@@ -347,15 +438,59 @@ impl StatusBar {
         self.inner.slider_syncing.set(false);
     }
 
-    /// `UpdateActivityTimerTick`'s lamp visibility.
+    /// `UpdateActivityTimerTick`'s lamp visibility. The scan lamp
+    /// also starts/stops its frame animation with the visibility.
     pub fn update_lamps(&self, scan: bool, write: bool, export: bool) {
         self.inner.lamp_scan.set_visible(scan);
         self.inner.lamp_write.set_visible(write);
         self.inner.lamp_export.set_visible(export);
+        self.sync_scan_anim(scan);
+    }
+
+    /// The scan-lamp frame timer: runs ONLY while the lamp shows
+    /// (the C# animates the resx GIF natively whenever visible).
+    fn sync_scan_anim(&self, scan: bool) {
+        if scan && !self.inner.scan_frames.is_empty() {
+            let anim = self.inner.anim.borrow().is_some();
+            if anim {
+                return;
+            }
+            let inner = Rc::downgrade(&self.inner);
+            let source = glib::timeout_add_local(
+                std::time::Duration::from_millis(SCAN_ANIM_MS),
+                move || {
+                    let Some(inner) = inner.upgrade() else {
+                        return glib::ControlFlow::Break;
+                    };
+                    if !inner.lamp_scan.is_visible() || inner.scan_frames.is_empty() {
+                        *inner.anim.borrow_mut() = None;
+                        return glib::ControlFlow::Break;
+                    }
+                    let count = inner.scan_frames.len();
+                    let next = (inner.scan_frame.get() + 1) % count;
+                    inner.scan_frame.set(next);
+                    inner
+                        .scan_image
+                        .set_paintable(Some(&inner.scan_frames[next]));
+                    glib::ControlFlow::Continue
+                },
+            );
+            *self.inner.anim.borrow_mut() = Some(source);
+            return;
+        }
+        if let Some(source) = self.inner.anim.borrow_mut().take() {
+            source.remove();
+        }
     }
 
     pub fn connect_lamp_click<F: Fn() + 'static>(&self, f: F) {
         *self.inner.on_lamp_click.borrow_mut() = Some(Box::new(f));
+    }
+
+    /// The scan lamp's "Cancel scan" row (`library::abort_scan`
+    /// through the shell hook).
+    pub fn connect_cancel_scan<F: Fn() + 'static>(&self, f: F) {
+        *self.inner.on_cancel_scan.borrow_mut() = Some(Box::new(f));
     }
 
     pub fn connect_page_click<F: Fn() + 'static>(&self, f: F) {
@@ -399,6 +534,30 @@ impl StatusBar {
             "export" => self.inner.lamp_export.is_visible(),
             _ => false,
         }
+    }
+
+    /// The scan animation is running (a frame timer is live).
+    pub fn scan_anim_running(&self) -> bool {
+        self.inner.anim.borrow().is_some()
+    }
+
+    /// The scan-lamp frame count (the bundled animation).
+    pub fn scan_frame_count(&self) -> usize {
+        self.inner.scan_frames.len()
+    }
+
+    /// The probe path: the REAL scan-lamp click (the menu opens).
+    pub fn click_scan_lamp(&self) {
+        self.inner.lamp_scan.emit_clicked();
+    }
+
+    /// The probe path: the REAL "Cancel scan" row click.
+    pub fn click_cancel_scan(&self) {
+        self.inner.scan_cancel.emit_clicked();
+    }
+
+    pub fn cancel_menu_visible(&self) -> bool {
+        self.inner.scan_menu.is_visible()
     }
 
     pub fn locked_visible(&self) -> bool {

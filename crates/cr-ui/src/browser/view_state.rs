@@ -225,6 +225,48 @@ impl ViewState {
         self.rebuild();
     }
 
+    /// `ItemView.ExpandGroups(expand)`: every group becomes
+    /// `!expand` (collapsed = false when expand). One rebuild.
+    pub fn set_all_collapsed(&mut self, collapsed: bool) {
+        let mut changed = false;
+        for g in &mut self.groups {
+            if g.collapsed != collapsed {
+                g.collapsed = collapsed;
+                changed = true;
+            }
+        }
+        if changed {
+            self.rebuild();
+        }
+    }
+
+    /// `ItemView.ToggleGroups` (the Collapse/Expand all Groups
+    /// command): the FIRST group's state decides the direction —
+    /// collapsed first → expand all, else collapse all.
+    pub fn toggle_groups(&mut self) {
+        self.set_all_collapsed(!self.groups.first().is_some_and(|g| g.collapsed));
+    }
+
+    /// Whether ANY group is collapsed (the UI's enable/label hooks).
+    pub fn any_collapsed(&self) -> bool {
+        self.groups.iter().any(|g| g.collapsed)
+    }
+
+    /// `OnMouseClickGroupHeader` on the LABEL: select ALL the
+    /// group's items (the C# clears the selection, selects every
+    /// item, and focuses the first).
+    pub fn select_group_items(&mut self, group: usize) {
+        let Some(g) = self.groups.get(group) else {
+            return;
+        };
+        let ids: Vec<CrGuid> = g
+            .items
+            .iter()
+            .map(|&d| self.books[self.display_order[d]].id)
+            .collect();
+        self.restore_selection(&ids);
+    }
+
     pub fn set_books(&mut self, books: Vec<ComicBook>) {
         self.books = books;
         self.rebuild();
@@ -659,6 +701,63 @@ mod tests {
         assert_eq!(captions, ["Batman", "batman", "Superman"]);
         assert_eq!(view.groups()[0].items.len(), 1);
         assert_eq!(view.groups()[1].items.len(), 1);
+    }
+
+    /// `ItemView.ExpandGroups` / `ToggleGroups` (the Collapse/Expand
+    /// all Groups command) + the collapse carry across a rebuild.
+    #[test]
+    fn collapse_all_and_toggle_follow_the_first_group() {
+        let mut view = ViewState::new(vec![
+            book("Batman", 1.0, 1),
+            book("Batman", 2.0, 2),
+            book("Superman", 1.0, 3),
+        ]);
+        view.set_grouper(Some("Series"));
+        view.set_collapsed(1, true);
+        assert!(view.any_collapsed());
+        // ToggleGroups: first group expanded → collapse ALL.
+        view.toggle_groups();
+        assert!(view.groups().iter().all(|g| g.collapsed));
+        assert_eq!(view.len(), 0, "every item is hidden");
+        // ToggleGroups again: first collapsed → expand ALL.
+        view.toggle_groups();
+        assert!(view.groups().iter().all(|g| !g.collapsed));
+        assert_eq!(view.len(), 3);
+        // set_all_collapsed(expand) clears every flag in one pass.
+        view.set_collapsed(0, true);
+        view.set_all_collapsed(false);
+        assert!(view.groups().iter().all(|g| !g.collapsed));
+    }
+
+    /// The header-label click: select ALL the group's items (the C#
+    /// `OnMouseClickGroupHeader(arrow:false)`), focus on the first.
+    #[test]
+    fn select_group_items_selects_the_whole_bucket() {
+        let mut view = ViewState::new(vec![
+            book("Batman", 1.0, 1),
+            book("Batman", 2.0, 2),
+            book("Superman", 1.0, 3),
+        ]);
+        view.set_grouper(Some("Series"));
+        view.select_group_items(0);
+        assert_eq!(view.selection().len(), 2);
+        assert!(view.focus().is_some());
+        // Only the Batman bucket is selected.
+        let selected: Vec<String> = view
+            .selection()
+            .iter()
+            .map(|id| {
+                view.books()
+                    .iter()
+                    .find(|b| &b.id == id)
+                    .unwrap()
+                    .info
+                    .series
+                    .clone()
+            })
+            .collect();
+        assert!(selected.iter().all(|s| s == "Batman"));
+        assert_eq!(selected.len(), 2);
     }
 
     #[test]

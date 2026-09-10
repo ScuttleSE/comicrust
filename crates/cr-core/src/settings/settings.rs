@@ -149,6 +149,10 @@ pub struct Settings {
     pub library_gauges_format: LibraryGauges,
     pub new_books_checked: bool,
     pub thumb_cache_enabled: bool,
+    /// PORT ADDITION (no C# counterpart): when false the grid loads
+    /// only already-cached covers; the File ▸ Generate Cover
+    /// Thumbnails command backfills the cache instead.
+    pub generate_thumbnails_on_demand: bool,
     pub thumb_cache_size_mb: i32,
     pub page_cache_enabled: bool,
     pub page_cache_size_mb: i32,
@@ -278,6 +282,7 @@ impl Default for Settings {
             library_gauges_format: LibraryGauges(0x1007), // Default
             new_books_checked: true,
             thumb_cache_enabled: true,
+            generate_thumbnails_on_demand: true,
             thumb_cache_size_mb: 500,
             page_cache_enabled: true,
             page_cache_size_mb: 500,
@@ -362,6 +367,9 @@ crate::settings_fields! {
     Bool "DisplayLibraryGauges" => display_library_gauges: bool, cat: "Application", desc: "", browsable: false, ini: true;
     Bool "NewBooksChecked" => new_books_checked: bool, cat: "Application", desc: "Newly added Books are checked", browsable: true, ini: true;
     Bool "ThumbCacheEnabled" => thumb_cache_enabled: bool, cat: "Caching", desc: "Turn thumbnail caching on or off", browsable: false, ini: true;
+    // PORT ADDITION (no C# counterpart): the on-demand cover
+    // generation switch (the Preferences caching page row).
+    Bool "GenerateThumbnailsOnDemand" => generate_thumbnails_on_demand: bool, cat: "Caching", desc: "Generate cover thumbnails on demand when books are displayed", browsable: false, ini: true;
     Bool "PageCacheEnabled" => page_cache_enabled: bool, cat: "Caching", desc: "Turn page caching on or off", browsable: false, ini: true;
     Bool "InternetCacheEnabled" => internet_cache_enabled: bool, cat: "Caching", desc: "Turn Internet caching on or off", browsable: false, ini: true;
     Bool "MemoryThumbCacheOptimized" => memory_thumb_cache_optimized: bool, cat: "", desc: "Optimize Memory Thumbnail cache", browsable: false, ini: true;
@@ -532,6 +540,12 @@ impl Settings {
         )?;
         w_bool(e, "NewBooksChecked", self.new_books_checked)?;
         w_bool(e, "ThumbCacheEnabled", self.thumb_cache_enabled)?;
+        // PORT ADDITION — see the field comment.
+        w_bool(
+            e,
+            "GenerateThumbnailsOnDemand",
+            self.generate_thumbnails_on_demand,
+        )?;
         w_int(e, "ThumbCacheSizeMB", self.thumb_cache_size_mb)?;
         w_bool(e, "PageCacheEnabled", self.page_cache_enabled)?;
         w_int(e, "PageCacheSizeMB", self.page_cache_size_mb)?;
@@ -889,6 +903,10 @@ fn read_elem(r: &mut XmlReader<'_>, s: &Start, x: &mut Settings) -> XmlResult<bo
         }
         "NewBooksChecked" => x.new_books_checked = r_bool(r, "NewBooksChecked")?,
         "ThumbCacheEnabled" => x.thumb_cache_enabled = r_bool(r, "ThumbCacheEnabled")?,
+        // PORT ADDITION — see the field comment.
+        "GenerateThumbnailsOnDemand" => {
+            x.generate_thumbnails_on_demand = r_bool(r, "GenerateThumbnailsOnDemand")?
+        }
         "ThumbCacheSizeMB" => x.thumb_cache_size_mb = r_i32(r, "ThumbCacheSizeMB")?,
         "PageCacheEnabled" => x.page_cache_enabled = r_bool(r, "PageCacheEnabled")?,
         "PageCacheSizeMB" => x.page_cache_size_mb = r_i32(r, "PageCacheSizeMB")?,

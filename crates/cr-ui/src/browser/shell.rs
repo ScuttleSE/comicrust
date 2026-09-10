@@ -1495,6 +1495,9 @@ impl BrowserShell {
                     }
                 });
         }
+        // The scan lamp's "Cancel scan" row (the C# aborts through
+        // the Tasks dialog's scan row — `Scanner.Stop(clearQueue)`).
+        state.status_bar.connect_cancel_scan(library::abort_scan);
         // The slider drag → `SetItemSize` (the C# `TrackBar.Scroll`
         // routes to the ACTIVE browser's view).
         {
@@ -1677,6 +1680,14 @@ impl BrowserShell {
     /// The grid's book count (the probe).
     pub fn state_grid_book_count(&self) -> usize {
         self.state.item_view.book_count()
+    }
+
+    /// Probe: the group count + the collapsed count (the grouping
+    /// gates).
+    pub fn state_grid_groups(&self) -> (usize, usize) {
+        let groups = self.state.item_view.group_count();
+        let collapsed = self.state.item_view.collapsed_count();
+        (groups, collapsed)
     }
 
     /// The grid's selection length (the probe).
@@ -2194,6 +2205,9 @@ impl ShellState {
         }
         self.set_action_enabled("prev-list", can_prev);
         self.set_action_enabled("next-list", can_next);
+        // The group expand/collapse command (`() =>
+        // itemView.AreGroupsVisible` — a grouper is set).
+        self.set_action_enabled("toggle-groups", self.item_view.has_groups());
         // migrate-paths lives only while Windows-style paths remain
         // (the Phase 8 T11 user decision).
         self.set_action_enabled("migrate-paths", library::has_windows_paths());
@@ -3499,6 +3513,13 @@ impl ShellState {
         self.actions
             .borrow_mut()
             .insert("duplicates-only", duplicates);
+
+        // The group expand/collapse command (the C#
+        // `ItemView.ToggleGroups` through `miExpandAllGroups` — no
+        // check state, enabled iff groups are visible).
+        self.add_simple(&group, "toggle-groups", |sh| {
+            sh.item_view.toggle_all_groups();
+        });
 
         // The Quick Search scope radio (the cue text follows).
         let scope = gio::SimpleAction::new_stateful(

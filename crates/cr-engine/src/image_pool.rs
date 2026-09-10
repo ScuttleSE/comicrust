@@ -333,6 +333,24 @@ impl ImagePool {
         );
     }
 
+    /// Whether the thumbnail is ALREADY rendered (memory pool or
+    /// disk cache) — the on-demand gate: with
+    /// `GenerateThumbnailsOnDemand` off, the view only loads cached
+    /// covers and never starts render work (the backfill command
+    /// fills the cache instead).
+    pub fn thumbnail_cached(&self, key: &ThumbnailKey) -> bool {
+        let text = base_key_text(&key.key);
+        let hash = fnv1a(&text);
+        if let Ok(mut pool) = self.thumbs.lock() {
+            if pool.get(hash).is_some() {
+                return true;
+            }
+        }
+        self.thumb_disk
+            .as_ref()
+            .is_some_and(|d| d.is_available(hash, &text))
+    }
+
     /// `AreImagesPending(filePath)`.
     pub fn are_images_pending(&self, file_path: &str) -> bool {
         let pending = |items: &[ImageKey]| items.iter().any(|k| k.location == file_path);
