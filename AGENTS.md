@@ -73,6 +73,18 @@ Update this section at the **end of every work session**. The next agent must kn
 
 ### State summary
 
+- **GROUP-HEADER ARROW = VECTOR TRIANGLE (2026-09-10, commit
+  d8e83ed; user ask: "make the icon a triangle pointing right when
+  collapsed; a click rotates it 90° to point down and the group
+  expands"):** the arrow was a font glyph (U+25B8/U+25BE) — renders
+  inconsistently across systems. Now a filled cairo triangle (12 px,
+  vertically centered, the C# `groupCollapsedImage`/
+  `groupExpandedImage` bitmaps as vector geometry): RIGHT = collapsed,
+  DOWN = expanded; the single arrow click toggles (the existing
+  behavior — the draw state was the only change). The hit zone is
+  the triangle square + slack at full header height. 489 tests;
+  fmt/clippy green; browserbar D2+D3 green (the probe reads the
+  recorded zone — unaffected by the draw change).
 - **GROUP COLLAPSE: COUNTS + DOUBLE-CLICK DIRECTION FIXED
   (2026-09-10, commit 6b4016d; user report: "when I collapse grouped
   by series, all series have 0 titles, and I can't expand just one
