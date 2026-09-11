@@ -549,32 +549,77 @@ fn build_value_row(
     };
     let matcher_spec = spec::by_class_name(&matcher.type_name);
 
-    // The type dropdown (the C# matcher menu; switching keeps the
-    // values via `edit_ops::switch_type`).
-    let type_combo = ComboBoxText::new();
-    for s in spec::all_specs() {
-        type_combo.append(Some(s.class_name), s.description);
+    // The type menu (the C# `btMatcher` +
+    // `Program.CreateComicBookMatchersMenu`: a button over the
+    // matcher row that opens the `ContextMenuBuilder.Create(20)`
+    // shape — All + letter submenus over every available matcher
+    // description; the C# "Recent" rung needs usage tracking the
+    // port does not keep, and the C# hides it while empty). Switching
+    // keeps the values via `edit_ops::switch_type`.
+    let specs = spec::all_specs();
+    let entries: Vec<crate::browser::columns::ChooserEntry> = specs
+        .iter()
+        .enumerate()
+        .map(|(i, s)| (i as i32, s.description.to_string(), false))
+        .collect();
+    let chooser = crate::browser::columns::chooser_menu(&entries);
+    let spec_at = |e: &crate::browser::columns::ChooserEntry| specs[e.0 as usize];
+    let menu = gio::Menu::new();
+    let all = gio::Menu::new();
+    for entry in &chooser.all {
+        let mi = gio::MenuItem::new(Some(&entry.1), None);
+        mi.set_action_and_target_value(
+            Some("sm.switch-type"),
+            Some(&spec_at(entry).class_name.to_variant()),
+        );
+        all.append_item(&mi);
     }
-    type_combo.set_active(Some(
-        spec::all_specs()
-            .iter()
-            .position(|s| s.class_name == matcher.type_name)
-            .unwrap_or(0) as u32,
+    menu.append_submenu(Some("All"), &all);
+    for (label, run) in &chooser.letters {
+        let sub = gio::Menu::new();
+        for entry in run {
+            let mi = gio::MenuItem::new(Some(&entry.1), None);
+            mi.set_action_and_target_value(
+                Some("sm.switch-type"),
+                Some(&spec_at(entry).class_name.to_variant()),
+            );
+            sub.append_item(&mi);
+        }
+        menu.append_submenu(Some(label), &sub);
+    }
+    let type_button = gtk4::MenuButton::builder()
+        .always_show_arrow(true)
+        .halign(gtk4::Align::Fill)
+        .build();
+    let type_label = gtk4::Label::new(Some(
+        matcher_spec
+            .map(|s| s.description)
+            .unwrap_or(matcher.type_name.as_str()),
     ));
+    type_label.set_halign(gtk4::Align::Start);
+    type_label.set_xalign(0.0);
+    type_label.set_ellipsize(gtk4::pango::EllipsizeMode::End);
+    type_label.set_width_chars(16);
+    type_button.set_child(Some(&type_label));
+    let type_popover = gtk4::PopoverMenu::from_model(Some(&menu));
+    type_popover.set_has_arrow(false);
+    type_button.set_popover(Some(&type_popover));
     {
+        let group = gio::SimpleActionGroup::new();
+        let action = gio::SimpleAction::new("switch-type", Some(&String::static_variant_type()));
         let state = Rc::clone(state);
         let path = path.to_vec();
         let rebuild = Rc::clone(rebuild);
-        type_combo.connect_changed(move |c| {
-            let Some(active) = c.active_id() else {
+        action.connect_activate(move |_, param| {
+            let Some(name) = param.and_then(|p| p.str()) else {
                 return;
             };
             let switched = {
                 let s = state.borrow();
                 match walk_matcher(&s.matchers, &path) {
                     Some(ComicBookMatcher::Value(v)) => {
-                        if v.type_name != active.as_str() {
-                            edit_ops::switch_type(&ComicBookMatcher::Value(v.clone()), &active)
+                        if v.type_name != name {
+                            edit_ops::switch_type(&ComicBookMatcher::Value(v.clone()), name)
                         } else {
                             None
                         }
@@ -591,6 +636,8 @@ fn build_value_row(
                 rebuild();
             }
         });
+        group.add_action(&action);
+        type_button.insert_action_group("sm", Some(&group));
     }
 
     // The operator combo (the spec's operator list).
@@ -666,7 +713,7 @@ fn build_value_row(
         });
     }
 
-    row.append(&type_combo);
+    row.append(&type_button);
     row.append(&op_combo);
     row.append(&value1);
     row.append(&value2);

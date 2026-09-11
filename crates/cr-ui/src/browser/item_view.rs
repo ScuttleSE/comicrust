@@ -1726,6 +1726,7 @@ fn draw_frame(ctx: &cairo::Context, state: &Rc<RefCell<ItemViewState>>, window: 
         // All visible columns — the same list the cells draw (the
         // image-only columns hold their slot).
         let visible: Vec<&Column> = s.detail_columns.iter().filter(|c| c.visible).collect();
+        let mut column_lines: Vec<f64> = Vec::new();
         let mut x = header.x + layout::COLUMN_OFFSET_X;
         for column in visible {
             // Clip the caption to its column (the C#
@@ -1745,7 +1746,19 @@ fn draw_frame(ctx: &cairo::Context, state: &Rc<RefCell<ItemViewState>>, window: 
                 ctx.fill().ok();
                 ctx.set_source_rgb(pal.fg.0, pal.fg.1, pal.fg.2);
             }
+            column_lines.push(x + column.width - 0.5);
             x += column.width;
+        }
+        // The thin vertical column lines (a user addition — the C#
+        // Detail body has no grid): one 1 px line per column
+        // boundary, running from the top THROUGH the header down the
+        // rows. Painted under the row content (the banding is
+        // translucent, the line stays visible).
+        let bottom = s.layout.virtual_size.1.max(s.config.view_height);
+        ctx.set_source_rgba(pal.fg.0, pal.fg.1, pal.fg.2, 0.2);
+        for lx in column_lines {
+            ctx.rectangle(lx, 0.0, 1.0, bottom);
+            ctx.fill().ok();
         }
     }
 

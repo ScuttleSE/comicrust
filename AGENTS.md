@@ -73,6 +73,61 @@ Update this section at the **end of every work session**. The next agent must kn
 
 ### State summary
 
+- **CHOOSER SUBMENUS + SMART-LIST RULE MENU + DETAIL GRID LINES
+  (2026-09-10, follow-up round; user report: "column picker doesn't
+  work — the sub-menus (All, A-B, C-F etc.) are all empty"; plus
+  "add a thin vertical line per column going up through the header"
+  and "the smart-list rule-type pick list should be built like the
+  column picker"):**
+  (1) EMPTY-SUBMENU ROOT CAUSE, proven at the GTK source
+  (gtkmenusectionbox.c): the previous round built submenu placeholders
+  as model items with BOTH a `custom` attribute AND a submenu link —
+  the insert branch order is separator → SUBMENU → custom, so the
+  submenu branch won: the page is built from the LINKED model (empty)
+  named by the label, the custom attribute is ignored, and
+  `gtk_menu_section_box_add_custom` returns false (the custom-slot
+  hash only fills for items WITHOUT a submenu link — custom widgets
+  are INLINE slots, never submenu pages). FIX: drop the custom pages
+  entirely — the submenus are REAL model submenus carrying the same
+  rows as check items bound to the `cols.col<id>` actions; the tall
+  "All" page scrolls in the PopoverMenu's own outer scroller (the
+  popover child IS a ScrolledWindow wrapping the page stack —
+  gtkpopovermenu.c). NEW GATE: `state_column_chooser_page_rows(sub)`
+  sets the popover's `visible-submenu` property (READWRITE — drives
+  the page stack headlessly) and walks the named stack page counting
+  GtkModelButton rows; browserbar_probe D now reads all=92 / a-b=16
+  (title button + 91/15 rows) — the empty-page regression fails the
+  gate at 1/1.
+  (2) DETAIL GRID LINES (user addition; the C# Detail body has NO
+  vertical lines — the C# header frame edge is the only line): one
+  1 px vertical line per column boundary at the header edge x, from
+  y=0 THROUGH the header down to the content bottom, fg @ alpha 0.2,
+  painted under the row content (the translucent banding keeps it
+  visible; opaque selection covers it). The column boundaries are
+  collected in the header strip loop (`x + column.width - 0.5` —
+  the same x the C# header frame uses), drawn before the item loop
+  so the lines stay under the text.
+  (3) SMART-LIST RULE MENU: the matcher row's type combo became the
+  C# `btMatcher` shape (MatcherEditor.cs:150 — a left-aligned
+  button) opening a PopoverMenu in the
+  `Program.CreateComicBookMatchersMenu` shape
+  (Program.cs:439-455): one parametered `sm.switch-type::<class>`
+  action per row group; items = the `ContextMenuBuilder.Create(20)`
+  fill via the SAME `columns::chooser_menu` helper (All =
+  alphabetical, letter submenus with the run-merge rule over the 97
+  spec descriptions). The C# "Recent" rung (the 5 used matcher
+  types, LastTimeUsed) is NOT ported — no usage tracking, and the
+  C# hides the submenu while empty. Gate: `smartlistmenu_probe`
+  (new; the editor builds rule rows + commits — the menu mechanism
+  itself is gated by the chooser D gate).
+  491 tests; fmt/clippy green; browserbar (D + the new submenu-row
+  gate + D2/D3), statusbar (A-J2), workspace, commands (73/73),
+  menubar, navpages, detailresize probes green. USER TEST = the
+  chooser submenus (All + A-B/C-F/G-O/P-R/S/T-Y) now list their
+  columns and toggle from any row; the Detail view carries the thin
+  vertical column lines through header and rows; the smart-list
+  editor's rule rows pick the type from the All/letter menu (the
+  button shows the current description; switching keeps the values).
 - **DETAIL VIEW MATCHED TO CR (2026-09-10; user batch: "text slightly
   too small, rows almost twice CR's, alternate white/grey rows,
   column chooser like CR"):** four fixes, all C#-source derived.

@@ -1980,6 +1980,51 @@ impl BrowserShell {
             .unwrap_or(0)
     }
 
+    /// Switches the open chooser to a submenu page (the
+    /// `visible-submenu` property drives the popover's stack) and
+    /// counts its menu rows — the probe gate for the EMPTY-submenu
+    /// regression (a `custom`-attribute item with a submenu link
+    /// never attached its custom page and the model page stayed
+    /// empty).
+    pub fn state_column_chooser_page_rows(&self, sub: &str) -> usize {
+        let columns_drop = self.state.columns_drop.borrow();
+        let Some(popover) = columns_drop.as_ref() else {
+            return 0;
+        };
+        popover.set_property("visible-submenu", sub);
+        // popover → content → viewport → stack
+        let mut w = popover.first_child();
+        while let Some(cur) = w {
+            if cur.widget_name() == "GtkStack" {
+                w = Some(cur);
+                break;
+            }
+            w = cur.first_child();
+        }
+        let Some(stack) = w else {
+            return 0;
+        };
+        let Ok(stack) = stack.downcast::<gtk4::Stack>() else {
+            return 0;
+        };
+        let Some(page) = stack.child_by_name(sub) else {
+            return 0;
+        };
+        fn walk(w: &gtk4::Widget, count: &mut usize) {
+            if w.widget_name() == "GtkModelButton" {
+                *count += 1;
+            }
+            let mut c = w.first_child();
+            while let Some(ch) = c {
+                walk(&ch, count);
+                c = ch.next_sibling();
+            }
+        }
+        let mut count = 0usize;
+        walk(&page, &mut count);
+        count
+    }
+
     /// The browser toolbar's Group/Arrange label texts (the probe).
     pub fn browserbar_labels(&self) -> (String, String) {
         self.state.browser_toolbar.label_texts()
@@ -3049,12 +3094,20 @@ impl ShellState {
         self.update_status_panels();
     }
 
-    /// The Detail header column chooser: a PLAIN popover of check-
-    /// rows built fresh per open — the Wayland-proven shape of the
-    /// book context menu. The T5/T6 `build_dropdown` popover
-    /// (has_arrow off + submenu child popovers) fails to MAP when
-    /// parented to the top-level window on Wayland; a plain popover
-    /// maps fine.
+    /// The Detail header column chooser (`CreateHeaderMenu`): a
+    /// model-driven `PopoverMenu` built fresh per open — ONE surface
+    /// whose pages swap inside it (Wayland-safe; the popover's own
+    /// vertical scroller handles the tall pages). The C# T5/T6
+    /// `build_dropdown` shape (has_arrow off + child popover
+    /// submenus) fails to MAP when parented to the top-level window
+    /// on Wayland; a PopoverMenu maps fine.
+    ///
+    /// GTK contract (gtkmenusectionbox.c, measured): a model item
+    /// with a `custom` attribute takes the INLINE-slot branch only
+    /// when it carries NO submenu link — an item with both takes the
+    /// SUBMENU branch (page content = the linked model) and
+    /// `add_child` returns false, leaving the page empty. So the
+    /// submenus are REAL model submenus, not custom pages.
     fn popup_column_chooser(self: &Rc<ShellState>, wx: f64, wy: f64) {
         let snapshot = self.item_view.detail_columns_snapshot();
         // The per-column check actions (one stateful bool per column
@@ -3093,35 +3146,31 @@ impl ShellState {
                 a.set_state(&visible.to_variant());
             }
         }
-        // The `CreateHeaderMenu` fill: the visible columns at top
-        // level, then All + the letter submenus. The big pages are
-        // custom scrolled widgets (the model pages cannot scroll).
+        // The `ContextMenuBuilder.Create(20)` fill: the visible
+        // columns at top level, then All + the letter submenus —
+        // every row a model item bound to its column action.
         let chooser = columns::chooser_menu(&snapshot);
         let menu = gio::Menu::new();
         let top = gio::Menu::new();
         for entry in &chooser.top {
-            let mi = gio::MenuItem::new(Some(&entry.1), None);
-            mi.set_action_and_target_value(Some(&format!("cols.col{}", entry.0)), None);
-            top.append_item(&mi);
+            top.append_item(&Self::chooser_item(entry));
         }
         menu.append_section(None, &top);
-        let push_custom = |menu: &gio::Menu, label: &str, id: &str| {
-            let mi = gio::MenuItem::new(Some(label), None);
-            mi.set_attribute_value("custom", Some(&id.to_variant()));
-            mi.set_link("submenu", Some(&gio::Menu::new()));
-            menu.append_item(&mi);
-        };
-        push_custom(&menu, "All", "chooser-all");
-        for (i, (label, _)) in chooser.letters.iter().enumerate() {
-            push_custom(&menu, label, &format!("chooser-letters-{i}"));
+        let all = gio::Menu::new();
+        for entry in &chooser.all {
+            all.append_item(&Self::chooser_item(entry));
+        }
+        menu.append_submenu(Some("All"), &all);
+        for (label, run) in &chooser.letters {
+            let sub = gio::Menu::new();
+            for entry in run {
+                sub.append_item(&Self::chooser_item(entry));
+            }
+            menu.append_submenu(Some(label), &sub);
         }
         let popover = gtk4::PopoverMenu::from_model(Some(&menu));
         // No pointing arrow (the C# ContextMenuStrip shape).
         popover.set_has_arrow(false);
-        popover.add_child(&self.chooser_page(&chooser.all), "chooser-all");
-        for (i, (_, run)) in chooser.letters.iter().enumerate() {
-            popover.add_child(&self.chooser_page(run), &format!("chooser-letters-{i}"));
-        }
         popover.set_parent(&self.window);
         popover.connect_closed(|p| p.unparent());
         let rect = gtk4::gdk::Rectangle::new(wx as i32, wy as i32 + 4, 1, 1);
@@ -3130,43 +3179,13 @@ impl ShellState {
         popover.popup();
     }
 
-    /// One chooser submenu page: a scroller of check rows (the big
-    /// submenus exceed the screen — the C# scroll arrows).
-    fn chooser_page(
-        self: &Rc<ShellState>,
-        entries: &[columns::ChooserEntry],
-    ) -> gtk4::ScrolledWindow {
-        let list = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
-        list.set_margin_top(4);
-        list.set_margin_bottom(4);
-        list.set_margin_start(4);
-        list.set_margin_end(4);
-        for (id, name, visible) in entries.iter().cloned() {
-            let check = gtk4::CheckButton::with_label(&name);
-            check.set_active(visible);
-            let state = Rc::downgrade(self);
-            check.connect_toggled(move |c| {
-                if let Some(sh) = state.upgrade() {
-                    sh.item_view.toggle_column_visible(id);
-                    // Keep the model check states honest while open.
-                    if let Some(a) = sh.column_actions.borrow().get(&id) {
-                        a.set_state(&c.is_active().to_variant());
-                    }
-                    sh.sync_enabled();
-                }
-            });
-            list.append(&check);
-        }
-        gtk4::ScrolledWindow::builder()
-            .propagate_natural_width(true)
-            // Without natural-height propagation the scroller
-            // collapses — request the list's full height up to the
-            // cap (the T6 lesson).
-            .propagate_natural_height(true)
-            .max_content_height(480)
-            .hscrollbar_policy(gtk4::PolicyType::Never)
-            .child(&list)
-            .build()
+    /// One chooser check row (a model item bound to its column's
+    /// stateful `cols.col<id>` action — the checkmark = the action
+    /// state).
+    fn chooser_item(entry: &columns::ChooserEntry) -> gio::MenuItem {
+        let mi = gio::MenuItem::new(Some(&entry.1), None);
+        mi.set_action_and_target_value(Some(&format!("cols.col{}", entry.0)), None);
+        mi
     }
 
     /// The Preferences dialog (shared by the header button and the

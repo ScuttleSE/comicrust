@@ -225,6 +225,15 @@ fn main() {
                 println!(
                     "D chooser-open={mapped} height={h} series-before={series:?} (expect true, height>100)"
                 );
+                // The submenu pages must carry their rows (the
+                // empty-submenu regression: a model item with BOTH a
+                // `custom` attribute and a submenu link took the
+                // submenu branch and the custom page never attached).
+                let all_rows = shell.state_column_chooser_page_rows("All");
+                let ab_rows = shell.state_column_chooser_page_rows("A-B");
+                println!(
+                    "D submenu rows all={all_rows} a-b={ab_rows} (expect 92 / 16 — the title button rides each page)"
+                );
                 glib::ControlFlow::Break
             }
         });
