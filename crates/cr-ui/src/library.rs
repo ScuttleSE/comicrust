@@ -696,7 +696,8 @@ pub fn apply_path_migration(
 /// `Stop(clearQueue: true)` (ComicScanner.cs:228) — then waits for
 /// the partial merge (one pump tick) and saves unconditionally.
 /// Waiting for a RUNNING scan would hang the exit (the user report);
-/// saving mid-scan would write the taken, empty book list.
+/// the stop makes the save a consistent full set instead of a
+/// mid-scan partial.
 pub fn save() -> Result<(), cr_core::database::DbError> {
     if scan_in_flight() {
         abort_scan();
@@ -709,13 +710,12 @@ pub fn save() -> Result<(), cr_core::database::DbError> {
     session().borrow_mut().save()
 }
 
-/// `DatabaseManager.SaveInBackground`: saves only when dirty. A scan
-/// in flight skips this tick (the book storage is on the worker).
-/// Returns whether a save ran.
+/// `DatabaseManager.SaveInBackground`: saves only when dirty. Runs
+/// MID-SCAN too: since ADR-032 the worker scans a CLONE and the
+/// main-thread database stays live (the batches appended so far) —
+/// the C# background-saves its live collection while the scanner
+/// walks. Returns whether a save ran.
 pub fn save_if_dirty() -> Result<bool, cr_core::database::DbError> {
-    if scan_in_flight() {
-        return Ok(false);
-    }
     session().borrow_mut().save_if_dirty()
 }
 

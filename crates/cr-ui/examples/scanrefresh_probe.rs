@@ -11,6 +11,10 @@
 //! D. a scan over a big folder fills the grid WHILE it walks (the
 //!    C# live-storage parity), and Abort Scanning stops the walk —
 //!    the books found so far stay (a partial landing, count < total),
+//!    D2. the background save runs MID-SCAN and the DB file on disk
+//!    holds the books landed so far (ADR-032: the main-thread
+//!    database is live during the scan — the C# background-saves its
+//!    live collection while the scanner walks),
 //! E. the re-scan after the abort completes the library (the stored
 //!    books refresh cheaply — nothing is redone),
 //! G. a RE-scan keeps the whole library live mid-scan: the grid, a
@@ -290,6 +294,26 @@ fn gate_d(shell: &cr_ui::browser::shell::BrowserShell) {
             let scanning = cr_ui::library::is_scanning();
             let count = shell.state_grid_book_count();
             if scanning && count >= 5 {
+                // D2: the background save runs MID-SCAN — the DB file
+                // on disk holds the books landed so far (the old
+                // scan-in-flight skip wrote nothing until the scan
+                // ended).
+                let saved =
+                    cr_ui::library::save_if_dirty().expect("D2: the mid-scan background save");
+                assert!(saved, "D2 FAIL: save_if_dirty skipped the save mid-scan");
+                let data = std::env::var("XDG_DATA_HOME").expect("XDG_DATA_HOME");
+                let db_path = std::path::Path::new(&data).join("comicrust/ComicDb/ComicDb.xml");
+                let db = cr_core::database::comic_database::load(&db_path)
+                    .expect("D2: the mid-scan saved database loads");
+                assert!(
+                    db.books.len() >= count && db.books.len() > 2,
+                    "D2 FAIL: the mid-scan saved database holds {} books (expected >= {count}, > 2)",
+                    db.books.len()
+                );
+                println!(
+                    "D2 ok: the mid-scan save wrote {} books to disk",
+                    db.books.len()
+                );
                 // The grid filled WHILE the scan walks — the progressive
                 // fill works. Abort now (the Tasks "Abort Scanning").
                 println!("D ok: grid filled mid-scan ({count} books, scanning) — aborting");
