@@ -118,8 +118,41 @@ Update this section at the **end of every work session**. The next agent must kn
 
 ### State summary
 
-### State summary
-
+- **DOUBLE-CLICK OPEN CRASH FIXED (2026-09-11, commit 140ba4c; user
+  crash log: "RefCell already borrowed" at `item_view.rs:562:36` in
+  the pressed trampoline, SIGABRT on a double-click open; a previous
+  agent started this fix and was killed — its uncommitted working-
+  tree changes were verified and completed; NO stash existed, the
+  only leftovers were the three modified files):** ROOT CAUSE — the
+  pressed closure ran the activate callback under the `if let Some(f)
+  = state.borrow().on_activate...` scrutinee Ref (the edition-2021
+  temporaries crash class; the Phase 3 lesson). The activate opens
+  the reader; the open fires the reader page-change hook (the
+  b4decdd live-ribbon wiring) whose `update_read_state` `borrow_mut`
+  collided with the held Ref → panic in a GTK trampoline (cannot
+  unwind) → SIGABRT. FIXES: (1) the press body is the static
+  `ItemView::handle_press` — the real `connect_pressed` closure AND
+  a new `probe_press` probe seam share it (mods pass in explicitly);
+  (2) the activate callback is CLONED OUT (`ActivateFn` Box →
+  `Rc<dyn Fn>`) and fired with NO borrow held in BOTH paths — the
+  double-click branch and the keyboard Enter path (the keyboard
+  handler defers the activate past its `drop(s)`); (3) new probe
+  accessors `probe_press`/`probe_item_center`/`probe_book_center`/
+  `probe_book_read_state` + the shell `state_item_press`/
+  `state_book_center`/`state_grid_book_read_state`. GATES:
+  browserbar_probe grew F (the REAL press path n=1+n=2 on the
+  half-read Beta book → 1 reader tab + the reader page revealed →
+  one `win.next-page` turn → the grid copy carries (mid+1, mid+1)
+  through the reader hook). VERIFY-BOTH-WAYS measured: the
+  neutralized borrow-holding shape (the old `as_ref` scrutinee)
+  SIGABRTs with the identical `RefCell already borrowed` at
+  `update_read_state`'s `borrow_mut` (exit 134; the user's HEAD
+  binary showed the same panic at 562:36 = the same line, 4-line
+  offset from the fix's line shifts); the fix exits 0 with F green.
+  statusbar + tabstrip probes re-run green; 517 tests; fmt/clippy
+  green. USER TEST = rebuild; double-click a book in the grid → the
+  reader opens with no abort; read a few pages, close the tab → the
+  green read-ribbon moved in the grid without clicking away.
 - **LIVE READ RIBBONS + SORT SURVIVES SAME-LIST REFRESH (2026-09-11,
   commit b4decdd; two user reports: "the green bookmark tag doesn't
   update as I read — only after clicking away and back" and "while
