@@ -73,6 +73,71 @@ Update this section at the **end of every work session**. The next agent must kn
 
 ### State summary
 
+- **SMART-LIST EDITOR: RULE DELETE + CLIPBOARD OPS (2026-09-11,
+  commit 19da428; user report "there doesn't seem to be a way to
+  remove a rule"; user approved the scope incl. the clipboard ops):**
+  ROOT CAUSE — the Delete op existed (`edit_ops::remove_node`, wired
+  in the dialog) but its ONLY trigger was a right-click popover the
+  row's own widgets swallowed (Entries claim button 3, an Entry shows
+  GTK's text menu), so the menu never appeared. C# PARITY RESTORED:
+  every MatcherEditor/MatcherGroupEditor row carries a visible
+  `btEdit` dropdown (a 21 px button with `Resources.SmallArrowDown`
+  at the row's right edge, MatcherEditor.Designer.cs:176-186) that
+  opens the `cmEdit` menu; the port now mounts a MenuButton (the
+  bundled `SmallArrowDown` texture) on value rows AND group frames
+  (group: right edge of the mode row) opening the same row menu —
+  the row right-click survives as a port addition. Menu = the
+  Designer order (New Rule, New Group, Delete | Cut, Copy, Paste |
+  Move Up, Move Down) with the `cmEdit_Opening` enable states
+  (MatcherEditor.cs:76-85) re-run at every open (the button's
+  `activate` + the right-click press): Delete/Cut iff the container
+  holds >1 node, Move Up/Down by index, New Group at the
+  `MAX_LEVEL` cap (`path.len() < 5` — consistent with the port's
+  `add_group` gate, which is ONE level stricter than the C#
+  `level <= 5`; pre-existing port cap, unit-pinned), Copy always,
+  Paste iff the clipboard carries the matcher MIME. NEW: the
+  Cut/Copy/Paste ops (the user picked "also port clipboard ops") —
+  `ComicBookMatcher::to_clipboard_bytes`/`from_clipboard_bytes`
+  (cr-core list_items: ONE `<ComicBookMatcher>` element wrapped in a
+  namespace root; 2 unit tests) under the private MIME
+  `application/x-comicrust-matcher` PLUS text/plain (a gdk
+  ContentProvider UNION — the MIME gates Paste, read_text reads
+  back); `edit_ops::paste_node` (insert AFTER the addressed node, a
+  group payload rejected at the cap — the C# `level <= MaxLevel`
+  shape; 2 unit tests); the UI `run_row_op` Copy/Cut arms write the
+  clipboard synchronously (Cut = copy + remove), Paste reads
+  `read_text_async` and applies through the shared `apply_paste`
+  (insert + rebuild) on the main thread. DEVIATIONS: the C# ships a
+  WinForms binary clipboard object (`ComicBookMatcher.ClipboardFormat`)
+  — the payload is the XML element instead, so cross-instance paste
+  needs the same comicrust build; the C# menu shortcut keys (Ctrl+R/
+  G/X/C/V/U/D) are not bound. PROBE TRAP (measured): the Xvfb
+  clipboard read hangs on every read AFTER the first set+read cycle
+  (X11 selection transfer without a WM) while the identical sequence
+  works in a minimal window — the probe injects the paste payload
+  through `probe_paste_payload` (the REAL apply path; only the GDK
+  read is skipped) and gates Cut/Copy via
+  `probe_clipboard_has_matcher` (formats() is sync); the round-trip
+  itself is user-test territory on a real desktop. GATES: the
+  rewritten `smartlistmenu_probe` — A the rows carry the edit
+  machinery (3 rows), C the enable states (row 0: Up off/Down on;
+  row 2 the reverse; Delete on), B delete through the REAL action
+  path (Series A gone, rows re-registered), F copy→paste inserts a
+  clone after row 1 ([B,C,B]), G cut (remove + clipboard set), D
+  delete-to-1 disables Delete/Cut, the post-cut paste restores 2,
+  H OK commits the reduced set, then a depth-5 group-chain editor:
+  the value row (index 5) has New Group DISABLED, a group payload
+  paste is REJECTED at the cap while a value payload pastes. A
+  row-destruction fix rode along: the row's right-click PopoverMenu
+  now unparents on the row's destroy (`connect_destroy`) — GTK
+  warned "Finalizing GtkFrame ... still has children left". 506
+  tests; fmt/clippy green. USER TEST = rebuild, open a smart list's
+  editor: every rule row and group carries a small ▾ button at the
+  right edge — click it → New Rule / New Group / Delete / Cut /
+  Copy / Paste / Move Up / Move Down with the honest enable states
+  (the single remaining rule cannot Delete/Cut); Delete removes a
+  rule; Copy on one row + Paste on another inserts a clone; a Query
+  tab round trip stays clean.
 - **"NO METADATA" TAG ON EMPTY BOOKS (2026-09-11; user request
   "a subtle tag on books where there was no metadata fetched during
   initial scan; it disappears if you edit in metadata manually, or
@@ -1082,7 +1147,14 @@ Update this section at the **end of every work session**. The next agent must kn
   HEIF/AVIF decode. The Phase 11 PIPELINE is COMPLETE (the v0.0.283
   release carries all 9 assets on both hosts); the install steps
   (the kickoff user test) remain.
-  OPEN USER TESTS (2026-09-11, in test order): the "NO METADATA" TAG
+  OPEN USER TESTS (2026-09-11, in test order): the SMART-LIST RULE
+  DELETE + clipboard ops (rebuild, open a smart list's editor — every
+  rule row and group carries a small ▾ button at the right edge with
+  the New Rule / New Group / Delete / Cut / Copy / Paste / Move Up /
+  Move Down menu and the honest enable states; Delete removes a rule;
+  Copy + Paste inserts a clone; a Query round trip stays clean; the
+  Cut/Copy/Paste clipboard round trip on a real desktop — Xvfb
+  stalls those reads), the "NO METADATA" TAG
   (rebuild; books whose scan found no metadata carry a small dark "?"
   chip top-left on the cover in Thumbnail and Tile; Properties edits
   to a key field or a Comic Vine scrape make it disappear), the
@@ -2006,7 +2078,7 @@ Update this section at the **end of every work session**. The next agent must kn
   Phases 0-5 are complete (their gates stay green). Open Phase 1
   gaps: WebComicProvider and the PDF/DjVu writers (tracked in
   `docs/phase-1-kickoff.md`).
-- **State:** `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` are green. 497 tests — 36 suites plus the cr-scrape suites (the Phase 8 perf gates: `reading_list_perf`, `view_perf`, `path_migration_perf`, `list_eval_perf`, `scan_perf`; the cr-ui probes are examples, not tests — the newest are `browserbar_probe` gate D (the column chooser: the open + the submenu-row gate `state_column_chooser_page_rows` reading all=92/a-b=16 through the popover's `visible-submenu` page + the toggle) and D2+D3 (the grouping: ungrouped (1,0) + the disabled action + toggle-groups; the D3 press-sequence machine drives the REAL group-header press paths — label select, single-click collapse/expand of one group, both double-click directions, the true counts on collapsed headers), `statusbar_probe` gates J/J2 (the scan lamp: frames, the visible-only animation, the Cancel-scan menu map + the abort hook), and `smartlistmenu_probe` (the smart-list editor builds its rule rows with the menu-button type picker + commits); `scanrefresh_probe` (gates A-J: the scan-land refresh, the re-scan idempotence, the mid-scan fill, the abort partial landing, the re-scan completion, the mid-add exit save, the mid-RE-scan library liveness (G), the watch-rescan dedupe (H), the non-Library per-tick churn (I), the mid-scan remove/edit survival (J) — it REFUSES a non-isolated XDG pair and wipes it at start, the exit save pollutes it); the real-fixture parts skip in CI without the git-ignored `tests/testfiles/` files; the RAR round-trips skip without `CR_RAR_TESTS` + `rar`). CI runs on the `docker-runner-amd64` container runner (ADR-020) and is LIVE (it caught the 2026-09-09 group-gate flake — the runner + `comicrust-ci:latest` image work). The release tracks are `release.yaml` (rolling prerelease per push) and `tagged-release.yaml` (manual dispatch, stable release for an existing tag — ADR-021, 2026-09-03); `packaging.yaml` (Phase 11) attaches the source tarball, the Arch package, and the .deb to a tagged release. First real tagged-release run (v0.0.273, 2026-09-09) exposed a latent env bug: the "Publish to GitHub mirror" step lacked `TAG` (the Gitea publish succeeded; the mirror step died on `set -u`) — fixed in commit 05483da.
+- **State:** `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` are green. 506 tests — 36 suites plus the cr-scrape suites (the Phase 8 perf gates: `reading_list_perf`, `view_perf`, `path_migration_perf`, `list_eval_perf`, `scan_perf`; the cr-ui probes are examples, not tests — the newest are `browserbar_probe` gate D (the column chooser: the open + the submenu-row gate `state_column_chooser_page_rows` reading all=92/a-b=16 through the popover's `visible-submenu` page + the toggle) and D2+D3 (the grouping: ungrouped (1,0) + the disabled action + toggle-groups; the D3 press-sequence machine drives the REAL group-header press paths — label select, single-click collapse/expand of one group, both double-click directions, the true counts on collapsed headers), `statusbar_probe` gates J/J2 (the scan lamp: frames, the visible-only animation, the Cancel-scan menu map + the abort hook), and `smartlistmenu_probe` (the smart-list editor: the rule rows carry the btEdit dropdown + the row menu; the enable states follow `cmEdit_Opening`; delete/cut run through the REAL action path; copy→paste inserts a clone after the row; a group payload is rejected at the cap while a value payload pastes; OK commits — the paste payload rides `probe_paste_payload` because the Xvfb clipboard read stalls, see the state block); `scanrefresh_probe` (gates A-J: the scan-land refresh, the re-scan idempotence, the mid-scan fill, the abort partial landing, the re-scan completion, the mid-add exit save, the mid-RE-scan library liveness (G), the watch-rescan dedupe (H), the non-Library per-tick churn (I), the mid-scan remove/edit survival (J) — it REFUSES a non-isolated XDG pair and wipes it at start, the exit save pollutes it); the real-fixture parts skip in CI without the git-ignored `tests/testfiles/` files; the RAR round-trips skip without `CR_RAR_TESTS` + `rar`). CI runs on the `docker-runner-amd64` container runner (ADR-020) and is LIVE (it caught the 2026-09-09 group-gate flake — the runner + `comicrust-ci:latest` image work). The release tracks are `release.yaml` (rolling prerelease per push) and `tagged-release.yaml` (manual dispatch, stable release for an existing tag — ADR-021, 2026-09-03); `packaging.yaml` (Phase 11) attaches the source tarball, the Arch package, and the .deb to a tagged release. First real tagged-release run (v0.0.273, 2026-09-09) exposed a latent env bug: the "Publish to GitHub mirror" step lacked `TAG` (the Gitea publish succeeded; the mirror step died on `set -u`) — fixed in commit 05483da.
 - **GitHub mirror (2026-09-06):** remote `github` = `git@github.com:ScuttleSE/comicrust.git` — a TRUE mirror (identical SHAs; `.gitea/` rides along but is inert there, GitHub Actions only reads `.github/workflows/`). After every origin push also `git push github main`; stable tags get pushed manually once; the `rolling` tag is CI-managed on BOTH sides (each release run deletes/recreates it) — never push it by hand. Both release workflows also publish the built tarball + sha256 to GitHub Releases through `.gitea/publish_github_release.sh` (build once on Gitea, assets on both); it needs the Gitea secret `MIRROR_RELEASE_TOKEN` (GitHub PAT with Contents read/write on ScuttleSE/comicrust; Gitea forbids a `GITHUB_` prefix) — unset secret = the step skips with a notice.
 - **Phase 0 gate status:** byte-stable ComicDb.xml round-trip proven on all three synthetic fixtures AND the real-world database `tests/realworld/ComicDb.xml` (255 books, 584 KB, 2026-09-02, user-approved commit).
 - **Phase 2 gate status:** every saved smart list in the real-world DB (a) binds to the matcher registry, (b) renders to a `Match` query string that re-parses and re-renders byte-identically, and (c) evaluates to the SAME book sets the C# cached in `CacheStorage` (Never Read = all 255, Files to update = the 3 dirty books, Reading/Read = empty). Evidence: `crates/cr-engine/tests/realworld_query.rs`.
