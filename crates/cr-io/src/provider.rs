@@ -87,6 +87,30 @@ pub const FOLDER_FORMAT: FileFormat = FileFormat {
     dynamic: false,
 };
 
+/// What [`ComicProvider::open_with_report`] found out about a source
+/// while opening it. The scanner turns this into the per-book scan
+/// status (the red "!" and amber "≠" thumbnail chips).
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct OpenReport {
+    /// The format the FILE NAME claimed, when the extension is known.
+    pub extension_format: Option<&'static FileFormat>,
+    /// The format the file CONTENT proved, when a signature matched.
+    pub detected_format: Option<&'static FileFormat>,
+    /// The content format contradicts the extension, and the content
+    /// won (a RAR archive named `.cbz`, for example).
+    pub mismatch: bool,
+    /// The entry list could not be read. The file is in the library but
+    /// unreadable; the text is the accessor's own message.
+    pub entry_error: Option<String>,
+}
+
+impl OpenReport {
+    /// True when the source opened with no complaint at all.
+    pub fn is_clean(&self) -> bool {
+        !self.mismatch && self.entry_error.is_none()
+    }
+}
+
 /// Port of `ArchiveComicProvider` + `ImageProvider` page semantics,
 /// driven by a `ComicAccessor`. Page index = position in the filtered,
 /// naturally sorted list — the C# `foundImageList`.
@@ -109,25 +133,70 @@ impl ComicProvider {
     /// (`PdfComicProvider` extends `ComicProvider`, not
     /// `ArchiveComicProvider`): the accessor's page list is used as-is.
     pub fn open(source: &Path) -> Result<ComicProvider> {
+        Self::open_with_report(source).map(|(p, _)| p)
+    }
+
+    /// [`ComicProvider::open`] plus the [`OpenReport`] the scanner
+    /// records.
+    ///
+    /// The extension picks the candidate format, exactly as the C#
+    /// `ProviderFactory.GetSourceProviderType` does. Then the
+    /// accessor's own `IsFormat` runs, and a failure sends the source
+    /// through content detection — the port's form of
+    /// `ImageProviderFactory.CreateSourceProvider`, which asks the
+    /// other providers for a `FastFormatCheck` hit
+    /// (ImageProviderFactory.cs:18-27). A RAR archive named `.cbz`
+    /// therefore reads through the RAR accessor instead of driving the
+    /// zip reader across the whole file.
+    pub fn open_with_report(source: &Path) -> Result<(ComicProvider, OpenReport)> {
+        let mut report = OpenReport::default();
         let (format, accessor): (&'static FileFormat, Box<dyn ComicAccessor>) = if source.is_dir() {
             (&FOLDER_FORMAT, Box::new(FolderAccessor))
         } else {
-            let format = formats::source_format(source)
+            let by_extension = formats::source_format(source)
                 .ok_or_else(|| Error::UnsupportedFormat(source.to_path_buf()))?;
-            let accessor = crate::accessors::accessor_for(format.id)
+            report.extension_format = Some(by_extension);
+            let accessor = crate::accessors::accessor_for(by_extension.id)
                 .ok_or_else(|| Error::UnsupportedFormat(source.to_path_buf()))?;
-            (format, accessor)
+
+            // `FastFormatCheck`: when the claimed reader recognizes the
+            // content, keep it. Formats with no signature (tar) answer
+            // from their own parse attempt.
+            if accessor.is_format(source) {
+                (by_extension, accessor)
+            } else {
+                match formats::detect_format(source) {
+                    Some(id) if id != by_extension.id => {
+                        let detected = formats::format_by_id(id);
+                        report.detected_format = detected;
+                        match detected
+                            .and_then(|f| crate::accessors::accessor_for(f.id).map(|a| (f, a)))
+                        {
+                            Some((f, a)) => {
+                                report.mismatch = true;
+                                (f, a)
+                            }
+                            // Known signature, no ported reader: keep
+                            // the claimed one and let it report.
+                            None => (by_extension, accessor),
+                        }
+                    }
+                    // No signature matched, or it agrees with the
+                    // extension after all: keep the claimed reader.
+                    _ => (by_extension, accessor),
+                }
+            }
         };
         let mut provider = ComicProvider {
             source: source.to_path_buf(),
             format,
             pages: Vec::new(),
         };
-        provider.parse(
+        report.entry_error = provider.parse(
             &*accessor,
             format.id == formats::ids::PDF || format.id == formats::ids::DJVU,
         );
-        Ok(provider)
+        Ok((provider, report))
     }
     pub fn format(&self) -> &FileFormat {
         self.format
@@ -178,11 +247,19 @@ impl ComicProvider {
     /// accessor's entry list, keep supported images, and sort by
     /// natural order (`ExtendedStringComparer`, IgnoreCase); PDF and
     /// DjVu sources take the page list as-is.
-    fn parse(&mut self, accessor: &dyn ComicAccessor, raw_page_list: bool) {
-        let entries = accessor.get_entry_list(&self.source).unwrap_or_default();
+    ///
+    /// The C# swallows a broken archive into an empty page list. The
+    /// port keeps that behavior (the page list stays empty) and ALSO
+    /// returns the message, so the scanner can mark the book
+    /// unreadable instead of storing a silent zero-page entry.
+    fn parse(&mut self, accessor: &dyn ComicAccessor, raw_page_list: bool) -> Option<String> {
+        let (entries, error) = match accessor.get_entry_list(&self.source) {
+            Ok(entries) => (entries, None),
+            Err(e) => (Vec::new(), Some(e.to_string())),
+        };
         if raw_page_list {
             self.pages = entries;
-            return;
+            return error;
         }
         let mut list = entries
             .into_iter()
@@ -190,6 +267,7 @@ impl ComicProvider {
             .collect::<Vec<_>>();
         list.sort_by(|a, b| extended_compare_ignore_case(&a.name, &b.name));
         self.pages = list;
+        error
     }
 }
 

@@ -39,6 +39,22 @@ thread_local! {
     /// per walked file by the worker.
     static SCAN_STOP: RefCell<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>> =
         const { RefCell::new(None) };
+    /// The in-flight scan's "Skip Current File" flag. `skip_current_
+    /// scan_file` sets it; the worker CONSUMES it (one press abandons
+    /// one file) and carries on with the next file.
+    static SCAN_SKIP: RefCell<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>> =
+        const { RefCell::new(None) };
+    /// The problems accumulated across the scans of one run (a full
+    /// scan queues one request per watch root). Reported once, when the
+    /// last queued scan lands.
+    static SCAN_PROBLEMS: RefCell<ScanProblemSummary> =
+        const { RefCell::new(ScanProblemSummary {
+            unreadable: 0,
+            mismatched: 0,
+            timed_out: 0,
+            skipped: 0,
+            skipped_known_bad: 0,
+        }) };
     /// Book ids removed on the main thread while a scan is in flight
     /// (the remove flow records them): the landing merge drops them
     /// from the worker's storage copy instead of resurrecting them.
@@ -153,6 +169,97 @@ pub fn abort_scan() {
         }
     });
     crate::trace::trace("scan abort requested");
+}
+
+/// "Skip Current File" (PORT ADDITION, user request 2026-09-11 — no
+/// C# counterpart): abandon the file the scan is reading right now and
+/// continue with the next one. The whole scan keeps running.
+///
+/// This is the manual escape hatch. It is NOT the normal recovery
+/// path: the scanner already bounds every file with its own deadline
+/// and marks a file it had to abandon, so an unattended scan never
+/// waits for this button.
+pub fn skip_current_scan_file() {
+    let requested = SCAN_SKIP.with(|cell| {
+        if let Some(flag) = cell.borrow().as_ref() {
+            flag.store(true, std::sync::atomic::Ordering::Relaxed);
+            true
+        } else {
+            false
+        }
+    });
+    crate::trace::trace(format!("scan skip requested (in flight: {requested})"));
+}
+
+/// The problems found since the current run of scans began. A full
+/// library scan queues one request per watch root, so the counts
+/// accumulate and are reported ONCE, when the last queued scan lands.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ScanProblemSummary {
+    pub unreadable: usize,
+    pub mismatched: usize,
+    pub timed_out: usize,
+    pub skipped: usize,
+    pub skipped_known_bad: usize,
+}
+
+impl ScanProblemSummary {
+    pub fn total(&self) -> usize {
+        self.unreadable + self.mismatched + self.timed_out + self.skipped
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.total() == 0
+    }
+
+    /// The one-paragraph report shown after a scan, and the text a
+    /// user can act on with a smart list.
+    pub fn message(&self) -> String {
+        let mut lines: Vec<String> = Vec::new();
+        if self.unreadable > 0 {
+            lines.push(format!("{} could not be read", self.unreadable));
+        }
+        if self.timed_out > 0 {
+            lines.push(format!(
+                "{} took too long and were abandoned",
+                self.timed_out
+            ));
+        }
+        if self.skipped > 0 {
+            lines.push(format!("{} were skipped by hand", self.skipped));
+        }
+        if self.mismatched > 0 {
+            lines.push(format!(
+                "{} have contents that do not match their file name (these were imported)",
+                self.mismatched
+            ));
+        }
+        if self.skipped_known_bad > 0 {
+            lines.push(format!(
+                "{} were left alone because they failed before and have not changed",
+                self.skipped_known_bad
+            ));
+        }
+        lines.join("\n")
+    }
+}
+
+/// Adds one scan run's problems to the session summary.
+fn record_scan_problems(result: &ScanResult) {
+    SCAN_PROBLEMS.with(|cell| {
+        let mut s = cell.borrow_mut();
+        s.unreadable += result.unreadable.len();
+        s.mismatched += result.mismatched.len();
+        s.timed_out += result.timed_out.len();
+        s.skipped += result.skipped.len();
+        s.skipped_known_bad += result.skipped_known_bad.len();
+    });
+}
+
+/// Takes the accumulated summary and resets it. The shell calls this
+/// when the last queued scan lands.
+pub fn take_scan_problem_summary() -> ScanProblemSummary {
+    SCAN_PROBLEMS.with(|cell| std::mem::take(&mut *cell.borrow_mut()))
 }
 
 /// Opens the library database at the default location (`Program`'s
@@ -471,12 +578,24 @@ fn scan_async(location: String, done: impl FnOnce(ScanResult) + 'static) {
 /// final merge.
 enum ScanWorkerMsg {
     Batch(Vec<ComicBook>),
-    Done(Vec<ComicBook>, ScanResult),
+    Done(Vec<ComicBook>, Box<ScanResult>),
 }
 
 /// Books per batch send (the pump appends + refreshes per tick; a
 /// book clones once for its batch, so the cost is O(N) total).
 const SCAN_BATCH_SIZE: usize = 20;
+
+/// The per-file scan limits from the unified config
+/// (`ScanFileTimeoutSeconds`, `ScanRetryFailedFiles`). A timeout of 0
+/// disables the deadline.
+fn scan_limits() -> cr_engine::scanner::ScanLimits {
+    let settings = cr_core::settings::ExtendedSettings::global();
+    let seconds = settings.scan_file_timeout_seconds;
+    cr_engine::scanner::ScanLimits {
+        per_file_timeout: (seconds > 0).then(|| std::time::Duration::from_secs(seconds as u64)),
+        retry_failed: settings.scan_retry_failed_files,
+    }
+}
 
 /// Takes the book storage, runs the scan on a worker thread, and
 /// pumps batches + the result back onto the UI thread.
@@ -511,6 +630,10 @@ fn start_scan_worker(location: String, done: impl FnOnce(ScanResult) + 'static) 
     // `abort_scan` sets it, the worker checks per walked file.
     let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     SCAN_STOP.with(|cell| *cell.borrow_mut() = Some(std::sync::Arc::clone(&stop)));
+    // The "Skip Current File" flag: set by the status-bar/Tasks row,
+    // CONSUMED by the worker so one press abandons exactly one file.
+    let skip = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    SCAN_SKIP.with(|cell| *cell.borrow_mut() = Some(std::sync::Arc::clone(&skip)));
     std::thread::Builder::new()
         .name("Book Scanner".into())
         .spawn(move || {
@@ -518,14 +641,23 @@ fn start_scan_worker(location: String, done: impl FnOnce(ScanResult) + 'static) 
             let t = std::time::Instant::now();
             crate::trace::trace(format!("scan start '{location}'"));
             let mut batch: Vec<ComicBook> = Vec::new();
-            let result = cr_engine::scanner::scan_sync_with_progress(
+            let stop_fn = || stop.load(std::sync::atomic::Ordering::Relaxed);
+            let skip_fn = || {
+                skip.swap(false, std::sync::atomic::Ordering::Relaxed)
+            };
+            let control = cr_engine::scanner::ScanControl {
+                stop: &stop_fn,
+                take_skip: &skip_fn,
+            };
+            let result = cr_engine::scanner::scan_sync_with_control(
                 &mut storage,
                 &items,
                 &now,
                 &mut |f: &Path| {
                     let _ = ptx.send(f.to_string_lossy().into_owned());
                 },
-                &|| stop.load(std::sync::atomic::Ordering::Relaxed),
+                &control,
+                scan_limits(),
                 &mut |book: &ComicBook| {
                     batch.push(book.clone());
                     if batch.len() >= SCAN_BATCH_SIZE {
@@ -546,7 +678,15 @@ fn start_scan_worker(location: String, done: impl FnOnce(ScanResult) + 'static) 
                 result.moved.len(),
                 result.removed.len()
             ));
-            let _ = tx.send(ScanWorkerMsg::Done(storage, result));
+            crate::trace::trace(format!(
+                "scan problems '{location}': unreadable {} mismatched {} timed out {} skipped {} known-bad skipped {}",
+                result.unreadable.len(),
+                result.mismatched.len(),
+                result.timed_out.len(),
+                result.skipped.len(),
+                result.skipped_known_bad.len()
+            ));
+            let _ = tx.send(ScanWorkerMsg::Done(storage, Box::new(result)));
         })
         .expect("spawn Book Scanner");
 
@@ -588,6 +728,9 @@ fn start_scan_worker(location: String, done: impl FnOnce(ScanResult) + 'static) 
                     tick_batch.extend(batch);
                 }
                 Ok(ScanWorkerMsg::Done(books, result)) => {
+                    // The run summary accumulates across the queued
+                    // scans; the shell reports it once at the end.
+                    record_scan_problems(&result);
                     // Late batches ride the final storage — the landing
                     // merge replaces the appends wholesale.
                     tick_batch.clear();
@@ -608,6 +751,7 @@ fn start_scan_worker(location: String, done: impl FnOnce(ScanResult) + 'static) 
                     SCAN_IN_FLIGHT.with(|cell| *cell.borrow_mut() = false);
                     SCAN_LOCATION.with(|cell| cell.borrow_mut().clear());
                     SCAN_STOP.with(|cell| *cell.borrow_mut() = None);
+                    SCAN_SKIP.with(|cell| *cell.borrow_mut() = None);
                     fire_scan_view_hook(&[]);
                     // The done callback refreshes against the MERGED
                     // database — it must run BEFORE the next queued
@@ -615,7 +759,7 @@ fn start_scan_worker(location: String, done: impl FnOnce(ScanResult) + 'static) 
                     // taken, empty book list wipes the view; measured:
                     // "evaluate 0 books" right after "evaluate 10002").
                     if let Some(d) = done.take() {
-                        d(result);
+                        d(*result);
                     }
                     // The queued requests run one at a time, in arrival
                     // order (the C# scan queue).
@@ -629,6 +773,7 @@ fn start_scan_worker(location: String, done: impl FnOnce(ScanResult) + 'static) 
                     SCAN_IN_FLIGHT.with(|cell| *cell.borrow_mut() = false);
                     SCAN_LOCATION.with(|cell| cell.borrow_mut().clear());
                     SCAN_STOP.with(|cell| *cell.borrow_mut() = None);
+                    SCAN_SKIP.with(|cell| *cell.borrow_mut() = None);
                     if let Some(d) = done.take() {
                         d(ScanResult::default());
                     }

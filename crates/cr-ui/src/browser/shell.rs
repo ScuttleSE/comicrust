@@ -785,6 +785,12 @@ impl BrowserShell {
         self.state.item_view.probe_metadata_badge_draws()
     }
 
+    /// Probe: the scan markers ("!" / "≠") drawn in the last grid
+    /// frame (settle before reading, like the metadata badge).
+    pub fn state_grid_scan_marker_draws(&self) -> u32 {
+        self.state.item_view.probe_scan_marker_draws()
+    }
+
     /// Probe: the navigator pane visibility + split (the T14 restore
     /// gate).
     pub fn state_sidebar(&self) -> (bool, i32) {
@@ -1359,6 +1365,7 @@ impl BrowserShell {
                             if let Some(sh) = state2.upgrade() {
                                 sh.refresh_view_from_list();
                                 sh.sync_enabled();
+                                sh.report_scan_problems();
                             }
                         });
                     }
@@ -1524,6 +1531,12 @@ impl BrowserShell {
         // The scan lamp's "Cancel scan" row (the C# aborts through
         // the Tasks dialog's scan row — `Scanner.Stop(clearQueue)`).
         state.status_bar.connect_cancel_scan(library::abort_scan);
+        // "Skip current file": abandon the file in flight, keep the
+        // scan running (the manual escape hatch; the scanner's own
+        // per-file deadline is the unattended path).
+        state
+            .status_bar
+            .connect_skip_scan_file(library::skip_current_scan_file);
         // The slider drag → `SetItemSize` (the C# `TrackBar.Scroll`
         // routes to the ACTIVE browser's view).
         {
@@ -3265,6 +3278,45 @@ impl ShellState {
         });
     }
 
+    /// The post-scan problem report (PORT ADDITION, user request
+    /// 2026-09-11). It runs when the LAST queued scan lands, so a full
+    /// library scan across many watch roots reports once.
+    ///
+    /// Nothing here interrupts the scan: the scanner already marked
+    /// every problem file and carried on. This only tells the user
+    /// that the marked books exist, and how to list them.
+    fn report_scan_problems(self: &Rc<ShellState>) {
+        // More scans are still queued or running: wait for the last.
+        if library::is_scanning() {
+            return;
+        }
+        let summary = library::take_scan_problem_summary();
+        if summary.is_empty() {
+            return;
+        }
+        crate::trace::trace(format!("scan summary: {summary:?}"));
+        let dialog = gtk4::MessageDialog::builder()
+            .transient_for(&self.window)
+            .modal(false)
+            .title("comicrust")
+            .text(format!(
+                "The scan finished. {} book(s) need attention.",
+                summary.total()
+            ))
+            .secondary_text(format!(
+                "{}\n\nThese books are in the library and carry a marker on their \
+cover. To list them, make a smart list with the rule:\n\
+Custom Value \"{}\" is not empty",
+                summary.message(),
+                cr_core::scan_status::STATUS_KEY
+            ))
+            .message_type(gtk4::MessageType::Warning)
+            .buttons(gtk4::ButtonsType::Close)
+            .build();
+        dialog.connect_response(|dialog, _| dialog.destroy());
+        dialog.present();
+    }
+
     /// The Tasks dialog (`ShowPendingTasks`): one instance — an open
     /// dialog re-presents (`taskDialog.Activate()`).
     fn show_tasks(self: &Rc<ShellState>) {
@@ -3890,6 +3942,7 @@ impl ShellState {
                     if let Some(sh) = weak.upgrade() {
                         sh.refresh_view_from_list();
                         sh.sync_enabled();
+                        sh.report_scan_problems();
                     }
                 });
             }

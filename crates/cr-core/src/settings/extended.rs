@@ -42,6 +42,15 @@ pub struct ExtendedSettings {
     /// `DatabaseBackgroundSaving` (seconds) — drives the background
     /// database save timer.
     pub database_background_saving: i32,
+    /// `ScanFileTimeoutSeconds` (PORT ADDITION) — the longest time one
+    /// file may take during a library scan before the scan abandons it,
+    /// marks it "Timed out", and moves to the next file. 0 disables the
+    /// deadline.
+    pub scan_file_timeout_seconds: i32,
+    /// `ScanRetryFailedFiles` (PORT ADDITION) — re-read files that
+    /// already carry an unchanged scan failure. Off by default, so a
+    /// rescan does not pay for the same failures again.
+    pub scan_retry_failed_files: bool,
     pub load_database_in_foreground: bool,
     pub alternate_config: Option<String>,
     pub language: Option<String>,
@@ -111,6 +120,8 @@ impl Default for ExtendedSettings {
             show_context_help_key: false,
             data_source: None,
             database_background_saving: 600,
+            scan_file_timeout_seconds: 120,
+            scan_retry_failed_files: false,
             load_database_in_foreground: false,
             alternate_config: None,
             language: None,
@@ -179,6 +190,8 @@ crate::settings_fields! {
     Bool "ShowContextHelpKey" => show_context_help_key: bool, cat: "", desc: "", browsable: false, ini: true;
     StrOpt "DataSource" => data_source: Option<String>, cat: "", desc: "", browsable: false, ini: true;
     Int "DatabaseBackgroundSaving" => database_background_saving: i32, cat: "", desc: "", browsable: false, ini: true;
+    Int "ScanFileTimeoutSeconds" => scan_file_timeout_seconds: i32, cat: "", desc: "", browsable: false, ini: true;
+    Bool "ScanRetryFailedFiles" => scan_retry_failed_files: bool, cat: "", desc: "", browsable: false, ini: true;
     Bool "LoadDatabaseInForeground" => load_database_in_foreground: bool, cat: "", desc: "", browsable: false, ini: true;
     StrOpt "AlternateConfig" => alternate_config: Option<String>, cat: "", desc: "", browsable: false, ini: false;
     StrOpt "Language" => language: Option<String>, cat: "", desc: "", browsable: false, ini: false;

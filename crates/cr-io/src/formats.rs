@@ -179,6 +179,84 @@ pub fn source_format(source: &Path) -> Option<&'static FileFormat> {
     FORMATS.iter().find(|f| f.supports(source))
 }
 
+/// The first format in [`FORMATS`] with this id (the reader the
+/// accessor table keys on).
+pub fn format_by_id(id: i32) -> Option<&'static FileFormat> {
+    FORMATS.iter().find(|f| f.id == id)
+}
+
+/// Bytes read from the head of a file for [`detect_format`]. A tar
+/// archive carries its `ustar` magic at offset 257, so the window must
+/// reach 265.
+const DETECT_HEAD: usize = 265;
+
+/// Content-based format detection — the port's stand-in for the C#
+/// `ImageProviderFactory.CreateSourceProvider` fallback: when the
+/// provider picked by extension fails its `FastFormatCheck`, the C#
+/// asks every other provider whose check passes
+/// (ImageProviderFactory.cs:22). Reading the head once and mapping the
+/// signature is the same decision with one read instead of one open
+/// per provider.
+///
+/// Returns the format id, or `None` when no known signature matches.
+/// This never reads more than [`DETECT_HEAD`] bytes, so it is cheap on
+/// a network mount.
+pub fn detect_format(source: &Path) -> Option<i32> {
+    let mut file = std::fs::File::open(source).ok()?;
+    let mut head = [0u8; DETECT_HEAD];
+    let n = read_head(&mut file, &mut head)?;
+    detect_format_bytes(&head[..n])
+}
+
+/// Reads up to `buf.len()` bytes, tolerating short reads (a network
+/// filesystem may return fewer bytes than asked for).
+fn read_head(file: &mut std::fs::File, buf: &mut [u8]) -> Option<usize> {
+    use std::io::Read;
+    let mut filled = 0usize;
+    while filled < buf.len() {
+        match file.read(&mut buf[filled..]) {
+            Ok(0) => break,
+            Ok(n) => filled += n,
+            Err(ref e) if e.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(_) => return None,
+        }
+    }
+    Some(filled)
+}
+
+/// [`detect_format`] on an already-read head buffer (the unit-test
+/// seam).
+pub fn detect_format_bytes(head: &[u8]) -> Option<i32> {
+    if head.starts_with(b"Rar!\x1a\x07\x00") {
+        return Some(ids::CBR);
+    }
+    if head.starts_with(b"Rar!\x1a\x07\x01") {
+        return Some(ids::RAR5);
+    }
+    if head.starts_with(b"7z\xbc\xaf\x27\x1c") {
+        return Some(ids::CB7);
+    }
+    if head.starts_with(b"%PDF") {
+        return Some(ids::PDF);
+    }
+    // DjVu is an IFF container: "AT&TFORM" then a "DJV" form type.
+    if head.starts_with(b"AT&TFORM") {
+        return Some(ids::DJVU);
+    }
+    // Zip local header, spanned/empty markers included.
+    if head.starts_with(b"PK\x03\x04")
+        || head.starts_with(b"PK\x05\x06")
+        || head.starts_with(b"PK\x07\x08")
+    {
+        return Some(ids::CBZ);
+    }
+    // Tar: the `ustar` magic sits at offset 257.
+    if head.len() >= 265 && (&head[257..262] == b"ustar") {
+        return Some(ids::CBT);
+    }
+    None
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

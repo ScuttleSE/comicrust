@@ -17,6 +17,7 @@ libc.workspace = true
 
 [dev-dependencies]
 zip.workspace = true
+tar.workspace = true
 
 # Mirrors the workspace lints (cannot mix `workspace = true` with
 # overrides). The bindings deprecate the whole GTK3-era widget

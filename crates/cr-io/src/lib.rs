@@ -44,4 +44,4 @@ pub mod write;
 
 pub use error::{Error, Result};
 pub use formats::FileFormat;
-pub use provider::{ComicAccessor, ComicProvider, ProviderImageInfo};
+pub use provider::{ComicAccessor, ComicProvider, OpenReport, ProviderImageInfo};

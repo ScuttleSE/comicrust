@@ -159,6 +159,9 @@ pub struct ItemViewState {
     /// The "no metadata" tags drawn THIS frame (the probe seam — the
     /// draw re-records every frame, the arrow-zone pattern).
     badge_draws: u32,
+    /// The scan markers ("!" / "≠") drawn THIS frame — the same probe
+    /// seam as `badge_draws`.
+    scan_marker_draws: u32,
 }
 
 impl ItemViewState {
@@ -363,6 +366,7 @@ impl ItemView {
             type_ahead_source: None,
             canvas: canvas.clone(),
             badge_draws: 0,
+            scan_marker_draws: 0,
         }));
 
         let iv = ItemView {
@@ -396,6 +400,33 @@ impl ItemView {
                 let queued = draw_frame(ctx, &state, window);
                 if queued {
                     start_thumb_pump(&state);
+                }
+            });
+        }
+
+        // The scan-marker tooltip: hovering a book that failed its
+        // scan explains why, so the red "!" and amber "≠" chips are
+        // self-describing (PORT ADDITION, user request 2026-09-11).
+        {
+            let state = Rc::downgrade(&state);
+            canvas.set_has_tooltip(true);
+            canvas.connect_query_tooltip(move |_, x, y, _keyboard, tooltip| {
+                let Some(state) = state.upgrade() else {
+                    return false;
+                };
+                // Bind the borrow before the match: the scrutinee of an
+                // `if let` holds it through the whole statement.
+                let text = {
+                    let s = state.borrow();
+                    hit_test(&s.layout, x as f64, y as f64)
+                        .and_then(|d| super::item::scan_marker_tooltip(s.view.book(d)))
+                };
+                match text {
+                    Some(text) => {
+                        tooltip.set_text(Some(&text));
+                        true
+                    }
+                    None => false,
                 }
             });
         }
@@ -1064,6 +1095,12 @@ impl ItemView {
     /// resets the count at every frame start — settle before reading).
     pub fn probe_metadata_badge_draws(&self) -> u32 {
         self.state.borrow().badge_draws
+    }
+
+    /// The scan markers drawn in the LAST frame (same seam as
+    /// [`ItemView::probe_metadata_badge_draws`]).
+    pub fn probe_scan_marker_draws(&self) -> u32 {
+        self.state.borrow().scan_marker_draws
     }
 
     /// The center of one placed item's rect (the probe's press
@@ -1751,6 +1788,7 @@ fn draw_frame(ctx: &cairo::Context, state: &Rc<RefCell<ItemViewState>>, window: 
     // The per-frame draw record resets here (the badge count is the
     // probe seam — one settled frame decides).
     s.badge_draws = 0;
+    s.scan_marker_draws = 0;
     // The layout is maintained by the setters; the draw path only
     // tracks the viewport width (a full reflow per frame made the
     // full-library view crawl).
@@ -2094,6 +2132,17 @@ fn draw_thumbnail_item(
             );
             s.badge_draws += 1;
         }
+        // The scan marker (red "!" unreadable, amber "≠" mislabeled).
+        // It sits NEXT TO the "?" chip, so a book can carry both.
+        if let Some(marker) = super::item::scan_marker(book) {
+            super::item::draw_scan_tag(
+                ctx,
+                (image_area.x, image_area.y, image_area.w, image_area.h),
+                marker,
+                usize::from(no_meta),
+            );
+            s.scan_marker_draws += 1;
+        }
     }
     // The caption: the exact `Comic.Caption`, centered, wrapping in
     // the 3-line strip (skipped when captions hide — QuickOpen).
@@ -2186,6 +2235,20 @@ fn draw_tile_item(
             (image_area.x, image_area.y, image_area.w, image_area.h),
         );
         s.badge_draws += 1;
+    }
+    // The scan marker, beside the "?" chip (see the Thumbnail path).
+    let marker = {
+        let b = s.view.book(display);
+        super::item::scan_marker(b)
+    };
+    if let Some(marker) = marker {
+        super::item::draw_scan_tag(
+            ctx,
+            (image_area.x, image_area.y, image_area.w, image_area.h),
+            marker,
+            usize::from(no_meta),
+        );
+        s.scan_marker_draws += 1;
     }
     // The text block: the `DefaultFileComic` lines with the shared
     // tab stop (`SimpleTextRenderer` two-column shape). The segments

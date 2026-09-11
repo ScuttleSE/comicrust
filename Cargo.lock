@@ -418,6 +418,7 @@ dependencies = [
  "cr-io",
  "fancy-regex",
  "notify",
+ "tar",
  "zip",
 ]
 
@@ -480,6 +481,7 @@ dependencies = [
  "gtk4",
  "libc",
  "serde_json",
+ "tar",
  "zip",
 ]
 

@@ -314,12 +314,21 @@ pub fn show_tasks_dialog(parent: &impl IsA<gtk4::Window>, pool: Arc<ImagePool>) 
         .halign(Align::Start)
         .build();
     let abort = Button::with_label("Abort all User Tasks");
+    // "Skip current file" (PORT ADDITION, user request 2026-09-11):
+    // abandon the file the scan is reading now and carry on. Enabled
+    // only while a scan runs.
+    let skip_file = Button::with_label("Skip current file");
+    skip_file.set_tooltip_text(Some(
+        "Abandon the file the scan is reading now and continue with the next one",
+    ));
+    skip_file.set_sensitive(false);
     let close = Button::with_label("Close");
     let bottom = gtk4::Box::new(Orientation::Horizontal, 6);
     bottom.append(&pending_label);
     let spacer = gtk4::Box::new(Orientation::Horizontal, 0);
     spacer.set_hexpand(true);
     bottom.append(&spacer);
+    bottom.append(&skip_file);
     bottom.append(&abort);
     bottom.append(&close);
     content.append(&bottom);
@@ -331,6 +340,7 @@ pub fn show_tasks_dialog(parent: &impl IsA<gtk4::Window>, pool: Arc<ImagePool>) 
         let store = store.clone();
         let pending_label = pending_label.clone();
         let abort = abort.clone();
+        let skip_file = skip_file.clone();
         let pool = Arc::clone(&pool);
         std::rc::Rc::new(Box::new(move || {
             store.clear();
@@ -387,8 +397,20 @@ pub fn show_tasks_dialog(parent: &impl IsA<gtk4::Window>, pool: Arc<ImagePool>) 
                 .iter()
                 .any(|b| b.abort.is_some() && b.pending_count() > 0);
             abort.set_sensitive(abortable);
+            // Only a running scan has a "current file" to skip.
+            skip_file.set_sensitive(crate::library::is_scanning());
         }))
     };
+
+    // Skip current file: the scan abandons the file in flight, marks
+    // it, and continues with the next one.
+    {
+        let refresh = std::rc::Rc::clone(&refresh);
+        skip_file.connect_clicked(move |_| {
+            crate::library::skip_current_scan_file();
+            refresh();
+        });
+    }
 
     // Abort all (`btAbort_Click`): every abortable queue drops its
     // pending items. The ported aborts: the cover-generation queue,

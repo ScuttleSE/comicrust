@@ -485,22 +485,122 @@ pub fn metadata_missing(book: &ComicBook) -> bool {
 /// at the top-left of the cover — subtle in both themes and against
 /// any cover art.
 pub fn draw_metadata_tag(ctx: &Context, box_: (f64, f64, f64, f64)) {
+    draw_chip(ctx, box_, 0, "?", (0.05, 0.05, 0.05, 0.62), (1.0, 1.0, 1.0));
+}
+
+/// The scan marker a book carries after a scan (PORT ADDITION, user
+/// request 2026-09-11 — no C# counterpart).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScanMarker {
+    /// Red "!": the file could not be read, timed out, or was skipped.
+    Failed,
+    /// Amber "≠": the archive content is not the format the file name
+    /// claims. The book IS readable through the detected reader.
+    Mismatch,
+}
+
+impl ScanMarker {
+    fn glyph(self) -> &'static str {
+        match self {
+            ScanMarker::Failed => "!",
+            ScanMarker::Mismatch => "≠",
+        }
+    }
+
+    /// The chip fill. Both keep the translucent-dark base of the "?"
+    /// chip so they read the same way over any cover art.
+    fn fill(self) -> (f64, f64, f64, f64) {
+        match self {
+            ScanMarker::Failed => (0.62, 0.09, 0.09, 0.82),
+            ScanMarker::Mismatch => (0.68, 0.45, 0.05, 0.82),
+        }
+    }
+}
+
+/// The scan marker for a book, read from the stored
+/// `comicrust.scan.status` custom value. A book with no verdict, and
+/// a fileless one, carry no marker.
+pub fn scan_marker(book: &ComicBook) -> Option<ScanMarker> {
+    if book.file_path.is_empty() {
+        return None;
+    }
+    match cr_core::scan_status::status(book)? {
+        s if s.is_failure() => Some(ScanMarker::Failed),
+        cr_core::scan_status::ScanStatus::FormatMismatch => Some(ScanMarker::Mismatch),
+        _ => None,
+    }
+}
+
+/// The tooltip text for a book's scan marker: the verdict, the format
+/// disagreement when there is one, and the stored reason.
+pub fn scan_marker_tooltip(book: &ComicBook) -> Option<String> {
+    let status = cr_core::scan_status::status(book)?;
+    let mut text = String::from(status.as_text());
+    let detected = cr_core::scan_status::detected_format(book);
+    let expected = custom_value(book, cr_core::scan_status::EXPECTED_FORMAT_KEY);
+    match (&detected, &expected) {
+        (Some(detected), Some(expected)) => {
+            text.push_str(&format!(
+                "\nContent is {detected}, the name says {expected}"
+            ));
+        }
+        (Some(detected), None) => text.push_str(&format!("\nContent is {detected}")),
+        _ => {}
+    }
+    if let Some(error) = cr_core::scan_status::error_text(book) {
+        text.push('\n');
+        text.push_str(&error);
+    }
+    Some(text)
+}
+
+fn custom_value(book: &ComicBook, key: &str) -> Option<String> {
+    cr_core::model::comic_book::values_store::decode(&book.custom_values_store)
+        .into_iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case(key))
+        .map(|(_, v)| v)
+        .filter(|v| !v.is_empty())
+}
+
+/// Draws a book's scan marker. `slot` shifts the chip right so it does
+/// not cover the "no metadata" chip when a book carries both.
+pub fn draw_scan_tag(ctx: &Context, box_: (f64, f64, f64, f64), marker: ScanMarker, slot: usize) {
+    draw_chip(
+        ctx,
+        box_,
+        slot,
+        marker.glyph(),
+        marker.fill(),
+        (1.0, 1.0, 1.0),
+    );
+}
+
+/// The shared chip geometry of every top-left cover tag. `slot` is the
+/// zero-based position in the row of chips.
+fn draw_chip(
+    ctx: &Context,
+    box_: (f64, f64, f64, f64),
+    slot: usize,
+    glyph: &str,
+    fill: (f64, f64, f64, f64),
+    ink: (f64, f64, f64),
+) {
     let (x, y, w, h) = box_;
     let size = (w.min(h) * 0.13).clamp(12.0, 20.0);
-    let bx = x + 8.0;
+    let bx = x + 8.0 + slot as f64 * (size + 4.0);
     let by = y + 8.0;
-    ctx.set_source_rgba(0.05, 0.05, 0.05, 0.62);
+    ctx.set_source_rgba(fill.0, fill.1, fill.2, fill.3);
     rounded_rect(ctx, bx, by, size, size, size * 0.28);
     ctx.fill().ok();
     ctx.select_font_face("Sans", cairo::FontSlant::Normal, cairo::FontWeight::Normal);
     ctx.set_font_size(size * 0.62);
-    if let Ok(ext) = ctx.text_extents("?") {
-        ctx.set_source_rgba(1.0, 1.0, 1.0, 0.85);
+    if let Ok(ext) = ctx.text_extents(glyph) {
+        ctx.set_source_rgba(ink.0, ink.1, ink.2, 0.92);
         ctx.move_to(
             bx + (size - ext.width()) / 2.0 - ext.x_bearing(),
             by + size * 0.76,
         );
-        ctx.show_text("?").ok();
+        ctx.show_text(glyph).ok();
     }
 }
 

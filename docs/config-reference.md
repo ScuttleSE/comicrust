@@ -81,6 +81,8 @@ Application switches (the old `ComicRack.ini` keys).
 | `RegisterFormats` | "" | C# file association registration list. No effect in this port. |
 | `RemoteLibrariesInQuickOpen` | true | Quick Open shows remote libraries (C# remote feature). |
 | `ReplaceDefaultListsInQuickOpen` | false | Own quick lists replace the built-in ones. |
+| `ScanFileTimeoutSeconds` | 120 | Port addition. The longest time a library scan may spend on ONE file. When the time runs out, the scan marks the book "Timed out" and continues with the next file. 0 removes the limit. |
+| `ScanRetryFailedFiles` | false | Port addition. Read files again that already carry an unchanged scan failure. The default leaves them alone, so a rescan does not pay for the same failures again. A changed file is always read again. |
 | `ShowContextHelpKey` | false | C# WinForms help gate. No effect in this port. |
 | `ShowCustomScriptValues` | false | Shows dotted custom values (script values) in Properties. |
 | `ShowScriptConsole` | false | C# IronPython console. No effect in this port. |

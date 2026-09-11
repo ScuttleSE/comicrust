@@ -261,4 +261,178 @@ fn cbz_with_prepended_junk_opens_fast() {
 
     let info = provider.read_info_file("ComicInfo.xml").unwrap();
     assert_eq!(info, b"<ComicInfo />");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Regression (measured 2026-09-11, live scan): a ZIP64 archive keeps
+/// its zip64 record (56 bytes) and locator (20 bytes) BETWEEN the
+/// central directory and the EOCD. The old `EOCD - cd_size - cd_offset`
+/// arithmetic therefore produced a non-zero archive offset for a file
+/// with no prepended bytes at all (76 on the 2.8 GB omnibus), the
+/// mandatory-guess open failed, and the crate fell back to a full-file
+/// backward scan. The offset is now VERIFIED against the central
+/// directory signature before it is used.
+#[test]
+fn zip64_archive_resolves_to_offset_zero() {
+    let dir = temp_dir("cbz-zip64");
+    let path = dir.join("comic.cbz");
+
+    // `large_file(true)` writes the zip64 trailer regardless of size.
+    let file = File::create(&path).unwrap();
+    let mut zip = zip::ZipWriter::new(file);
+    let options: zip::write::SimpleFileOptions =
+        zip::write::SimpleFileOptions::default().large_file(true);
+    for (name, data) in comic_entries() {
+        zip.start_file(name.to_string(), options).unwrap();
+        zip.write_all(&data).unwrap();
+    }
+    zip.finish().unwrap();
+
+    let provider = ComicProvider::open(&path).unwrap();
+    assert_eq!(provider.format().name, "eComic (ZIP)");
+    let names: Vec<&str> = provider.pages().iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(
+        names,
+        ["cover.jpg", "pages/1.jpg", "pages/2.jpg", "pages/10.jpg"],
+        "the zip64 trailer must not shift the derived archive offset"
+    );
+    assert_eq!(
+        provider.read_info_file("ComicInfo.xml").unwrap(),
+        b"<ComicInfo />"
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A ZIP64 archive that ALSO carries prepended bytes: the offset comes
+/// from the zip64 record position, and is verified like every other
+/// candidate.
+#[test]
+fn zip64_archive_with_prepended_junk_resolves() {
+    let dir = temp_dir("cbz-zip64-prepend");
+    let path = dir.join("comic.cbz");
+
+    let file = File::create(&path).unwrap();
+    let mut zip = zip::ZipWriter::new(file);
+    let options: zip::write::SimpleFileOptions =
+        zip::write::SimpleFileOptions::default().large_file(true);
+    for (name, data) in comic_entries() {
+        zip.start_file(name.to_string(), options).unwrap();
+        zip.write_all(&data).unwrap();
+    }
+    zip.finish().unwrap();
+
+    let body = std::fs::read(&path).unwrap();
+    let mut with_junk = vec![0u8; 512];
+    with_junk.extend_from_slice(&body);
+    std::fs::write(&path, &with_junk).unwrap();
+
+    let provider = ComicProvider::open(&path).unwrap();
+    let names: Vec<&str> = provider.pages().iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(names.first(), Some(&"cover.jpg"));
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Regression (measured 2026-09-11): "The Boys 064.cbz" carried ONE
+/// zip local entry followed by 17.4 MB of unrelated data and no
+/// central directory at all. The old open walked the whole file
+/// backwards looking for an EOCD. The open must now fail from the
+/// bounded tail check, report the reason, and leave the page list
+/// empty — never scan the body.
+#[test]
+fn cbz_without_central_directory_fails_from_the_tail() {
+    let dir = temp_dir("cbz-no-cd");
+    let path = dir.join("comic.cbz");
+
+    // A real local file header, then junk, and no directory.
+    let mut bytes: Vec<u8> = Vec::new();
+    bytes.extend_from_slice(b"PK\x03\x04");
+    bytes.extend_from_slice(&[0u8; 26]);
+    bytes.extend_from_slice(&vec![0xab; 512 * 1024]);
+    std::fs::write(&path, &bytes).unwrap();
+
+    let (provider, report) = ComicProvider::open_with_report(&path).unwrap();
+    assert_eq!(provider.page_count(), 0);
+    assert!(!report.is_clean());
+    assert!(
+        report.entry_error.is_some(),
+        "a directory-less zip must report why it could not be read"
+    );
+    assert!(!report.mismatch, "the content really is zip-flavored");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// Regression (measured 2026-09-11): "Blacksad ... Issue 004.cbz" is a
+/// RAR archive with a `.cbz` name. The zip reader drove a full-file
+/// backward scan over CIFS. The provider must detect the content, route
+/// to the RAR reader, and flag the mismatch — the C#
+/// `ImageProviderFactory.CreateSourceProvider` fallback
+/// (ImageProviderFactory.cs:18-27).
+#[test]
+fn rar_content_named_cbz_routes_to_the_rar_reader() {
+    let dir = temp_dir("rar-as-cbz");
+    let path = dir.join("comic.cbz");
+
+    // A RAR4 signature is enough to decide the ROUTING; reading the
+    // entries needs the 7z subprocess, which is gated elsewhere.
+    let mut bytes = b"Rar!\x1a\x07\x00".to_vec();
+    bytes.extend_from_slice(&[0u8; 256]);
+    std::fs::write(&path, &bytes).unwrap();
+
+    let (provider, report) = ComicProvider::open_with_report(&path).unwrap();
+    assert_eq!(
+        provider.format().id,
+        cr_io::formats::ids::CBR,
+        "RAR content must read through the RAR accessor, not the zip one"
+    );
+    assert!(
+        report.mismatch,
+        "the extension/content mismatch is recorded"
+    );
+    assert_eq!(
+        report.extension_format.map(|f| f.id),
+        Some(cr_io::formats::ids::CBZ)
+    );
+    assert_eq!(
+        report.detected_format.map(|f| f.id),
+        Some(cr_io::formats::ids::CBR)
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A normal, correctly named CBZ reports no mismatch and no error, so
+/// the scanner leaves it unmarked.
+#[test]
+fn well_formed_cbz_reports_a_clean_open() {
+    let dir = temp_dir("cbz-clean");
+    let path = dir.join("comic.cbz");
+    build_zip(&path, &comic_entries());
+
+    let (_, report) = ComicProvider::open_with_report(&path).unwrap();
+    assert!(report.is_clean());
+    assert!(!report.mismatch);
+    assert!(report.entry_error.is_none());
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A TAR archive named `.cbz`: the tar engine has no signature, so the
+/// routing comes from the `ustar` magic at offset 257.
+#[test]
+fn tar_content_named_cbz_routes_to_the_tar_reader() {
+    let dir = temp_dir("tar-as-cbz");
+    let path = dir.join("comic.cbz");
+    build_tar(&path, &comic_entries());
+
+    let (provider, report) = ComicProvider::open_with_report(&path).unwrap();
+    assert_eq!(provider.format().id, cr_io::formats::ids::CBT);
+    assert!(report.mismatch);
+    let names: Vec<&str> = provider.pages().iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(names.first(), Some(&"cover.jpg"));
+
+    std::fs::remove_dir_all(&dir).ok();
 }

@@ -17,3 +17,4 @@ workspace = true
 
 [dev-dependencies]
 zip = "2"
+tar.workspace = true

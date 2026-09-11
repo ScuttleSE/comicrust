@@ -145,83 +145,192 @@ impl ComicAccessor for TarAccessor {
     }
 }
 
-/// Open a zip archive with a cheap archive-offset resolution.
+/// Open a zip archive with a BOUNDED archive-offset resolution.
 ///
-/// `ZipArchive::new` (`ArchiveOffset::Detect`) handles prepended junk by
-/// searching BACKWARDS from the EOCD for the first CDFH in 2045-byte
-/// windows. On a big archive over CIFS (~4 ms per seek+read round trip)
-/// that crawl costs hours per file (measured: a 2.85 GB omnibus with a
-/// 512-byte prepend). This helper reads the file tail ONCE, locates the
-/// EOCD, and derives the archive offset arithmetically
-/// (`eocd_offset - cd_size - relative_cd_offset`); the crate's mandatory
-/// CDFH guess then hits on the FIRST read. Any parse surprise falls back
-/// to the crate's own detection.
+/// `ZipArchive::new` (`ArchiveOffset::Detect`) resolves prepended junk
+/// with two backward searches: one for the EOCD and one for the first
+/// CDFH. Both are unbounded — when a file carries no usable central
+/// directory the EOCD finder walks the WHOLE file backwards in
+/// 2045-byte windows. Over CIFS that is a measured ~0.49 MB/s, and the
+/// scanner opens each new book three times (page list, ComicInfo,
+/// ComicBook), so a 33 MB file cost minutes and a 2.8 GB one cost
+/// hours (measured 2026-09-11 on a live scan: thread "Book Scanner"
+/// in `folio_wait_bit_common`, file offsets walking backwards).
+///
+/// This helper does the whole resolution inside ONE tail read:
+///
+/// 1. read the last 64 KiB + 22 bytes,
+/// 2. locate the EOCD there (a valid zip keeps it inside that window,
+///    because the trailing comment is at most 64 KiB),
+/// 3. derive the archive offset arithmetically, using the ZIP64 record
+///    from the same buffer when the zip32 fields are saturated,
+/// 4. verify the derived central directory really starts with a CDFH.
+///
+/// If any step fails, the function returns an error IMMEDIATELY. It
+/// never hands the file to the crate's detection, because that is the
+/// unbounded path. A file with no central directory is therefore
+/// rejected after a few kilobytes instead of after a full-file scan.
 fn open_zip_archive(file: File) -> zip::result::ZipResult<zip::ZipArchive<File>> {
-    use std::io::{Seek, SeekFrom};
-
-    const EOCD_SIG: [u8; 4] = [0x50, 0x4b, 0x05, 0x06];
-    const MAX_COMMENT: u64 = 65_535;
-
-    let detect = || zip::ZipArchive::new(file.try_clone()?);
-    let len = match file.metadata() {
-        Ok(m) => m.len(),
-        Err(_) => return detect(),
-    };
-    if len < 22 {
-        return detect();
-    }
-
-    // One tail read: EOCD (22) + the maximum comment.
-    let tail_len = (len).min(22 + MAX_COMMENT);
-    let tail_start = len - tail_len;
-    let mut tail = vec![0u8; tail_len as usize];
-    let mut file2 = match file.try_clone() {
-        Ok(f) => f,
-        Err(_) => return detect(),
-    };
-    if file2.seek(SeekFrom::Start(tail_start)).is_err() {
-        return detect();
-    }
-    if std::io::Read::read_exact(&mut file2, &mut tail).is_err() {
-        return detect();
-    }
-
-    // EOCD: scan back for the signature (last occurrence wins — the
-    // comment may contain the bytes).
-    let Some(eocd_pos) = tail.windows(4).rposition(|w| w == EOCD_SIG) else {
-        return detect();
-    };
-    let eocd = eocd_pos + tail_start as usize;
-    if eocd + 22 > len as usize {
-        return detect();
-    }
-    let b = &tail[eocd_pos..eocd_pos + 22];
-    let cd_size = u32::from_le_bytes([b[12], b[13], b[14], b[15]]) as u64;
-    let cd_rel = u32::from_le_bytes([b[16], b[17], b[18], b[19]]) as u64;
-
-    // Derive the archive offset from the EOCD position. If the numbers
-    // disagree (or the derivation underflows), let the crate detect.
-    let eocd_off = eocd as u64;
-    if cd_size == 0 || cd_rel == 0 {
-        return detect();
-    }
-    let Some(archive_offset) = eocd_off
-        .checked_sub(cd_size)
-        .and_then(|v| v.checked_sub(cd_rel))
-    else {
-        return detect();
-    };
-    if archive_offset == 0 {
-        // No prepend — the plain open is already fast.
-        return detect();
-    }
-
+    let archive_offset = resolve_archive_offset(&file)?;
     zip::ZipArchive::with_config(
         zip::read::Config {
             archive_offset: zip::read::ArchiveOffset::Known(archive_offset),
         },
         file,
     )
+}
+
+/// Zip signatures used by the bounded resolution.
+const EOCD_SIG: [u8; 4] = *b"PK\x05\x06";
+const EOCD64_SIG: [u8; 4] = *b"PK\x06\x06";
+const EOCD64_LOCATOR_SIG: [u8; 4] = *b"PK\x06\x07";
+const CDFH_SIG: [u8; 4] = *b"PK\x01\x02";
+/// The largest zip trailing comment, so the largest distance from the
+/// EOCD to the end of the file.
+const MAX_COMMENT: u64 = 65_535;
+
+/// Derives the archive offset (the count of prepended bytes) from the
+/// file tail. Every read here is bounded; see [`open_zip_archive`].
+///
+/// The offset is never trusted from arithmetic alone. Subtracting the
+/// directory size and its relative offset from the EOCD position is
+/// only correct when the EOCD directly follows the central directory,
+/// and that is FALSE for every zip64 file, because the zip64 record
+/// (56 bytes) and its locator (20 bytes) sit in between. Measured on
+/// the 2.8 GB omnibus: the arithmetic yields 76 for a file whose real
+/// offset is 0. So this builds the small set of candidate offsets and
+/// verifies each one against the central directory signature, which
+/// costs one 4-byte read per candidate.
+fn resolve_archive_offset(file: &File) -> zip::result::ZipResult<u64> {
+    use std::io::{Read, Seek, SeekFrom};
+
+    let len = file.metadata()?.len();
+    if len < 22 {
+        return Err(zip::result::ZipError::InvalidArchive(
+            "file is too short to hold a zip end-of-central-directory record",
+        ));
+    }
+
+    // ONE tail read: the EOCD plus the largest possible comment.
+    let tail_len = len.min(22 + MAX_COMMENT);
+    let tail_start = len - tail_len;
+    let mut tail = vec![0u8; tail_len as usize];
+    let mut reader = file.try_clone()?;
+    reader.seek(SeekFrom::Start(tail_start))?;
+    reader.read_exact(&mut tail)?;
+
+    // The EOCD: the LAST occurrence wins, because a comment may
+    // contain the signature bytes.
+    let eocd_pos = tail.windows(4).rposition(|w| w == EOCD_SIG).ok_or(
+        zip::result::ZipError::InvalidArchive(
+            "no zip end-of-central-directory record in the file tail",
+        ),
+    )?;
+    if eocd_pos + 22 > tail.len() {
+        return Err(zip::result::ZipError::InvalidArchive(
+            "truncated zip end-of-central-directory record",
+        ));
+    }
+    let eocd_abs = tail_start + eocd_pos as u64;
+    let eocd = &tail[eocd_pos..eocd_pos + 22];
+    let mut entries = u16::from_le_bytes([eocd[10], eocd[11]]) as u64;
+    let cd_size = u32::from_le_bytes([eocd[12], eocd[13], eocd[14], eocd[15]]) as u64;
+    let mut cd_rel = u32::from_le_bytes([eocd[16], eocd[17], eocd[18], eocd[19]]) as u64;
+
+    // Candidate offsets, in order of likelihood. Each one is verified
+    // before it is returned.
+    let mut candidates: Vec<u64> = vec![0];
+
+    // The zip64 trailer, when present, is authoritative for the counts
+    // and gives a second candidate offset. Both records live in the
+    // tail buffer that is already in memory.
+    if let Some(z64) = read_zip64_trailer(&tail, tail_start, eocd_pos) {
+        entries = z64.entries;
+        cd_rel = z64.cd_offset;
+        candidates.push(z64.archive_offset);
+    } else if let Some(arith) = eocd_abs
+        .checked_sub(cd_size)
+        .and_then(|v| v.checked_sub(cd_rel))
+    {
+        // Plain zip32 with the EOCD directly after the directory.
+        candidates.push(arith);
+    }
+
+    // An empty archive has no central directory to verify against.
+    if entries == 0 {
+        return Ok(0);
+    }
+
+    candidates.dedup();
+    for candidate in candidates {
+        if let Some(pos) = cd_rel.checked_add(candidate) {
+            if pos < eocd_abs && verify_cdfh(file, pos)? {
+                return Ok(candidate);
+            }
+        }
+    }
+    Err(zip::result::ZipError::InvalidArchive(
+        "no zip central-directory header at any derived offset",
+    ))
+}
+
+/// The zip64 trailer values taken from the tail buffer.
+struct Zip64Trailer {
+    entries: u64,
+    cd_offset: u64,
+    archive_offset: u64,
+}
+
+/// Reads the zip64 locator (the 20 bytes before the EOCD) and the
+/// zip64 end-of-central-directory record it points at. Both are
+/// located inside the tail buffer, so this performs no file read.
+/// Returns `None` when the file carries no zip64 trailer.
+fn read_zip64_trailer(tail: &[u8], tail_start: u64, eocd_pos: usize) -> Option<Zip64Trailer> {
+    if eocd_pos < 20 {
+        return None;
+    }
+    let loc = &tail[eocd_pos - 20..eocd_pos];
+    if loc[..4] != EOCD64_LOCATOR_SIG {
+        return None;
+    }
+    let eocd64_rel = u64::from_le_bytes([
+        loc[8], loc[9], loc[10], loc[11], loc[12], loc[13], loc[14], loc[15],
+    ]);
+
+    let eocd64_pos = tail[..eocd_pos - 20]
+        .windows(4)
+        .rposition(|w| w == EOCD64_SIG)?;
+    if eocd64_pos + 56 > tail.len() {
+        return None;
+    }
+    let rec = &tail[eocd64_pos..eocd64_pos + 56];
+    let eocd64_abs = tail_start + eocd64_pos as u64;
+    Some(Zip64Trailer {
+        entries: u64::from_le_bytes([
+            rec[32], rec[33], rec[34], rec[35], rec[36], rec[37], rec[38], rec[39],
+        ]),
+        cd_offset: u64::from_le_bytes([
+            rec[48], rec[49], rec[50], rec[51], rec[52], rec[53], rec[54], rec[55],
+        ]),
+        archive_offset: eocd64_abs.saturating_sub(eocd64_rel),
+    })
+}
+
+/// Reads the 4 bytes at `pos` and reports whether a central-directory
+/// file header starts there. This is the check that proves a derived
+/// offset is right before the crate ever touches the file. A short or
+/// out-of-range read is a plain `false`, not an error.
+fn verify_cdfh(file: &File, pos: u64) -> zip::result::ZipResult<bool> {
+    use std::io::{Read, Seek, SeekFrom};
+
+    let mut reader = file.try_clone()?;
+    reader.seek(SeekFrom::Start(pos))?;
+    let mut sig = [0u8; 4];
+    match reader.read_exact(&mut sig) {
+        Ok(()) => Ok(sig == CDFH_SIG),
+        Err(ref e) if e.kind() == std::io::ErrorKind::UnexpectedEof => Ok(false),
+        Err(e) => Err(e.into()),
+    }
 }
 
 /// Shared signature check (`FileBasedAccessor.IsFormat`). `on_error`

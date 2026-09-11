@@ -126,6 +126,7 @@ struct Inner {
     anim: RefCell<Option<glib::SourceId>>,
     scan_menu: Popover,
     scan_cancel: gtk4::Button,
+    scan_skip: gtk4::Button,
     book: Label,
     page_button: gtk4::Button,
     page_label: Label,
@@ -138,6 +139,7 @@ struct Inner {
     slider_syncing: Cell<bool>,
     on_lamp_click: RefCell<Option<LampFn>>,
     on_cancel_scan: RefCell<Option<LampFn>>,
+    on_skip_scan_file: RefCell<Option<LampFn>>,
     on_page_click: RefCell<Option<LampFn>>,
     on_slider_change: RefCell<Option<SliderFn>>,
 }
@@ -250,7 +252,8 @@ impl StatusBar {
             widget.append(lamp);
         }
 
-        // The scan lamp's menu: one "Cancel scan" row (the C# abort
+        // The scan lamp's menu: "Skip current file" (abandon the file
+        // in flight, keep scanning) and "Cancel scan" (the C# abort
         // lives in the Tasks dialog's scan row; the user asked for
         // the direct menu on the lamp). Parented to the LAMP (the
         // popover-before-toplevel lesson) and positioned above the
@@ -263,6 +266,11 @@ impl StatusBar {
         menu_box.set_margin_bottom(4);
         menu_box.set_margin_start(2);
         menu_box.set_margin_end(2);
+        let skip = crate::widgets::menu_item_button("Skip current file");
+        skip.set_tooltip_text(Some(
+            "Abandon the file the scan is reading now and continue with the next one",
+        ));
+        menu_box.append(&skip);
         let cancel = crate::widgets::menu_item_button("Cancel scan");
         menu_box.append(&cancel);
         scan_menu.set_child(Some(&menu_box));
@@ -330,6 +338,7 @@ impl StatusBar {
                 anim: RefCell::new(None),
                 scan_menu,
                 scan_cancel: cancel,
+                scan_skip: skip,
                 book,
                 page_button,
                 page_label,
@@ -339,6 +348,7 @@ impl StatusBar {
                 slider_syncing: Cell::new(false),
                 on_lamp_click: RefCell::new(None),
                 on_cancel_scan: RefCell::new(None),
+                on_skip_scan_file: RefCell::new(None),
                 on_page_click: RefCell::new(None),
                 on_slider_change: RefCell::new(None),
             }),
@@ -373,6 +383,15 @@ impl StatusBar {
             self.inner.scan_cancel.connect_clicked(move |_| {
                 inner.scan_menu.popdown();
                 if let Some(f) = inner.on_cancel_scan.borrow().as_ref() {
+                    f();
+                }
+            });
+        }
+        {
+            let inner = Rc::clone(&self.inner);
+            self.inner.scan_skip.connect_clicked(move |_| {
+                inner.scan_menu.popdown();
+                if let Some(f) = inner.on_skip_scan_file.borrow().as_ref() {
                     f();
                 }
             });
@@ -493,6 +512,12 @@ impl StatusBar {
         *self.inner.on_cancel_scan.borrow_mut() = Some(Box::new(f));
     }
 
+    /// The scan lamp's "Skip current file" row
+    /// (`library::skip_current_scan_file` through the shell hook).
+    pub fn connect_skip_scan_file<F: Fn() + 'static>(&self, f: F) {
+        *self.inner.on_skip_scan_file.borrow_mut() = Some(Box::new(f));
+    }
+
     pub fn connect_page_click<F: Fn() + 'static>(&self, f: F) {
         *self.inner.on_page_click.borrow_mut() = Some(Box::new(f));
     }
@@ -554,6 +579,11 @@ impl StatusBar {
     /// The probe path: the REAL "Cancel scan" row click.
     pub fn click_cancel_scan(&self) {
         self.inner.scan_cancel.emit_clicked();
+    }
+
+    /// The probe path: the REAL "Skip current file" row click.
+    pub fn click_skip_scan_file(&self) {
+        self.inner.scan_skip.emit_clicked();
     }
 
     pub fn cancel_menu_visible(&self) -> bool {
