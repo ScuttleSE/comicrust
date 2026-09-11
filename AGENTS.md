@@ -65,6 +65,51 @@ These rules are absolute. Break none of them. If you break them, you waste the u
   GTK widget handles (Rc) and `Box<dyn FnOnce>` callbacks are NOT
   Send — they stay on the main-thread side of the channel.
 
+### Rules R-1 to R-10: Execution discipline (ABSOLUTE)
+
+These rules sit UNDER Rule 0 and are absolute. Every one is
+mechanically checkable against the session log. Any breach has ONE
+permitted response: INSTANT FULL STOP — drop everything, make no
+further tool call, report the breach in one line (which rule, what
+happened), and wait for the user's instruction. Nothing else. "Let
+me just finish this step" is a second breach.
+
+- **R-1. REPORT-BEFORE-ACT.** After every command whose output
+  carries information: print the raw fact, one line, then STOP. Do
+  not run a second action while a first result sits unreported.
+- **R-2. NO-INFO-RUNS FORBIDDEN.** Before any repeat of a command,
+  name IN WRITING what new information the run produces that the
+  previous run did not. No nameable new information = do not run.
+  Ask the user instead.
+- **R-3. SURPRISE = FULL STOP.** A result that contradicts the
+  expectation permits exactly one next step: present the raw
+  evidence and ask. No second command, no hypothesis-test cycle, no
+  tweak.
+- **R-4. INCONSISTENT GATE = REPORTED FINDING.** A gate/probe/test
+  that gives different answers on identical code is reported as a
+  fact with options. Redesigning or re-running it without the
+  user's approval is a breach.
+- **R-5. SPECULATION: MAX TWO, OUT LOUD, WITH PERMISSION.** Every
+  hypothesis is stated as "Speculation N of 2:" with its supporting
+  evidence, followed by a question to the user. Acting on a
+  speculation without the user's explicit go is a breach. The third
+  speculation does not exist.
+- **R-6. TWEAK-UNTIL-GREEN IS FORBIDDEN.** Never change an expected
+  value, timing, threshold, seed, or assertion to make a failing
+  gate pass. The failure goes to the user first, with evidence.
+- **R-7. VERIFY-STEPS RUN ONE AT A TIME.** The verify-both-ways
+  protocol (revert → run → restore → run) executes as separate
+  reported steps, each ending in a wait for the user. No batched
+  chains.
+- **R-8. LOOP DETECTION = INSTANT STOP.** The moment a repeated
+  action class appears (same command, same file, same search, same
+  probe), stop mid-sentence and ask one targeted question.
+- **R-9. PLAN MODE = OBSERVE ONLY.** No edits, no commits, no
+  pushes, no state changes until the user says go. The approved
+  plan is the only scope.
+- **R-10. NO SILENT STATE.** What passed, what failed, what is
+  unknown — the user sees all three as plain facts at every step.
+
 ---
 
 ## Current status (KEEP UPDATED)
