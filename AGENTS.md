@@ -73,6 +73,60 @@ Update this section at the **end of every work session**. The next agent must kn
 
 ### State summary
 
+- **SCAN/OPEN METADATA IMPORT FIXED — THE INFO CHAIN NOW READS AT
+  CREATE (2026-09-11; user report: "imported magazines have no info,
+  yet they have a ComicInfo.xml"):** ROOT CAUSE — the port's scan
+  NEVER read ComicInfo.xml: `create_book` (scanner.rs) called only
+  `refresh_file_info` (size/times/page count), while the C# scan calls
+  `AddedTime = now; RefreshInfoFromFile()` for every NEW book
+  (ComicScanner.cs:219-225) — `RefreshInfoFromFile` (ComicBook
+  .cs:2442-2500) loads the FULL info chain (stored xattrs → sidecar →
+  in-archive ComicInfo.xml, MetronInfo.xml mapped, method `Complete`
+  for a fresh book) merges it `SetInfo(ci, onlyUpdateEmpty: true)`,
+  then the ComicBook.xml copy (`cb.SetInfo(ci, onlyUpdateEmpty: false)`
+  + `SetBook(cb)`, skipped when `IgnoreEmbeddedComicBookXml`), then the
+  page count. The only `load_info` caller in the app was the Folders
+  view preview. FIXES: (1) cr-core `ComicBook::set_book` — the
+  `SetBook`+`CopyFrom` port (ComicBook.cs:2669/2023): the
+  file-determined fields (path/size/times) are protected, the library
+  list id kept when the file carries none (`LastOpenedFromListId
+  Specified` parity = empty Guid), `Id` NOT copied (the C# `Id`
+  property setter is a decompiled no-op, ComicBook.cs:259 — the
+  `CopyFrom` assignment never moves); (2) cr-engine
+  `apply_info_chain(book, provider)` (+ a gated test seam) — the
+  `LoadInfo`/`SetInfo`/`LoadBook`/`SetBook` slice, called by
+  `create_book` with ONE provider open serving the chain and the page
+  count (the provider count wins over the stored PageCount for a fresh
+  book — the C# `needsPageCountRefresh` shape); (3) cr-ui
+  `open_book`'s AddToLibraryOnOpen branch now routes through
+  `create_book` (the C# `ComicBookFactory.Create(file, AddToStorage)`
+  parity) and the reader's TEMPORARY-book branch calls
+  `apply_info_chain` against the provider already open for the page
+  merge (ComicBookFactory.cs:95) — Properties on a non-library comic
+  shows its metadata now. Existing stored books are NOT re-read on
+  rescan (C# parity — the scan skips them; the user declined a
+  backfill: "don't do anything"); the `force_refresh_info` scan stub
+  stays a recorded deviation (every caller passes false). The engine
+  config gate `IgnoreEmbeddedComicBookXml` is honored
+  (`apply_info_chain_gated`). GATES: cr-engine
+  `apply_info_chain_gates_comic_book_xml` (the gate on/off), scanner_lib
+  `scan_imports_comic_info_metadata` + `scan_comic_info_wins_over_
+  comic_book_xml` + `scan_maps_metron_info_metadata`; scanrefresh_probe
+  grew K (the "Scanned A" fixture carries an embedded ComicInfo.xml and
+  the landed book carries its series — read in a SCOPED borrow: the
+  Ref guard must be gone before gate_c dispatches the next scan, the
+  session borrow_mut would panic otherwise). LESSONS: the port named
+  the C# `InfoLoadingMethod.Complete` as `Slow` (same semantics —
+  in-archive preferred); a ComicInfo with `<Pages>` but no
+  `<PageCount>` drops its page list in the C# `SetInfo` too (the
+  whole pages block gates on `ci.PageCount != 0`, ComicInfo.cs:1380) —
+  fixtures must carry a PageCount. 501 tests; fmt/clippy green;
+  scanrefresh A-K green. USER TEST = rebuild, rescan a folder
+  containing magazines WITH ComicInfo.xml files — NEW files (and files
+  added to the library via open) carry series/title/writer/page
+  metadata; the ALREADY-imported empty books stay empty (re-import
+  them if wanted); Properties on a non-library comic shows its
+  metadata too.
 - **SCAN-LIVENESS FIXED — THE SCANNER CLONES THE STORAGE, NOT A TAKE
   (2026-09-11, ADR-032; user report: "search hits blank mid-scan and
   stay blank — re-searching finds nothing, smart lists too, restart
@@ -992,7 +1046,12 @@ Update this section at the **end of every work session**. The next agent must kn
   HEIF/AVIF decode. The Phase 11 PIPELINE is COMPLETE (the v0.0.283
   release carries all 9 assets on both hosts); the install steps
   (the kickoff user test) remain.
-  OPEN USER TESTS (2026-09-10, in test order): the DETAIL-VIEW
+  OPEN USER TESTS (2026-09-11, in test order): the SCAN/OPEN METADATA
+  import fix (rebuild, rescan a folder with ComicInfo.xml-bearing
+  magazines — NEW files carry series/title/writer/page metadata; files
+  added via open too; Properties on a non-library comic shows its
+  metadata; already-imported empty books stay empty — the user
+  declined a backfill), the DETAIL-VIEW
   round (c21086a + f20a690: switch the browser to Detail — after ONE
   slider drag the text size and row rhythm match CR (the saved
   ItemRowHeight 48 artifact must be dragged off the slider once, the

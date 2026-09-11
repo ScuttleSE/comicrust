@@ -13,7 +13,9 @@ use cr_core::database::comic_database::OpenStatus;
 use cr_core::model::comic_book::ComicBook;
 use cr_core::xml::scalar::{CrDateTime, CrGuid};
 use cr_engine::library::Library;
-use cr_engine::scanner::{refresh_file_info, refresh_file_info_basic, ScanItem, ScanResult};
+use cr_engine::scanner::{
+    create_book, refresh_file_info, refresh_file_info_basic, ScanItem, ScanResult,
+};
 use glib::ControlFlow;
 use gtk4::glib;
 
@@ -390,14 +392,13 @@ pub fn open_book(path: &str) -> Option<ComicBook> {
     }
     let add_to_library = settings().borrow().add_to_library_on_open;
     if add_to_library && Path::new(path).exists() {
-        // `ComicBookFactory.Create(file, AddToStorage)`: the new book
-        // carries the scan defaults and joins the storage.
-        let mut book = ComicBook {
-            file_path: path.to_string(),
-            added_time: CrDateTime::now(),
-            ..ComicBook::default()
-        };
-        refresh_file_info(&mut book);
+        // `ComicBookFactory.Create(file, AddToStorage, GetFastPageCount)`
+        // (ComicBookFactory.cs:79-90): the fresh book goes through
+        // `ComicBook.Create` → `RefreshInfoFromFile` — the scan
+        // defaults, the file properties, the info chain (ComicInfo.xml
+        // etc.) and the page count — then joins the storage.
+        let now = CrDateTime::now();
+        let book = create_book(path, &now);
         lib.database_mut().books.push(book.clone());
         lib.mark_dirty();
         return Some(book);

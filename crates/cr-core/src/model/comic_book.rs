@@ -124,6 +124,48 @@ impl ComicBook {
         self.current_page = self.current_page.min(self.info.page_count - 1);
     }
 
+    /// `ComicBook.SetBook(cb)` + `CopyFrom(cb)` (ComicBook.cs:2669,
+    /// 2023-2062): take the ComicBook.xml copy `cb` wholesale. The
+    /// file-determined fields (path/size/times) are protected — the
+    /// C# stamps this's values onto `cb` before the copy — and the
+    /// library list id is kept when the file did not carry one
+    /// (`LastOpenedFromListIdSpecified` parity: an empty Guid means
+    /// unspecified, matching the writer that omits empty guids).
+    /// `Id` is NOT copied: the C# `Id` property setter is a no-op
+    /// (ComicBook.cs:259-268, decompiled empty set body), so the
+    /// `CopyFrom` assignment never moves.
+    pub fn set_book(&mut self, cb: ComicBook) {
+        let keep_list_id = cb.last_opened_from_list_id.is_empty();
+        self.set_info(&cb.info, false, true);
+        self.added_time = cb.added_time;
+        self.released_time = cb.released_time;
+        self.opened_time = cb.opened_time;
+        self.opened_count = cb.opened_count;
+        self.current_page = cb.current_page;
+        self.last_page_read = cb.last_page_read;
+        self.rating = cb.rating;
+        self.color_adjustment = cb.color_adjustment;
+        self.enable_dynamic_update = cb.enable_dynamic_update;
+        self.enable_proposed = cb.enable_proposed;
+        self.series_complete = cb.series_complete;
+        self.checked = cb.checked;
+        self.custom_thumbnail_key = cb.custom_thumbnail_key;
+        if !keep_list_id {
+            self.last_opened_from_list_id = cb.last_opened_from_list_id;
+        }
+        self.custom_values_store = cb.custom_values_store;
+        // Catalog data (ComicBook.cs:2050-2060).
+        self.book_store = cb.book_store;
+        self.book_price = cb.book_price;
+        self.isbn = cb.isbn;
+        self.book_age = cb.book_age;
+        self.book_condition = cb.book_condition;
+        self.book_owner = cb.book_owner;
+        self.book_location = cb.book_location;
+        self.book_collection_status = cb.book_collection_status;
+        self.book_notes = cb.book_notes;
+    }
+
     pub fn write_xml<W: Write>(&self, e: &mut Emitter<W>) -> std::io::Result<()> {
         e.start("Book")?;
         self.write_body(e)?;

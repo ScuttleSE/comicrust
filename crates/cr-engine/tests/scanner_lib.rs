@@ -75,12 +75,20 @@ fn adler32(data: &[u8]) -> u32 {
 }
 
 fn build_cbz(path: &Path, pages: usize) {
+    build_cbz_entries(path, pages, &[]);
+}
+
+fn build_cbz_entries(path: &Path, pages: usize, extra: &[(&str, Vec<u8>)]) {
     let file = std::fs::File::create(path).unwrap();
     let mut zip = zip::ZipWriter::new(file);
     let options: zip::write::SimpleFileOptions = Default::default();
     for i in 0..pages {
         zip.start_file(format!("{i:03}.png"), options).unwrap();
         zip.write_all(&png_pixel(100 + i as u8)).unwrap();
+    }
+    for (name, data) in extra {
+        zip.start_file((*name).to_string(), options).unwrap();
+        zip.write_all(data).unwrap();
     }
     zip.finish().unwrap();
 }
@@ -131,4 +139,114 @@ fn unattended_library_scan() {
     assert_eq!(db.books.len(), 2);
     assert!(db.books.iter().any(|b| b.file_path.ends_with("003.cbz")));
     assert!(!db.books.iter().any(|b| b.file_path.ends_with("001.cbz")));
+}
+
+fn comic_info_xml(series: &str) -> Vec<u8> {
+    format!(
+        "<?xml version=\"1.0\"?>\r\n<ComicInfo xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">\r\n  <Series>{series}</Series>\r\n  <Number>3</Number>\r\n  <Writer>John Writer</Writer>\r\n  <PageCount>2</PageCount>\r\n  <Pages>\r\n    <Page ImageSize=\"10\" ImageWidth=\"1\" ImageHeight=\"1\" />\r\n    <Page ImageSize=\"10\" ImageWidth=\"1\" ImageHeight=\"1\" ImageIndex=\"1\" PageType=\"Story\" />\r\n  </Pages>\r\n</ComicInfo>"
+    )
+    .into_bytes()
+}
+
+fn comic_book_xml(series: &str, checked: bool) -> Vec<u8> {
+    format!(
+        "<?xml version=\"1.0\"?>\r\n<ComicBook xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\" Checked=\"{}\">\r\n  <Series>{series}</Series>\r\n  <BookNotes>catalog notes</BookNotes>\r\n</ComicBook>",
+        if checked { "true" } else { "false" }
+    )
+    .into_bytes()
+}
+
+fn metron_info_xml(series: &str) -> Vec<u8> {
+    format!(
+        "<?xml version=\"1.0\"?>\r\n<MetronInfo xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">\r\n  <Series>\r\n    <Name>{series}</Name>\r\n    <Volume>2</Volume>\r\n  </Series>\r\n  <Number>7</Number>\r\n</MetronInfo>"
+    )
+    .into_bytes()
+}
+
+#[test]
+fn scan_imports_comic_info_metadata() {
+    let dir = temp_dir("info");
+    build_cbz_entries(
+        &dir.join("001.cbz"),
+        2,
+        &[("ComicInfo.xml", comic_info_xml("Info Series"))],
+    );
+    let mut db = create_new();
+    let now = CrDateTime::min_value();
+    let items = vec![ScanItem {
+        location: dir.to_string_lossy().into_owned(),
+        all: true,
+        remove_missing: true,
+        force_refresh_info: false,
+    }];
+    let result = scan_database(&mut db, &items, &now);
+    assert_eq!(result.added.len(), 1, "{result:?}");
+    let book = &db.books[0];
+    // The C# scan reads the info chain for NEW books
+    // (ComicScanner.cs:222 → RefreshInfoFromFile → LoadInfo).
+    assert_eq!(book.info.series, "Info Series");
+    assert_eq!(book.info.number, "3");
+    assert_eq!(book.info.writer, "John Writer");
+    // Page metadata rides the ComicInfo Pages list; PageCount comes
+    // from the provider (2 PNG pages — the C# count wins for a fresh
+    // book: `base.PageCount = imageProvider.Count`).
+    assert_eq!(book.info.page_count, 2);
+    assert_eq!(book.info.pages.len(), 2);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn scan_comic_info_wins_over_comic_book_xml() {
+    let dir = temp_dir("bookxml");
+    build_cbz_entries(
+        &dir.join("001.cbz"),
+        1,
+        &[
+            ("ComicInfo.xml", comic_info_xml("Info Series")),
+            ("ComicBook.xml", comic_book_xml("Book Series", true)),
+        ],
+    );
+    let mut db = create_new();
+    let now = CrDateTime::min_value();
+    let items = vec![ScanItem {
+        location: dir.to_string_lossy().into_owned(),
+        all: true,
+        remove_missing: true,
+        force_refresh_info: false,
+    }];
+    scan_database(&mut db, &items, &now);
+    let book = &db.books[0];
+    // ComicInfo.xml has the most up-to-date info (the C# merges it
+    // over the ComicBook copy: cb.SetInfo(ci, onlyUpdateEmpty: false)).
+    assert_eq!(book.info.series, "Info Series");
+    // ComicBook-only fields ride SetBook.
+    assert!(book.checked);
+    assert_eq!(book.book_notes, "catalog notes");
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn scan_maps_metron_info_metadata() {
+    let dir = temp_dir("metron");
+    build_cbz_entries(
+        &dir.join("001.cbz"),
+        1,
+        &[("MetronInfo.xml", metron_info_xml("Metron Series"))],
+    );
+    let mut db = create_new();
+    let now = CrDateTime::min_value();
+    let items = vec![ScanItem {
+        location: dir.to_string_lossy().into_owned(),
+        all: true,
+        remove_missing: true,
+        force_refresh_info: false,
+    }];
+    scan_database(&mut db, &items, &now);
+    let book = &db.books[0];
+    // The MetronInfo.xml source maps into the same chain (order 1 —
+    // read only when no ComicInfo.xml hit).
+    assert_eq!(book.info.series, "Metron Series");
+    assert_eq!(book.info.number, "7");
+    assert_eq!(book.info.volume, 2);
+    std::fs::remove_dir_all(&dir).ok();
 }

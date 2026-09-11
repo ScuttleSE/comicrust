@@ -1003,6 +1003,12 @@ impl ReaderShell {
                     file_path: path.to_string_lossy().into_owned(),
                     ..ComicBook::default()
                 };
+                // `CreateBookOption.AddToTemporary` → `ComicBook
+                // .Create(file, options)` → `RefreshInfoFromFile` (the
+                // C# ComicBookFactory.cs:95 shape): the temporary book
+                // carries the ComicInfo.xml/MetronInfo.xml metadata
+                // too — the open provider serves the read.
+                cr_engine::scanner::apply_info_chain(&mut book, &provider);
                 // `OnBookOpened` + the navigator `Opened` handler
                 // (`TrackCurrentPage` gates both stamps — the setting).
                 let track = cr_ui_settings().borrow().track_current_page;

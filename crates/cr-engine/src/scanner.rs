@@ -19,8 +19,10 @@ use std::path::{Path, PathBuf};
 
 use cr_core::database::comic_database::ComicDatabase;
 use cr_core::model::comic_book::ComicBook;
+use cr_core::settings::EngineConfiguration;
 use cr_core::xml::scalar::{CrDateTime, CrGuid};
 use cr_io::formats;
+use cr_io::info::InfoLoadingMethod;
 
 /// One scan request (`ScanItemFileOrFolder`).
 #[derive(Clone, Debug)]
@@ -114,11 +116,17 @@ pub fn refresh_file_info_basic(book: &mut ComicBook) -> bool {
     date_modified
 }
 
-/// `ComicBook.Create(file, options)`: fresh defaults + the file path,
-/// then the info refresh. Public for the Files view's folder book
-/// list (`FolderComicListProvider.GetFolderBookList` — the
-/// `AddToTemporary` session books; the library scan builds the same
-/// shape).
+/// `ComicBook.Create(file, options)` + `RefreshInfoFromFile(
+/// GetFastPageCount)` (ComicBook.cs:1764, 2442): fresh defaults, the
+/// file properties, the info chain (ComicInfo.xml through the full
+/// stored/sidecar/in-archive chain, the `Slow` method = the C#
+/// `Complete` — MetronInfo.xml maps in the same chain; then the
+/// ComicBook.xml copy unless `IgnoreEmbeddedComicBookXml`), then the
+/// page count. ONE
+/// provider open serves the info chain and the count. Public for the
+/// Files view's folder book list (`FolderComicListProvider
+/// .GetFolderBookList` — the `AddToTemporary` session books; the
+/// library scan builds the same shape).
 pub fn create_book(file: &str, now: &CrDateTime) -> ComicBook {
     let mut book = ComicBook {
         id: CrGuid::new_random(),
@@ -126,8 +134,66 @@ pub fn create_book(file: &str, now: &CrDateTime) -> ComicBook {
         ..Default::default()
     };
     book.added_time = *now;
-    refresh_file_info(&mut book);
+    // RefreshFileProperties first (ComicBook.cs:2449), then the
+    // early-out on a missing file (ComicBook.cs:2454).
+    let date_modified = refresh_file_info_basic(&mut book);
+    if book.file_is_missing {
+        return book;
+    }
+    let path = book.file_path.clone();
+    if path.is_empty() {
+        return book;
+    }
+    if let Ok(provider) = cr_io::ComicProvider::open(Path::new(&path)) {
+        apply_info_chain(&mut book, &provider);
+        // Page count: always refresh for a fresh book (the C#
+        // `needsPageCountRefresh` sees FileSize change from the
+        // default) — the provider count wins over the stored one.
+        if book.info.page_count == 0 || date_modified {
+            let count = provider.pages().len() as i32;
+            if count > 0 {
+                book.info.page_count = count;
+            }
+        }
+    }
     book
+}
+
+/// The info-chain slice of `ComicBook.RefreshInfoFromFile`
+/// (ComicBook.cs:2483-2500) against an already-open provider:
+/// `LoadInfo` + `SetInfo(ci, onlyUpdateEmpty: true)`, then the
+/// ComicBook.xml copy — `cb.SetInfo(ci, onlyUpdateEmpty: false)` plus
+/// `SetBook(cb)` — unless `IgnoreEmbeddedComicBookXml`. The fresh
+/// book's `FileInfoRetrieved == false` picks the `Complete` method
+/// (the port's `Slow`: in-archive sources read even when a sidecar/
+/// xattr exists). Public for the reader's temporary-book open path
+/// (`ComicBookFactory.Create` → `AddToTemporary` →
+/// `RefreshInfoFromFile`, the C# ComicBookFactory.cs:95 shape).
+pub fn apply_info_chain(book: &mut ComicBook, provider: &cr_io::ComicProvider) {
+    let ignore = EngineConfiguration::global().ignore_embedded_comic_book_xml;
+    apply_info_chain_gated(book, provider, ignore);
+}
+
+/// [`apply_info_chain`] with the `IgnoreEmbeddedComicBookXml` gate
+/// injected — the test seam (the engine-config global is
+/// process-wide; tests must not flip it).
+fn apply_info_chain_gated(
+    book: &mut ComicBook,
+    provider: &cr_io::ComicProvider,
+    ignore_embedded: bool,
+) {
+    let ci = provider.load_info(InfoLoadingMethod::Slow);
+    if let Some(ci) = &ci {
+        book.set_info(ci, true, true);
+    }
+    if !ignore_embedded {
+        if let Some(mut cb) = provider.load_book(InfoLoadingMethod::Slow) {
+            if let Some(ci) = &ci {
+                cb.set_info(ci, false, true);
+            }
+            book.set_book(cb);
+        }
+    }
 }
 
 fn is_comic_file(file: &Path) -> bool {
@@ -490,5 +556,44 @@ mod tests {
         assert_eq!(storage.len(), result.added.len());
         // The walk visited exactly 2 files before the flag fired.
         assert_eq!(walked.get(), 2);
+    }
+
+    #[test]
+    fn apply_info_chain_gates_comic_book_xml() {
+        use std::io::Write as _;
+        let dir = temp_dir("gate");
+        let path = dir.join("book.cbz");
+        let file = std::fs::File::create(&path).unwrap();
+        let mut z = zip::ZipWriter::new(file);
+        let options: zip::write::SimpleFileOptions = Default::default();
+        z.start_file("page1.jpg", options).unwrap();
+        z.write_all(b"p").unwrap();
+        z.start_file("ComicBook.xml", options).unwrap();
+        z.write_all(
+            br#"<?xml version="1.0"?>
+<ComicBook xmlns:xsd="http://www.w3.org/2001/XMLSchema" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" Checked="true">
+  <Series>Book Series</Series>
+  <BookNotes>catalog notes</BookNotes>
+</ComicBook>"#,
+        )
+        .unwrap();
+        z.finish().unwrap();
+
+        let provider = cr_io::ComicProvider::open(&path).unwrap();
+
+        // Embedded ComicBook.xml read (the default).
+        let mut book = ComicBook::default();
+        apply_info_chain_gated(&mut book, &provider, false);
+        assert_eq!(book.info.series, "Book Series");
+        assert_eq!(book.book_notes, "catalog notes");
+
+        // IgnoreEmbeddedComicBookXml: the ComicBook.xml copy is
+        // skipped entirely (ComicBook.cs:2492).
+        let mut book2 = ComicBook::default();
+        apply_info_chain_gated(&mut book2, &provider, true);
+        assert!(book2.info.series.is_empty());
+        assert!(book2.book_notes.is_empty());
+
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

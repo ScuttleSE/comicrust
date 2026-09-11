@@ -38,6 +38,10 @@ use cr_core::database::list_items::ComicListItem;
 use cr_core::xml::scalar::CrGuid;
 
 fn write_page_zip(path: &Path) {
+    write_page_zip_entries(path, &[]);
+}
+
+fn write_page_zip_entries(path: &Path, extra: &[(&str, Vec<u8>)]) {
     let file = std::fs::File::create(path).unwrap();
     let mut zip = zip::ZipWriter::new(file);
     zip.start_file("00000.jpg", zip::write::SimpleFileOptions::default())
@@ -54,7 +58,22 @@ fn write_page_zip(path: &Path) {
         ],
     )
     .unwrap();
+    for (name, data) in extra {
+        zip.start_file(
+            (*name).to_string(),
+            zip::write::SimpleFileOptions::default(),
+        )
+        .unwrap();
+        std::io::Write::write_all(&mut zip, data).unwrap();
+    }
     zip.finish().unwrap();
+}
+
+fn comic_info_bytes(series: &str) -> Vec<u8> {
+    format!(
+        "<?xml version=\"1.0\"?>\r\n<ComicInfo xmlns:xsd=\"http://www.w3.org/2001/XMLSchema\" xmlns:xsi=\"http://www.w3.org/2001/XMLSchema-instance\">\r\n  <Series>{series}</Series>\r\n  <Number>1</Number>\r\n</ComicInfo>"
+    )
+    .into_bytes()
 }
 
 fn main() {
@@ -89,7 +108,12 @@ fn main() {
     // for the page count).
     let folder = work.join("comics");
     std::fs::create_dir_all(&folder).unwrap();
-    write_page_zip(&folder.join("Scanned A 001.cbz"));
+    // "Scanned A" carries an embedded ComicInfo.xml — gate K proves
+    // the scan imports the info chain.
+    write_page_zip_entries(
+        &folder.join("Scanned A 001.cbz"),
+        &[("ComicInfo.xml", comic_info_bytes("Scanned Info Series"))],
+    );
     write_page_zip(&folder.join("Scanned B 002.cbz"));
 
     // The watch-folder root (the Preferences add shape — the REAL
@@ -120,6 +144,7 @@ fn main() {
         // immediate dispatch passed against the unfixed code).
         glib::timeout_add_local(std::time::Duration::from_millis(600), {
             let shell = shell.clone();
+            let folder = folder.clone();
             move || {
                 // A. The fresh library grid is empty (past the boot
                 //    evaluation — no pending boot fill can set books).
@@ -142,11 +167,36 @@ fn main() {
                 glib::timeout_add_local(std::time::Duration::from_millis(100), {
                     let shell = shell.clone();
                     let landed = landed.clone();
+                    let folder = folder.clone();
                     move || {
                         landed.set(landed.get() + 1);
                         let scanning = cr_ui::library::is_scanning();
                         let count = book_count(&shell);
                         if !scanning && count == 2 {
+                            // K. The scan imported the info chain: the
+                            //    scanned book carries its embedded
+                            //    ComicInfo.xml series (the C#
+                            //    RefreshInfoFromFile parity —
+                            //    ComicScanner.cs:222). The read runs in
+                            //    its own scope — the Ref guard must be
+                            //    gone before gate_c dispatches the
+                            //    scan (the scan landing borrows the
+                            //    session mut).
+                            let book_path =
+                                folder.join("Scanned A 001.cbz").to_string_lossy().into_owned();
+                            let series = {
+                                let lib = cr_ui::library::session();
+                                let lib = lib.borrow();
+                                let book = lib.find_book(&book_path).unwrap_or_else(|| {
+                                    panic!("K FAIL: {book_path} not in the library")
+                                });
+                                book.info.series.clone()
+                            };
+                            assert_eq!(
+                                series, "Scanned Info Series",
+                                "K FAIL: the scan did not import the ComicInfo.xml series"
+                            );
+                            println!("K ok: the scanned book carries its ComicInfo series");
                             println!("B ok: scan landed, grid shows {count} books");
                             gate_c(shell.clone(), landed.get());
                             return glib::ControlFlow::Break;
