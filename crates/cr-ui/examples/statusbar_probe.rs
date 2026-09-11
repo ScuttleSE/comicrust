@@ -168,6 +168,31 @@ let _shell = shell.clone();
             }
         });
 
+        // D2. The live read ribbons: the page turn reaches the
+        //     ItemView's book copy through the page-change hook (the
+        //     stale-green-ribbon fix: the view's cloned snapshot
+        //     follows the session book without a list refresh).
+        glib::timeout_add_local(std::time::Duration::from_millis(4000), {
+            let shell = shell.clone();
+            move || {
+                let state = shell.item_view_state();
+                let opened = state
+                    .books()
+                    .iter()
+                    .find(|b| b.file_path.ends_with("probe a.cbz"))
+                    .map(|b| (b.current_page, b.last_page_read));
+                println!(
+                    "D2 view-copy read-state={opened:?} (expect Some((1, 1)) — the turn reached the grid)"
+                );
+                assert_eq!(
+                    opened,
+                    Some((1, 1)),
+                    "the page turn never reached the ItemView's book copy (stale read ribbons)"
+                );
+                glib::ControlFlow::Break
+            }
+        });
+
         // E. The page-panel click toggles TrackCurrentPage (the C#
         //    `tsCurrentPage_Click`): the locked icon hides and the
         //    action check flips.

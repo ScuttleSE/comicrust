@@ -453,7 +453,46 @@ fn main() {
                 glib::ControlFlow::Break
             }
         });
-        glib::timeout_add_local(std::time::Duration::from_millis(5700), {
+        // E2. The sort survives a same-list refresh (the reported
+        //     drop: Properties OK mid-scan reset the sort — the C#
+        //     ItemSorter survives FillBookList); a REAL list switch
+        //     still resets it (the recorded T14 per-list deviation).
+        glib::timeout_add_local(std::time::Duration::from_millis(5800), {
+            let shell = shell.clone();
+            move || {
+                shell.state_dispatch_param("win.sort-column", "Series");
+                let before = shell.item_view_sort_summary();
+                // The scan-land / data-change refresh path.
+                shell.refresh_after_data_change();
+                let after = shell.item_view_sort_summary();
+                println!(
+                    "E2 sort before={before:?} after-refresh={after:?} (expect Some(\"Series\") both)"
+                );
+                assert_eq!(
+                    after.0.as_deref(),
+                    Some("Series"),
+                    "the same-list refresh dropped the sort chain (the Properties-OK reset)"
+                );
+                // A real list switch (the second tree row — the Smart
+                // Lists folder): the recorded T14 deviation resets.
+                if let Some(other) = cr_ui::library::comic_lists_snapshot()
+                    .get(1)
+                    .map(|i| i.base().id)
+                {
+                    shell.navigator().select_list(&other);
+                }
+                glib::ControlFlow::Break
+            }
+        });
+        glib::timeout_add_local(std::time::Duration::from_millis(6500), {
+            let shell = shell.clone();
+            move || {
+                let (sort, _, _) = shell.item_view_sort_summary();
+                println!("E2 after-switch sort={sort:?} (expect None — the per-list reset)");
+                glib::ControlFlow::Break
+            }
+        });
+        glib::timeout_add_local(std::time::Duration::from_millis(7000), {
             let app = app.clone();
             move || {
                 println!("PROBE COMPLETE");

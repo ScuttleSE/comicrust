@@ -33,6 +33,7 @@ use gtk4::prelude::*;
 use gtk4::{glib, Application, ApplicationWindow, HeaderBar, Label, Notebook};
 
 use cr_core::model::comic_book::ComicBook;
+use cr_core::xml::scalar::CrGuid;
 use cr_engine::image_pool::ImagePool;
 
 use crate::library;
@@ -77,6 +78,9 @@ type LibraryCommandFn = Rc<dyn Fn(&str)>;
 /// The tab-close hook (the C# `BookClosing` — the auto Quick Review
 /// gate reads the leaving book).
 type BookClosingFn = Box<dyn Fn(&ComicBook)>;
+/// The page-change hook: (display page, session book id, resulting
+/// `LastPageRead` — the ItemView's live read-ribbon feed).
+type PageChangeFn = Box<dyn Fn(usize, CrGuid, i32)>;
 
 /// One open slot as the workspace tab strip renders it.
 pub struct TabInfo {
@@ -115,7 +119,7 @@ struct ShellState {
     /// or re-docking (`true`) — the main window swaps its stack page.
     on_view_change: Option<Box<dyn Fn(bool)>>,
     /// The host runs this on every page change of the current slot.
-    on_page_change: Option<Box<dyn Fn(usize)>>,
+    on_page_change: Option<PageChangeFn>,
     /// The host runs this when the visible book changes (open or
     /// slot switch) — the Pages panel rebinds.
     on_book_changed: Option<Box<dyn Fn()>>,
@@ -335,8 +339,8 @@ impl ReaderShell {
     }
 
     /// The host hook: every page change on the current slot (the
-    /// Pages panel's current-page marker).
-    pub fn set_on_page_change<F: Fn(usize) + 'static>(&self, f: F) {
+    /// Pages panel's current-page marker + the live read ribbons).
+    pub fn set_on_page_change<F: Fn(usize, CrGuid, i32) + 'static>(&self, f: F) {
         self.state.borrow_mut().on_page_change = Some(Box::new(f));
     }
 
@@ -1132,17 +1136,23 @@ impl ReaderShell {
                         return;
                     };
                     let mut s = sh.borrow_mut();
+                    // (book id, resulting LastPageRead) for the host
+                    // hook — the read-ribbon feed. `set_current_page`
+                    // carries the high-water mark.
+                    let mut read_state: Option<(CrGuid, i32)> = None;
                     if let Some(book) = s.books.get_mut(&slot) {
                         book.set_current_page(page as i32);
                         let file = book.file_path.clone();
                         library::record_page_change(&file, page as i32);
+                        read_state = Some((book.id, book.last_page_read));
                     }
                     if s.current_slot() == Some(slot) {
                         s.subtitle.set_text(&page_subtitle(page, count));
                         // Only the bound book's turns reach the host
                         // (the C# per-item `Navigation` subscription).
-                        if let Some(f) = s.on_page_change.as_ref() {
-                            f(page);
+                        if let (Some(f), Some((id, last))) = (s.on_page_change.as_ref(), read_state)
+                        {
+                            f(page, id, last);
                         }
                     }
                 })));

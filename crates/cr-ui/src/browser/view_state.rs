@@ -286,6 +286,35 @@ impl ViewState {
         self.rebuild();
     }
 
+    /// Replaces the whole sort chain (the same-list refresh carry —
+    /// `ItemView.set_books` clones it out and puts it back; the C#
+    /// keeps `ItemSorter` on the ItemView across `FillBookList`).
+    pub fn set_sort_chain(&mut self, chain: SortChain) {
+        self.sort = chain;
+        self.rebuild();
+    }
+
+    /// In-place read-state update for ONE book (the live read
+    /// ribbons: a page turn repaints the item — the C# ItemView draws
+    /// the live book objects — but never re-sorts or re-filters the
+    /// view). Returns whether the book was found AND a value changed.
+    pub fn update_read_state(
+        &mut self,
+        id: CrGuid,
+        current_page: i32,
+        last_page_read: i32,
+    ) -> bool {
+        let Some(book) = self.books.iter_mut().find(|b| b.id == id) else {
+            return false;
+        };
+        if book.current_page == current_page && book.last_page_read == last_page_read {
+            return false;
+        }
+        book.current_page = current_page;
+        book.last_page_read = last_page_read;
+        true
+    }
+
     pub fn set_filter(&mut self, filter: Option<Matcher>) {
         self.filter = filter;
         self.rebuild();
@@ -780,6 +809,60 @@ mod tests {
             .collect();
         assert!(selected.iter().all(|s| s == "Batman"));
         assert_eq!(selected.len(), 2);
+    }
+
+    /// The live read-ribbon update: an in-place field change for the
+    /// matching id only — no rebuild (the display order and the
+    /// selection stay), unknown ids change nothing.
+    #[test]
+    fn update_read_state_touches_one_book_in_place() {
+        let mut view = ViewState::new(vec![book("A", 1.0, 1), book("B", 1.0, 2)]);
+        view.set_sort_column("Series");
+        let order: Vec<u8> = (0..view.len())
+            .map(|i| view.book(i).id.as_bytes()[0])
+            .collect();
+        assert!(view.update_read_state(CrGuid::from_bytes([2; 16]), 24, 24));
+        let after: Vec<u8> = (0..view.len())
+            .map(|i| view.book(i).id.as_bytes()[0])
+            .collect();
+        assert_eq!(after, order, "the display order is untouched");
+        let (cur, last) = {
+            let b = view
+                .books()
+                .iter()
+                .find(|b| b.id == CrGuid::from_bytes([2; 16]))
+                .unwrap();
+            (b.current_page, b.last_page_read)
+        };
+        assert_eq!((cur, last), (24, 24));
+        // The other book is untouched.
+        let (cur, last) = {
+            let b = view
+                .books()
+                .iter()
+                .find(|b| b.id == CrGuid::from_bytes([1; 16]))
+                .unwrap();
+            (b.current_page, b.last_page_read)
+        };
+        assert_eq!((cur, last), (0, 0));
+        // Unknown id: no match, no change.
+        assert!(!view.update_read_state(CrGuid::from_bytes([9; 16]), 5, 5));
+        // Same values again: no change (no spurious redraw).
+        assert!(!view.update_read_state(CrGuid::from_bytes([2; 16]), 24, 24));
+    }
+
+    /// The same-list refresh carry: set_books keeps the sort chain
+    /// (the C# ItemSorter survives FillBookList).
+    #[test]
+    fn set_books_keeps_the_sort_chain() {
+        let mut view = ViewState::new(vec![book("Batman", 2.0, 1), book("Superman", 1.0, 2)]);
+        view.set_sort_column("Series");
+        view.set_books(vec![book("Batman", 1.0, 3)]);
+        assert_eq!(view.sort().keys()[0].column, "Series");
+        let names: Vec<String> = (0..view.len())
+            .map(|i| view.book(i).info.series.clone())
+            .collect();
+        assert_eq!(names, ["Batman"]);
     }
 
     #[test]

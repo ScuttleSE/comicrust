@@ -1046,22 +1046,23 @@ impl BrowserShell {
         }
         {
             let state = Rc::downgrade(state);
-            state
-                .upgrade()
-                .expect("state")
-                .reader
-                .set_on_page_change(move |page| {
+            state.upgrade().expect("state").reader.set_on_page_change(
+                move |page, book_id, last_page_read| {
                     if let Some(sh) = state.upgrade() {
                         sh.pages.set_current_page(page);
-                        // The status-bar page panel follows every
-                        // turn (wheel/click turns dispatch no action,
-                        // so the sync never sees them). The hook runs
-                        // INSIDE the reader-state borrow — no reader
-                        // access here, only the page value.
+                        // The ItemView's read ribbons track the turn
+                        // live (the C# ItemView draws the live book
+                        // objects; the port's cloned snapshots need
+                        // the push). The hook runs INSIDE the
+                        // reader-state borrow — no reader access here,
+                        // only the passed values.
+                        sh.item_view
+                            .update_read_state(book_id, page as i32, last_page_read);
                         let track = cr_ui_settings().borrow().track_current_page;
                         sh.status_bar.set_page(Some(page), track);
                     }
-                });
+                },
+            );
         }
         {
             let state = Rc::downgrade(state);
@@ -1154,6 +1155,17 @@ impl BrowserShell {
                 .navigator
                 .connect_selected(move |id, _name| {
                     if let Some(sh) = state.upgrade() {
+                        // A real list switch resets the sort (the
+                        // recorded T14 deviation — the C# keeps the
+                        // sort PER LIST; the port stores none). A
+                        // boot/refresh re-select of the SAME list
+                        // keeps the chain (the restored T14 sort
+                        // survives the boot fill).
+                        let switched = sh
+                            .current_list
+                            .borrow()
+                            .map(|prev| prev != *id)
+                            .unwrap_or(false);
                         *sh.current_list.borrow_mut() = Some(*id);
                         // The list history (`BrowsePrevious` chain): a
                         // history walk lands on the entry at the walk
@@ -1173,6 +1185,9 @@ impl BrowserShell {
                             // selection panel (`BookList.Name`).
                             *sh.current_list_name.borrow_mut() = name;
                             sh.item_view.set_books(books);
+                            if switched {
+                                sh.item_view.clear_sort();
+                            }
                         }
                         sh.sync_enabled();
                     }

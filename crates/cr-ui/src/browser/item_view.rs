@@ -479,9 +479,9 @@ impl ItemView {
     }
 
     /// Replaces the book set (a library selection change). The
-    /// FILTER and the GROUPER survive the swap (the C# keeps both on
-    /// the ItemView across refreshes — `FillBookList` re-creates the
-    /// items, never the view config).
+    /// FILTER, the GROUPER and the SORT survive the swap (the C#
+    /// keeps the view config on the ItemView across refreshes —
+    /// `FillBookList` re-creates the items, never the view config).
     pub fn set_books(&self, books: Vec<ComicBook>) {
         let width = self.state.borrow().config.view_width;
         let t0 = std::time::Instant::now();
@@ -489,11 +489,13 @@ impl ItemView {
             let mut s = self.state.borrow_mut();
             let filter = s.view.filter_clone();
             let grouper = s.view.grouper();
+            let sort = s.view.sort().clone();
             let t1 = std::time::Instant::now();
             s.view = ViewState::new(books);
             crate::trace::trace(format!("set_books: ViewState::new {:?}", t1.elapsed()));
             let t2 = std::time::Instant::now();
             s.view.set_filter(filter);
+            s.view.set_sort_chain(sort);
             crate::trace::trace(format!("set_books: set_filter {:?}", t2.elapsed()));
             if grouper.is_some() {
                 s.view.set_grouper(grouper);
@@ -548,6 +550,21 @@ impl ItemView {
             "append_books: +{added} books in {:?}",
             t0.elapsed()
         ));
+    }
+
+    /// The live read-ribbon update: a page-turn read-state change
+    /// lands in the view's book copy and repaints (the C# ItemView
+    /// draws the live book objects and repaints per book change; the
+    /// port's cloned snapshots need the push). No rebuild — a page
+    /// turn never re-sorts or re-filters.
+    pub fn update_read_state(&self, id: CrGuid, current_page: i32, last_page_read: i32) {
+        let changed = {
+            let mut s = self.state.borrow_mut();
+            s.view.update_read_state(id, current_page, last_page_read)
+        };
+        if changed {
+            self.canvas.queue_draw();
+        }
     }
 
     pub fn connect_activate<F: Fn(&CrGuid) + 'static>(&self, f: F) {
