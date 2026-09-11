@@ -23,9 +23,13 @@ still open.
 - Commit: the scan-robustness round (2026-09-11).
 - `cargo fmt --all` — green.
 - `cargo clippy --workspace --all-targets -- -D warnings` — green.
-- `cargo test --workspace` — 544 pass (was 522).
+- `cargo test --workspace` — 561 pass (was 522).
 - Probes: `scanrefresh` A-K green (release), `scanmarker` A-D green
   (release).
+- `docs/guides/smart-list-queries.md` is gated by
+  `cr-engine/tests/query_doc.rs` (every example parses; the field
+  tables match the registry both ways) and
+  `query_doc_semantics.rs` (the behaviour claims).
 - Measured on the live CIFS library after the fix, with no contention:
   the 2.8 GB ZIP64 omnibus 0.664 s / 850 pages, the 33 MB
   RAR-named-`.cbz` 0.513 s / 57 pages, the 18 MB directory-less file
