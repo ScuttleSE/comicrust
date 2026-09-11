@@ -18,6 +18,11 @@
 # comicrust-<version>-linux-amd64.tar.gz and its .sha256 file must
 # exist in the working directory.
 #
+# The build commit must exist in the mirror repo before a release can
+# tag it, so this script also pushes SHA to the mirror's main branch.
+# GitHub cannot create a tag at a commit it does not have; that fails
+# with 422.
+#
 # Skips with a notice when GH_TOKEN is unset, so the workflow stays
 # green until the secret is configured on Gitea.
 set -euo pipefail
@@ -59,6 +64,12 @@ for f in "$asset" "$checksum"; do
     fi
 done
 
+# Give the mirror the commit the release will tag. This is a fast-forward
+# in the normal case; --force keeps the mirror following the built state
+# the same way the rolling flow replaces the tag ref.
+git push --force "https://x-access-token:${GH_TOKEN}@github.com/${GH_REPO}.git" \
+    "${SHA}:refs/heads/main"
+
 API="https://api.github.com"
 UPLOAD="https://uploads.github.com/repos/$GH_REPO/releases"
 auth="Authorization: Bearer $GH_TOKEN"
@@ -71,7 +82,8 @@ if [ -n "$release_id" ]; then
     curl -fsS -X DELETE "${stdhdr[@]}" "$API/repos/$GH_REPO/releases/$release_id"
 fi
 if [ "$delete_tag" = "true" ]; then
-    curl -fsS -X DELETE "${stdhdr[@]}" "$API/repos/$GH_REPO/git/refs/tags/$tag" || true
+    # A missing tag is fine on the first run; GitHub answers 422 for it.
+    curl -fsS -X DELETE "${stdhdr[@]}" "$API/repos/$GH_REPO/git/refs/tags/$tag" >/dev/null 2>&1 || true
 fi
 
 # Create the release. GitHub creates the tag at SHA when it does not
