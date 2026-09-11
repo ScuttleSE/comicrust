@@ -25,6 +25,8 @@ fn main() {
         ("Probe Beta", i32::MIN), // half — set below
         ("Probe Gamma", i32::MAX),
     ];
+    let mut seed_ids = Vec::new();
+    let mut beta_expect: Option<(i32, i32)> = None;
     for (i, (series, marker)) in seeds.iter().enumerate() {
         let comic = work.join(format!("probe {i}.cbz"));
         std::fs::copy(src, &comic).unwrap();
@@ -42,6 +44,9 @@ fn main() {
             i32::MAX => book.info.page_count - 1,
             v => v,
         };
+        // The half-read book resumes where the reader left off (the
+        // stored CurrentPage — the real mid-read shape).
+        book.current_page = book.last_page_read.max(0);
         book.info.pages = provider
             .pages()
             .iter()
@@ -56,8 +61,16 @@ fn main() {
             })
             .collect();
         let (mut lib, _) = cr_engine::library::Library::open_at_default_location().unwrap();
-        lib.database_mut().books.push(book);
+        lib.database_mut().books.push(book.clone());
         lib.save().unwrap();
+        if i == 1 {
+            // The gate's expected read state: the reader resumes at
+            // the stored CurrentPage (= mid) and the gate turns ONE
+            // page — the live-ribbon push moves the grid copy to
+            // (mid+1, mid+1).
+            beta_expect = Some((book.last_page_read + 1, book.last_page_read + 1));
+        }
+        seed_ids.push(book.id);
     }
     cr_ui::library::initialize().expect("session init");
 
@@ -492,7 +505,75 @@ fn main() {
                 glib::ControlFlow::Break
             }
         });
-        glib::timeout_add_local(std::time::Duration::from_millis(7000), {
+
+        // F. The double-click OPEN gate (the 2026-09-11 crash: the
+        //     n=2 press held a state borrow across the activate; the
+        //     open fires the reader page hook whose
+        //     update_read_state re-entered the borrow — RefCell
+        //     already borrowed, SIGABRT mid-scan). The REAL press
+        //     path (n=1 select, n=2 activate) opens the reader, then
+        //     a page turn pushes the read state into the grid copy.
+        let beta_id = seed_ids[1];
+        let beta_expect = beta_expect.expect("the Beta seed set the expectation");
+        glib::timeout_add_local(std::time::Duration::from_millis(6600), {
+            let shell = shell.clone();
+            move || {
+                if let Some(lib) = cr_ui::library::comic_lists_snapshot().first() {
+                    shell.navigator().select_list(&lib.base().id);
+                }
+                glib::ControlFlow::Break
+            }
+        });
+        glib::timeout_add_local(std::time::Duration::from_millis(6900), {
+            let shell = shell.clone();
+            let beta = beta_id;
+            move || {
+                let Some((cx, cy)) = shell.state_book_center(&beta) else {
+                    println!("F no cell for the half-read book");
+                    return glib::ControlFlow::Break;
+                };
+                shell.state_item_press(1, cx, cy);
+                shell.state_item_press(2, cx, cy);
+                println!("F pressed n=1+2 at ({cx:.0},{cy:.0}) — open dispatched");
+                glib::ControlFlow::Break
+            }
+        });
+        glib::timeout_add_local(std::time::Duration::from_millis(7200), {
+            let shell = shell.clone();
+            move || {
+                // The reader is open: turn one page (the live-ribbon
+                // push — the grid copy must move through the hook).
+                shell.state_dispatch("win.next-page");
+                glib::ControlFlow::Break
+            }
+        });
+        glib::timeout_add_local(std::time::Duration::from_millis(7500), {
+            let shell = shell.clone();
+            let beta = beta_id;
+            move || {
+                let tabs = shell.state_reader_tab_count();
+                let page = shell.state_visible_page();
+                let read = shell.state_grid_book_read_state(&beta);
+                println!(
+                    "F tabs={tabs} page={page:?} read-state={read:?} (expect 1 reader, {beta_expect:?})"
+                );
+                assert_eq!(
+                    tabs, 1,
+                    "the double-click activate did not open the reader"
+                );
+                assert_eq!(
+                    page.as_deref(),
+                    Some("reader"),
+                    "the double-click activate did not reveal the reader"
+                );
+                assert_eq!(
+                    read, Some(beta_expect),
+                    "the reader-hook read-state push did not land in the grid copy"
+                );
+                glib::ControlFlow::Break
+            }
+        });
+        glib::timeout_add_local(std::time::Duration::from_millis(7600), {
             let app = app.clone();
             move || {
                 println!("PROBE COMPLETE");

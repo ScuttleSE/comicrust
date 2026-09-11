@@ -1744,6 +1744,28 @@ impl BrowserShell {
         self.state.item_view.probe_group_press(n, x, y)
     }
 
+    /// Probe: a REAL grid press through the click path (the n=2
+    /// double-click press runs the activate — the open-crash gate).
+    pub fn state_item_press(&self, n: u32, x: f64, y: f64) {
+        self.state.item_view.probe_press(n, x, y)
+    }
+
+    /// Probe: the center of one placed item's rect.
+    pub fn state_item_center(&self, display: usize) -> Option<(f64, f64)> {
+        self.state.item_view.probe_item_center(display)
+    }
+
+    /// Probe: the center of one book's placed rect by id.
+    pub fn state_book_center(&self, id: &CrGuid) -> Option<(f64, f64)> {
+        self.state.item_view.probe_book_center(id)
+    }
+
+    /// Probe: the read state of one book in the grid's copy (the
+    /// reader-hook push gate).
+    pub fn state_grid_book_read_state(&self, id: &CrGuid) -> Option<(i32, i32)> {
+        self.state.item_view.probe_book_read_state(id)
+    }
+
     /// Probe: the recorded arrow zone of one group header.
     pub fn state_group_arrow_zone(&self, group: usize) -> (f64, f64, f64, f64) {
         self.state.item_view.probe_group_arrow_zone(group)

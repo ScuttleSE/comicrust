@@ -77,7 +77,7 @@ struct ResizeState {
     start_width: f64,
 }
 
-type ActivateFn = Box<dyn Fn(&CrGuid)>;
+type ActivateFn = Rc<dyn Fn(&CrGuid)>;
 type SelectionFn = Rc<dyn Fn(usize)>;
 type HeaderContextFn = Rc<dyn Fn(f64, f64)>;
 type BookContextFn = Rc<dyn Fn(Option<CrGuid>, f64, f64)>;
@@ -221,12 +221,8 @@ impl ItemViewState {
         }
     }
 
-    fn activate_focus(&self) {
-        if let Some(id) = self.view.focus() {
-            if let Some(f) = self.on_activate.as_ref() {
-                f(&id);
-            }
-        }
+    fn activate_focus(&self) -> Option<CrGuid> {
+        self.view.focus()
     }
 
     /// Queues cover loads for the visible items (`AddToTop` — the
@@ -568,7 +564,7 @@ impl ItemView {
     }
 
     pub fn connect_activate<F: Fn(&CrGuid) + 'static>(&self, f: F) {
-        self.state.borrow_mut().on_activate = Some(Box::new(f));
+        self.state.borrow_mut().on_activate = Some(Rc::new(f));
     }
 
     pub fn connect_selection_changed<F: Fn(usize) + 'static>(&self, f: F) {
@@ -827,6 +823,109 @@ impl ItemView {
     /// if/else statement (the edition-2021 temporaries lesson) and
     /// collided with the `borrow_mut` below — the group-by-series
     /// double-click crash.
+    /// The shared press body (the real `connect_pressed` closure AND
+    /// the probe seam run it): group headers, the Detail separator
+    /// zones, the activate, selection and the rubber-band start. The
+    /// activate callback runs with NO borrow held — the open path
+    /// re-enters `update_read_state` through the reader hook (the
+    /// 2026-09-11 double-click-open crash).
+    fn handle_press(
+        state: &Rc<RefCell<ItemViewState>>,
+        canvas: &DrawingArea,
+        n: u32,
+        x: f64,
+        y: f64,
+        mods: gtk4::gdk::ModifierType,
+    ) {
+        if n != 1 {
+            // The group-header double-click first (`OnMouseDoubleClick
+            // GroupHeader`): the ARROW expands/collapses ALL groups —
+            // the direction is the clicked header's post-first-click
+            // state (the single click of the sequence already toggled
+            // it); the LABEL toggles that group again.
+            if Self::handle_group_header_press(state, canvas, n, x, y) {
+                return;
+            }
+            // Double-click: a header separator auto-sizes the
+            // column first (`OnDoubleClickColumnHeaderSeperator`),
+            // otherwise it activates the focused book.
+            let header_hit = {
+                let s = state.borrow();
+                layout::column_separator_hit(&s.config, &s.detail_columns, x, y)
+            };
+            if let Some(id) = header_hit {
+                autosize_column_state(state, id);
+                canvas.queue_draw();
+                return;
+            }
+            let id = state.borrow().view.focus();
+            if let Some(id) = id {
+                // Clone the callback out and call it with NO borrow
+                // held (the scrutinee temporary in the old `if let`
+                // held the Ref across the call).
+                let f = state.borrow().on_activate.clone();
+                if let Some(f) = f {
+                    f(&id);
+                }
+            }
+            return;
+        }
+        {
+            let mut s = state.borrow_mut();
+            // The header separator zone wins first (the C#
+            // `OnMouseDown` checks it before the item hit).
+            if let Some(id) = layout::column_separator_hit(&s.config, &s.detail_columns, x, y) {
+                s.begin_resize(id, x);
+                drop(s);
+                canvas.queue_draw();
+                return;
+            }
+        }
+        let s = state.borrow_mut();
+        let hit = hit_test(&s.layout, x, y);
+        drop(s);
+        // The group-header click (`OnMouseClickGroupHeader`): the
+        // ARROW toggles the group's collapse; the LABEL selects
+        // ALL the group's items (no collapse).
+        if Self::handle_group_header_press(state, canvas, n, x, y) {
+            return;
+        }
+        let mut s = state.borrow_mut();
+        match hit {
+            Some(display) => {
+                let id = s.view.book_id(display);
+                let ctrl = mods.contains(gtk4::gdk::ModifierType::CONTROL_MASK);
+                let shift = mods.contains(gtk4::gdk::ModifierType::SHIFT_MASK);
+                if ctrl {
+                    s.view.select_flip(id);
+                } else if shift {
+                    s.view.select_range(id);
+                } else {
+                    s.view.select_one(id);
+                }
+                s.band = None;
+            }
+            None => {
+                // Rubber band start (the C#: empty background,
+                // no modifiers, multiselect).
+                if !mods.contains(gtk4::gdk::ModifierType::CONTROL_MASK)
+                    && !mods.contains(gtk4::gdk::ModifierType::SHIFT_MASK)
+                {
+                    s.band_start = (x, y);
+                    s.band = Some(Rect::new(x, y, 0.0, 0.0));
+                    s.band_snapshot = s.view.selection_snapshot();
+                    s.view.clear_selection();
+                }
+            }
+        }
+        // The selection callback re-enters this widget
+        // (`book_count` on the status bar) — drop the borrow
+        // first (the RefCell double-borrow lesson).
+        drop(s);
+        state.borrow().notify_selection();
+        canvas.queue_draw();
+    }
+
     fn handle_group_header_press(
         state: &Rc<RefCell<ItemViewState>>,
         canvas: &DrawingArea,
@@ -935,6 +1034,20 @@ impl ItemView {
         Self::handle_group_header_press(&self.state, &self.canvas, n, x, y)
     }
 
+    /// The probe path: the REAL press body (`n` = 1 single, 2 the
+    /// double-click's second press — the activate) through the shared
+    /// `handle_press`. No modifiers.
+    pub fn probe_press(&self, n: u32, x: f64, y: f64) {
+        Self::handle_press(
+            &self.state,
+            &self.canvas,
+            n,
+            x,
+            y,
+            gtk4::gdk::ModifierType::empty(),
+        );
+    }
+
     /// The recorded arrow zone of one group header (the draw records
     /// it — zero until the first paint).
     pub fn probe_group_arrow_zone(&self, group: usize) -> (f64, f64, f64, f64) {
@@ -951,6 +1064,40 @@ impl ItemView {
     /// resets the count at every frame start — settle before reading).
     pub fn probe_metadata_badge_draws(&self) -> u32 {
         self.state.borrow().badge_draws
+    }
+
+    /// The center of one placed item's rect (the probe's press
+    /// coordinates).
+    pub fn probe_item_center(&self, display: usize) -> Option<(f64, f64)> {
+        let s = self.state.borrow();
+        s.layout
+            .items
+            .get(display)
+            .and_then(|it| it.as_ref())
+            .map(|it| (it.rect.x + it.rect.w / 2.0, it.rect.y + it.rect.h / 2.0))
+    }
+
+    /// The center of one book's placed rect by id (the probe's press
+    /// coordinates for a known book).
+    pub fn probe_book_center(&self, id: &CrGuid) -> Option<(f64, f64)> {
+        let s = self.state.borrow();
+        let d = s.view.display_index_of(id)?;
+        s.layout
+            .items
+            .get(d)
+            .and_then(|it| it.as_ref())
+            .map(|it| (it.rect.x + it.rect.w / 2.0, it.rect.y + it.rect.h / 2.0))
+    }
+
+    /// The read state of one book in the view's copy (the probe gate
+    /// for the reader-hook push).
+    pub fn probe_book_read_state(&self, id: &CrGuid) -> Option<(i32, i32)> {
+        let s = self.state.borrow();
+        s.view
+            .books()
+            .iter()
+            .find(|b| &b.id == id)
+            .map(|b| (b.current_page, b.last_page_read))
     }
 
     /// Takes the keyboard focus onto the grid (the window-activation
@@ -1218,92 +1365,14 @@ impl ItemView {
             // Take the keyboard focus on click (GTK4 has no
             // click-to-focus — the Phase 3 lesson).
             canvas.grab_focus();
-            if n != 1 {
-                // The group-header double-click first (`OnMouseDoubleClick
-                // GroupHeader`): the ARROW expands/collapses ALL groups —
-                // the direction is the clicked header's post-first-click
-                // state (the single click of the sequence already toggled
-                // it); the LABEL toggles that group again.
-                if Self::handle_group_header_press(&state, &canvas, n as u32, x, y) {
-                    return;
-                }
-                // Double-click: a header separator auto-sizes the
-                // column first (`OnDoubleClickColumnHeaderSeperator`),
-                // otherwise it activates the focused book.
-                let header_hit = {
-                    let s = state.borrow();
-                    layout::column_separator_hit(&s.config, &s.detail_columns, x, y)
-                };
-                if let Some(id) = header_hit {
-                    autosize_column_state(&state, id);
-                    let canvas = canvas.clone();
-                    canvas.queue_draw();
-                    return;
-                }
-                let id = state.borrow().view.focus();
-                if let Some(id) = id {
-                    if let Some(f) = state.borrow().on_activate.as_ref() {
-                        f(&id);
-                    }
-                }
-                return;
-            }
-            {
-                let mut s = state.borrow_mut();
-                // The header separator zone wins first (the C#
-                // `OnMouseDown` checks it before the item hit).
-                if let Some(id) = layout::column_separator_hit(&s.config, &s.detail_columns, x, y) {
-                    s.begin_resize(id, x);
-                    drop(s);
-                    canvas.queue_draw();
-                    return;
-                }
-            }
-            let s = state.borrow_mut();
-            let hit = hit_test(&s.layout, x, y);
-            drop(s);
-            // The group-header click (`OnMouseClickGroupHeader`): the
-            // ARROW toggles the group's collapse; the LABEL selects
-            // ALL the group's items (no collapse).
-            if Self::handle_group_header_press(&state, &canvas, n as u32, x, y) {
-                return;
-            }
-            let mut s = state.borrow_mut();
-            match hit {
-                Some(display) => {
-                    let id = s.view.book_id(display);
-                    let mods = gesture.current_event_state();
-                    let ctrl = mods.contains(gtk4::gdk::ModifierType::CONTROL_MASK);
-                    let shift = mods.contains(gtk4::gdk::ModifierType::SHIFT_MASK);
-                    if ctrl {
-                        s.view.select_flip(id);
-                    } else if shift {
-                        s.view.select_range(id);
-                    } else {
-                        s.view.select_one(id);
-                    }
-                    s.band = None;
-                }
-                None => {
-                    // Rubber band start (the C#: empty background,
-                    // no modifiers, multiselect).
-                    let mods = gesture.current_event_state();
-                    if !mods.contains(gtk4::gdk::ModifierType::CONTROL_MASK)
-                        && !mods.contains(gtk4::gdk::ModifierType::SHIFT_MASK)
-                    {
-                        s.band_start = (x, y);
-                        s.band = Some(Rect::new(x, y, 0.0, 0.0));
-                        s.band_snapshot = s.view.selection_snapshot();
-                        s.view.clear_selection();
-                    }
-                }
-            }
-            // The selection callback re-enters this widget
-            // (`book_count` on the status bar) — drop the borrow
-            // first (the RefCell double-borrow lesson).
-            drop(s);
-            state.borrow().notify_selection();
-            canvas.queue_draw();
+            Self::handle_press(
+                &state,
+                &canvas,
+                n as u32,
+                x,
+                y,
+                gesture.current_event_state(),
+            );
         });
         gesture.connect_released(move |gesture, _n, _x, _y| {
             let Some(state) = state_released.upgrade() else {
@@ -1388,6 +1457,11 @@ impl ItemView {
             let focus = s.view.focus();
             let ctrl = modifier.contains(gtk4::gdk::ModifierType::CONTROL_MASK);
             let shift = modifier.contains(gtk4::gdk::ModifierType::SHIFT_MASK);
+            // The activate callback opens the reader; the open fires
+            // the reader page hook which re-enters ANY state borrow
+            // (`update_read_state`) — the callback MUST run with no
+            // borrow held (the 2026-09-11 double-click-open crash).
+            let mut activate: Option<CrGuid> = None;
             let step = |s: &ItemViewState, f: Option<CrGuid>, dx: i32, dy: i32| -> Option<CrGuid> {
                 let d = f.and_then(|f| s.view.display_index_of(&f))?;
                 let d = if s.layout.items.iter().flatten().count() > d {
@@ -1439,7 +1513,7 @@ impl ItemView {
                     s.view.move_focus(target, shift, ctrl);
                 }
                 gtk4::gdk::Key::Return | gtk4::gdk::Key::KP_Enter => {
-                    s.activate_focus();
+                    activate = s.activate_focus();
                 }
                 gtk4::gdk::Key::space => {
                     if let Some(f) = focus {
@@ -1502,6 +1576,14 @@ impl ItemView {
             }
             s.type_ahead.clear();
             drop(s);
+            // The activate fires with NO borrow held (the open path
+            // re-enters `update_read_state` through the reader hook).
+            if let Some(id) = activate {
+                let f = state.borrow().on_activate.clone();
+                if let Some(f) = f {
+                    f(&id);
+                }
+            }
             state.borrow().notify_selection();
             canvas.queue_draw();
             glib::Propagation::Stop
