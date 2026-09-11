@@ -73,6 +73,60 @@ Update this section at the **end of every work session**. The next agent must kn
 
 ### State summary
 
+- **SCAN-LIVENESS FIXED — THE SCANNER CLONES THE STORAGE, NOT A TAKE
+  (2026-09-11, ADR-032; user report: "search hits blank mid-scan and
+  stay blank — re-searching finds nothing, smart lists too, restart
+  restores"; the user scanned via File ▸ Scan Book Folders over a
+  watch folder, interrupting and resuming):** ROOT CAUSE —
+  `start_scan_worker` did `std::mem::take` on the DB books, and a
+  RE-scan fires `on_new` only for NEW files (scanner.rs
+  process_file's already-stored branch), so ZERO batches flowed and
+  the database held 0 books for the ENTIRE scan. Every evaluation
+  read 0: the watch-poll landings' `refresh_after_data_change` →
+  navigator refill → the 200 ms debounced select → `set_books(0)`
+  (the blank — it fires AFTER the same-tick pop of the next queued
+  leg re-took the storage), smart lists, F5, any list switch. The
+  search itself is view-side only (rebuild_filter → ViewState), so
+  re-searching filtered an already-emptied book set. File ▸ Scan
+  Book Folders queues one scan PER watch root and each landing pops
+  the next in the same pump tick, so the DB stayed empty through the
+  whole sequence; the 1 s watch poll stacked another rescan per
+  second on top. Restart fixed it because `save_if_dirty` skips
+  mid-scan and the exit abort merged the worker's full storage.
+  FIXES (user approved the ADR-019-shape change): (1) the worker
+  scans a CLONE (`db.books.clone()`); the DB keeps the full library
+  and grows by the batch appends; the landing runs
+  `merge_scan_storage` (pure, 6 unit tests): the worker's storage is
+  master (scanned file-info updates + new books), database-only
+  books stay (mid-scan adds), TOUCHED ids keep the DB copy
+  (`record_scan_touch` at every main-thread mutation site:
+  apply_edited, open_book, record_page_change, the cache-events
+  pump, the Info Writer pump, the export surgery), REMOVED ids drop
+  everywhere (`record_scan_removal` at remove_book, the delete-files
+  retain in shell.rs, the export remove_by_path); (2) the per-tick
+  hook no longer falls back to a full refresh for non-Library views
+  (a per-100 ms-tick re-evaluation was a refresh storm; the landing
+  hook does the one refresh); (3) `take_watch_folder_rescans` holds
+  the pending roots while a scan runs. GATES: scanrefresh_probe grew
+  G (a mid-RE-scan grid + a Never-Read evaluation + the
+  refresh_after_data_change path all see the FULL stored set — fails
+  at 0 on the take), H (the rescan is HELD mid-scan, delivers after;
+  the probe now registers watch folders through the REAL
+  `add_watch_folder` — a direct DB push builds no watcher and the
+  events never existed), I (a non-Library view holds its count
+  mid-scan, stepping only at leg landings — intermediate batch-sized
+  values = the churn), J (a mid-scan remove stays removed and a
+  mid-scan edit keeps the edit after the merge); A-F re-run green
+  (D: abort kept 2376 of 10002; F's trigger now rides the LIVE count
+  base — the earlier gates grow the library past the old fixed
+  threshold). Probe LESSON: `win.scan-folders` runs one scan leg per
+  watch root and EVERY leg landing fires the hook's `&[]` full
+  refresh of the current view — a mid-scan count assertion must
+  allow the post-landing step, not only the pre-scan value. 497
+  tests; fmt/clippy green. USER TEST = rebuild, search "Action
+  Comics", scan the folder (and interrupt/resume it) — the hits stay
+  visible the whole time; smart lists and re-searching keep working
+  mid-scan; removing/editing a book during a scan survives it.
 - **CHOOSER SUBMENUS + SMART-LIST RULE MENU + DETAIL GRID LINES
   (2026-09-10, follow-up round; user report: "column picker doesn't
   work — the sub-menus (All, A-B, C-F etc.) are all empty"; plus
@@ -932,7 +986,7 @@ Update this section at the **end of every work session**. The next agent must kn
   2026-09-10 DETAIL/CHOOSER SESSION (immediately after, same day, in
   the state blocks at the top): the Detail-view CR-matching batch
   (c21086a) and the chooser-submenu fix + grid lines + the
-  smart-list rule menu (f20a690). HEAD = f20a690, 491 tests.
+  smart-list rule menu (f20a690). The 2026-09-11 SCAN-LIVENESS session follows (the clone-not-take fix, ADR-032); see its block at the top for the current HEAD.
   Open gaps: WebComicProvider, PDF/DjVu writers, the LICENSE file
   (Phase 11 packaging gap), the T14 per-list sort deviation,
   HEIF/AVIF decode. The Phase 11 PIPELINE is COMPLETE (the v0.0.283
@@ -1853,7 +1907,7 @@ Update this section at the **end of every work session**. The next agent must kn
   Phases 0-5 are complete (their gates stay green). Open Phase 1
   gaps: WebComicProvider and the PDF/DjVu writers (tracked in
   `docs/phase-1-kickoff.md`).
-- **State:** `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` are green. 491 tests — 36 suites plus the cr-scrape suites (the Phase 8 perf gates: `reading_list_perf`, `view_perf`, `path_migration_perf`, `list_eval_perf`, `scan_perf`; the cr-ui probes are examples, not tests — the newest are `browserbar_probe` gate D (the column chooser: the open + the submenu-row gate `state_column_chooser_page_rows` reading all=92/a-b=16 through the popover's `visible-submenu` page + the toggle) and D2+D3 (the grouping: ungrouped (1,0) + the disabled action + toggle-groups; the D3 press-sequence machine drives the REAL group-header press paths — label select, single-click collapse/expand of one group, both double-click directions, the true counts on collapsed headers), `statusbar_probe` gates J/J2 (the scan lamp: frames, the visible-only animation, the Cancel-scan menu map + the abort hook), and `smartlistmenu_probe` (the smart-list editor builds its rule rows with the menu-button type picker + commits); `scanrefresh_probe` (gates A-F: the scan-land refresh, the re-scan idempotence, the mid-scan fill, the abort partial landing, the re-scan completion, the mid-add exit save — it REFUSES a non-isolated XDG pair and wipes it at start, the exit save pollutes it); the real-fixture parts skip in CI without the git-ignored `tests/testfiles/` files; the RAR round-trips skip without `CR_RAR_TESTS` + `rar`). CI runs on the `docker-runner-amd64` container runner (ADR-020) and is LIVE (it caught the 2026-09-09 group-gate flake — the runner + `comicrust-ci:latest` image work). The release tracks are `release.yaml` (rolling prerelease per push) and `tagged-release.yaml` (manual dispatch, stable release for an existing tag — ADR-021, 2026-09-03); `packaging.yaml` (Phase 11) attaches the source tarball, the Arch package, and the .deb to a tagged release. First real tagged-release run (v0.0.273, 2026-09-09) exposed a latent env bug: the "Publish to GitHub mirror" step lacked `TAG` (the Gitea publish succeeded; the mirror step died on `set -u`) — fixed in commit 05483da.
+- **State:** `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` are green. 497 tests — 36 suites plus the cr-scrape suites (the Phase 8 perf gates: `reading_list_perf`, `view_perf`, `path_migration_perf`, `list_eval_perf`, `scan_perf`; the cr-ui probes are examples, not tests — the newest are `browserbar_probe` gate D (the column chooser: the open + the submenu-row gate `state_column_chooser_page_rows` reading all=92/a-b=16 through the popover's `visible-submenu` page + the toggle) and D2+D3 (the grouping: ungrouped (1,0) + the disabled action + toggle-groups; the D3 press-sequence machine drives the REAL group-header press paths — label select, single-click collapse/expand of one group, both double-click directions, the true counts on collapsed headers), `statusbar_probe` gates J/J2 (the scan lamp: frames, the visible-only animation, the Cancel-scan menu map + the abort hook), and `smartlistmenu_probe` (the smart-list editor builds its rule rows with the menu-button type picker + commits); `scanrefresh_probe` (gates A-J: the scan-land refresh, the re-scan idempotence, the mid-scan fill, the abort partial landing, the re-scan completion, the mid-add exit save, the mid-RE-scan library liveness (G), the watch-rescan dedupe (H), the non-Library per-tick churn (I), the mid-scan remove/edit survival (J) — it REFUSES a non-isolated XDG pair and wipes it at start, the exit save pollutes it); the real-fixture parts skip in CI without the git-ignored `tests/testfiles/` files; the RAR round-trips skip without `CR_RAR_TESTS` + `rar`). CI runs on the `docker-runner-amd64` container runner (ADR-020) and is LIVE (it caught the 2026-09-09 group-gate flake — the runner + `comicrust-ci:latest` image work). The release tracks are `release.yaml` (rolling prerelease per push) and `tagged-release.yaml` (manual dispatch, stable release for an existing tag — ADR-021, 2026-09-03); `packaging.yaml` (Phase 11) attaches the source tarball, the Arch package, and the .deb to a tagged release. First real tagged-release run (v0.0.273, 2026-09-09) exposed a latent env bug: the "Publish to GitHub mirror" step lacked `TAG` (the Gitea publish succeeded; the mirror step died on `set -u`) — fixed in commit 05483da.
 - **GitHub mirror (2026-09-06):** remote `github` = `git@github.com:ScuttleSE/comicrust.git` — a TRUE mirror (identical SHAs; `.gitea/` rides along but is inert there, GitHub Actions only reads `.github/workflows/`). After every origin push also `git push github main`; stable tags get pushed manually once; the `rolling` tag is CI-managed on BOTH sides (each release run deletes/recreates it) — never push it by hand. Both release workflows also publish the built tarball + sha256 to GitHub Releases through `.gitea/publish_github_release.sh` (build once on Gitea, assets on both); it needs the Gitea secret `MIRROR_RELEASE_TOKEN` (GitHub PAT with Contents read/write on ScuttleSE/comicrust; Gitea forbids a `GITHUB_` prefix) — unset secret = the step skips with a notice.
 - **Phase 0 gate status:** byte-stable ComicDb.xml round-trip proven on all three synthetic fixtures AND the real-world database `tests/realworld/ComicDb.xml` (255 books, 584 KB, 2026-09-02, user-approved commit).
 - **Phase 2 gate status:** every saved smart list in the real-world DB (a) binds to the matcher registry, (b) renders to a `Match` query string that re-parses and re-renders byte-identically, and (c) evaluates to the SAME book sets the C# cached in `CacheStorage` (Never Read = all 255, Files to update = the 3 dirty books, Reading/Read = empty). Evidence: `crates/cr-engine/tests/realworld_query.rs`.

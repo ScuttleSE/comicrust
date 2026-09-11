@@ -5,6 +5,7 @@
 //! scan worker (the C# "Book Scanner" low-priority thread).
 
 use std::cell::{Cell, RefCell};
+use std::collections::{HashMap, HashSet};
 use std::path::Path;
 use std::rc::Rc;
 
@@ -36,6 +37,15 @@ thread_local! {
     /// per walked file by the worker.
     static SCAN_STOP: RefCell<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>> =
         const { RefCell::new(None) };
+    /// Book ids removed on the main thread while a scan is in flight
+    /// (the remove flow records them): the landing merge drops them
+    /// from the worker's storage copy instead of resurrecting them.
+    static SCAN_REMOVED_IDS: RefCell<HashSet<CrGuid>> = RefCell::new(HashSet::new());
+    /// Book ids mutated on the main thread while a scan is in flight
+    /// (edits, reading state, page sizes, write-back results): the
+    /// landing merge keeps the DATABASE copy for them (the worker's
+    /// storage copy is the pre-scan state).
+    static SCAN_TOUCHED_IDS: RefCell<HashSet<CrGuid>> = RefCell::new(HashSet::new());
     /// The per-batch view refresh (the C# scan events update the live
     /// views): the shell installs it, the scan pump fires it when new
     /// books land mid-scan. The slice carries the tick's new books
@@ -61,6 +71,72 @@ fn fire_scan_view_hook(batch: &[ComicBook]) {
             hook(batch);
         }
     });
+}
+
+/// Records a book id removed on the main thread while a scan is in
+/// flight (the landing merge must not resurrect it from the worker's
+/// storage copy).
+pub fn record_scan_removal(id: &CrGuid) {
+    if is_scanning() {
+        SCAN_REMOVED_IDS.with(|s| s.borrow_mut().insert(*id));
+    }
+}
+
+/// Records a book id the main thread mutated while a scan is in
+/// flight (the landing merge keeps the database copy for it).
+fn record_scan_touch(id: &CrGuid) {
+    if is_scanning() {
+        SCAN_TOUCHED_IDS.with(|s| s.borrow_mut().insert(*id));
+    }
+}
+
+/// Drains the mid-scan side-effect records (the landing merge).
+fn take_scan_side_effects() -> (HashSet<CrGuid>, HashSet<CrGuid>) {
+    (
+        SCAN_REMOVED_IDS.with(|s| std::mem::take(&mut *s.borrow_mut())),
+        SCAN_TOUCHED_IDS.with(|s| std::mem::take(&mut *s.borrow_mut())),
+    )
+}
+
+/// The landing merge: the worker's scanned storage is the master copy
+/// (the scanned file-info updates + the new books). What the main
+/// thread did WHILE the scan ran is preserved on top: database-only
+/// books stay (mid-scan adds), touched ids keep the database copy
+/// (mid-scan edits and reads), removed ids drop everywhere. (The C#
+/// scans the LIVE collection — one shared storage, no reconciliation;
+/// the clone-per-scan split needs this merge.)
+fn merge_scan_storage(
+    worker: Vec<ComicBook>,
+    db_books: &[ComicBook],
+    removed: &HashSet<CrGuid>,
+    touched: &HashSet<CrGuid>,
+) -> Vec<ComicBook> {
+    let worker_ids: HashSet<CrGuid> = worker.iter().map(|b| b.id).collect();
+    let mut db_wins: HashMap<CrGuid, ComicBook> = HashMap::new();
+    let mut preserved: Vec<ComicBook> = Vec::new();
+    for b in db_books {
+        if removed.contains(&b.id) {
+            continue;
+        }
+        if worker_ids.contains(&b.id) {
+            if touched.contains(&b.id) {
+                db_wins.insert(b.id, b.clone());
+            }
+        } else {
+            preserved.push(b.clone());
+        }
+    }
+    let mut merged: Vec<ComicBook> = worker
+        .into_iter()
+        .filter(|b| !removed.contains(&b.id))
+        .collect();
+    for b in merged.iter_mut() {
+        if let Some(db) = db_wins.get(&b.id) {
+            *b = db.clone();
+        }
+    }
+    merged.extend(preserved);
+    merged
 }
 
 /// `Scanner.Stop(clearQueue: true)` — the Tasks dialog's "Abort
@@ -247,6 +323,7 @@ pub fn install_cache_events(pool: &std::sync::Arc<cr_engine::image_pool::ImagePo
             };
             let page = book.info.translate_image_index_to_page(index as i32);
             if book.info.update_page_size(page, w as i32, h as i32) {
+                record_scan_touch(&book.id);
                 l.mark_dirty();
             }
         }
@@ -304,6 +381,7 @@ pub fn open_book(path: &str) -> Option<ComicBook> {
         book.opened_time = CrDateTime::now();
         book.opened_count += 1;
         book.new_pages = 0;
+        record_scan_touch(&book.id);
         found = Some(book.clone());
     }
     if found.is_some() {
@@ -336,6 +414,7 @@ pub fn record_page_change(path: &str, page: i32) {
     let mut lib = library.borrow_mut();
     if let Some(book) = lib.find_book_mut(path) {
         book.set_current_page(page);
+        record_scan_touch(&book.id);
         lib.mark_dirty();
     }
 }
@@ -349,15 +428,17 @@ pub fn add_folder_to_library(path: &Path, done: impl FnOnce(ScanResult) + 'stati
 
 /// The scan worker (the C# `ComicScanner` runs its queue on a
 /// dedicated low-priority "Book Scanner" thread; a synchronous scan
-/// freezes the UI on real libraries). The book storage moves to the
-/// worker and back over std mpsc; a `timeout_add_local` pump merges
-/// it (the ADR-019 pattern). New books ride incremental batches to
-/// the pump (the C# adds to the live storage per file — the view
-/// fills during the walk, `ComicBookCollection.Add` → `OnBookAdded`);
-/// the final storage merges at the landing. While a scan runs, the
-/// database holds the books found SO FAR — a re-scan refreshes stored
-/// paths cheaply instead of redoing them. Requests arriving mid-scan
-/// queue and run in arrival order.
+/// freezes the UI on real libraries). The worker scans a CLONE of the
+/// book storage — the database keeps the FULL library while the scan
+/// runs (smart lists, the quick search and every list evaluation stay
+/// live mid-scan) — and reports back over std mpsc; a
+/// `timeout_add_local` pump merges it (the ADR-019 pattern). New
+/// books ride incremental batches to the pump (the C# adds to the
+/// live storage per file — the view fills during the walk,
+/// `ComicBookCollection.Add` → `OnBookAdded`); the final storage
+/// merges at the landing, keeping what the main thread added / edited
+/// / removed while the scan ran. Requests arriving mid-scan queue and
+/// run in arrival order.
 fn scan_async(location: String, done: impl FnOnce(ScanResult) + 'static) {
     let in_flight = SCAN_IN_FLIGHT.with(|cell| *cell.borrow());
     if in_flight {
@@ -385,10 +466,17 @@ const SCAN_BATCH_SIZE: usize = 20;
 fn start_scan_worker(location: String, done: impl FnOnce(ScanResult) + 'static) {
     let library = session();
     let books = {
-        let mut lib = library.borrow_mut();
+        let lib = library.borrow_mut();
         SCAN_IN_FLIGHT.with(|cell| *cell.borrow_mut() = true);
         SCAN_LOCATION.with(|cell| *cell.borrow_mut() = location.clone());
-        std::mem::take(&mut lib.database_mut().books)
+        // A CLONE, not a take: the database keeps the full library
+        // while the scan runs. The take emptied it — a re-scan sends
+        // zero batches (only NEW files fire `on_new`), so every list
+        // evaluation read an empty library mid-scan and the search
+        // results blanked until a restart (user report 2026-09-11).
+        // The landing merge reconciles the worker's updates with the
+        // mid-scan side effects.
+        lib.database().books.clone()
     };
     let items = [ScanItem {
         location: location.clone(),
@@ -488,7 +576,10 @@ fn start_scan_worker(location: String, done: impl FnOnce(ScanResult) + 'static) 
                     tick_batch.clear();
                     {
                         let mut lib = library.borrow_mut();
-                        lib.database_mut().books = books;
+                        let (removed, touched) = take_scan_side_effects();
+                        let merged =
+                            merge_scan_storage(books, &lib.database().books, &removed, &touched);
+                        lib.database_mut().books = merged;
                         let changed = !result.added.is_empty()
                             || !result.updated.is_empty()
                             || !result.moved.is_empty()
@@ -543,8 +634,14 @@ fn start_scan_worker(location: String, done: impl FnOnce(ScanResult) + 'static) 
 }
 
 /// Pops the debounced watch roots that need a rescan (the watch poll
-/// timer calls this every second).
+/// timer calls this every second). While a scan is in flight the
+/// events stay pending — a rescan queued per second behind a running
+/// scan stacks a full re-scan storm; the roots deliver once the scan
+/// ends.
 pub fn take_watch_folder_rescans() -> Vec<String> {
+    if is_scanning() {
+        return Vec::new();
+    }
     session().borrow_mut().take_watch_folder_rescans()
 }
 
@@ -1026,6 +1123,7 @@ pub fn apply_edited(edited: &ComicBook) -> bool {
     edited.comic_info_is_dirty = true;
     let id = edited.id;
     *slot = edited;
+    record_scan_touch(&id);
     l.mark_dirty();
     drop(l);
     schedule_book_file_update(&id);
@@ -1324,6 +1422,7 @@ fn ensure_write_worker() {
                             slot.info = outcome.book.info.clone();
                             slot.comic_info_is_dirty = false;
                         }
+                        record_scan_touch(&id);
                         l.mark_dirty();
                     }
                 }
@@ -1409,9 +1508,21 @@ pub fn export_post_process_with(
     let mut l = lib.borrow_mut();
 
     // The C# `Database.Books.Remove(item)` — every book pointing at
-    // the removed file leaves the database.
+    // the removed file leaves the database. The removed ids are
+    // recorded while a scan runs (the landing merge must not
+    // resurrect them from the worker's storage copy).
     let remove_by_path = |l: &mut Library, file: &str| {
+        let removed: Vec<CrGuid> = l
+            .database()
+            .books
+            .iter()
+            .filter(|b| b.file_path == file)
+            .map(|b| b.id)
+            .collect();
         l.database_mut().books.retain(|b| b.file_path != file);
+        for id in &removed {
+            record_scan_removal(id);
+        }
     };
     // Trash + drop; a failed trash keeps the book (data-safe — the
     // C# `ShellFile.DeleteFile` throw skips the removal too).
@@ -1443,6 +1554,7 @@ pub fn export_post_process_with(
         // for the same reason.
         if let Some(slot) = l.database_mut().books.iter_mut().find(|b| b.id == kcb.id) {
             *slot = book;
+            record_scan_touch(&kcb.id);
             l.mark_dirty();
         }
         for source in &sources {
@@ -1478,6 +1590,7 @@ pub fn export_post_process_with(
                     changed = true;
                 }
                 if changed {
+                    record_scan_touch(&kcb.id);
                     l.mark_dirty();
                 }
             }
@@ -1498,6 +1611,7 @@ pub fn remove_book(id: &CrGuid) {
     let before = l.database().books.len();
     l.database_mut().books.retain(|b| b.id != *id);
     if l.database().books.len() != before {
+        record_scan_removal(id);
         l.mark_dirty();
     }
 }
@@ -1876,4 +1990,102 @@ pub fn remember_export_setting(setting: cr_io::export::ExportSetting) {
 
 pub fn last_export_setting() -> Option<cr_io::export::ExportSetting> {
     LAST_EXPORT.with(|c| c.borrow().clone())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use cr_core::model::comic_book::ComicBook;
+
+    fn book(path: &str) -> ComicBook {
+        ComicBook {
+            file_path: path.to_string(),
+            id: CrGuid::new_random(),
+            ..ComicBook::default()
+        }
+    }
+
+    fn ids(books: &[ComicBook]) -> Vec<String> {
+        let mut v: Vec<String> = books.iter().map(|b| b.file_path.clone()).collect();
+        v.sort();
+        v
+    }
+
+    #[test]
+    fn merge_without_side_effects_takes_the_worker_storage() {
+        let a = book("a.cbz");
+        let b = book("b.cbz");
+        let worker = vec![a.clone(), b.clone()];
+        let db = vec![a, b];
+        let merged = merge_scan_storage(worker, &db, &HashSet::new(), &HashSet::new());
+        assert_eq!(ids(&merged), vec!["a.cbz", "b.cbz"]);
+    }
+
+    #[test]
+    fn merge_keeps_books_added_mid_scan() {
+        // The worker's clone predates the mid-scan add: the database
+        // book survives.
+        let a = book("a.cbz");
+        let worker = vec![a.clone()];
+        let db = vec![a, book("added-mid-scan.cbz")];
+        let merged = merge_scan_storage(worker, &db, &HashSet::new(), &HashSet::new());
+        assert_eq!(ids(&merged), vec!["a.cbz", "added-mid-scan.cbz"]);
+    }
+
+    #[test]
+    fn merge_keeps_the_database_copy_for_touched_books() {
+        // Edited on the main thread while the scan ran: the database
+        // copy (the edit) wins over the worker's pre-scan copy; the
+        // untouched book keeps the worker's scanned copy.
+        let a = book("a.cbz");
+        let b = book("b.cbz");
+        let mut edited = a.clone();
+        edited.info.title = "Edited Mid-Scan".into();
+        let touched: HashSet<CrGuid> = [a.id].into();
+        let worker = vec![a, b.clone()];
+        let db = vec![edited, b];
+        let merged = merge_scan_storage(worker, &db, &HashSet::new(), &touched);
+        assert_eq!(ids(&merged), vec!["a.cbz", "b.cbz"]);
+        assert_eq!(merged[0].info.title, "Edited Mid-Scan");
+    }
+
+    #[test]
+    fn merge_drops_removed_books_everywhere() {
+        // Removed on the main thread mid-scan: the database copy is
+        // gone already and the worker's copy must not resurrect it.
+        let a = book("a.cbz");
+        let removed_book = book("removed-mid-scan.cbz");
+        let removed: HashSet<CrGuid> = [removed_book.id].into();
+        let worker = vec![a.clone(), removed_book];
+        let db = vec![a];
+        let merged = merge_scan_storage(worker, &db, &removed, &HashSet::new());
+        assert_eq!(ids(&merged), vec!["a.cbz"]);
+    }
+
+    #[test]
+    fn merge_pump_added_books_do_not_duplicate() {
+        // The pump appended the new book to the database mid-scan AND
+        // the worker pushed it into its storage: one copy survives.
+        let a = book("a.cbz");
+        let pumped = book("pumped.cbz");
+        let worker = vec![a.clone(), pumped.clone()];
+        let db = vec![a, pumped];
+        let merged = merge_scan_storage(worker, &db, &HashSet::new(), &HashSet::new());
+        assert_eq!(ids(&merged), vec!["a.cbz", "pumped.cbz"]);
+    }
+
+    #[test]
+    fn merge_touched_pump_added_book_keeps_the_database_copy() {
+        // Added by the pump mid-scan, then edited on the main thread:
+        // the database copy (the edit) wins over the worker's.
+        let a = book("a.cbz");
+        let pumped = book("pumped.cbz");
+        let mut edited = pumped.clone();
+        edited.info.title = "Edited After Pump".into();
+        let touched: HashSet<CrGuid> = [pumped.id].into();
+        let worker = vec![a.clone(), pumped];
+        let db = vec![a, edited];
+        let merged = merge_scan_storage(worker, &db, &HashSet::new(), &touched);
+        assert_eq!(merged[1].info.title, "Edited After Pump");
+    }
 }

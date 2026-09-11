@@ -1548,8 +1548,17 @@ impl BrowserShell {
             let state = Rc::downgrade(state);
             move |batch: &[ComicBook]| {
                 if let Some(sh) = state.upgrade() {
-                    if batch.is_empty() || !sh.append_scan_batch(batch) {
+                    if batch.is_empty() {
+                        // The landing (the merge is complete): one full
+                        // refresh.
                         sh.refresh_view_from_list();
+                    } else {
+                        // The incremental append (the Library root only).
+                        // A non-Library view deliberately skips the
+                        // per-tick full refresh — a re-evaluation every
+                        // 100 ms tick was a refresh storm; the landing
+                        // hook does the one refresh.
+                        sh.append_scan_batch(batch);
                     }
                     sh.sync_enabled();
                 }
@@ -1654,6 +1663,13 @@ impl BrowserShell {
             self.state.item_view.select_book(&first.id);
             self.state.sync_enabled();
         }
+    }
+
+    /// Probe seam: selects a navigator list through the REAL
+    /// selection path (select_list → selection-changed → the debounced
+    /// select handler).
+    pub fn state_select_list(&self, id: &CrGuid) {
+        self.state.navigator.select_list(id);
     }
 
     /// Fires a detailed action on the window (the dispatch path).
@@ -5143,6 +5159,17 @@ fn show_folder_context_menu(
                             // `Program.Database.Books.RemoveRange(books)`
                             // — the library books at the same paths.
                             let lib = library::session();
+                            let removed: Vec<CrGuid> = {
+                                let l = lib.borrow();
+                                l.database()
+                                    .books
+                                    .iter()
+                                    .filter(|b| {
+                                        paths.iter().any(|(_, p)| *p == b.file_path)
+                                    })
+                                    .map(|b| b.id)
+                                    .collect()
+                            };
                             let mut l = lib.borrow_mut();
                             let before = l.database().books.len();
                             l.database_mut().books.retain(|b| {
@@ -5151,6 +5178,11 @@ fn show_folder_context_menu(
                                     .any(|(_, p)| *p == b.file_path)
                             });
                             if l.database().books.len() != before {
+                                // A mid-scan removal must survive the
+                                // scan's landing merge.
+                                for id in &removed {
+                                    library::record_scan_removal(id);
+                                }
                                 l.mark_dirty();
                             }
                         }
