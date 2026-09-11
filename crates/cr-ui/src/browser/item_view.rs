@@ -156,6 +156,9 @@ pub struct ItemViewState {
     type_ahead: String,
     type_ahead_source: Option<glib::SourceId>,
     canvas: DrawingArea,
+    /// The "no metadata" tags drawn THIS frame (the probe seam — the
+    /// draw re-records every frame, the arrow-zone pattern).
+    badge_draws: u32,
 }
 
 impl ItemViewState {
@@ -363,6 +366,7 @@ impl ItemView {
             type_ahead: String::new(),
             type_ahead_source: None,
             canvas: canvas.clone(),
+            badge_draws: 0,
         }));
 
         let iv = ItemView {
@@ -924,6 +928,12 @@ impl ItemView {
             .find(|g| g.group == group)
             .map(|g| (g.arrow.x, g.arrow.y, g.arrow.w, g.arrow.h))
             .unwrap_or((0.0, 0.0, 0.0, 0.0))
+    }
+
+    /// The "no metadata" tags drawn in the LAST frame (the draw
+    /// resets the count at every frame start — settle before reading).
+    pub fn probe_metadata_badge_draws(&self) -> u32 {
+        self.state.borrow().badge_draws
     }
 
     /// Takes the keyboard focus onto the grid (the window-activation
@@ -1639,6 +1649,9 @@ fn draw_frame(ctx: &cairo::Context, state: &Rc<RefCell<ItemViewState>>, window: 
     let t0 = crate::trace::enabled().then(std::time::Instant::now);
     let mut s = state.borrow_mut();
     s.config.view_height = window.h;
+    // The per-frame draw record resets here (the badge count is the
+    // probe seam — one settled frame decides).
+    s.badge_draws = 0;
     // The layout is maintained by the setters; the draw path only
     // tracks the viewport width (a full reflow per frame made the
     // full-library view crawl).
@@ -1971,6 +1984,17 @@ fn draw_thumbnail_item(
                 missing_cross().as_ref(),
             );
         }
+        // The "no metadata" tag (the port addition): comics whose
+        // scan/open imported nothing. Fileless/missing books carry
+        // their own markers and never show it.
+        let no_meta = super::item::metadata_missing(book);
+        if no_meta {
+            super::item::draw_metadata_tag(
+                ctx,
+                (image_area.x, image_area.y, image_area.w, image_area.h),
+            );
+            s.badge_draws += 1;
+        }
     }
     // The caption: the exact `Comic.Caption`, centered, wrapping in
     // the 3-line strip (skipped when captions hide — QuickOpen).
@@ -2051,6 +2075,19 @@ fn draw_tile_item(
         (image_area.x, image_area.y, image_area.w, image_area.h),
         selected,
     );
+    // The "no metadata" tag (the same condition as Thumbnail — the
+    // Tile cover carries it too).
+    let no_meta = {
+        let b = s.view.book(display);
+        super::item::metadata_missing(b)
+    };
+    if no_meta {
+        super::item::draw_metadata_tag(
+            ctx,
+            (image_area.x, image_area.y, image_area.w, image_area.h),
+        );
+        s.badge_draws += 1;
+    }
     // The text block: the `DefaultFileComic` lines with the shared
     // tab stop (`SimpleTextRenderer` two-column shape). The segments
     // render once per book (tab stops resolved, lines truncated) —

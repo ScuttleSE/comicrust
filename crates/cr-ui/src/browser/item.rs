@@ -459,6 +459,51 @@ pub fn draw_bookmark_h(ctx: &Context, box_: (f64, f64, f64, f64)) {
     ctx.stroke().ok();
 }
 
+/// The "no metadata" condition (PORT ADDITION, user request — no C#
+/// counterpart): a file-backed, present comic whose descriptive
+/// metadata is all empty — the scan/open found nothing to import
+/// (the `create_book`/`apply_info_chain` chain read nothing). A
+/// fileless or missing-file book carries its own state marker and
+/// never shows the tag. The tag clears the moment any key field
+/// fills: an editor commit and the Comic Vine scrape both land in
+/// these fields, so no persisted flag is needed.
+pub fn metadata_missing(book: &ComicBook) -> bool {
+    if book.file_path.is_empty() || book.file_is_missing {
+        return false;
+    }
+    let i = &book.info;
+    i.series.is_empty()
+        && i.title.is_empty()
+        && i.number.is_empty()
+        && i.volume == -1
+        && i.writer.is_empty()
+        && i.publisher.is_empty()
+        && i.summary.is_empty()
+}
+
+/// The "no metadata" tag: a small translucent dark chip with a "?"
+/// at the top-left of the cover — subtle in both themes and against
+/// any cover art.
+pub fn draw_metadata_tag(ctx: &Context, box_: (f64, f64, f64, f64)) {
+    let (x, y, w, h) = box_;
+    let size = (w.min(h) * 0.13).clamp(12.0, 20.0);
+    let bx = x + 8.0;
+    let by = y + 8.0;
+    ctx.set_source_rgba(0.05, 0.05, 0.05, 0.62);
+    rounded_rect(ctx, bx, by, size, size, size * 0.28);
+    ctx.fill().ok();
+    ctx.select_font_face("Sans", cairo::FontSlant::Normal, cairo::FontWeight::Normal);
+    ctx.set_font_size(size * 0.62);
+    if let Ok(ext) = ctx.text_extents("?") {
+        ctx.set_source_rgba(1.0, 1.0, 1.0, 0.85);
+        ctx.move_to(
+            bx + (size - ext.width()) / 2.0 - ext.x_bearing(),
+            by + size * 0.76,
+        );
+        ctx.show_text("?").ok();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -498,5 +543,42 @@ mod tests {
         b.info.summary = String::new();
         let lines = tile_text_lines(&b);
         assert!(lines[4].0.starts_with("Size:\t"));
+    }
+
+    #[test]
+    fn metadata_missing_tracks_the_key_fields() {
+        // A file-backed comic with all descriptive fields empty.
+        let empty = ComicBook {
+            file_path: "/comics/magazine 2024-05.cbz".into(),
+            ..Default::default()
+        };
+        assert!(metadata_missing(&empty));
+        // Any key field filled clears the tag.
+        let fills: [fn(&mut ComicBook); 7] = [
+            |b| b.info.series = "S".into(),
+            |b| b.info.title = "T".into(),
+            |b| b.info.number = "1".into(),
+            |b| b.info.volume = 2,
+            |b| b.info.writer = "W".into(),
+            |b| b.info.publisher = "P".into(),
+            |b| b.info.summary = "Sum".into(),
+        ];
+        for fill in fills {
+            let mut b = ComicBook {
+                file_path: "/comics/x.cbz".into(),
+                ..Default::default()
+            };
+            fill(&mut b);
+            assert!(!metadata_missing(&b));
+        }
+        // Fileless and missing-file books carry their own markers.
+        let fileless = ComicBook::default();
+        assert!(!metadata_missing(&fileless));
+        let missing = ComicBook {
+            file_path: "/comics/gone.cbz".into(),
+            file_is_missing: true,
+            ..Default::default()
+        };
+        assert!(!metadata_missing(&missing));
     }
 }

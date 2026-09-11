@@ -779,6 +779,12 @@ impl BrowserShell {
         }
     }
 
+    /// Probe: the "no metadata" tags drawn in the last grid frame
+    /// (the metadata-tag gate — settle before reading).
+    pub fn state_grid_metadata_badge_draws(&self) -> u32 {
+        self.state.item_view.probe_metadata_badge_draws()
+    }
+
     /// Probe: the navigator pane visibility + split (the T14 restore
     /// gate).
     pub fn state_sidebar(&self) -> (bool, i32) {

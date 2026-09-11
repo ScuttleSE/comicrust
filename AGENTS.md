@@ -73,6 +73,42 @@ Update this section at the **end of every work session**. The next agent must kn
 
 ### State summary
 
+- **"NO METADATA" TAG ON EMPTY BOOKS (2026-09-11; user request
+  "a subtle tag on books where there was no metadata fetched during
+  initial scan; it disappears if you edit in metadata manually, or
+  the comicvine scraper adds it"):** PORT ADDITION (no C#
+  counterpart), DERIVED — no persisted flag (a ComicDb.xml field
+  would break the byte-parity invariant). `item::metadata_missing`
+  (cr-ui/browser/item.rs): file-backed (`file_path` non-empty) +
+  present (`!file_is_missing`) + ALL key descriptive fields empty
+  (series/title/number/volume(-1)/writer/publisher/summary) — a
+  ComicInfo that carried only pages/page-count still reads as "no
+  info" (the user's mental model: "has no info"). The tag is a
+  small translucent dark chip with a "?" at the top-left of the
+  cover (`draw_metadata_tag`), drawn in Thumbnail AND Tile (the
+  same condition; Detail has no cover — no tag). It clears with NO
+  state to track: any edit that fills a key field hides it — the
+  editor commit and the Comic Vine scrape both funnel through those
+  fields (`apply_edited`/`set_info`). Probe seam: the draw counts
+  tags per frame (`ItemViewState.badge_draws`, reset at every frame
+  start — the arrow-zone pattern); accessors
+  `ItemView::probe_metadata_badge_draws` +
+  `state_grid_metadata_badge_draws`. GATES: the `item.rs` unit test
+  `metadata_missing_tracks_the_key_fields` (each key field clears;
+  fileless/missing-file books never tag) + `metadatatag_probe`
+  (NEW example; isolated-XDG pair): A = exactly ONE tag in a
+  2-book grid (a metadataless book + a series-carrying neighbor,
+  both real-decodable zips — the badge draws only on a ready thumb,
+  so the settle waits the decode), B = the `apply_edited` edit +
+  `refresh_after_data_change` clears it (0 tags). 502 tests;
+  fmt/clippy green; browserbar + statusbar probes re-run COMPLETE.
+  USER TEST = rebuild; books in the grid whose scan found no
+  metadata show a small dark "?" chip top-left on the cover
+  (Thumbnail and Tile views); edit any key field (series/title/
+  number/writer/publisher/summary/volume) in Properties or let the
+  Comic Vine scrape fill one → the chip disappears on the next
+  refresh. Placement/glyph is negotiable (the user asked for
+  "subtle"; current: 12-20 px chip, alpha 0.62).
 - **SCAN/OPEN METADATA IMPORT FIXED — THE INFO CHAIN NOW READS AT
   CREATE (2026-09-11; user report: "imported magazines have no info,
   yet they have a ComicInfo.xml"):** ROOT CAUSE — the port's scan
@@ -1046,7 +1082,11 @@ Update this section at the **end of every work session**. The next agent must kn
   HEIF/AVIF decode. The Phase 11 PIPELINE is COMPLETE (the v0.0.283
   release carries all 9 assets on both hosts); the install steps
   (the kickoff user test) remain.
-  OPEN USER TESTS (2026-09-11, in test order): the SCAN/OPEN METADATA
+  OPEN USER TESTS (2026-09-11, in test order): the "NO METADATA" TAG
+  (rebuild; books whose scan found no metadata carry a small dark "?"
+  chip top-left on the cover in Thumbnail and Tile; Properties edits
+  to a key field or a Comic Vine scrape make it disappear), the
+  SCAN/OPEN METADATA
   import fix (rebuild, rescan a folder with ComicInfo.xml-bearing
   magazines — NEW files carry series/title/writer/page metadata; files
   added via open too; Properties on a non-library comic shows its
