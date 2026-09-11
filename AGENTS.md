@@ -1347,13 +1347,21 @@ Update this section at the **end of every work session**. The next agent must kn
   2026-09-10 DETAIL/CHOOSER SESSION (immediately after, same day, in
   the state blocks at the top): the Detail-view CR-matching batch
   (c21086a) and the chooser-submenu fix + grid lines + the
-  smart-list rule menu (f20a690). The 2026-09-11 SCAN-LIVENESS session follows (the clone-not-take fix, ADR-032); see its block at the top for the current HEAD.
+  smart-list rule menu (f20a690). The 2026-09-11 SCAN-LIVENESS session
+  follows (the clone-not-take fix, ADR-032), then the 2026-09-11
+  DOUBLE-CLICK-OPEN crash round (the dead agent's uncommitted
+  leftovers verified + completed, 140ba4c); see both blocks at the
+  top for the current HEAD.
   Open gaps: WebComicProvider, PDF/DjVu writers, the LICENSE file
   (Phase 11 packaging gap), the T14 per-list sort deviation,
   HEIF/AVIF decode. The Phase 11 PIPELINE is COMPLETE (the v0.0.283
   release carries all 9 assets on both hosts); the install steps
   (the kickoff user test) remain.
-  OPEN USER TESTS (2026-09-11, in test order): the PHASE 13 CONFIG
+  OPEN USER TESTS (2026-09-11, in test order): the DOUBLE-CLICK
+  OPEN crash fix (rebuild; double-click a book in the grid → the
+  reader opens with no abort; read a few pages, close the tab → the
+  green read-ribbon moved in the grid without clicking away), the
+  PHASE 13 CONFIG
   UNIFICATION (rebuild; first start creates `~/.config/comicrust/
   comicrust.toml`; re-enter prefs/theme/API key + restart persists;
   hand-add an imprint line under `[data.imprints]`, restart, scrape
