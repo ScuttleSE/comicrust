@@ -118,6 +118,57 @@ Update this section at the **end of every work session**. The next agent must kn
 
 ### State summary
 
+- **CONFIG SEEDS EVERY CHANGEABLE KEY + `docs/config-reference.md`
+  (2026-09-11, commit d5c52b3; user rules: "All values that can be
+  changed _must_ appear in the config file" and "a detailed doc (md)
+  that has all the parameters and explanation for each"; no
+  comments — plain defaults):** (1) `unified::load` seeds
+  `[extended]` + `[engine]` next to the `[data]` seed: every
+  registry key with `ini: true` missing from the file is inserted at
+  its `Default` value, case-insensitive match, missing keys only
+  (user values and spellings survive; a deleted key line re-appears
+  at default). 51 extended keys (`Restart`/`WaitPid` excluded — the
+  restart plumbing; the 8 `ini: false` argv switches never seed) and
+  73 engine keys + the 6 converter fields as .NET text forms
+  (`ListCoverSize = "512, 512"`, `BookmarkColors = "Orange, Green,
+  Red, Blue"`). Whole floats seed with a decimal point so they
+  reload as floats. StrOpt-`None` fields seed `""` and the
+  `@set_str StrOpt` macro arm normalizes empty → `None` (the C#
+  `IsNullOrEmpty` consumer semantics — `Some("")` can never shadow
+  unset). (2) THE DRIFT GATES: `cr-core/tests/config_doc.rs` walks
+  EXTENDED_FIELDS/ENGINE_CONFIG_FIELDS (ini:true minus the excluded
+  pair) + the serde keys of `Settings::default()` (+ the three
+  optional members) and fails when `docs/config-reference.md` lacks
+  the backticked key; `cr-scrape/tests/config_doc.rs` does the same
+  for the scraper's serde keys + `ADVANCED_KEYS` (the 16 advanced
+  line keys, now `pub`). The gate caught three real gaps
+  (`AutoHideMainMenu`, `HideSampleScripts`, one dup row) on the way.
+  (3) THE DOC: `docs/config-reference.md` — every parameter of
+  every section (extended/engine/settings incl. the grouped
+  settings tables + CurrentWorkspace shape, the scraper section with
+  the `advancedSettings` KEY table incl. the `LEFT --> RIGHT` arrow
+  form, `[data]`, and the argv-only keys table); per-key defaults
+  from the seeded dump, meanings from the C# `ComicRack.ini`
+  template + the code; README links it. (4) FOUND THROUGH THE SWEEP:
+  `DatabaseBackgroundSaving` had NO consumer — the app hardcoded
+  `BACKGROUND_SAVE_INTERVAL_SECS = 600` (the const is deleted), so
+  the earlier "set it in the toml" advice was dead. Now `app.rs`
+  reads `ExtendedSettings::global().database_background_saving`
+  clamped >= 1 s (Program.cs:758 parity). (5) LESSONS: toml values
+  read back as text through `flatten` — a seeded `600` lands as
+  `Integer` and applies as "600"; the doc drift gate greps BACKTICKED
+  names — table cells carry `` `Key` ``. GATES: +5 tests = 522
+  (the unified suite grew `section_seed_covers_every_changeable_key`,
+  `section_seed_keeps_stored_values_and_spellings`,
+  `empty_stropt_applies_as_none`; the old
+  `missing_file_seeds…` now asserts the seeded `[extended]`);
+  fmt/clippy -D warnings green; cache_probe (F/G cache-path override
+  rides the seeded `[extended]`) + workspace_probe ALL PASS. USER
+  TEST = rebuild; the first start writes comicrust.toml with every
+  `[extended]`/`[engine]` key visible at its default; edit
+  `DatabaseBackgroundSaving = 60`, restart, and the DB saves every
+  minute mid-scan; delete a key line, restart → it returns at
+  default; every key you look up is in `docs/config-reference.md`.
 - **BACKGROUND SAVE RUNS MID-SCAN (2026-09-11, commit d9262a4; user
   report: "scanning 4100+ files for several minutes, no ComicDb.xml
   on disk — aren't you supposed to write every 60 seconds or so?"):**
