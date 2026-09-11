@@ -189,7 +189,7 @@ fn texture_from_thumb_blob(bytes: &[u8]) -> Option<gdk::MemoryTexture> {
         width,
         height,
         gdk::MemoryFormat::B8g8r8a8Premultiplied,
-        &glib::Bytes::from(data.as_ref()),
+        &glib::Bytes::from(&*data),
         stride as usize,
     ))
 }

@@ -121,7 +121,7 @@ fn main() {
         .downcast::<Dialog>()
         .expect("the Preferences dialog is a Dialog")
         .response(gtk4::ResponseType::Ok);
-    let config = cr_scrape::config::Configuration::load(&cr_scrape::config::default_config_dir());
+    let config = cr_ui::library::scraper_config();
     if config.api_key != "prefs-key-789" {
         eprintln!("FAIL: the API key did not commit: {:?}", config.api_key);
         std::process::exit(1);
@@ -130,6 +130,6 @@ fn main() {
         eprintln!("FAIL: the Series flag did not commit");
         std::process::exit(1);
     }
-    println!("GATE C OK: OK commits the scraper settings into settings.json");
+    println!("GATE C OK: OK commits the scraper settings into the unified config");
     std::process::exit(0);
 }

@@ -1,6 +1,6 @@
 //! Headless: the file write-back flow. Seeds an isolated library
 //! with a COPY of the test comic, turns the update settings on via
-//! the isolated Config.xml, applies an edit through `apply_edited`,
+//! the isolated comicrust.toml, applies an edit through `apply_edited`,
 //! and verifies the file's ComicInfo.xml changed.
 use cr_core::model::comic_book::ComicBook;
 use cr_core::xml::scalar::{CrDateTime, CrGuid};
@@ -21,9 +21,7 @@ fn main() {
         auto_update_comics_files: true,
         ..Default::default()
     };
-    settings
-        .save(&cr_core::paths::settings_file(&paths))
-        .unwrap();
+    cr_core::settings::unified::save_file(&cr_core::paths::config_file(&paths), &settings).unwrap();
 
     // Seed the library with the comic copy.
     let (mut lib, _) = cr_engine::library::Library::open_at_default_location().unwrap();

@@ -1,86 +1,21 @@
-//! Port of the plugin's `cvimprints.py` — the known imprints and
-//! their parent publishers. Both keys and values must match the
-//! ComicVine database exactly (case and punctuation included, so the
-//! tables are verbatim).
+//! The known imprints and their parent publishers — the port of the
+//! plugin's `cvimprints.py`. The table lives in the unified config
+//! file (`[data.imprints]`, ADR-033): seeded on first boot from
+//! `cr_core::settings::unified::IMPRINTS`, user-editable without a
+//! recompile, and the built-in seed applies when the session has no
+//! table (headless tests, uninitialized session). Keys and values
+//! must match the ComicVine database exactly (case and punctuation
+//! included, so the seed is verbatim).
+//!
+//! The advanced-settings `IMPRINT=` entries still override on top
+//! (the `__update_publishers` chain in `bookdata.rs`).
 
 /// `find_parent_publisher`: the parent publisher for a known imprint,
 /// or the original string when unknown.
 pub fn find_parent_publisher(imprint: &str) -> String {
     let imprint = imprint.trim();
-    match imprint {
-        "2000AD" => "DC Comics",
-        "Adventure" => "Malibu",
-        "Aircel Publishing" => "Malibu",
-        "America's Best Comics" => "DC Comics",
-        "Amerotica " => "Nbm",
-        "Antimatter" => "Amryl Entertainment",
-        "Apparat" => "Avatar Press",
-        "Archaia" => "Boom!",
-        "Berger Books" => "Dark Horse Comics",
-        "BOOM! Box" => "Boom!",
-        "Boundless Comics" => "Avatar Press",
-        "Black Bull" => "Wizard",
-        "Black Crown" => "IDW Publishing",
-        "Blu Manga" => "Tokyopop",
-        "CMX" => "DC Comics",
-        "Chaos! Comics" => "Dynamite Entertainment",
-        "Cliffhanger" => "DC Comics",
-        "Comic Bom Bom" => "Kodansha",
-        "ComicsLit" => "Nbm",
-        "Curtis Magazines" => "Marvel",
-        "Danger Zone" => "Action Lab",
-        "Dark Horse Books" => "Dark Horse Comics",
-        "Dark Horse Manga" => "Dark Horse Comics",
-        "Desperado Publishing" => "Image",
-        "Epic" => "Marvel",
-        "Eternity" => "Malibu",
-        "Eurotica " => "Nbm",
-        "Focus" => "DC Comics",
-        "Helix" => "DC Comics",
-        "Hero Comics" => "Heroic Publishing",
-        "Homage comics" => "DC Comics",
-        "Hudson Street Press" => "Penguin Group",
-        "Icon Comics" => "Marvel",
-        "Impact" => "DC Comics",
-        "Jets Comics" => "Hakusensha",
-        "KaBOOM!" => "Boom!",
-        "KiZoic" => "Ape Entertainment",
-        "Kodansha Comics Digital-First!" => "Kodansha",
-        "Kodansha Comics USA" => "Kodansha",
-        "MAD" => "DC Comics",
-        "Marvel Digital Comics Unlimited" => "Marvel",
-        "Marvel Knights" => "Marvel",
-        "Marvel Music" => "Marvel",
-        "Marvel Soleil" => "Marvel",
-        "Marvel UK" => "Marvel",
-        "Maverick" => "Dark Horse Comics",
-        "Max" => "Marvel",
-        "Milestone" => "DC Comics",
-        "Minx" => "DC Comics",
-        "Papercutz" => "Nbm",
-        "Paradox Press" => "DC Comics",
-        "Piranha Press" => "DC Comics",
-        "Quillion" => "Lion Forge Comics",
-        "Razorline" => "Marvel",
-        "Roar Comics" => "Lion Forge Comics",
-        "ShadowLine" => "Image",
-        "Silverline" => "Image",
-        "Sin Factory Comix" => "Radio Comix",
-        "Skybound" => "Image",
-        "Slave Labor" => "Slg Publishing",
-        "Star Comics" => "Marvel",
-        "Tangent Comics" => "DC Comics",
-        "Titan Books" => "Titan Comics",
-        "Todd McFarlane Productions" => "Image",
-        "Tokuma Comics" => "Tokuma Shoten",
-        "Top Cow" => "Image",
-        "Top Shelf" => "IDW Publishing",
-        "Ultraverse" => "Malibu",
-        "Vertical" => "Kodansha",
-        "Vertigo" => "DC Comics",
-        "Wildstorm" => "DC Comics",
-        "Zuda Comics" => "DC Comics",
-        _ => return imprint.to_string(),
-    }
-    .to_string()
+    cr_core::settings::unified::data_table("imprints")
+        .get(imprint)
+        .cloned()
+        .unwrap_or_else(|| imprint.to_string())
 }

@@ -73,6 +73,79 @@ Update this section at the **end of every work session**. The next agent must kn
 
 ### State summary
 
+### State summary
+
+- **PHASE 13: ONE UNIFIED CONFIG FILE + DATA TABLES OUT OF CODE
+  (2026-09-11, user ask "consolidate comicrust.ini + Config.xml + the
+  plugin configs to one unified config file" + "data like the Imprint
+  table should live in the config file, so adding an imprint needs no
+  recompile"; ADR-033; the kickoff is `docs/phase-13-kickoff.md`):**
+  ONE TOML file `~/.config/comicrust/comicrust.toml` replaces ALL
+  THREE stores (user decisions locked: TOML; full-seed the data
+  tables with a revision merge; prior_series.json stays a separate
+  cache file; NO migration — old files left on disk, never read
+  again; ComicDb.xml untouched — confirmed the DB carries no
+  EngineConfiguration element in this port, it rides ini keys and
+  just moves sections). cr-core `settings/unified.rs`: the `UnifiedDoc`
+  model (sections `[extended]`/`[engine]`/`[settings]`/
+  `[plugins.<name>]`/`[data]`) + the session section globals; `load`
+  seeds the built-in `[data]` tables on first boot (rewrites the
+  file) and installs the sections; `save_file` rewrites the whole
+  file atomically (tmp+rename) with `[extended]`/`[engine]` VERBATIM
+  from the loaded session (the C# never writes its ini either — argv
+  values never leak; `update_extended_keys` is the only writer, the
+  old `save_ini_keys` shape); `merge_extended_keys` for `cr-cli
+  migrate`; `get_plugin`/`set_plugin` typed through serde (cr-core
+  stores plugins opaque — no cr-scrape dep); `data_table` (session →
+  built-in fallback). SETTINGS + WORKSPACESTATE gained serde derives
+  mirroring the C# member names (pinned renames:
+  `RemoveFilesfromDatabase`, `InformationCover3D`, the six `*MB`
+  fields; enums ride the `to_xml`/`from_xml` string forms via a
+  `serde_xml_enum!` helper; `CrGuid`; `f32_shortest` keeps hand-edited
+  floats clean — the f64-widened `0.05000000074505806` was ugly). THE
+  XML LAYER IS DELETED (Settings write_xml/read_elem/save/load, the
+  workspace write_xml/parse, `ini.rs` read_files/merge_write, paths
+  INI_FILE_NAME/ini_default_locations) — round-trip equality tests
+  replace the XML golden tests; the ComicDb.xml byte-stability
+  invariant is UNAFFECTED (Config.xml was never the sacred file). The
+  imprints table moved from `cr-scrape/src/cv/imprints.rs` into the
+  cr-core seed (`IMPRINTS` + `IMPRINTS_REVISION`; bump the revision
+  when the seed grows — the boot merge adds ONLY missing keys, user
+  edits and deletions survive); `find_parent_publisher` reads
+  `data_table("imprints")` (exact trimmed key; unknown → input); the
+  advanced-settings IMPRINT overrides stay on top. The scraper config
+  rides `[plugins.comic-vine-scraper]` through
+  `library::scraper_config`/`store_scraper_config` (7 call sites
+  rewired; the cr-scrape `load(dir)`/`save(dir)` file store deleted;
+  `default_config_dir` survives only for prior_series.json; the
+  `advanced` reparse moved to the accessor). Boot order unchanged
+  (the unified read slots exactly where the ini chain read sat).
+  GATES: 514 tests (+11 unified-config unit tests incl. the
+  seed/merge/corrupt/registry-name-guard/engine-special-text
+  round-trips; the XML golden tests went with the deleted layer); fmt
+  + clippy -D warnings green; probes (release, Xvfb): cache A-G (the
+  cache-path override rides `[extended]` now), workspace ALL PASS
+  (the `[settings.CurrentWorkspace]` shape + the close-path save),
+  bootreentry, scanrefresh A-K (RELEASE — gate E in a DEBUG build
+  stalls mid-scan on this machine; the unmodified base HEAD fails
+  the same gate identically = a debug-timing environment flake, not
+  this phase's regression), statusbar/browserbar/navpages/tabstrip/
+  displaysettings/smalldialogs/writeback/startup/menubar/commands
+  (73/73)/pathmigration/scrapeprefs/scrapeconfig/importlist/
+  listorder/dynmenus/toolbar/menubarvis/foldersview/deleteperf/
+  detailresize/icons all green; newbook/exportpage/contextmenu reach
+  PROBE DONE then their internal watchdog fires — SAME rc=2 on the
+  unmodified base HEAD (pre-existing probe quirk). LESSONS: toml 0.9
+  adds winnow to the tree — `data.as_ref()` on a cairo
+  ImageSurfaceData now hits an AsRef<_> ambiguity (fixed with
+  `&*data`); serde skips `advanced` — the reparse belongs in the
+  accessor, not the storage. USER TEST = rebuild; the first start
+  creates comicrust.toml (old files stay on disk, ignored); re-enter
+  prefs (API key, theme, caches), OK, restart → persisted; the dark
+  toggle + cache-folder row persist; hand-add `"My Imprint" = "DC
+  Comics"` under `[data.imprints]`, restart, scrape a matching book →
+  the parent publisher resolves with no recompile; a scrape run works
+  from the unified file; ComicDb.xml bytes unchanged.
 - **SMART-LIST EDITOR: RULE DELETE + CLIPBOARD OPS (2026-09-11,
   commit 19da428; user report "there doesn't seem to be a way to
   remove a rule"; user approved the scope incl. the clipboard ops):**
@@ -1110,8 +1183,10 @@ Update this section at the **end of every work session**. The next agent must kn
   and the settings dialog worked on the first run. The rescrape fast
   path and the fileless cover render are probe-gated (scrape_probe,
   the pool tests) and stay watch-items for daily use.
-- **Phase:** NO PHASE IS ACTIVE — the last active phase (12, the
-  Comic Vine Scraper) closed USER-TESTED 2026-09-10; the fix-round-3
+- **Phase:** 13 ACTIVE (the unified config; IMPLEMENTED 2026-09-11,
+  user test pending — see the state block at the top). The last
+  closed phase is 12 (the Comic Vine Scraper) closed USER-TESTED
+  2026-09-10; the fix-round-3
   batch (the user-reported nine: the Preferences scraper page, the
   series columns + double-click, the forced issue dialog, the
   fileless cover, the Summary height, the left-aligned menus, the
@@ -1147,7 +1222,13 @@ Update this section at the **end of every work session**. The next agent must kn
   HEIF/AVIF decode. The Phase 11 PIPELINE is COMPLETE (the v0.0.283
   release carries all 9 assets on both hosts); the install steps
   (the kickoff user test) remain.
-  OPEN USER TESTS (2026-09-11, in test order): the SMART-LIST RULE
+  OPEN USER TESTS (2026-09-11, in test order): the PHASE 13 CONFIG
+  UNIFICATION (rebuild; first start creates `~/.config/comicrust/
+  comicrust.toml`; re-enter prefs/theme/API key + restart persists;
+  hand-add an imprint line under `[data.imprints]`, restart, scrape
+  resolves the parent publisher without a recompile; a scrape run
+  works; ComicDb.xml untouched; old Config.xml/comicrust.ini stay on
+  disk ignored), the SMART-LIST RULE
   DELETE + clipboard ops (rebuild, open a smart list's editor — every
   rule row and group carries a small ▾ button at the right edge with
   the New Rule / New Group / Delete / Cut / Copy / Paste / Move Up /
@@ -2078,7 +2159,7 @@ Update this section at the **end of every work session**. The next agent must kn
   Phases 0-5 are complete (their gates stay green). Open Phase 1
   gaps: WebComicProvider and the PDF/DjVu writers (tracked in
   `docs/phase-1-kickoff.md`).
-- **State:** `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` are green. 506 tests — 36 suites plus the cr-scrape suites (the Phase 8 perf gates: `reading_list_perf`, `view_perf`, `path_migration_perf`, `list_eval_perf`, `scan_perf`; the cr-ui probes are examples, not tests — the newest are `browserbar_probe` gate D (the column chooser: the open + the submenu-row gate `state_column_chooser_page_rows` reading all=92/a-b=16 through the popover's `visible-submenu` page + the toggle) and D2+D3 (the grouping: ungrouped (1,0) + the disabled action + toggle-groups; the D3 press-sequence machine drives the REAL group-header press paths — label select, single-click collapse/expand of one group, both double-click directions, the true counts on collapsed headers), `statusbar_probe` gates J/J2 (the scan lamp: frames, the visible-only animation, the Cancel-scan menu map + the abort hook), and `smartlistmenu_probe` (the smart-list editor: the rule rows carry the btEdit dropdown + the row menu; the enable states follow `cmEdit_Opening`; delete/cut run through the REAL action path; copy→paste inserts a clone after the row; a group payload is rejected at the cap while a value payload pastes; OK commits — the paste payload rides `probe_paste_payload` because the Xvfb clipboard read stalls, see the state block); `scanrefresh_probe` (gates A-J: the scan-land refresh, the re-scan idempotence, the mid-scan fill, the abort partial landing, the re-scan completion, the mid-add exit save, the mid-RE-scan library liveness (G), the watch-rescan dedupe (H), the non-Library per-tick churn (I), the mid-scan remove/edit survival (J) — it REFUSES a non-isolated XDG pair and wipes it at start, the exit save pollutes it); the real-fixture parts skip in CI without the git-ignored `tests/testfiles/` files; the RAR round-trips skip without `CR_RAR_TESTS` + `rar`). CI runs on the `docker-runner-amd64` container runner (ADR-020) and is LIVE (it caught the 2026-09-09 group-gate flake — the runner + `comicrust-ci:latest` image work). The release tracks are `release.yaml` (rolling prerelease per push) and `tagged-release.yaml` (manual dispatch, stable release for an existing tag — ADR-021, 2026-09-03); `packaging.yaml` (Phase 11) attaches the source tarball, the Arch package, and the .deb to a tagged release. First real tagged-release run (v0.0.273, 2026-09-09) exposed a latent env bug: the "Publish to GitHub mirror" step lacked `TAG` (the Gitea publish succeeded; the mirror step died on `set -u`) — fixed in commit 05483da.
+- **State:** `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` are green. 514 tests — 37 suites plus the cr-scrape suites (the Phase 8 perf gates: `reading_list_perf`, `view_perf`, `path_migration_perf`, `list_eval_perf`, `scan_perf`; the cr-ui probes are examples, not tests — the newest are `browserbar_probe` gate D (the column chooser: the open + the submenu-row gate `state_column_chooser_page_rows` reading all=92/a-b=16 through the popover's `visible-submenu` page + the toggle) and D2+D3 (the grouping: ungrouped (1,0) + the disabled action + toggle-groups; the D3 press-sequence machine drives the REAL group-header press paths — label select, single-click collapse/expand of one group, both double-click directions, the true counts on collapsed headers), `statusbar_probe` gates J/J2 (the scan lamp: frames, the visible-only animation, the Cancel-scan menu map + the abort hook), and `smartlistmenu_probe` (the smart-list editor: the rule rows carry the btEdit dropdown + the row menu; the enable states follow `cmEdit_Opening`; delete/cut run through the REAL action path; copy→paste inserts a clone after the row; a group payload is rejected at the cap while a value payload pastes; OK commits — the paste payload rides `probe_paste_payload` because the Xvfb clipboard read stalls, see the state block); `scanrefresh_probe` (gates A-J: the scan-land refresh, the re-scan idempotence, the mid-scan fill, the abort partial landing, the re-scan completion, the mid-add exit save, the mid-RE-scan library liveness (G), the watch-rescan dedupe (H), the non-Library per-tick churn (I), the mid-scan remove/edit survival (J) — it REFUSES a non-isolated XDG pair and wipes it at start, the exit save pollutes it); the real-fixture parts skip in CI without the git-ignored `tests/testfiles/` files; the RAR round-trips skip without `CR_RAR_TESTS` + `rar`). CI runs on the `docker-runner-amd64` container runner (ADR-020) and is LIVE (it caught the 2026-09-09 group-gate flake — the runner + `comicrust-ci:latest` image work). The release tracks are `release.yaml` (rolling prerelease per push) and `tagged-release.yaml` (manual dispatch, stable release for an existing tag — ADR-021, 2026-09-03); `packaging.yaml` (Phase 11) attaches the source tarball, the Arch package, and the .deb to a tagged release. First real tagged-release run (v0.0.273, 2026-09-09) exposed a latent env bug: the "Publish to GitHub mirror" step lacked `TAG` (the Gitea publish succeeded; the mirror step died on `set -u`) — fixed in commit 05483da.
 - **GitHub mirror (2026-09-06):** remote `github` = `git@github.com:ScuttleSE/comicrust.git` — a TRUE mirror (identical SHAs; `.gitea/` rides along but is inert there, GitHub Actions only reads `.github/workflows/`). After every origin push also `git push github main`; stable tags get pushed manually once; the `rolling` tag is CI-managed on BOTH sides (each release run deletes/recreates it) — never push it by hand. Both release workflows also publish the built tarball + sha256 to GitHub Releases through `.gitea/publish_github_release.sh` (build once on Gitea, assets on both); it needs the Gitea secret `MIRROR_RELEASE_TOKEN` (GitHub PAT with Contents read/write on ScuttleSE/comicrust; Gitea forbids a `GITHUB_` prefix) — unset secret = the step skips with a notice.
 - **Phase 0 gate status:** byte-stable ComicDb.xml round-trip proven on all three synthetic fixtures AND the real-world database `tests/realworld/ComicDb.xml` (255 books, 584 KB, 2026-09-02, user-approved commit).
 - **Phase 2 gate status:** every saved smart list in the real-world DB (a) binds to the matcher registry, (b) renders to a `Match` query string that re-parses and re-renders byte-identically, and (c) evaluates to the SAME book sets the C# cached in `CacheStorage` (Never Read = all 255, Files to update = the 3 dirty books, Reading/Read = empty). Evidence: `crates/cr-engine/tests/realworld_query.rs`.

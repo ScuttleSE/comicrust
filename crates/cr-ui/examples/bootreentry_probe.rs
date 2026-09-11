@@ -5,7 +5,7 @@
 //! `value_changed` OUTSIDE the sync guard, the handler re-entered
 //! `set_item_size` while the selection notify still held the
 //! ItemView borrow → "RefCell already borrowed" abort at boot.
-//! The probe writes a Detail-mode Config.xml + seeds books into an
+//! The probe writes a Detail-mode comicrust.toml + seeds books into an
 //! isolated XDG, then boots the real shell — an abort IS the gate
 //! failure.
 //! Run with an isolated XDG: XDG_DATA_HOME=/tmp/opencode/... cargo

@@ -1,15 +1,19 @@
 //! Port of the Comic Vine Scraper's `configuration.py` — the scraper
-//! settings. The basic options persist as JSON with the C#
-//! `settings.dat` key names (`apiKey`, `updateSeries`, …) plus the
-//! verbatim advanced-settings string; the advanced `KEY=VALUE` text
-//! is reparsed on every change exactly like the C#
+//! settings. The basic options persist as the
+//! `[plugins.comic-vine-scraper]` section of the unified config with
+//! the C# `settings.dat` key names (`apiKey`, `updateSeries`, …) plus
+//! the verbatim advanced-settings string; the advanced `KEY=VALUE`
+//! text is reparsed on every change exactly like the C#
 //! `__set_advanced_settings_s`.
 //!
-//! Files live plugin-locally (ADR-031): one `settings.json` under
-//! `~/.config/comicrust/plugins/comic-vine-scraper/`.
+//! Storage moved into the unified config file (ADR-033; the
+//! plugin-local `settings.json` of ADR-031 is superseded) — the load/
+//! save rides `cr_core::settings::unified::{get_plugin,set_plugin}`
+//! through the app session. The plugin-local directory keeps only
+//! `prior_series.json` (the scrape-history cache).
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::sync::LazyLock;
 
 use fancy_regex::Regex;
@@ -183,27 +187,6 @@ impl Configuration {
         self.advanced = parse_advanced(&self.advanced_settings);
     }
 
-    /// Loads the settings stored under `dir` (`settings.json`).
-    /// A missing or unreadable file means the defaults (C#
-    /// `load_map` parity: a broken file loads as empty).
-    pub fn load(dir: &Path) -> Configuration {
-        let mut config = Configuration::default();
-        if let Ok(bytes) = std::fs::read(dir.join("settings.json")) {
-            if let Ok(stored) = serde_json::from_slice::<Configuration>(&bytes) {
-                config = stored;
-                config.advanced = parse_advanced(&config.advanced_settings);
-            }
-        }
-        config
-    }
-
-    /// Saves the settings under `dir`, creating it when needed.
-    pub fn save(&self, dir: &Path) -> std::io::Result<()> {
-        std::fs::create_dir_all(dir)?;
-        let bytes = serde_json::to_vec_pretty(self).map_err(std::io::Error::other)?;
-        std::fs::write(dir.join("settings.json"), bytes)
-    }
-
     /// True when a scrape can run at all: a non-empty API key
     /// (C# `if not self.config.api_key_s`).
     pub fn has_api_key(&self) -> bool {
@@ -211,9 +194,11 @@ impl Configuration {
     }
 }
 
-/// The plugin's configuration directory:
+/// The plugin-local state directory:
 /// `$XDG_CONFIG_HOME/comicrust/plugins/comic-vine-scraper`
-/// (default `~/.config/comicrust/plugins/comic-vine-scraper`).
+/// (default `~/.config/comicrust/plugins/comic-vine-scraper`). Only
+/// `prior_series.json` (the scrape-history cache) lives there — the
+/// settings moved into the unified config (ADR-033).
 pub fn default_config_dir() -> PathBuf {
     config_dir_from(
         std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from),
@@ -581,23 +566,26 @@ mod tests {
     }
 
     #[test]
-    fn load_save_round_trip_and_broken_file_defaults() {
-        let dir = std::env::temp_dir().join(format!("cr-scrape-test-{}", std::process::id()));
-        let dir = dir.join("roundtrip");
+    fn plugin_section_round_trip() {
+        // The section storage rides the unified config accessors
+        // (ADR-033); a missing section means the defaults.
         let mut config = Configuration {
             api_key: "key".into(),
             ignore_blanks: true,
             ..Default::default()
         };
         config.set_advanced_settings("IGNORE_PUBLISHER=Marvel\nSCRAPE_DELAY=3");
-        config.save(&dir).unwrap();
-
-        let loaded = Configuration::load(&dir);
+        cr_core::settings::unified::set_plugin("comic-vine-scraper", &config);
+        let mut loaded =
+            cr_core::settings::unified::get_plugin::<Configuration>("comic-vine-scraper").unwrap();
+        // `advanced` is skipped by serde — the caller reparses from
+        // advanced_settings (the old load(dir) shape).
+        let raw = loaded.advanced_settings.clone();
+        loaded.set_advanced_settings(&raw);
         assert_eq!(config, loaded);
-
-        std::fs::remove_dir_all(&dir).unwrap();
-        let fresh = Configuration::load(&dir);
-        assert_eq!(fresh, Configuration::default());
+        assert!(
+            cr_core::settings::unified::get_plugin::<Configuration>("no-such-plugin").is_none()
+        );
     }
 
     #[test]

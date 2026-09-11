@@ -2691,14 +2691,13 @@ impl ShellState {
     }
 
     /// The Comic Vine Scraper config dialog (`cvs_config`): OK saves
-    /// the settings into the plugin dir.
+    /// the settings into the unified config's plugin section.
     fn show_scrape_config(self: &Rc<ShellState>) {
-        let config =
-            cr_scrape::config::Configuration::load(&cr_scrape::config::default_config_dir());
+        let config = library::scraper_config();
         let state = Rc::downgrade(self);
         crate::dialogs::scrape_config::show_scrape_config(&self.window, &config, move |result| {
             if let Some(config) = result {
-                let _ = config.save(&cr_scrape::config::default_config_dir());
+                library::store_scraper_config(&config);
                 if let Some(sh) = state.upgrade() {
                     sh.sync_enabled();
                 }
@@ -2719,8 +2718,7 @@ impl ShellState {
         if books.is_empty() {
             return;
         }
-        let config =
-            cr_scrape::config::Configuration::load(&cr_scrape::config::default_config_dir());
+        let config = library::scraper_config();
         if !config.has_api_key() {
             let window = self.window.clone();
             let state = Rc::downgrade(self);
@@ -4162,8 +4160,8 @@ impl ShellState {
             }
         });
         // `() => Program.Settings.AutoScrolling` — the view field
-        // mirrors the C# setting (session-only here; the C# writes
-        // Config.xml).
+        // mirrors the C# setting (session-only here; the port writes
+        // the unified config, ADR-033).
         self.add_check(&group, "auto-scroll", false, |sh| {
             sh.reader.dispatch_current("ToggleAutoScrolling");
         });

@@ -84,9 +84,8 @@ pub fn show_preferences(
 
     // ----- Comic Vine Scraper (the plugin Configuration; the C#
     // plugin carries its own config form) -----
-    let scraper = crate::dialogs::scrape_config::ScrapeConfigWidgets::build(
-        &cr_scrape::config::Configuration::load(&cr_scrape::config::default_config_dir()),
-    );
+    let scraper =
+        crate::dialogs::scrape_config::ScrapeConfigWidgets::build(&library::scraper_config());
     {
         let page = GtkBox::new(Orientation::Vertical, 6);
         page.set_margin_top(8);
@@ -121,10 +120,10 @@ pub fn show_preferences(
             behavior_panel.retrieve(&working_commit);
             *session.borrow_mut() = working_commit.borrow().clone();
             library::save_settings();
-            // The scraper page commits its plugin settings.json on OK
+            // The scraper page commits its plugin section on OK
             // (Cancel discards).
             let config = scraper.collect();
-            let _ = config.save(&cr_scrape::config::default_config_dir());
+            library::store_scraper_config(&config);
             on_ok();
         }
         dlg.close();

@@ -1,6 +1,6 @@
 //! The T14 workspace persistence: the conversions between the
 //! cr-core `WorkspaceState` (the `<CurrentWorkspace>` element in
-//! Config.xml) and the cr-ui widgets. The collect/apply lives in the
+//! the unified config) and the cr-ui widgets. The collect/apply lives in the
 //! shell (`browser/shell.rs`); this module holds the pure
 //! enum-name/DisplayOptions mapping plus the unit tests.
 

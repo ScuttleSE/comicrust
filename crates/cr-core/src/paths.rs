@@ -17,7 +17,7 @@ pub struct Paths {
     /// (`${XDG_DATA_HOME:-~/.local/share}/comicrust`).
     pub application_data_path: PathBuf,
     /// The configuration root — `~/.config/comicrust` (ADR-023;
-    /// holds `Config.xml` and `comicrust.ini`).
+    /// holds the unified config file `comicrust.toml`, ADR-033).
     pub config_path: PathBuf,
     /// `LocalApplicationDataPath` — the cache root (ADR-023: the
     /// C# non-roaming cache root maps onto the same XDG data tree).
@@ -45,35 +45,18 @@ pub fn database_file(paths: &Paths) -> PathBuf {
     paths.database_path.join("ComicDb.xml")
 }
 
-/// The C# `defaultSettingsFile` — `Config.xml` in the application
-/// data path (`Settings.Load`/`Save`; ADR-023 puts it in the config
-/// tree).
-pub fn settings_file(paths: &Paths) -> PathBuf {
-    paths.config_path.join("Config.xml")
+/// The unified config file — `comicrust.toml` in the config tree
+/// (`cr_core::settings::unified`; ADR-033). The C# `Settings.Load`/
+/// `Save` + the `IniFile.Default` chain both collapsed into it.
+pub fn config_file(paths: &Paths) -> PathBuf {
+    paths
+        .config_path
+        .join(crate::settings::unified::CONFIG_FILE_NAME)
 }
 
 /// The C# `defaultNewsFile` — `NewsFeeds.xml`.
 pub fn news_file(paths: &Paths) -> PathBuf {
     paths.application_data_path.join("NewsFeeds.xml")
-}
-
-/// The ini file base name: the C# uses the entry assembly file name
-/// (`ComicRack.ini`); the binary is `comicrust`.
-pub const INI_FILE_NAME: &str = "comicrust.ini";
-
-/// The C# `IniFile.DefaultIniFile` search chain: startup folder,
-/// common (system) location, user location — later files override
-/// earlier ones when read (`GetDefaultLocations` + `ReadFile`).
-pub fn ini_default_locations(paths: &Paths) -> Vec<PathBuf> {
-    let mut out = Vec::new();
-    if let Ok(exe) = std::env::current_exe() {
-        if let Some(dir) = exe.parent() {
-            out.push(dir.join(INI_FILE_NAME));
-        }
-    }
-    out.push(PathBuf::from("/etc").join("comicrust").join(INI_FILE_NAME));
-    out.push(paths.config_path.join(INI_FILE_NAME));
-    out
 }
 
 impl Paths {
@@ -196,8 +179,9 @@ mod tests {
 
     #[test]
     fn config_files_live_in_the_config_tree() {
-        // ADR-023: Config.xml and the ini live under ~/.config,
-        // data and caches under the data tree.
+        // ADR-023: the config lives under ~/.config, data and caches
+        // under the data tree; ADR-033: the config is the ONE
+        // `comicrust.toml` file.
         let data = std::env::temp_dir().join(format!(
             "comicrust-cfgdata-{}",
             std::time::SystemTime::now()
@@ -214,8 +198,8 @@ mod tests {
         ));
         let paths = Paths::from_roots(&data, &cfg);
         assert_eq!(
-            settings_file(&paths),
-            cfg.join("comicrust").join("Config.xml")
+            config_file(&paths),
+            cfg.join("comicrust").join("comicrust.toml")
         );
         assert_eq!(
             news_file(&paths),
@@ -228,10 +212,6 @@ mod tests {
                 .join("CustomThumbnails")
         );
         assert!(paths.config_path.is_dir());
-        let locs = ini_default_locations(&paths);
-        assert_eq!(locs.len(), 3);
-        assert_eq!(locs[1], PathBuf::from("/etc/comicrust/comicrust.ini"));
-        assert_eq!(locs[2], cfg.join("comicrust").join("comicrust.ini"));
     }
 
     #[test]

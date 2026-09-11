@@ -223,10 +223,12 @@ fn migrate_copies_and_maps_a_ce_profile() {
     let copied = std::fs::read(work.join("out")).unwrap();
     let source = std::fs::read(&realworld).unwrap();
     assert_eq!(copied, source, "the copy must be byte-identical");
-    let ini = std::fs::read_to_string(work.join("config").join("comicrust").join("comicrust.ini"))
-        .expect("the port ini written");
-    assert!(ini.contains("CachePath=/tmp/ce-cache"), "{ini}");
-    assert!(!ini.contains("NotAPortKey"), "{ini}");
+    let toml =
+        std::fs::read_to_string(work.join("config").join("comicrust").join("comicrust.toml"))
+            .expect("the unified config written");
+    assert!(toml.contains("[extended]"), "{toml}");
+    assert!(toml.contains("CachePath = \"/tmp/ce-cache\""), "{toml}");
+    assert!(!toml.contains("NotAPortKey"), "{toml}");
 
     // A second run refuses without --force.
     let out = Command::new(env!("CARGO_BIN_EXE_cr-cli"))

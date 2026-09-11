@@ -1,13 +1,14 @@
 //! Headless probe: the T14 layout persistence (`Settings.
-//! CurrentWorkspace` — the Config.xml `<CurrentWorkspace>` element).
-//! Gates: the exit snapshot collects the live browser layout (the
-//! sidebar visibility + split, view mode, sort key, thumb size, the
-//! Detail column set, the window size), the Config.xml carries the
-//! C#-shaped element, and a SECOND shell (the startup path) restores
-//! the layout through `apply_workspace`.
+//! CurrentWorkspace` — the `[settings.current_workspace]` tables of
+//! the unified config, ADR-033). Gates: the exit snapshot collects
+//! the live browser layout (the sidebar visibility + split, view
+//! mode, sort key, thumb size, the Detail column set, the window
+//! size), comicrust.toml carries the C#-named members, and a SECOND
+//! shell (the startup path) restores the layout through
+//! `apply_workspace`.
 //! Run: Xvfb + `cargo run -p cr-ui --example workspace_probe` with
 //! isolated XDG dirs (fresh DB → the default list tree; the probe
-//! writes a Config.xml).
+//! writes comicrust.toml).
 use gtk4::glib;
 use gtk4::prelude::*;
 use std::cell::Cell;
@@ -21,7 +22,7 @@ thread_local! {
 fn main() {
     gtk4::init().expect("gtk init");
     cr_ui::theme::init();
-    // The probe writes Config.xml and opens a DB — refuse a real
+    // The probe writes comicrust.toml and opens a DB — refuse a real
     // home (the accidental-run lesson).
     let isolated_data = std::env::var("XDG_DATA_HOME")
         .map(|v| v.contains("/tmp/opencode"))
@@ -31,7 +32,7 @@ fn main() {
         .unwrap_or(false);
     if !isolated_data || !isolated_config {
         eprintln!(
-            "REFUSED: set XDG_DATA_HOME=/tmp/opencode/<dir> and XDG_CONFIG_HOME=/tmp/opencode/<dir> (the probe seeds a DB and writes Config.xml)"
+            "REFUSED: set XDG_DATA_HOME=/tmp/opencode/<dir> and XDG_CONFIG_HOME=/tmp/opencode/<dir> (the probe seeds a DB and writes comicrust.toml)"
         );
         std::process::exit(1);
     }
@@ -72,8 +73,8 @@ fn main() {
             }
         });
 
-        // B. The exit snapshot → the settings → Config.xml. The
-        //    C#-shape evidence prints.
+        // B. The exit snapshot → the settings → comicrust.toml. The
+        //    C#-member evidence prints.
         glib::timeout_add_local(std::time::Duration::from_millis(1500), {
             let shell = shell.clone();
             move || {
@@ -97,21 +98,22 @@ fn main() {
                 assert!(ws.width > 0 && ws.height > 0, "the window size saves");
                 cr_ui::library::settings().borrow_mut().current_workspace = Some(ws);
                 cr_ui::library::save_settings();
-                let file = cr_core::paths::settings_file(&cr_core::paths::Paths::new_default());
+                let file = cr_core::paths::config_file(&cr_core::paths::Paths::new_default());
                 let text = std::fs::read_to_string(&file).unwrap();
                 println!(
-                    "B Config.xml carries the workspace: show_browser={} detail={} sort={} split={} (expect true x4)",
-                    text.contains("ShowBrowser=\"false\""),
-                    text.contains("ItemViewMode=\"Detail\""),
-                    text.contains("SortKey=\"Writer\""),
-                    text.contains("BrowserSplit=\"340\""),
+                    "B comicrust.toml carries the workspace: show_browser={} detail={} sort={} split={} (expect true x4)",
+                    text.contains("ShowBrowser = false"),
+                    text.contains("Mode = \"Detail\""),
+                    text.contains("SortKey = \"Writer\""),
+                    text.contains("BrowserSplit = 340"),
                 );
-                assert!(text.contains("<CurrentWorkspace>"));
-                assert!(text.contains("ShowBrowser=\"false\""));
-                assert!(text.contains("ItemViewMode=\"Detail\""));
-                assert!(text.contains("SortKey=\"Writer\""));
-                assert!(text.contains("BrowserSplit=\"340\""));
-                assert!(text.contains("<LandscapeLayout>"));
+                assert!(text.contains("[settings.CurrentWorkspace]"));
+                assert!(text.contains("[settings.CurrentWorkspace.View]"));
+                assert!(text.contains("ShowBrowser = false"));
+                assert!(text.contains("Mode = \"Detail\""));
+                assert!(text.contains("SortKey = \"Writer\""));
+                assert!(text.contains("BrowserSplit = 340"));
+                assert!(text.contains("Fit = \"FitWidth\""));
                 glib::ControlFlow::Break
             }
         });
@@ -152,18 +154,18 @@ fn main() {
         glib::timeout_add_local(std::time::Duration::from_millis(2700), {
             let app = app.clone();
             move || {
-                let file = cr_core::paths::settings_file(&cr_core::paths::Paths::new_default());
+                let file = cr_core::paths::config_file(&cr_core::paths::Paths::new_default());
                 let text = std::fs::read_to_string(&file).unwrap();
                 println!(
                     "D close-path save: detail={} split={} (expect true x2)",
-                    text.contains("ItemViewMode=\"Detail\""),
-                    text.contains("BrowserSplit=\"340\""),
+                    text.contains("Mode = \"Detail\""),
+                    text.contains("BrowserSplit = 340"),
                 );
                 assert!(
-                    text.contains("ItemViewMode=\"Detail\""),
+                    text.contains("Mode = \"Detail\""),
                     "the close-path collect kept the layout"
                 );
-                assert!(text.contains("BrowserSplit=\"340\""));
+                assert!(text.contains("BrowserSplit = 340"));
                 println!("T14 workspace probe: ALL PASS");
                 app.quit();
                 glib::ControlFlow::Break

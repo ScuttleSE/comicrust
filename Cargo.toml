@@ -21,6 +21,7 @@ anyhow = "1"
 regex = "1"
 chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
 serde_json = "1"
+toml = "0.9"
 clap = { version = "4", features = ["derive"] }
 zip = { version = "2", default-features = false, features = ["deflate", "deflate64"] }
 tar = "0.4"

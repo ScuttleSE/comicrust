@@ -159,10 +159,10 @@ pub fn abort_scan() {
 /// startup `DatabaseManager.Open`). Returns the `OpenMessage` the C#
 /// would show in the attention dialog (None for a plain load).
 ///
-/// Also loads the settings layer: `Config.xml` (the C#
-/// `Settings.Load(defaultSettingsFile)`) and the `comicrust.ini`
-/// chain + argv for `EngineConfiguration`/`ExtendedSettings` (the
-/// `IniFile.Default.Register` + `CommandLineParser` boot).
+/// Also loads the settings layer: the ONE unified config file
+/// `comicrust.toml` (the C# `Settings.Load` + the `IniFile` chain —
+/// ADR-033) plus the argv switches for `EngineConfiguration`/
+/// `ExtendedSettings` (the `CommandLineParser` boot).
 pub fn initialize() -> Result<Option<String>, cr_core::database::DbError> {
     let (library, status) = Library::open_at_default_location()?;
     let message = open_message(status);
@@ -173,29 +173,25 @@ pub fn initialize() -> Result<Option<String>, cr_core::database::DbError> {
     Ok(message)
 }
 
-/// The settings boot (`Settings.Load` + the ini chain + argv).
-/// Unknown/corrupt config files fall back to the defaults (the C#
-/// catch parity).
+/// The settings boot (`Settings.Load` + the ini keys + argv). A
+/// missing or corrupt config file falls back to the defaults (the C#
+/// catch parity); the first boot seeds the built-in data tables into
+/// the file.
 fn initialize_settings() {
     let paths = cr_core::paths::Paths::new_default();
-    let settings = cr_core::settings::Settings::load(&cr_core::paths::settings_file(&paths));
-
-    // The ini chain (later files override earlier ones, C#
-    // `DefaultIniFile`), plus the command line.
-    let chain = cr_core::paths::ini_default_locations(&paths)
-        .iter()
-        .map(|p| p.to_string_lossy().into_owned())
-        .collect::<Vec<_>>()
-        .join("|");
-    let ini = cr_core::settings::IniValues::read_files(&chain);
     let argv: Vec<String> = std::env::args().skip(1).collect();
 
+    // The unified file: reads `[extended]`/`[engine]`/`[settings]`/
+    // `[plugins]`/`[data]` into the session (and seeds the data
+    // tables, rewriting the file when it did).
+    let loaded = cr_core::settings::unified::load(&cr_core::paths::config_file(&paths));
+
     let mut engine = cr_core::settings::EngineConfiguration::default();
-    engine.load(&ini);
+    engine.load(&loaded.engine);
     cr_core::settings::EngineConfiguration::init_global(engine);
 
     let mut extended = cr_core::settings::ExtendedSettings::default();
-    extended.load(&ini, &argv);
+    extended.load(&loaded.extended, &argv);
     // The C# `Program.ExtendedSettings` getter (Program.cs:160-165):
     // a `-restart` boot clears the one-shot arguments so the
     // restarted instance opens nothing.
@@ -206,14 +202,15 @@ fn initialize_settings() {
     }
     if std::env::var("CR_DEBUG_SL").is_ok() {
         eprintln!(
-            "[cache-ov] chain={chain} ini-cache-path={:?} argv={argv:?}",
-            ini.get("CachePath")
+            "[cache-ov] config={:?} ext-cache-path={:?} argv={argv:?}",
+            cr_core::paths::config_file(&paths),
+            loaded.extended.get("CachePath")
         );
     }
     cr_core::settings::ExtendedSettings::init_global(extended);
 
     SETTINGS.with(|cell| {
-        *cell.borrow_mut() = Some(Rc::new(RefCell::new(settings)));
+        *cell.borrow_mut() = Some(Rc::new(RefCell::new(loaded.settings)));
     });
 }
 
@@ -223,30 +220,49 @@ pub fn settings() -> Rc<RefCell<cr_core::settings::Settings>> {
     SETTINGS.with(|cell| cell.borrow().clone().expect("settings not initialized"))
 }
 
-/// `Settings.Save(defaultSettingsFile)` (the C# app-exit step).
+/// `Settings.Save(defaultSettingsFile)` (the C# app-exit step):
+/// rewrites the whole unified config file — the settings plus the
+/// `[extended]`/`[engine]`/`[plugins]`/`[data]` session sections.
 pub fn save_settings() {
     let paths = cr_core::paths::Paths::new_default();
-    let config_file = cr_core::paths::settings_file(&paths);
+    let config_file = cr_core::paths::config_file(&paths);
     let s = settings();
-    let _ = s
-        .borrow()
-        .save(&config_file)
-        .inspect_err(|e| eprintln!("saving Config.xml failed: {e}"));
+    let _ = cr_core::settings::unified::save_file(&config_file, &s.borrow())
+        .inspect_err(|e| eprintln!("saving {config_file:?} failed: {e}"));
 }
 
-/// Persists ini keys into the LAST file of the ini chain (the user
-/// location — the chain's override at load). The C# never writes the
-/// ini, but it reads `ExtendedSettings` from it at every boot; this
-/// is the recorded deviation that lets the runtime theme toggle
-/// survive a restart.
+/// Persists `ExtendedSettings` keys into the `[extended]` section of
+/// the unified config (the old ini merge-writer's replacement — the
+/// theme toggle and the cache-path preference write through here; a
+/// boot applies the keys, argv still wins).
 pub fn save_ini_keys(keys: &[(&str, &str)]) {
-    let paths = cr_core::paths::Paths::new_default();
-    let Some(file) = cr_core::paths::ini_default_locations(&paths).pop() else {
-        return;
-    };
-    if let Err(err) = cr_core::settings::ini::merge_write(&file, keys) {
-        eprintln!("saving {} failed: {err}", file.display());
-    }
+    cr_core::settings::unified::update_extended_keys(keys);
+    save_settings();
+}
+
+// ---------- Plugin configs ([plugins.*] of the unified config) ----------
+
+/// The Comic Vine Scraper's section name in the unified config.
+pub const SCRAPER_PLUGIN: &str = "comic-vine-scraper";
+
+/// The scraper's stored configuration (the defaults when the section
+/// is absent — the C# `load_map` parity). The parsed advanced
+/// settings reparse from `advanced_settings` (serde skips them — the
+/// old file-load shape).
+pub fn scraper_config() -> cr_scrape::config::Configuration {
+    let mut config: cr_scrape::config::Configuration =
+        cr_core::settings::unified::get_plugin(SCRAPER_PLUGIN).unwrap_or_default();
+    let raw = config.advanced_settings.clone();
+    config.set_advanced_settings(&raw);
+    config
+}
+
+/// Commits the scraper configuration into `[plugins.comic-vine-scraper]`
+/// and saves the unified config (the old plugin-local settings.json
+/// write — ADR-031's file store is superseded by ADR-033).
+pub fn store_scraper_config(config: &cr_scrape::config::Configuration) {
+    cr_core::settings::unified::set_plugin(SCRAPER_PLUGIN, config);
+    save_settings();
 }
 
 fn open_message(status: OpenStatus) -> Option<String> {
@@ -1980,7 +1996,7 @@ pub fn find_list_item_any(id: &CrGuid) -> Option<cr_core::database::list_items::
 
 thread_local! {
     /// `Program.Settings.CurrentExportSetting` (session-only; the
-    /// Config.xml block joins when the settings schema grows the
+    /// unified-config block joins when the settings schema grows the
     /// export lists).
     static LAST_EXPORT: RefCell<Option<cr_io::export::ExportSetting>> = const { RefCell::new(None) };
 }

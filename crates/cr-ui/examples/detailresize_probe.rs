@@ -37,7 +37,7 @@ fn main() {
             .map(|v| v.contains("/tmp/opencode"))
             .unwrap_or(false)
     {
-        eprintln!("REFUSED: set XDG_DATA_HOME=/tmp/opencode/<dir> AND XDG_CONFIG_HOME=/tmp/opencode/<dir> (the probe seeds books and can write Config.xml)");
+        eprintln!("REFUSED: set XDG_DATA_HOME=/tmp/opencode/<dir> AND XDG_CONFIG_HOME=/tmp/opencode/<dir> (the probe seeds books and can write comicrust.toml)");
         std::process::exit(1);
     }
     let work = std::path::Path::new("/tmp/opencode/detailresize");

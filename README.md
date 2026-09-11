@@ -140,11 +140,17 @@ comicrust runs as a single instance. A second start sends its files to the runni
 
 | Path | Contents |
 |---|---|
-| `~/.config/comicrust/` | settings (`Config.xml`, `comicrust.ini`) |
+| Path | Contents |
+|---|---|
+| `~/.config/comicrust/comicrust.toml` | the ONE config file: settings, engine/extended options, plugin settings, and the editable data tables |
 | `~/.local/share/comicrust/ComicDb/ComicDb.xml` | the library database |
 | `~/.local/share/comicrust/Cache/` | thumbnail and image caches. Safe to delete. |
 
 comicrust also writes a `ComicDb.xml.bak` copy next to the database and can recover from it after a problem.
+
+### The config file
+
+All configuration lives in one TOML file: `~/.config/comicrust/comicrust.toml`. The `[settings]` section carries the user preferences, `[extended]`/`[engine]` the boot switches and engine options, `[plugins.comic-vine-scraper]` the scraper settings, and `[data.imprints]` the imprint→publisher table the Comic Vine Scraper uses — the table is seeded on first run and hand-editable (add or change an imprint line, then restart). Command-line switches (like `-dark`) still override the file for that run. The file is read once at startup; the app rewrites it at its save points, so hand edits apply at the next start.
 
 ## Migrate your library from Windows ComicRack
 

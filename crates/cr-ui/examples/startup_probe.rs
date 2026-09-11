@@ -27,7 +27,7 @@ fn main() {
             .map(|v| v.contains("/tmp/opencode"))
             .unwrap_or(false)
     {
-        eprintln!("REFUSED: set XDG_DATA_HOME=/tmp/opencode/<dir> AND XDG_CONFIG_HOME=/tmp/opencode/<dir> (the probe writes a database and Config.xml)");
+        eprintln!("REFUSED: set XDG_DATA_HOME=/tmp/opencode/<dir> AND XDG_CONFIG_HOME=/tmp/opencode/<dir> (the probe writes a database and comicrust.toml)");
         std::process::exit(1);
     }
     let scenario = std::env::args().nth(1).unwrap_or_else(|| "fresh".into());

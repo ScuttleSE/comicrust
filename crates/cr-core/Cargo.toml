@@ -5,6 +5,8 @@ edition.workspace = true
 
 [dependencies]
 serde.workspace = true
+serde_json.workspace = true
+toml.workspace = true
 quick-xml.workspace = true
 thiserror.workspace = true
 regex.workspace = true

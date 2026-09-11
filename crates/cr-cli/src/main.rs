@@ -638,14 +638,13 @@ fn migrate(source: &Path, out: Option<&Path>, force: bool, dry_run: bool) -> Res
                         (n, v)
                     })
                     .collect();
-                let target_ini = cr_core::paths::Paths::new_default()
-                    .config_path
-                    .join(cr_core::paths::INI_FILE_NAME);
-                if let Some(parent) = target_ini.parent() {
+                let target_config =
+                    cr_core::paths::config_file(&cr_core::paths::Paths::new_default());
+                if let Some(parent) = target_config.parent() {
                     std::fs::create_dir_all(parent).ok();
                 }
-                cr_core::settings::ini::merge_write(&target_ini, &entries)
-                    .context("writing the port ini")?;
+                cr_core::settings::unified::merge_extended_keys(&target_config, &entries)
+                    .context("writing the unified config")?;
             }
         }
     }
