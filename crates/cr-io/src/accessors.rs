@@ -29,7 +29,7 @@ impl ComicAccessor for ZipAccessor {
     /// native index (`item.ZipFileIndex`).
     fn get_entry_list(&self, source: &Path) -> Result<Vec<ProviderImageInfo>> {
         let file = File::open(source)?;
-        let mut archive = zip::ZipArchive::new(file)?;
+        let mut archive = open_zip_archive(file)?;
         let mut list = Vec::with_capacity(archive.len());
         for i in 0..archive.len() {
             let entry = archive.by_index_raw(i)?;
@@ -46,7 +46,7 @@ impl ComicAccessor for ZipAccessor {
     /// C# `catch { return null }`.
     fn read_byte_image(&self, source: &Path, info: &ProviderImageInfo) -> Option<Vec<u8>> {
         let file = File::open(source).ok()?;
-        let mut archive = zip::ZipArchive::new(file).ok()?;
+        let mut archive = open_zip_archive(file).ok()?;
         let mut entry = archive.by_name(&info.name).ok()?;
         let mut data = Vec::with_capacity(info.size.min(64 * 1024 * 1024) as usize);
         entry.read_to_end(&mut data).ok()?;
@@ -57,7 +57,7 @@ impl ComicAccessor for ZipAccessor {
     /// search (`zipFile.FindEntry(s, ignoreCase: true)`).
     fn read_info_file(&self, source: &Path, filename: &str) -> Option<Vec<u8>> {
         let file = File::open(source).ok()?;
-        let mut archive = zip::ZipArchive::new(file).ok()?;
+        let mut archive = open_zip_archive(file).ok()?;
         let index = (0..archive.len()).find(|i| {
             archive
                 .by_index_raw(*i)
@@ -143,6 +143,85 @@ impl ComicAccessor for TarAccessor {
         }
         None
     }
+}
+
+/// Open a zip archive with a cheap archive-offset resolution.
+///
+/// `ZipArchive::new` (`ArchiveOffset::Detect`) handles prepended junk by
+/// searching BACKWARDS from the EOCD for the first CDFH in 2045-byte
+/// windows. On a big archive over CIFS (~4 ms per seek+read round trip)
+/// that crawl costs hours per file (measured: a 2.85 GB omnibus with a
+/// 512-byte prepend). This helper reads the file tail ONCE, locates the
+/// EOCD, and derives the archive offset arithmetically
+/// (`eocd_offset - cd_size - relative_cd_offset`); the crate's mandatory
+/// CDFH guess then hits on the FIRST read. Any parse surprise falls back
+/// to the crate's own detection.
+fn open_zip_archive(file: File) -> zip::result::ZipResult<zip::ZipArchive<File>> {
+    use std::io::{Seek, SeekFrom};
+
+    const EOCD_SIG: [u8; 4] = [0x50, 0x4b, 0x05, 0x06];
+    const MAX_COMMENT: u64 = 65_535;
+
+    let detect = || zip::ZipArchive::new(file.try_clone()?);
+    let len = match file.metadata() {
+        Ok(m) => m.len(),
+        Err(_) => return detect(),
+    };
+    if len < 22 {
+        return detect();
+    }
+
+    // One tail read: EOCD (22) + the maximum comment.
+    let tail_len = (len).min(22 + MAX_COMMENT);
+    let tail_start = len - tail_len;
+    let mut tail = vec![0u8; tail_len as usize];
+    let mut file2 = match file.try_clone() {
+        Ok(f) => f,
+        Err(_) => return detect(),
+    };
+    if file2.seek(SeekFrom::Start(tail_start)).is_err() {
+        return detect();
+    }
+    if std::io::Read::read_exact(&mut file2, &mut tail).is_err() {
+        return detect();
+    }
+
+    // EOCD: scan back for the signature (last occurrence wins — the
+    // comment may contain the bytes).
+    let Some(eocd_pos) = tail.windows(4).rposition(|w| w == EOCD_SIG) else {
+        return detect();
+    };
+    let eocd = eocd_pos + tail_start as usize;
+    if eocd + 22 > len as usize {
+        return detect();
+    }
+    let b = &tail[eocd_pos..eocd_pos + 22];
+    let cd_size = u32::from_le_bytes([b[12], b[13], b[14], b[15]]) as u64;
+    let cd_rel = u32::from_le_bytes([b[16], b[17], b[18], b[19]]) as u64;
+
+    // Derive the archive offset from the EOCD position. If the numbers
+    // disagree (or the derivation underflows), let the crate detect.
+    let eocd_off = eocd as u64;
+    if cd_size == 0 || cd_rel == 0 {
+        return detect();
+    }
+    let Some(archive_offset) = eocd_off
+        .checked_sub(cd_size)
+        .and_then(|v| v.checked_sub(cd_rel))
+    else {
+        return detect();
+    };
+    if archive_offset == 0 {
+        // No prepend — the plain open is already fast.
+        return detect();
+    }
+
+    zip::ZipArchive::with_config(
+        zip::read::Config {
+            archive_offset: zip::read::ArchiveOffset::Known(archive_offset),
+        },
+        file,
+    )
 }
 
 /// Shared signature check (`FileBasedAccessor.IsFormat`). `on_error`

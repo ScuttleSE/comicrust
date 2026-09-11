@@ -236,3 +236,29 @@ fn zip_page_read_survives_deflate() {
 
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// Regression: the zip crate's `ArchiveOffset::Detect` searches
+/// BACKWARDS from the EOCD for the first CDFH in 2045-byte windows; on
+/// an archive with prepended junk over a network mount that crawl costs
+/// hours (measured on a 2.85 GB CIFS file). `ZipAccessor` derives the
+/// offset from one tail read instead. This fixture prepends junk and
+/// pins that info reads still work through the derived offset.
+#[test]
+fn cbz_with_prepended_junk_opens_fast() {
+    let dir = temp_dir("cbz-prepend");
+    let path = dir.join("comic.cbz");
+    build_zip(&path, &comic_entries());
+
+    // Prepend 512 junk bytes in place.
+    let body = std::fs::read(&path).unwrap();
+    let mut with_junk = vec![0u8; 512];
+    with_junk.extend_from_slice(&body);
+    std::fs::write(&path, &with_junk).unwrap();
+
+    let provider = ComicProvider::open(&path).unwrap();
+    let names: Vec<&str> = provider.pages().iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(names.first(), Some(&"cover.jpg"));
+
+    let info = provider.read_info_file("ComicInfo.xml").unwrap();
+    assert_eq!(info, b"<ComicInfo />");
+}
