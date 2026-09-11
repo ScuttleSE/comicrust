@@ -20,6 +20,7 @@ use std::rc::Rc;
 
 use gtk4::gdk;
 use gtk4::gio;
+use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::{
     Align, Box as GtkBox, Button, CheckButton, ComboBoxText, Dialog, Entry, Frame, Grid, Label,
@@ -266,10 +267,13 @@ pub fn show_smart_list_editor(
             }
             let item = state.borrow().clone();
             let inner = slot.borrow().as_ref().expect("rebuild set").clone();
+            PROBE_ROWS.with(|r| r.borrow_mut().clear());
+            PROBE_PATHS.with(|r| r.borrow_mut().clear());
             build_rows(&state, &rows_box, &item.matchers, &[], &dialog, &inner);
         })
     };
     *rebuild_slot.borrow_mut() = Some(Rc::clone(&rebuild));
+    PROBE_EDITOR.with(|p| *p.borrow_mut() = Some((Rc::clone(&state), Rc::clone(&rebuild))));
 
     // Add Rule / Add Group with no selection appends at the root.
     {
@@ -372,10 +376,12 @@ pub fn show_smart_list_editor(
                     let committed = state.borrow().clone();
                     dlg.close();
                     on_done(Some(committed));
+                    probe_clear();
                 }
                 _ => {
                     dlg.close();
                     on_done(None);
+                    probe_clear();
                 }
             }
         });
@@ -455,83 +461,363 @@ fn build_rows(
 }
 
 fn run_row_op(state: &StateRef, path: &[usize], op: RowOp, rebuild: &RebuildFn) {
-    {
-        let mut s = state.borrow_mut();
-        let matchers = &mut s.matchers;
-        match op {
-            RowOp::AddRule => {
-                edit_ops::add_rule(matchers, path);
-            }
-            RowOp::AddGroup => {
-                edit_ops::add_group(matchers, path);
-            }
-            RowOp::Delete => {
-                edit_ops::remove_node(matchers, path);
-            }
-            RowOp::Up => {
-                edit_ops::move_node(matchers, path, -1);
-            }
-            RowOp::Down => {
-                edit_ops::move_node(matchers, path, 1);
+    match op {
+        RowOp::Copy => {
+            let node = {
+                let s = state.borrow();
+                walk_matcher(&s.matchers, path).cloned()
+            };
+            if let Some(m) = node {
+                clipboard_set_matcher(&display_clipboard(), &m);
             }
         }
+        RowOp::Cut => {
+            let node = {
+                let s = state.borrow();
+                walk_matcher(&s.matchers, path).cloned()
+            };
+            if let Some(m) = node {
+                clipboard_set_matcher(&display_clipboard(), &m);
+            }
+            {
+                let mut s = state.borrow_mut();
+                edit_ops::remove_node(&mut s.matchers, path);
+            }
+            rebuild();
+        }
+        RowOp::Paste => {
+            let clipboard = display_clipboard();
+            let state = Rc::clone(state);
+            let path = path.to_vec();
+            let rebuild = Rc::clone(rebuild);
+            clipboard.read_text_async(gio::Cancellable::NONE, move |res| {
+                let Some(text) = res.ok().flatten() else {
+                    return;
+                };
+                let Ok(payload) = ComicBookMatcher::from_clipboard_bytes(text.as_bytes()) else {
+                    return;
+                };
+                apply_paste(&state, &path, &payload, &rebuild);
+            });
+        }
+        RowOp::AddRule | RowOp::AddGroup | RowOp::Delete | RowOp::Up | RowOp::Down => {
+            {
+                let mut s = state.borrow_mut();
+                let matchers = &mut s.matchers;
+                match op {
+                    RowOp::AddRule => {
+                        edit_ops::add_rule(matchers, path);
+                    }
+                    RowOp::AddGroup => {
+                        edit_ops::add_group(matchers, path);
+                    }
+                    RowOp::Delete => {
+                        edit_ops::remove_node(matchers, path);
+                    }
+                    RowOp::Up => {
+                        edit_ops::move_node(matchers, path, -1);
+                    }
+                    RowOp::Down => {
+                        edit_ops::move_node(matchers, path, 1);
+                    }
+                    RowOp::Cut | RowOp::Copy | RowOp::Paste => {}
+                }
+            }
+            rebuild();
+        }
     }
-    rebuild();
 }
 
-#[derive(Clone, Copy)]
+/// The matcher-clipboard MIME type (a private format — the C#
+/// clipboard carries a WinForms binary object under
+/// `ComicBookMatcher.ClipboardFormat`; the port ships the matcher's
+/// XML element as text under this MIME, which also gates Paste).
+const MATCHER_MIME: &str = "application/x-comicrust-matcher";
+
+fn display_clipboard() -> gdk::Clipboard {
+    gdk::Display::default().expect("gdk display").clipboard()
+}
+
+/// Writes a matcher to the clipboard: the private MIME for the Paste
+/// gate plus `text/plain` so `read_text_async` can read it back (the
+/// union provider serves both).
+fn clipboard_set_matcher(clipboard: &gdk::Clipboard, m: &ComicBookMatcher) {
+    let Ok(bytes) = m.to_clipboard_bytes() else {
+        return;
+    };
+    let bytes = glib::Bytes::from_owned(bytes);
+    let own = gdk::ContentProvider::for_bytes(MATCHER_MIME, &bytes);
+    let text = gdk::ContentProvider::for_bytes("text/plain;charset=utf-8", &bytes);
+    // Best-effort: a failed clipboard write just leaves Paste disabled.
+    let _ = clipboard.set_content(Some(&gdk::ContentProvider::new_union(&[own, text])));
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum RowOp {
     AddRule,
     AddGroup,
     Delete,
+    Cut,
+    Copy,
+    Paste,
     Up,
     Down,
 }
 
-/// The per-row edit menu (New Rule / New Group / Delete / Up /
-/// Down) — a right-click popover on the row (the C# `cmEdit`).
-fn attach_row_menu<W: IsA<gtk4::Widget>>(
-    state: &StateRef,
-    row: &W,
-    path: &[usize],
-    rebuild: &RebuildFn,
-) {
+/// The per-row edit machinery (the C# `cmEdit` menu over a `btEdit`
+/// dropdown button — MatcherEditor.Designer.cs:80-90 order: New Rule,
+/// New Group, Delete | Cut, Copy, Paste | Move Up, Move Down). The
+/// action group mounts on the ROW; the row edit button AND a row
+/// right-click both open the same menu.
+#[derive(Clone)]
+struct RowEdit {
+    menu_model: gio::Menu,
+    group: gio::SimpleActionGroup,
+    /// The `cmEdit_Opening` enable states — re-run before every open.
+    update: Rc<dyn Fn()>,
+}
+
+/// The sibling count of the addressed node (its container's size).
+fn container_len(state: &StateRef, path: &[usize]) -> Option<usize> {
+    let s = state.borrow();
+    let (_, parent_path) = path.split_last()?;
+    Some(walk_matcher_list(&s.matchers, parent_path)?.len())
+}
+
+/// The paste APPLY path (insert after the addressed node + rebuild) —
+/// shared by the clipboard read callback and the probe seam.
+fn apply_paste(state: &StateRef, path: &[usize], payload: &ComicBookMatcher, rebuild: &RebuildFn) {
+    {
+        let mut s = state.borrow_mut();
+        edit_ops::paste_node(&mut s.matchers, path, payload);
+    }
+    rebuild();
+}
+
+fn make_row_edit(state: &StateRef, path: &[usize], rebuild: &RebuildFn) -> RowEdit {
     let path = path.to_vec();
-    let state = Rc::clone(state);
-    let rebuild = Rc::clone(rebuild);
     let menu_model = gio::Menu::new();
     menu_model.append(Some("New Rule"), Some("row.rule"));
     menu_model.append(Some("New Group"), Some("row.group"));
     menu_model.append(Some("Delete"), Some("row.delete"));
-    menu_model.append(Some("Move Up"), Some("row.up"));
-    menu_model.append(Some("Move Down"), Some("row.down"));
+    let clipboard = gio::Menu::new();
+    clipboard.append(Some("Cut"), Some("row.cut"));
+    clipboard.append(Some("Copy"), Some("row.copy"));
+    menu_model.append_section(None, &clipboard);
+    let paste = gio::Menu::new();
+    paste.append(Some("Paste"), Some("row.paste"));
+    menu_model.append_section(None, &paste);
+    let move_section = gio::Menu::new();
+    move_section.append(Some("Move Up"), Some("row.up"));
+    move_section.append(Some("Move Down"), Some("row.down"));
+    menu_model.append_section(None, &move_section);
+
     let group = gio::SimpleActionGroup::new();
+    let mut actions: Vec<(RowOp, gio::SimpleAction)> = Vec::new();
     for (name, op) in [
         ("rule", RowOp::AddRule),
         ("group", RowOp::AddGroup),
         ("delete", RowOp::Delete),
+        ("cut", RowOp::Cut),
+        ("copy", RowOp::Copy),
+        ("paste", RowOp::Paste),
         ("up", RowOp::Up),
         ("down", RowOp::Down),
     ] {
         let action = gio::SimpleAction::new(name, None);
-        let state = Rc::clone(&state);
+        let state = Rc::clone(state);
         let path = path.clone();
-        let rebuild = Rc::clone(&rebuild);
+        let rebuild = Rc::clone(rebuild);
         action.connect_activate(move |_, _| run_row_op(&state, &path, op, &rebuild));
         group.add_action(&action);
+        actions.push((op, action));
     }
-    row.insert_action_group("row", Some(&group));
-    let popover = PopoverMenu::from_model(Some(&menu_model));
+
+    let update: Rc<dyn Fn()> = {
+        let state = Rc::clone(state);
+        let actions = actions;
+        let path = path.clone();
+        Rc::new(move || {
+            let count = container_len(&state, &path).unwrap_or(1);
+            let idx = *path.last().unwrap_or(&0);
+            for (op, action) in &actions {
+                let enabled = match op {
+                    RowOp::AddRule | RowOp::Copy => true,
+                    // The C# cmEdit_Opening: Delete/Cut need a
+                    // sibling, Move Up/Down the index range, New
+                    // Group the level cap, Paste the clipboard.
+                    RowOp::Delete | RowOp::Cut => count > 1,
+                    RowOp::Up => idx > 0,
+                    RowOp::Down => idx + 1 < count,
+                    RowOp::AddGroup => path.len() < edit_ops::MAX_LEVEL,
+                    RowOp::Paste => gdk::Display::default()
+                        .map(|d| d.clipboard().formats().contain_mime_type(MATCHER_MIME))
+                        .unwrap_or(false),
+                };
+                action.set_enabled(enabled);
+            }
+        })
+    };
+
+    let edit = RowEdit {
+        menu_model,
+        group,
+        update,
+    };
+    PROBE_ROWS.with(|r| r.borrow_mut().push(edit.clone()));
+    PROBE_PATHS.with(|r| r.borrow_mut().push(path.clone()));
+    edit
+}
+
+// ---------- Probe seams (the smartlistmenu_probe) ----------
+//
+// The LIVE editor state and the per-row edit actions while a dialog
+// is open. Rows register in traversal order (group frames before
+// their children); the registry resets at every wholesale rebuild.
+
+thread_local! {
+    static PROBE_EDITOR: RefCell<Option<(StateRef, RebuildFn)>> = RefCell::new(None);
+    static PROBE_ROWS: RefCell<Vec<RowEdit>> = const { RefCell::new(Vec::new()) };
+    static PROBE_PATHS: RefCell<Vec<Vec<usize>>> = const { RefCell::new(Vec::new()) };
+}
+
+/// The root matchers of the open editor (None = no editor open).
+pub fn probe_matchers() -> Option<Vec<ComicBookMatcher>> {
+    PROBE_EDITOR.with(|p| {
+        p.borrow()
+            .as_ref()
+            .map(|(state, _)| state.borrow().matchers.clone())
+    })
+}
+
+/// The registered edit rows (one per rendered rule/group).
+pub fn probe_row_edit_count() -> usize {
+    PROBE_ROWS.with(|r| r.borrow().len())
+}
+
+/// The enabled state of a row's edit action (the menu-item state).
+pub fn probe_row_action_enabled(row: usize, name: &str) -> Option<bool> {
+    PROBE_ROWS.with(|r| {
+        let rows = r.borrow();
+        let row = rows.get(row)?;
+        Some(row.group.lookup_action(name)?.is_enabled())
+    })
+}
+
+/// Runs a row's `cmEdit_Opening` enable states.
+pub fn probe_refresh_row_actions(row: usize) {
+    PROBE_ROWS.with(|r| {
+        if let Some(row) = r.borrow().get(row) {
+            (row.update)();
+        }
+    });
+}
+
+/// Fires a row's edit action through the REAL action path (a disabled
+/// action ignores the activation — the C# disabled-menu-item parity).
+pub fn probe_fire_row_action(row: usize, name: &str) -> bool {
+    let action = PROBE_ROWS.with(|r| {
+        r.borrow()
+            .get(row)
+            .and_then(|row| row.group.lookup_action(name.to_string().as_str()))
+    });
+    match action {
+        Some(action) => {
+            action.activate(None);
+            true
+        }
+        None => false,
+    }
+}
+
+/// Writes a matcher payload to the clipboard (the Cut/Copy product).
+pub fn probe_clipboard_write_matcher(m: &ComicBookMatcher) {
+    clipboard_set_matcher(&display_clipboard(), m);
+}
+
+/// Applies a paste payload through the REAL paste path (insert after
+/// the row + rebuild). The probe's Xvfb clipboard round-trip is
+/// unreliable (X11 selection transfers stall without a WM), so the
+/// probe injects the payload the clipboard read would deliver.
+pub fn probe_paste_payload(row: usize, payload: &ComicBookMatcher) {
+    PROBE_EDITOR.with(|p| {
+        let Some((state, rebuild)) = p.borrow().as_ref().map(|(s, r)| (s.clone(), r.clone()))
+        else {
+            return;
+        };
+        let path = PROBE_PATHS.with(|r| r.borrow().get(row).cloned());
+        if let Some(path) = path {
+            apply_paste(&state, &path, payload, &rebuild);
+        }
+    });
+}
+
+/// Whether the clipboard carries a matcher payload (the Paste gate).
+pub fn probe_clipboard_has_matcher() -> bool {
+    gdk::Display::default()
+        .map(|d| d.clipboard().formats().contain_mime_type(MATCHER_MIME))
+        .unwrap_or(false)
+}
+
+fn probe_clear() {
+    PROBE_EDITOR.with(|p| *p.borrow_mut() = None);
+    PROBE_ROWS.with(|r| r.borrow_mut().clear());
+    PROBE_PATHS.with(|r| r.borrow_mut().clear());
+}
+
+/// The visible row edit button (the C# `btEdit`: a small
+/// `SmallArrowDown` button on the row's right edge that opens the
+/// edit menu — the row right-click keeps working too).
+fn row_edit_button(edit: &RowEdit) -> gtk4::MenuButton {
+    let button = gtk4::MenuButton::builder()
+        .always_show_arrow(false)
+        .valign(gtk4::Align::Center)
+        .build();
+    match crate::icon::icon("SmallArrowDown") {
+        Some(texture) => {
+            button.set_child(Some(&gtk4::Image::from_paintable(Some(&texture))));
+        }
+        None => button.set_always_show_arrow(true),
+    }
+    let popover = PopoverMenu::from_model(Some(&edit.menu_model));
+    popover.set_has_arrow(false);
+    button.set_popover(Some(&popover));
+    let update = Rc::clone(&edit.update);
+    button.connect_activate(move |_| update());
+    button
+}
+
+/// Mounts the edit machinery on a row: the action group, the
+/// right-click popover (a port addition — the C# menu opens only from
+/// `btEdit`), and returns the edit button for the caller's layout.
+fn attach_row_edit(
+    state: &StateRef,
+    row: &impl IsA<gtk4::Widget>,
+    path: &[usize],
+    rebuild: &RebuildFn,
+) -> gtk4::MenuButton {
+    let edit = make_row_edit(state, path, rebuild);
+    row.insert_action_group("row", Some(&edit.group));
+    let popover = PopoverMenu::from_model(Some(&edit.menu_model));
     popover.set_parent(row);
+    // The popover is associated (not a layout child): unparent it
+    // when the row goes away, or GTK warns at finalize.
     let row_widget = row.clone().upcast::<gtk4::Widget>();
+    {
+        let popover = popover.clone();
+        row_widget.connect_destroy(move |_| popover.unparent());
+    }
+    let update = Rc::clone(&edit.update);
     let gesture = gtk4::GestureClick::new();
     gesture.set_button(3);
     gesture.connect_pressed(move |g, _n, x, y| {
         g.set_state(gtk4::EventSequenceState::Claimed);
+        update();
         popover.set_pointing_to(Some(&gdk::Rectangle::new(x as i32, y as i32 + 4, 1, 1)));
         popover.popup();
     });
     row_widget.add_controller(gesture);
+    row_edit_button(&edit)
 }
 
 fn build_value_row(
@@ -718,7 +1004,8 @@ fn build_value_row(
     row.append(&value1);
     row.append(&value2);
     row.append(&not_check);
-    attach_row_menu(state, &row, path, rebuild);
+    let edit_button = attach_row_edit(state, &row, path, rebuild);
+    row.append(&edit_button);
     row
 }
 
@@ -761,11 +1048,32 @@ fn build_group_row(
             }
         });
     }
-    inner.append(&mode_combo);
+    // The group header row (the C# MatcherGroupEditor top row): the
+    // match mode on the left, the edit button on the right edge.
+    let edit_button = attach_row_edit(state, &frame, path, rebuild);
+    edit_button.set_halign(Align::End);
+    edit_button.set_hexpand(true);
+    let header = GtkBox::new(Orientation::Horizontal, 4);
+    header.append(&mode_combo);
+    header.append(&edit_button);
+    inner.append(&header);
     build_rows(state, &inner, &group.matchers, path, dialog, rebuild);
     frame.set_child(Some(&inner));
-    attach_row_menu(state, &frame, path, rebuild);
     frame
+}
+
+fn walk_matcher_list<'a>(
+    matchers: &'a [ComicBookMatcher],
+    path: &[usize],
+) -> Option<&'a [ComicBookMatcher]> {
+    let mut list = matchers;
+    for idx in path {
+        match list.get(*idx)? {
+            ComicBookMatcher::Group(g) => list = &g.matchers,
+            _ => return None,
+        }
+    }
+    Some(list)
 }
 
 fn walk_matcher<'a>(

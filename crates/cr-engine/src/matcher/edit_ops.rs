@@ -118,6 +118,34 @@ pub fn remove_node(root: &mut Vec<ComicBookMatcher>, path: &[usize]) -> bool {
     true
 }
 
+/// The `MatcherEditor.PasteClipboard` (`matchers.Insert(indexOf + 1,
+/// clipboard)`): the payload inserts AFTER the addressed node. A
+/// Group payload is rejected when the target sits at the
+/// [`MAX_LEVEL`] cap — the same gate the C# checks
+/// (`level <= MaxLevel` around the insert).
+pub fn paste_node(
+    root: &mut Vec<ComicBookMatcher>,
+    path: &[usize],
+    payload: &ComicBookMatcher,
+) -> bool {
+    if path.is_empty() {
+        return false;
+    }
+    if matches!(payload, ComicBookMatcher::Group(_)) && path.len() >= MAX_LEVEL {
+        return false;
+    }
+    let (parent_path, last) = path.split_at(path.len() - 1);
+    let Some(parent) = walk_mut_list(root, parent_path) else {
+        return false;
+    };
+    let at = last[0];
+    if at >= parent.len() {
+        return false;
+    }
+    parent.insert(at + 1, payload.clone());
+    true
+}
+
 /// `MoveUp`/`MoveDown` (`matchers.MoveRelative`).
 pub fn move_node(root: &mut Vec<ComicBookMatcher>, path: &[usize], delta: i32) -> bool {
     let (parent_path, last) = path.split_at(path.len() - 1);
@@ -277,5 +305,44 @@ mod tests {
         }
         // Unknown classes fail.
         assert!(switch_type(&current, "NoSuchMatcher").is_none());
+    }
+
+    #[test]
+    fn paste_inserts_after_the_node() {
+        let mut root = vec![value("A"), value("B")];
+        let payload = value("P");
+        assert!(paste_node(&mut root, &[0], &payload));
+        let names: Vec<&str> = root.iter().map(series_of).collect();
+        assert_eq!(names, ["A", "P", "B"], "the payload lands after the node");
+    }
+
+    #[test]
+    fn paste_of_a_group_respects_the_depth_cap() {
+        let group = || {
+            ComicBookMatcher::Group(GroupMatcher {
+                matchers: vec![value("deep")],
+                ..Default::default()
+            })
+        };
+        let mut root = vec![ComicBookMatcher::Group(GroupMatcher {
+            matchers: vec![ComicBookMatcher::Group(GroupMatcher {
+                matchers: vec![ComicBookMatcher::Group(GroupMatcher {
+                    matchers: vec![ComicBookMatcher::Group(GroupMatcher {
+                        matchers: vec![value("deep")],
+                        ..Default::default()
+                    })],
+                    ..Default::default()
+                })],
+                ..Default::default()
+            })],
+            ..Default::default()
+        })];
+        // A group payload at the cap (path [0,0,0,0,0]) is rejected.
+        assert!(!paste_node(&mut root, &[0, 0, 0, 0, 0], &group()));
+        // A value payload pastes there.
+        assert!(paste_node(&mut root, &[0, 0, 0, 0, 0], &value("x")));
+        // A group payload one level up pastes (the C# `level <= MaxLevel`).
+        let mut shallow = vec![value("A")];
+        assert!(paste_node(&mut shallow, &[0], &group()));
     }
 }

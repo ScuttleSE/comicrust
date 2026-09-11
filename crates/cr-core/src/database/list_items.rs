@@ -222,6 +222,47 @@ impl ComicBookMatcher {
             }
         }
     }
+
+    /// The matcher-clipboard payload: ONE `<ComicBookMatcher>` element
+    /// wrapped in a namespace-carrying root. The C# ships a WinForms
+    /// binary clipboard object (`ComicBookMatcher.ClipboardFormat`) —
+    /// the GDK clipboard carries text, so the port ships the matcher's
+    /// own XML element; the private MIME type gates the Paste enable
+    /// state in the smart-list editor.
+    pub fn to_clipboard_bytes(&self) -> std::io::Result<Vec<u8>> {
+        let mut out = Vec::new();
+        let mut e = Emitter::new(&mut out)?;
+        e.root("MatcherClipboard")?;
+        self.write_xml(&mut e)?;
+        e.end()?;
+        e.finish()?;
+        Ok(out)
+    }
+
+    /// Reads a payload written by [`Self::to_clipboard_bytes`]: the
+    /// matcher at the top level or one level inside a wrapper root
+    /// (unknown elements are skipped — the database-reader tolerance).
+    pub fn from_clipboard_bytes(bytes: &[u8]) -> XmlResult<Self> {
+        let mut buf = std::io::BufReader::new(bytes);
+        let mut r = crate::xml::XmlReader::new(&mut buf);
+        let mut seen_wrapper = false;
+        loop {
+            match r.next_tok()? {
+                Tok::Eof => return Err(XmlError("no matcher in clipboard payload".into())),
+                Tok::Start(s) if s.name == "ComicBookMatcher" => {
+                    return Self::from_start(&s, &mut r)
+                }
+                Tok::Start(s) => {
+                    if seen_wrapper {
+                        r.skip_element(&s.name)?;
+                    } else {
+                        seen_wrapper = true;
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
 }
 
 // ---------- List items ----------
@@ -772,5 +813,50 @@ impl WatchFolder {
             e.attr("Watch", "true")?;
         }
         e.end()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn sample_value() -> ComicBookMatcher {
+        ComicBookMatcher::Value(ValueMatcher {
+            type_name: "ComicBookSeriesMatcher".into(),
+            not: true,
+            name: String::new(),
+            match_value: "Batman".into(),
+            match_value_2: "v2".into(),
+            match_operator: 3,
+            ignore_case: false,
+            option: None,
+            plugin_key: None,
+        })
+    }
+
+    #[test]
+    fn clipboard_round_trips_a_value_matcher() {
+        let bytes = sample_value().to_clipboard_bytes().unwrap();
+        let text = String::from_utf8(bytes.clone()).unwrap();
+        assert!(text.contains("xsi:type=\"ComicBookSeriesMatcher\""));
+        assert_eq!(
+            ComicBookMatcher::from_clipboard_bytes(&bytes).unwrap(),
+            sample_value()
+        );
+    }
+
+    #[test]
+    fn clipboard_round_trips_a_group_matcher() {
+        let group = ComicBookMatcher::Group(GroupMatcher {
+            not: false,
+            matcher_mode: MatcherMode::Or,
+            collapsed: false,
+            matchers: vec![sample_value()],
+        });
+        let bytes = group.to_clipboard_bytes().unwrap();
+        assert_eq!(
+            ComicBookMatcher::from_clipboard_bytes(&bytes).unwrap(),
+            group
+        );
     }
 }
