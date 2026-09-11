@@ -3305,8 +3305,10 @@ impl ShellState {
             ))
             .secondary_text(format!(
                 "{}\n\nThese books are in the library and carry a marker on their \
-cover. To list them, make a smart list with the rule:\n\
-Custom Value \"{}\" is not empty",
+cover. To list them, make a smart list and paste this query:\n\n\
+Match [Custom Value] regex \"{}\" \".\"\n\n\
+(The matcher has no \"is not empty\" operator. The regex \".\" matches \
+any value with at least one character.)",
                 summary.message(),
                 cr_core::scan_status::STATUS_KEY
             ))

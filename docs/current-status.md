@@ -23,7 +23,7 @@ still open.
 - Commit: the scan-robustness round (2026-09-11).
 - `cargo fmt --all` — green.
 - `cargo clippy --workspace --all-targets -- -D warnings` — green.
-- `cargo test --workspace` — 539 pass (was 522).
+- `cargo test --workspace` — 544 pass (was 522).
 - Probes: `scanrefresh` A-K green (release), `scanmarker` A-D green
   (release).
 - Measured on the live CIFS library after the fix, with no contention:
@@ -43,9 +43,9 @@ Run these in this order. Each one needs a rebuild first.
    books whose content does not match their file name carry an amber
    "≠" chip and still show their pages. Hover a chip: the tooltip gives
    the verdict, the format disagreement, and the reason. One summary
-   window appears at the end. Make a smart list with the rule
-   `Custom Value "comicrust.scan.status" is not empty` and confirm it
-   lists exactly those books. Repair or replace one bad file, rescan,
+   window appears at the end. Make a smart list, paste the query
+   `Match [Custom Value] regex "comicrust.scan.status" "."`, and confirm
+   it lists exactly those books. Repair or replace one bad file, rescan,
    and its chip disappears without any other action. While a scan runs,
    click the scan lamp and use "Skip current file" (the same row is in
    Tasks): the scan moves on and the skipped book is marked "Skipped".
