@@ -928,14 +928,27 @@ Update this section at the **end of every work session**. The next agent must kn
   disclosure triangle (d8e83ed). The user drove three fix rounds
   while testing grouping (the crash, the 0 counts, the inverted
   double-click) — grouping is effectively user-exercised; the lamp
-  + thumbnail parts still need the explicit test below. HEAD =
-  05c809e, 489 tests (491 after the Detail-view batch above).
+  + thumbnail parts still need the explicit test below. The
+  2026-09-10 DETAIL/CHOOSER SESSION (immediately after, same day, in
+  the state blocks at the top): the Detail-view CR-matching batch
+  (c21086a) and the chooser-submenu fix + grid lines + the
+  smart-list rule menu (f20a690). HEAD = f20a690, 491 tests.
   Open gaps: WebComicProvider, PDF/DjVu writers, the LICENSE file
   (Phase 11 packaging gap), the T14 per-list sort deviation,
   HEIF/AVIF decode. The Phase 11 PIPELINE is COMPLETE (the v0.0.283
   release carries all 9 assets on both hosts); the install steps
   (the kickoff user test) remain.
-  OPEN USER TESTS (2026-09-10, in test order): the GROUP/LAMP/THUMB
+  OPEN USER TESTS (2026-09-10, in test order): the DETAIL-VIEW
+  round (c21086a + f20a690: switch the browser to Detail — after ONE
+  slider drag the text size and row rhythm match CR (the saved
+  ItemRowHeight 48 artifact must be dragged off the slider once, the
+  status-bar slider re-ranges 12..48); rows alternate grey/white
+  starting grey and the selection keeps the highlight; the thin
+  vertical column lines run through the header and the rows;
+  right-click the column header — the 13 defaults, All
+  (alphabetical), then A-B/C-F/G-O/P-R/S/T-Y, every row toggles from
+  every page; the smart-list editor's rule rows pick the type from
+  the All/letter menu), the GROUP/LAMP/THUMB
   batch (grouping end-to-end after the fixes: Group by Series in
   Thumbnail/Tile/Details → header strips with TRUE counts,
   single-click the disclosure triangle collapses/expands ONE group,
@@ -1840,7 +1853,7 @@ Update this section at the **end of every work session**. The next agent must kn
   Phases 0-5 are complete (their gates stay green). Open Phase 1
   gaps: WebComicProvider and the PDF/DjVu writers (tracked in
   `docs/phase-1-kickoff.md`).
-- **State:** `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` are green. 489 tests — 36 suites plus the cr-scrape suites (the Phase 8 perf gates: `reading_list_perf`, `view_perf`, `path_migration_perf`, `list_eval_perf`, `scan_perf`; the cr-ui probes are examples, not tests — the newest are `statusbar_probe` gates J/J2 (the scan lamp: frames, the visible-only animation, the Cancel-scan menu map + the abort hook) and `browserbar_probe` gates D2+D3 (the grouping: ungrouped (1,0) + the disabled action + toggle-groups; the D3 press-sequence machine drives the REAL group-header press paths — label select, single-click collapse/expand of one group, both double-click directions, the true counts on collapsed headers); `scanrefresh_probe` (gates A-F: the scan-land refresh, the re-scan idempotence, the mid-scan fill, the abort partial landing, the re-scan completion, the mid-add exit save — it REFUSES a non-isolated XDG pair and wipes it at start, the exit save pollutes it); the real-fixture parts skip in CI without the git-ignored `tests/testfiles/` files; the RAR round-trips skip without `CR_RAR_TESTS` + `rar`). CI runs on the `docker-runner-amd64` container runner (ADR-020) and is LIVE (it caught the 2026-09-09 group-gate flake — the runner + `comicrust-ci:latest` image work). The release tracks are `release.yaml` (rolling prerelease per push) and `tagged-release.yaml` (manual dispatch, stable release for an existing tag — ADR-021, 2026-09-03); `packaging.yaml` (Phase 11) attaches the source tarball, the Arch package, and the .deb to a tagged release. First real tagged-release run (v0.0.273, 2026-09-09) exposed a latent env bug: the "Publish to GitHub mirror" step lacked `TAG` (the Gitea publish succeeded; the mirror step died on `set -u`) — fixed in commit 05483da.
+- **State:** `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` are green. 491 tests — 36 suites plus the cr-scrape suites (the Phase 8 perf gates: `reading_list_perf`, `view_perf`, `path_migration_perf`, `list_eval_perf`, `scan_perf`; the cr-ui probes are examples, not tests — the newest are `browserbar_probe` gate D (the column chooser: the open + the submenu-row gate `state_column_chooser_page_rows` reading all=92/a-b=16 through the popover's `visible-submenu` page + the toggle) and D2+D3 (the grouping: ungrouped (1,0) + the disabled action + toggle-groups; the D3 press-sequence machine drives the REAL group-header press paths — label select, single-click collapse/expand of one group, both double-click directions, the true counts on collapsed headers), `statusbar_probe` gates J/J2 (the scan lamp: frames, the visible-only animation, the Cancel-scan menu map + the abort hook), and `smartlistmenu_probe` (the smart-list editor builds its rule rows with the menu-button type picker + commits); `scanrefresh_probe` (gates A-F: the scan-land refresh, the re-scan idempotence, the mid-scan fill, the abort partial landing, the re-scan completion, the mid-add exit save — it REFUSES a non-isolated XDG pair and wipes it at start, the exit save pollutes it); the real-fixture parts skip in CI without the git-ignored `tests/testfiles/` files; the RAR round-trips skip without `CR_RAR_TESTS` + `rar`). CI runs on the `docker-runner-amd64` container runner (ADR-020) and is LIVE (it caught the 2026-09-09 group-gate flake — the runner + `comicrust-ci:latest` image work). The release tracks are `release.yaml` (rolling prerelease per push) and `tagged-release.yaml` (manual dispatch, stable release for an existing tag — ADR-021, 2026-09-03); `packaging.yaml` (Phase 11) attaches the source tarball, the Arch package, and the .deb to a tagged release. First real tagged-release run (v0.0.273, 2026-09-09) exposed a latent env bug: the "Publish to GitHub mirror" step lacked `TAG` (the Gitea publish succeeded; the mirror step died on `set -u`) — fixed in commit 05483da.
 - **GitHub mirror (2026-09-06):** remote `github` = `git@github.com:ScuttleSE/comicrust.git` — a TRUE mirror (identical SHAs; `.gitea/` rides along but is inert there, GitHub Actions only reads `.github/workflows/`). After every origin push also `git push github main`; stable tags get pushed manually once; the `rolling` tag is CI-managed on BOTH sides (each release run deletes/recreates it) — never push it by hand. Both release workflows also publish the built tarball + sha256 to GitHub Releases through `.gitea/publish_github_release.sh` (build once on Gitea, assets on both); it needs the Gitea secret `MIRROR_RELEASE_TOKEN` (GitHub PAT with Contents read/write on ScuttleSE/comicrust; Gitea forbids a `GITHUB_` prefix) — unset secret = the step skips with a notice.
 - **Phase 0 gate status:** byte-stable ComicDb.xml round-trip proven on all three synthetic fixtures AND the real-world database `tests/realworld/ComicDb.xml` (255 books, 584 KB, 2026-09-02, user-approved commit).
 - **Phase 2 gate status:** every saved smart list in the real-world DB (a) binds to the matcher registry, (b) renders to a `Match` query string that re-parses and re-renders byte-identically, and (c) evaluates to the SAME book sets the C# cached in `CacheStorage` (Never Read = all 255, Files to update = the 3 dirty books, Reading/Read = empty). Evidence: `crates/cr-engine/tests/realworld_query.rs`.
@@ -2370,7 +2383,7 @@ The UI crate (Phase 3):
 | `crates/cr-ui/assets/papers/` | Paper textures copied from the C# `Resources/Textures/Papers`. |
 | `crates/cr-image/src/error_assets.rs` | `CreateErrorPage`/`CreateErrorThumbnail` port with the bundled `ErrorPage.jpg` + `RedCross.png`. Unit-tested. |
 | `crates/cr-ui/src/library.rs` | The app session (`Program` statics): the Library open/save/scan wiring, the Settings + engine-config load/save, `apply_edited` (the editor commit + the dirty mark + the debounced file write), the file write-back on the Info Writer worker (`update_book_file_async` enqueue + `run_book_file_write` pure worker part + the 100 ms result pump), list CRUD (new smart list/folder/id list, update, evaluate), QuickOpen lists, the last-export setting, `save_ini_keys` (the ini merge-writer — the theme persistence). |
-| `crates/cr-ui/src/browser/shell.rs` | The browser window: navigator + ItemView + reader dock, the header commands, the context menu (open/reveal/edit/update-file/export/remove/properties), the quick search + the composed view filter (`compose_quick_filter`), view/sort/group/filter/scope actions, the Detail column chooser (`popup_column_chooser` — a plain popover), the dynamic menu fills (`dyn_fill`), the probe accessors (`state_*`/`toolbar_*`/`browserbar_*`). |
+| `crates/cr-ui/src/browser/shell.rs` | The browser window: navigator + ItemView + reader dock, the header commands, the context menu (open/reveal/edit/update-file/export/remove/properties), the quick search + the composed view filter (`compose_quick_filter`), view/sort/group/filter/scope actions, the Detail column chooser (`popup_column_chooser` — a model-driven PopoverMenu whose submenus ride the `cols.col<id>` actions), the dynamic menu fills (`dyn_fill`), the probe accessors (`state_*`/`toolbar_*`/`browserbar_*`). |
 | `crates/cr-ui/src/browser/menubar.rs` | The T3 custom menubar: the pure six-menu table (MenuNode Item/Sub/Sep/Dyn) + the popover widget (one-active-popover state machine, the Designer icon mapping) + the standalone `Dropdown` (`build_dropdown`) + the dynamic fill machinery (`set_dyn_fill`, `refresh_top`, per-slot map hooks) + the `menubar_visible` rule. |
 | `crates/cr-ui/src/browser/toolbar.rs` | The T5 reader toolbar: the nine-button strip (prev/next splits, layout/fit/zoom/rotate drops with state text, magnifier/fullscreen, Tools) + the `Dropdown` tables (PREV/NEXT/FIT/ZOOM/ROTATE/TOOLS); the bar rides the undock (docked home since T9: the tab strip's right host). |
 | `crates/cr-ui/src/browser/tabstrip.rs` | The T9 workspace tab strip (`MainView.tabStrip`): Library/Pages/comic-tabs/`+` under the menubar, the comic tabs with async 16 px covers + close + the bold current-slot marker, the right HOST box for the reader toolbar, `tabstrip_visible` (the Fill `flag4` rule, unit-tested). |
@@ -2386,7 +2399,7 @@ The UI crate (Phase 3):
 | `crates/cr-ui/src/dialogs/scrape_config.rs` | The Comic Vine Scraper config widgets (`ScrapeConfigWidgets`) shared by the standalone dialog and the Preferences "Comic Vine Scraper" page. |
 | `crates/cr-ui/src/widgets.rs` | Small shared widget helpers (`menu_item_button` — the left-aligned context-menu row). |
 | `crates/cr-ui/src/dialogs/bulk_edit.rs` | The bulk editor (Edit…): a Set check per field, the common-value cue, only checked fields apply. |
-| `crates/cr-ui/src/dialogs/smart_list.rs` | The smart-list editor: Designer (matcher rows/groups with the type/operator/value/not combos + the structure menu) | Query (the rendered query text round-trip). |
+| `crates/cr-ui/src/dialogs/smart_list.rs` | The smart-list editor: Designer (matcher rows/groups — the rule type rides a `btMatcher`-style menu button whose PopoverMenu carries the `CreateComicBookMatchersMenu` All/letter shape over the 97 spec descriptions; operator/value/not combos + the structure menu) | Query (the rendered query text round-trip). |
 | `crates/cr-ui/src/dialogs/list_editor.rs` | The list editor for folders (name/notes/combine) and reading lists (name/notes/quick-open). |
 | `crates/cr-ui/src/dialogs/export.rs` | The export dialog: target/folder/format/compression/naming/page-format/quality + the flags, the inline progress, the session-persisted last settings. |
 | `crates/cr-ui/examples/` | The headless probes: `commands_probe` (69 actions + accels), `menubar_probe` (the T3 bar), `dynmenus_probe` (the T4 fills), `toolbar_probe` (the T5 strip + the dropdown OPEN gate), `browserbar_probe` (the T6 browser toolbar: OPEN gates, the read/scope filters, the column chooser open/height/toggle, the duplicate landing), `navpages_probe` (the T7 navigator/Pages toolbars: the dispatch, the search filter, the expand flip, the Views OPEN + radio), `tabstrip_probe` (the T9 workspace strip: open/close/+/select flows, the Pages visibility, the bold slot, the comic-tab re-click, the reader-click MinimalGui gate), `statusbar_probe` (the T8 bar: defaults, the info line, the slider resize/sync, the page click, the lamp flags, the MinimalGui action; REFUSES a non-isolated XDG), `workspace_probe` (the T14 persistence: the mutate → collect → Config.xml shape → the second-shell restore → the close-path save; REFUSES a non-isolated XDG pair), `menubarvis_probe` (the visibility evidence), `displaysettings_probe`, `smalldialogs_probe`, `icons_probe`, `editor_probe`, `writeback_probe`, `scrape_probe` (the Phase 12 wizard), `scrapeconfig_probe` (the standalone scraper config dialog), `scrapeprefs_probe` (the Preferences scraper page: the default page, the initial-page open, the OK commit). |
@@ -2938,6 +2951,37 @@ Re-bless the `db-large.xml` snapshot after a deliberate model change: `CR_BLESS=
   default that nothing writes is a dead feature; when a C# property
   gates a render (`AreGroupsVisible`), wire the port's setter path
   in the same task that adds the draw.
+
+### Lessons from the detail-view session (2026-09-10, do not re-learn these)
+
+- GTK `GtkPopoverMenu` custom-page contract (proven at
+  gtkmenusectionbox.c): a model item with BOTH a `custom` attribute
+  and a submenu link takes the SUBMENU branch — the page is built
+  from the LINKED model (empty = an empty page) and named by the
+  LABEL, and `add_child` returns false: the custom-slot hash fills
+  ONLY for items WITHOUT a submenu link (custom widgets are INLINE
+  slots, never submenu pages). Nested check menus = REAL model
+  submenus with the rows bound to stateful actions; the tall pages
+  scroll in the popover's OWN outer scroller (its child is a
+  ScrolledWindow wrapping the page stack — gtkpopovermenu.c).
+- `GtkPopoverMenu:visible-submenu` is READWRITE and drives the page
+  stack headlessly — set it to the submenu LABEL and count the
+  stack page's GtkModelButton rows (the probe seam behind
+  `state_column_chooser_page_rows`; the title button rides each
+  page, so the counts are rows + 1).
+- A GTK range write (`set_range`) that CLAMPS the current value
+  fires `value_changed` — every programmatic range/value write must
+  sit inside the sync guard, or the handler re-enters the widget
+  with the clamped value (the T8 slider slam that left
+  `ItemRowHeight=48` in saved workspaces).
+- The C# `ContextMenuBuilder.Create(20)` is ONE builder for three
+  menus: the column header menu (`CreateHeaderMenu` — visible
+  columns at top level), the smart-list matcher menu
+  (`CreateComicBookMatchersMenu` — all entries `topLevel: false`,
+  so no top-level defaults; the "Recent" rung is usage-tracking
+  data the port does not keep). The pure structure lives in
+  `columns::chooser_menu` (unit-gated: A-B/C-F/G-O/P-R/S/T-Y over
+  the full column table) — reuse it for any new Create(20) menu.
 
 ### Blockers / open questions
 
