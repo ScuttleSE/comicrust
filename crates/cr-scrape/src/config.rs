@@ -234,7 +234,9 @@ pub fn parse_advanced(raw: &str) -> AdvancedSettings {
     a
 }
 
-const KEYS: [&str; 16] = [
+/// The advanced-settings line keys (the C# `Configuration` parses
+/// one line per key). Public so the doc drift gate can walk them.
+pub const ADVANCED_KEYS: [&str; 16] = [
     "IGNORE_PUBLISHER",
     "IGNORE_SEARCHTERM",
     "IGNORE_BEFORE_YEAR",
@@ -256,7 +258,7 @@ const KEYS: [&str; 16] = [
 fn parse_line(line: &str, a: &mut AdvancedSettings) {
     // the C# tries every key pattern against the line; the keys are
     // distinct prefixes, so at most one can match
-    for key in KEYS {
+    for key in ADVANCED_KEYS {
         if let Some(value) = extract_value(line, key) {
             apply(key, value, a);
             return;

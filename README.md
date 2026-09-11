@@ -152,6 +152,8 @@ comicrust also writes a `ComicDb.xml.bak` copy next to the database and can reco
 
 All configuration lives in one TOML file: `~/.config/comicrust/comicrust.toml`. The `[settings]` section carries the user preferences, `[extended]`/`[engine]` the boot switches and engine options, `[plugins.comic-vine-scraper]` the scraper settings, and `[data.imprints]` the imprint→publisher table the Comic Vine Scraper uses — the table is seeded on first run and hand-editable (add or change an imprint line, then restart). Command-line switches (like `-dark`) still override the file for that run. The file is read once at startup; the app rewrites it at its save points, so hand edits apply at the next start.
 
+**Every changeable key appears in the file** (the app seeds missing keys at their defaults), and every parameter is documented in [docs/config-reference.md](docs/config-reference.md).
+
 ## Migrate your library from Windows ComicRack
 
 The database format is the same. Your comic files stay where they are.

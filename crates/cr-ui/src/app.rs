@@ -100,16 +100,17 @@ pub fn run(args: Vec<String>) {
         );
 
         // `DatabaseBackgroundSaving` (default 600 s): the periodic save
-        // while the library is dirty.
-        glib::timeout_add_local(
-            std::time::Duration::from_secs(cr_engine::library::BACKGROUND_SAVE_INTERVAL_SECS),
-            || {
-                if let Err(err) = library::save_if_dirty() {
-                    eprintln!("background save failed: {err}");
-                }
-                glib::ControlFlow::Continue
-            },
-        );
+        // while the library is dirty. The ini/config key decides
+        // (Program.cs:758 parity); clamped to >= 1 s.
+        let background_save_secs = cr_core::settings::ExtendedSettings::global()
+            .database_background_saving
+            .max(1) as u64;
+        glib::timeout_add_local(std::time::Duration::from_secs(background_save_secs), || {
+            if let Err(err) = library::save_if_dirty() {
+                eprintln!("background save failed: {err}");
+            }
+            glib::ControlFlow::Continue
+        });
 
         // The watch-folder poll: debounced watch events map back to the
         // stored watch roots and each root rescans on the scan worker

@@ -201,7 +201,12 @@ macro_rules! settings_fields {
     (@set_float Str, $f:expr, $x:ident) => { let _ = $x; };
     (@set_float StrOpt, $f:expr, $x:ident) => { let _ = $x; };
     (@set_str Str, $f:expr, $x:ident) => { $f = $x; };
-    (@set_str StrOpt, $f:expr, $x:ident) => { $f = Some($x); };
+    (@set_str StrOpt, $f:expr, $x:ident) => {
+        // The C# consumers check `IsNullOrEmpty` — an empty ini value
+        // means unset (the seeded `""` for a `null`-default key must
+        // not shadow the default with `Some("")`).
+        $f = if $x.is_empty() { None } else { Some($x) };
+    };
     (@set_str Enum, $f:expr, $x:ident) => {
         if let Some(e) = $crate::settings::registry::EnumValue::from_name(&$x) { $f = e; }
     };

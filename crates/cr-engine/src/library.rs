@@ -20,9 +20,6 @@ use crate::queue_manager::QueueManager;
 use crate::scanner::{scan_database, ScanItem, ScanResult};
 use crate::watch::Watcher;
 
-/// `DatabaseBackgroundSaving` default (the C# `ExtendedSettings`).
-pub const BACKGROUND_SAVE_INTERVAL_SECS: u64 = 600;
-
 pub struct Library {
     database: ComicDatabase,
     /// The full path to `ComicDb.xml` (the C# `DatabaseFile`, which is

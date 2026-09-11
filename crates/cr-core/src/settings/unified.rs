@@ -15,10 +15,12 @@
 //! Sections:
 //! - `[extended]` — the `ExtendedSettings` keys, stored and applied
 //!   verbatim through the field registry (the argv switches still
-//!   overlay at boot; argv values are never written back).
+//!   overlay at boot; argv values are never written back). Every
+//!   changeable key is SEEDED at its default (missing keys only), so
+//!   the file always lists the full set — discoverable and editable.
 //! - `[engine]` — the `EngineConfiguration` keys, same registry
-//!   currency; the Size/Color converter fields keep the .NET text
-//!   forms (`"512, 512"`, `"r, g, b"`).
+//!   currency and same seed rule; the Size/Color converter fields
+//!   keep the .NET text forms (`"512, 512"`, `"r, g, b"`).
 //! - `[settings]` — the [`Settings`] fields under their C# member
 //!   names, serde round-tripped.
 //! - `[plugins.<name>]` — plugin-owned tables behind typed accessors
@@ -289,7 +291,8 @@ pub fn load(file: &Path) -> LoadedConfig {
         Err(_) => (UnifiedDoc::default(), true),
     };
     let seeded = ensure_builtin_data(&mut doc);
-    let corrupt = corrupt || seeded;
+    let seeded_sections = ensure_section_defaults(&mut doc);
+    let corrupt = corrupt || seeded || seeded_sections;
 
     *EXTENDED_SECTION
         .write()
@@ -474,6 +477,117 @@ fn ensure_builtin_data(doc: &mut UnifiedDoc) -> bool {
     changed
 }
 
+/// The registry value → the ini text the section stores (the same
+/// text `update_extended_keys` feeds through `text_to_value`, so the
+/// seeded TOML value types match the runtime-written ones: bools and
+/// numbers stay scalar, everything else is a string). Whole floats
+/// keep a decimal point so they reload as floats.
+fn registry_value_text(v: super::registry::Value) -> String {
+    match v {
+        super::registry::Value::Bool(b) => b.to_string(),
+        super::registry::Value::Int(i) => i.to_string(),
+        super::registry::Value::Float(f) => {
+            let text = format!("{f}");
+            if text.contains('.') || text.contains('e') || text.contains('E') {
+                text
+            } else {
+                format!("{text}.0")
+            }
+        }
+        super::registry::Value::Str(s) => s,
+    }
+}
+
+/// The named subset of [`parse_color`]-equivalent colors; anything
+/// else rides the `r, g, b` form.
+fn color_text(c: (u8, u8, u8)) -> String {
+    match c {
+        (255, 165, 0) => "Orange".into(),
+        (0, 128, 0) => "Green".into(),
+        (255, 0, 0) => "Red".into(),
+        (0, 0, 255) => "Blue".into(),
+        (0, 0, 0) => "Black".into(),
+        (255, 255, 255) => "White".into(),
+        (r, g, b) => format!("{r}, {g}, {b}"),
+    }
+}
+
+/// The restart plumbing (the `-restart`/`-waitpid` argv switches) —
+/// the C# ini template omits both; they are not user config.
+pub const EXTENDED_SEED_EXCLUDED: &[&str] = &["Restart", "WaitPid"];
+
+/// The `[extended]` seed rows: every registry key with `ini: true`
+/// at the `Default` value.
+fn extended_defaults() -> Vec<(&'static str, String)> {
+    let d = crate::settings::extended::ExtendedSettings::default();
+    crate::settings::extended::EXTENDED_FIELDS
+        .iter()
+        .filter(|f| f.ini_enabled && !EXTENDED_SEED_EXCLUDED.contains(&f.name))
+        .map(|f| (f.name, registry_value_text((f.get)(&d))))
+        .collect()
+}
+
+/// The `[engine]` seed rows: the registry keys plus the six
+/// converter-only fields ([`EngineConfiguration::apply_special`] —
+/// the registry cannot express them) in their .NET text forms.
+fn engine_defaults() -> Vec<(&'static str, String)> {
+    let d = super::engine_config::EngineConfiguration::default();
+    let mut out: Vec<(&'static str, String)> = crate::settings::engine_config::ENGINE_CONFIG_FIELDS
+        .iter()
+        .filter(|f| f.ini_enabled)
+        .map(|f| (f.name, registry_value_text((f.get)(&d))))
+        .collect();
+    out.push((
+        "ListCoverSize",
+        format!("{}, {}", d.list_cover_size.0, d.list_cover_size.1),
+    ));
+    out.push((
+        "PdfiumImageSize",
+        format!("{}, {}", d.pdfium_image_size.0, d.pdfium_image_size.1),
+    ));
+    out.push((
+        "DjVuSizeLimit",
+        format!("{}, {}", d.djvu_size_limit.0, d.djvu_size_limit.1),
+    ));
+    out.push(("PageBowColor", color_text(d.page_bow_color)));
+    out.push(("BlankPageColor", color_text(d.blank_page_color)));
+    out.push((
+        "BookmarkColors",
+        d.bookmark_colors
+            .iter()
+            .map(|c| color_text(*c))
+            .collect::<Vec<_>>()
+            .join(", "),
+    ));
+    out
+}
+
+/// Inserts a missing key (case-insensitive match like
+/// [`update_extended_keys`] — a hand-typed spelling is never
+/// duplicated).
+fn insert_missing(sec: &mut BTreeMap<String, Value>, key: &str, text: &str, changed: &mut bool) {
+    if !sec.keys().any(|k| k.eq_ignore_ascii_case(key)) {
+        sec.insert(key.to_string(), text_to_value(text));
+        *changed = true;
+    }
+}
+
+/// The `[extended]`/`[engine]` seed: every changeable key appears in
+/// the file at its default. Missing keys only — a stored value (and
+/// its spelling) survives; a deleted key line re-appears at default
+/// on the next boot, so the file always lists the full set. Returns
+/// true when the document changed.
+fn ensure_section_defaults(doc: &mut UnifiedDoc) -> bool {
+    let mut changed = false;
+    for (key, text) in extended_defaults() {
+        insert_missing(&mut doc.extended, key, &text, &mut changed);
+    }
+    for (key, text) in engine_defaults() {
+        insert_missing(&mut doc.engine, key, &text, &mut changed);
+    }
+    changed
+}
+
 /// The loaded `KEY=VALUE` text → a typed TOML value (bools/numbers
 /// when the text reads like one, strings otherwise — the ini-style
 /// traffic stays stringly through [`IniValues`]).
@@ -654,9 +768,8 @@ mod tests {
         let dir = tmp_dir("seed");
         let file = dir.join(CONFIG_FILE_NAME);
         let loaded = load(&file);
-        assert!(loaded.extended.is_empty());
-        assert_eq!(loaded.settings, Settings::default());
-        // The imprints table is seeded into the session AND the file.
+        // The [extended]/[engine] sections carry the seeded defaults.
+        assert_eq!(loaded.extended.get("DatabaseBackgroundSaving"), Some("600"));
         let imprints = data_table("imprints");
         assert_eq!(
             imprints.get("Vertigo").map(String::as_str),
@@ -666,11 +779,115 @@ mod tests {
         let text = std::fs::read_to_string(&file).unwrap();
         assert!(text.contains("[data.imprints]"), "{text}");
         assert!(text.contains("Vertigo = \"DC Comics\""), "{text}");
+        assert!(text.contains("DatabaseBackgroundSaving = 600"), "{text}");
         // A second load is idempotent (the seed does not duplicate).
         let before = std::fs::read_to_string(&file).unwrap();
         let _ = load(&file);
         assert_eq!(std::fs::read_to_string(&file).unwrap(), before);
         std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn section_seed_covers_every_changeable_key() {
+        let mut doc = UnifiedDoc::default();
+        assert!(ensure_section_defaults(&mut doc));
+        // [extended]: every ini key except the restart plumbing.
+        let expected_extended = crate::settings::extended::EXTENDED_FIELDS
+            .iter()
+            .filter(|f| f.ini_enabled && !EXTENDED_SEED_EXCLUDED.contains(&f.name))
+            .count();
+        assert_eq!(doc.extended.len(), expected_extended);
+        assert_eq!(
+            doc.extended.get("DatabaseBackgroundSaving"),
+            Some(&Value::Integer(600))
+        );
+        assert_eq!(
+            doc.extended.get("Theme"),
+            Some(&Value::String("Default".into()))
+        );
+        // A null-default StrOpt seeds as the empty string (the C#
+        // IsNullOrEmpty semantics make that unset).
+        assert_eq!(
+            doc.extended.get("CachePath"),
+            Some(&Value::String(String::new()))
+        );
+        assert!(!doc.extended.contains_key("Restart"));
+        assert!(!doc.extended.contains_key("WaitPid"));
+        // [engine]: the registry keys plus the six converter fields.
+        let expected_engine = crate::settings::engine_config::ENGINE_CONFIG_FIELDS
+            .iter()
+            .filter(|f| f.ini_enabled)
+            .count()
+            + 6;
+        assert_eq!(doc.engine.len(), expected_engine);
+        assert_eq!(
+            doc.engine.get("ListCoverSize"),
+            Some(&Value::String("512, 512".into()))
+        );
+        assert_eq!(
+            doc.engine.get("BookmarkColors"),
+            Some(&Value::String("Orange, Green, Red, Blue".into()))
+        );
+        assert_eq!(
+            doc.engine.get("BlankPageColor"),
+            Some(&Value::String("White".into()))
+        );
+        assert_eq!(
+            doc.engine.get("MaximumQueueThreads"),
+            Some(&Value::Integer(4))
+        );
+        // Whole floats keep a decimal point (they reload as floats).
+        match doc.engine.get("PageShadowWidthPercentage") {
+            Some(Value::Float(f)) => assert_eq!(*f, 1.0),
+            other => panic!("expected a float, got {other:?}"),
+        }
+        // Idempotent: a second run adds nothing.
+        assert!(!ensure_section_defaults(&mut doc));
+    }
+
+    #[test]
+    fn section_seed_keeps_stored_values_and_spellings() {
+        let mut doc = UnifiedDoc::default();
+        doc.extended
+            .insert("theme".into(), Value::String("Dark".into()));
+        doc.extended
+            .insert("DatabaseBackgroundSaving".into(), Value::Integer(60));
+        assert!(ensure_section_defaults(&mut doc));
+        // The user's values (and the hand-typed spelling) survive;
+        // nothing is duplicated.
+        assert_eq!(
+            doc.extended.get("theme"),
+            Some(&Value::String("Dark".into()))
+        );
+        assert_eq!(
+            doc.extended.get("DatabaseBackgroundSaving"),
+            Some(&Value::Integer(60))
+        );
+        assert_eq!(
+            doc.extended
+                .keys()
+                .filter(|k| k.eq_ignore_ascii_case("theme"))
+                .count(),
+            1
+        );
+    }
+
+    #[test]
+    fn empty_stropt_applies_as_none() {
+        // The seeded `""` for a null-default key must not shadow the
+        // default with Some("") (the C# IsNullOrEmpty consumer shape).
+        use crate::settings::ini::IniValues;
+        let mut ext = crate::settings::extended::ExtendedSettings::default();
+        let mut ini = IniValues::new();
+        ini.set("CachePath".to_string(), "".to_string());
+        ext.load(&ini, &[]);
+        assert!(ext.cache_path.is_none());
+        assert!(ext.database_path.is_none());
+        ext.cache_path = Some("/x".into());
+        let mut ini = IniValues::new();
+        ini.set("CachePath".to_string(), "".to_string());
+        ext.load(&ini, &[]);
+        assert!(ext.cache_path.is_none());
     }
 
     #[test]
