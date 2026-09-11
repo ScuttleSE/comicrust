@@ -170,7 +170,7 @@ pub const FORMATS: &[FileFormat] = &[
         dynamic: false,
     },
     // Web-comic provider (.cbw, dynamic) lands with the T3 decode
-    // chain; see docs/phase-1-kickoff.md T1.
+    // chain; see docs/archive/phases/phase-1.md T1.
 ];
 
 /// `ProviderFactory.GetSourceProviderInfo` — first registered format

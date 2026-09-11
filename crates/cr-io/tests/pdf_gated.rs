@@ -2,7 +2,7 @@
 //! available (CR_PDFIUM env var pointing at libpdfium.so, a library
 //! in the working directory, or a system library) — the C# bundles
 //! pdfium.dll, and we never commit binaries to the repo (test data
-//! policy in docs/phase-1-kickoff.md).
+//! policy in docs/archive/phases/phase-1.md).
 
 use cr_io::pdf::is_available;
 use cr_io::ComicProvider;

@@ -8,7 +8,7 @@
 //!
 //! No C# counterpart — this is the port-side migration helper (the
 //! user request, scope + decisions recorded in
-//! `docs/phase-8-kickoff.md` T11). Only string values change, so the
+//! `docs/archive/phases/phase-8.md` T11). Only string values change, so the
 //! ComicDb.xml schema and byte-stability are untouched.
 
 use std::path::Path;

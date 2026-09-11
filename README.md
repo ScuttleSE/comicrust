@@ -180,7 +180,7 @@ Point it at your ComicRack profile folder (on Windows `%APPDATA%\cYo\ComicRack C
 
 ## For developers
 
-See [AGENTS.md](AGENTS.md) for the project status and the [docs](docs/) folder for the port plan, the decision records, and the phase notes.
+See [docs/current-status.md](docs/current-status.md) for the project status, [AGENTS.md](AGENTS.md) for the contribution rules, and the [docs](docs/) folder for the port plan, the decision records, and the phase notes.
 
 ## Credits and license
 

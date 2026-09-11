@@ -4,6 +4,49 @@ Append new ADRs at the end. Never rewrite the decision content of an existing en
 
 ---
 
+## Index
+
+This index is navigation only. The entry below each ADR is the decision.
+
+| ADR | Title | Status | Superseded by |
+|---|---|---|---|
+| ADR-001 | Full 1:1 feature parity is the target | accepted | — |
+| ADR-002 | ComicDb.xml read/write compatibility is mandatory | accepted | — |
+| ADR-003 | Preserve the Python plugin ecosystem via PyO3/CPython 3 | superseded | ADR-027 |
+| ADR-004 | Plain GTK4 + custom CSS, no libadwaita | accepted | — |
+| ADR-005 | Drop WCF/Android remote-protocol compatibility | accepted | — |
+| ADR-006 | Windows-only metadata/storage replaced by freedesktop equivalents | accepted | — |
+| ADR-007 | No static-linking of unrar | accepted | — |
+| ADR-008 | Cairo-first rendering, GL second | accepted | — |
+| ADR-009 | License deferred | accepted | — |
+| ADR-010 | Reuse upstream translation XMLs verbatim | accepted | — |
+| ADR-011 | The ComicDb.xml layer is a hand-rolled writer, not serde | accepted | — |
+| ADR-012 | Metadata write-back rewrites zip/tar natively, not through 7z | accepted | — |
+| ADR-013 | The matcher engine keeps decompiled C# quirks as behavior | accepted | — |
+| ADR-014 | Queue identity, priorities, and the Rust threading model | accepted | — |
+| ADR-015 | Smart-list random selection uses the .NET Framework Random | accepted | — |
+| ADR-016 | The regex operator uses the regex/fancy-regex crates | accepted | — |
+| ADR-017 | The reader is one virtual image driven by the part machinery | accepted | — |
+| ADR-018 | gtk4-rs stays on the GTK 4.0-era API surface for now | accepted | — |
+| ADR-019 | Reader page loads ride the ImagePool queues | accepted | — |
+| ADR-020 | CI and release builds run in a container; one rolling release with commit-count versioning | accepted | — |
+| ADR-021 | Two release tracks: a rolling prerelease and tagged stable releases | accepted | — |
+| ADR-022 | The library session and the default database location | accepted | — |
+| ADR-023 | XDG layout — configuration in ~/.config, data and caches in ~/.local/share | accepted | — |
+| ADR-024 | A UI-parity phase (5.5) with a locked chrome scope | accepted | — |
+| ADR-025 | The dark/light toggle — theme-following UI, boot-switch compatibility | accepted | — |
+| ADR-026 | The browser dock modes and the sidebar preview pane move to the backlog | accepted | — |
+| ADR-027 | No scripting host — native modules replace the Python plugin ecosystem | accepted | — |
+| ADR-028 | Phase 7 re-scoped — sync, remote, tray, and i18n defer to the backlog | accepted | — |
+| ADR-030 | CBR/RAR in-archive write-back through the user-installed `rar` CLI | accepted | — |
+| ADR-031 | Native modules — one crate per plugin behind a thin UI seam | accepted | — |
+| ADR-032 | The Book Scanner scans a clone of the book storage, not a take | accepted | — |
+| ADR-033 | One unified config file (`comicrust.toml`) | accepted | — |
+
+ADR-029 is reserved for the deferred Phase 9 (SQLite) decision. It is not written yet.
+
+---
+
 ## ADR-001: Full 1:1 feature parity is the target
 
 - **Status:** accepted (2026-09-02)
@@ -126,7 +169,7 @@ Append new ADRs at the end. Never rewrite the decision content of an existing en
 - **Status:** accepted (2026-09-03)
 - **Context:** The C# reader nests `ComicDisplayControl` (page management, spreads, continuous strip) inside `ImageDisplayControl` (one image, fit/zoom/pan/rotation, part grid). Porting two widget layers would duplicate the geometry. The decompiled C# also reveals non-obvious mechanics: the part transform is part-local (source rectangles shift by the part window origin), and continuous mode keeps the whole scroll in part 0's offset (`GetClampedPartOffset` clamps against the full image, not the grid row).
 - **Decision:** One widget (`cr-ui/src/reader/page_view.rs`) renders one *virtual image* through the part machinery from `reader/display.rs`. The comic layer composes pages into that virtual image: a single page, a two-page spread (`compose_spread`, pure and unit-tested), or the continuous strip (`reader/continuous.rs`, the `ContinuousPageLayout` port). The widget never subclasses a GObject; state lives in `Rc<RefCell<ViewState>>` captured by GTK closures (main-thread only). Pages decode on a background worker (latest-wins mailbox + std mpsc + a `timeout_add_local` pump) so the logical page advances per press while images trail, matching the C# book/display split. Cairo renders via `gdk`-independent `ImageSurface` + the `DisplayOutput` matrix (GDI+ element order maps 1:1 onto `cairo::Matrix::new`).
-- **Consequences:** All layout decisions are pure functions with unit tests (fit modes, part grid, spread rules, anchors). The GL renderer (ADR-008) replaces only the draw call behind the same geometry. Widget lifecycle pitfalls (RefCell re-entrancy, glib channel absence) are recorded in the AGENTS.md lessons.
+- **Consequences:** All layout decisions are pure functions with unit tests (fit modes, part grid, spread rules, anchors). The GL renderer (ADR-008) replaces only the draw call behind the same geometry. Widget lifecycle pitfalls (RefCell re-entrancy, glib channel absence) are recorded in `docs/guides/gtk-and-ui.md`.
 
 ## ADR-018: gtk4-rs stays on the GTK 4.0-era API surface for now
 
@@ -174,7 +217,7 @@ Append new ADRs at the end. Never rewrite the decision content of an existing en
 
 - **Status:** accepted (2026-09-04, user directive)
 - **Context:** Phases 3-5 ported behavior (reader, browser, dialogs) but not the chrome: no menubar, no toolbars, a one-label status bar, bare book tabs, no dock modes, no bundled icons. Original ComicRack is chrome-heavy. A dedicated phase between 5 and 6 closes the gap before the scripting host (Phase 6) builds on the shell.
-- **Decision:** New phase 5.5, spec in `docs/phase-5.5-kickoff.md` (full C# chrome inventory with file:line refs, tasks T1-T14, per-task user acceptance tests). Locked scope: browser dock modes Fill + Bottom only (Left/Right dropped); the Detail column chooser is IN; CR's Info Panel is OUT (Properties editor + sidebar preview cover it); the C# PNG icon set (`ComicRack/Resources/*.png`, 183 files) is bundled into `cr-ui/assets/icons/` (papers precedent); named workspace presets are OUT (only automatic layout persistence). Omitted: undo/redo, tray icon, remote library UI, device sync, News/update/help links, Automation menu (Phase 6), splash, crash dialog, search-browser matcher panel, web-comics item.
+- **Decision:** New phase 5.5, spec in `docs/archive/phases/phase-5.5.md` (full C# chrome inventory with file:line refs, tasks T1-T14, per-task user acceptance tests). Locked scope: browser dock modes Fill + Bottom only (Left/Right dropped); the Detail column chooser is IN; CR's Info Panel is OUT (Properties editor + sidebar preview cover it); the C# PNG icon set (`ComicRack/Resources/*.png`, 183 files) is bundled into `cr-ui/assets/icons/` (papers precedent); named workspace presets are OUT (only automatic layout persistence). Omitted: undo/redo, tray icon, remote library UI, device sync, News/update/help links, Automation menu (Phase 6), splash, crash dialog, search-browser matcher panel, web-comics item.
 - **Consequences:** The shell grows a command/action layer (T1) before any menu work — GTK menubar accelerators need real Gio actions. The dock-mode task (T10) reshapes the shell; Fill must stay bit-identical and is user-tested before/after. Deviations from CR are recorded per task in the kickoff doc.
 
 ## ADR-025: The dark/light toggle — theme-following UI, boot-switch compatibility
@@ -203,7 +246,7 @@ Append new ADRs at the end. Never rewrite the decision content of an existing en
   - The native "New Comic…" fileless-book flow (`MainForm.cs:1879` parity) and a native "New fileless Book Series…" dialog (the NewComics.py port).
   - Smartlist `Expression` and plugin-list matchers keep parsing and rendering byte-stably; evaluation returns an explicit not-supported result (never a crash).
   - The settings parser keeps accepting the `Scripting` and `PluginsStates` keys from existing Config.xml files (they are ignored).
-- **Consequences:** Users with script workflows migrate to built-in features; new requests land as native work ("small features as we go along" is the maintenance model). The compat invariant on plugin file formats is retired. A future scripting host stays possible — a new ADR would revive it, and the C# hook-table record at the end of `phase-6-kickoff.md` remains the reference.
+- **Consequences:** Users with script workflows migrate to built-in features; new requests land as native work ("small features as we go along" is the maintenance model). The compat invariant on plugin file formats is retired. A future scripting host stays possible — a new ADR would revive it, and the C# hook-table record at the end of `docs/archive/phases/phase-6.md` remains the reference.
 
 ## ADR-028: Phase 7 re-scoped — sync, remote, tray, and i18n defer to the backlog
 
@@ -214,28 +257,28 @@ Append new ADRs at the end. Never rewrite the decision content of an existing en
 
 ## ADR-030: CBR/RAR in-archive write-back through the user-installed `rar` CLI
 
-- **Status:** accepted (2026-09-09, user decision; record: `docs/phase-10-kickoff.md`)
+- **Status:** accepted (2026-09-09, user decision; record: `docs/archive/phases/phase-10.md`)
 - **Context:** The C# never writes into RAR archives — `CbrComicProvider`/`Rar5ComicProvider` carry no `FileFormatAttribute.EnableUpdate` (only CBZ/CBT/CB7/CBW are updatable), and `ComicProvider.StoreInfo` instead persists edits for every format into the NTFS ADS stream. On Linux the ADS equivalent is the xattr store (ADR-006); it was offered as the parity fix and the user DECLINED it ("not really interested in the xattr thing, more interested in writing info into the actual files"). A real in-archive RAR write requires a RAR compressor, which does not exist as free software: 7-Zip and libarchive decode only, unrar is extract-only and GPL-incompatible. The only writer is RARLAB's `rar` CLI (closed-source freeware).
 - **Decision:** `cr-io` gains a `rar` subprocess writer (the `7z` precedent, ADR-007): `find_rar()` resolves `CR_RAR` then PATH (never `unrar`), and `store_info_scoped` routes CBR/RAR5 through one `rar a -y <archive> <files>` with cwd at the staging directory (root-level bare-name entries) and stdin null (a password-protected target then fails its prompt immediately — measured exit 12 — instead of hanging). Measured: rar 7.12 updates both RAR5 and existing RAR4 archives (format preserved, pages intact); it can no longer CREATE RAR4 archives (no `-ma4` in 7.x) — RAR4 write-back is proven on real fixtures via the `CBR_RAR4_FIXTURE` gate. `supports_update` stays false for RAR in the format registry (C# parity: not unconditionally updatable). The xattr fallback in `ComicProvider::store_info` stays as-is for the CLI path; the app's `update_book_file` reports "rar executable not found" through the existing error dialog.
 - **Consequences:** The binary is never bundled, linked, or distributed (license hygiene; the tarball and CI ship nothing RAR-related, so the gated tests skip in CI). Users install `rar` themselves (Arch AUR, Debian `non-free`, Fedora RPM Fusion, or the RARLAB static tarball). Without it, CBR writes surface a clear error and edits persist DB-only — the manual command is no longer a silent no-op. `rar` exit 1 (warning) still counts as failure for us. ADR-029 stays reserved for the deferred Phase 9 (SQLite) decision.
 
 ## ADR-031: Native modules — one crate per plugin behind a thin UI seam
 
-- **Status:** accepted (2026-09-10, user directive; record: `docs/phase-12-kickoff.md`)
+- **Status:** accepted (2026-09-10, user directive; record: `docs/archive/phases/phase-12.md`)
 - **Context:** ADR-027 dropped the scripting host; the used plugins must return as native features. The user's directive for the first one (Comic Vine Scraper): keep it as modular as possible, minimal interference with the base codebase, functionality parity first, look and feel second.
 - **Decision:** One new crate per plugin (`crates/cr-scrape` first): pure Rust, no GTK, depends only on cr-core (model + registry) and cr-image plus its own external deps (ureq/rustls, serde_json). The engine runs on a worker thread, never touches the thread-local app session, and mutates clones of the books it is handed; the UI side (the only consumer, cr-ui) drives it through a request/response message protocol over std mpsc + a `timeout_add_local` pump and applies results on the main thread through the existing `library::apply_edited` pipeline. Plugin configuration lives plugin-locally under `~/.config/comicrust/plugins/<plugin>/` — never in the cr-core Settings schema. Base-codebase touchpoints are enumerated in the phase kickoff and stay minimal (workspace member, one dialog module, a few shell wiring lines, plus at most one declared engine/render branch when a feature genuinely needs it — Phase 12 T8, the fileless custom-thumbnail render path).
 - **Consequences:** Plugins are independently testable headless (mock servers, fake UIs). The C# hook-table integration points (context menus, toolbars) get wired per-feature in cr-ui instead of through a generic plugin loader; there is no plugin discovery, no `.crplugin`, no host — each native module is app code that happens to live in its own crate. Future modules (Metron scrapers, autonumbering, …) follow the same shape.
 
 ## ADR-032: The Book Scanner scans a clone of the book storage, not a take
 
-- **Status:** accepted (2026-09-11, user approval; record: the SCAN-LIVENESS block in `AGENTS.md`)
+- **Status:** accepted (2026-09-11, user approval; record: commit `d9262a4`, and the scan-liveness history in git)
 - **Context:** The scan worker `std::mem::take`d the whole book storage out of the database for the duration of a scan (the ADR-019-era take-and-return shape). A re-scan fires `on_new` only for NEW files, so zero batches flowed and the database held ZERO books for the entire scan; every list evaluation (smart lists, the navigator select after a watch landing, F5) read 0 books and wiped the view, and the search results blanked until a restart. The user approved the architecture change explicitly.
 - **Decision:** `start_scan_worker` gives the worker a CLONE (`db.books.clone()`); the database keeps the full library mid-scan and grows by the pump's batch appends as before. The landing merge (`merge_scan_storage`, pure + unit-tested) reconciles the worker's storage with what the main thread did WHILE the scan ran: database-only books stay (mid-scan adds), touched ids keep the database copy (edits, reading state, page sizes, write-back results — recorded by `record_scan_touch` at the mutation sites), removed ids drop everywhere (`record_scan_removal` at the remove sites). The per-tick scan hook no longer falls back to a full refresh for non-Library views (the landing hook does the one refresh), and the watch poll holds pending roots while a scan runs instead of stacking a rescan per second.
 - **Consequences:** One library clone per scan (transient; the C# scans the live collection, the same class). A book edited mid-scan whose file write completed still wins through the touched record (the scan's file-info refresh for that book is discarded until the next scan). A scan with `remove_missing` (not used by any UI path today) would resurrect scanner-removed books unless they are also recorded; noted for whoever wires it.
 
 ## ADR-033: One unified config file (`comicrust.toml`)
 
-- **Status:** accepted (2026-09-11, user decision; record: `docs/phase-13-kickoff.md`)
+- **Status:** accepted (2026-09-11, user decision; record: `docs/phases/phase-13.md`)
 - **Context:** The config state sat in three stores: the `comicrust.ini` search chain (`ExtendedSettings` + `EngineConfiguration` keys), `Config.xml` (the ~120-field `Settings` object, ADR-023), and the plugin-local `settings.json` (ADR-031). The user asked for ONE file and for the scraper's hardcoded data tables (the imprint→publisher list) to leave the binary: "if I want to add another imprint, I don't have to recompile the whole app". The user confirmed ComicDb.xml stays sacred (books, lists, matchers, watch folders — untouched) and that migrating the old config files is not an issue.
 - **Decision:** ONE TOML file, `~/.config/comicrust/comicrust.toml` (serde, hand-editable). Sections: `[extended]` (the `ExtendedSettings` keys, stored/applied verbatim through the field registry — argv still overrides at boot and never writes back), `[engine]` (the `EngineConfiguration` keys; the Size/Color converter fields keep the .NET text forms), `[settings]` (the Settings fields under their C# member names, serde round-tripped), `[plugins.<name>]` (opaque plugin tables behind typed accessors — cr-core never depends on cr-scrape), and `[data]` — the user-editable data tables seeded from the built-ins on first boot with a per-table revision marker that merges ONLY missing keys on upgrade (user edits survive; a user-deleted built-in entry stays deleted until a future revision bump re-offers it). The Comic Vine imprints table moved from `cr-scrape/src/cv/imprints.rs` into the seed (`IMPRINTS` in cr-core `settings/unified.rs`); `find_parent_publisher` reads the session table and falls back to the built-in seed when uninitialized. Precedence unchanged: defaults < file < argv. The ini search chain (exe dir / `/etc`) collapses to the one file (recorded simplification); `save_ini_keys` becomes the `[extended]` update + whole-file save; the old `Config.xml` writer/reader and the ini file-chain machinery are deleted. supersessions: ADR-023's `Config.xml`/`comicrust.ini` layout, ADR-031's plugin-local `settings.json` storage (the plugin-local DIRECTORY survives only for the `prior_series.json` scrape cache, which is state, not config).
 - **Consequences:** The Settings layer is no longer byte-stable XML (Config.xml was never the sacred artifact — only ComicDb.xml is); round-trip equality tests replace the XML golden tests, and a registry-name guard test pins the C# member spellings (the pinned renames: `RemoveFilesfromDatabase`, `InformationCover3D`, the `*MB` cache fields). Hand-added TOML comments do not survive an app rewrite (values always do). The file is read once at boot — hand edits apply at the next start (the Config.xml model). Old files (`Config.xml`, `comicrust.ini`, `plugins/comic-vine-scraper/settings.json`) are left on disk, never read or written; users re-enter their preferences (per user decision). f32 fields serialize through the shortest f32 text to keep hand-edited values clean.

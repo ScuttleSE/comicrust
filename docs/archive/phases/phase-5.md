@@ -7,11 +7,11 @@ The browser shell's Phase 4 stubs (the Properties placeholder, the
 navigator's bare entry dialogs, the "Files to update" list) become
 the real commands.
 
-Read first: `AGENTS.md` (rules + status), `docs/phase-4-kickoff.md`
+Read first: `AGENTS.md` (rules + status), `docs/archive/phases/phase-4.md`
 (the browser — its shell hooks are this phase's integration
 points), `docs/decisions.md` (ADR-004 no libadwaita, ADR-018 GTK
 4.0-era surface, ADR-022 the library session). The reader
-(`docs/phase-3-kickoff.md`) and the browser already carry the
+(`docs/archive/phases/phase-3.md`) and the browser already carry the
 user-test protocol — it stays mandatory.
 
 ## Why this phase is long
@@ -514,7 +514,7 @@ library-wide custom-value key editor, the ComicBookIsDirty write
 half, the reading-list drag-in book management, and the C#
 tri-state list-merge checkbox. WebComicProvider and the PDF/DjVu
 writers remain Phase 1 gaps (tracked in
-`docs/phase-1-kickoff.md`).
+`docs/archive/phases/phase-1.md`).
 
 Check the boxes here and in `AGENTS.md`'s status as tasks close.
 The phase gate: a user edits a comic's metadata (single + bulk),

@@ -1,7 +1,7 @@
 //! Metadata write-back — port of `IStorageProvider`/`StorageProvider`
 //! write paths and `SevenZipEngine.UpdateComicInfos`.
 //!
-//! Per docs/phase-1-kickoff.md T5 the zip/tar/folder writers are
+//! Per docs/archive/phases/phase-1.md T5 the zip/tar/folder writers are
 //! native (the C# shells out to `7z u` even for zip/tar — we preserve
 //! the *behavior*: every entry's decompressed content stays identical,
 //! only the metadata entries change):

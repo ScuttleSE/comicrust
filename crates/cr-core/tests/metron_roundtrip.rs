@@ -1,4 +1,4 @@
-//! MetronInfo round-trip and mapping tests (T2, docs/phase-1-kickoff.md).
+//! MetronInfo round-trip and mapping tests (T2, docs/archive/phases/phase-1.md).
 //! Round-trip = serialize → parse → serialize must be byte-identical.
 
 use cr_core::model::metron_info::*;

@@ -1,6 +1,6 @@
 //! Integration tests for the provider framework: synthetic CBZ, CBT,
 //! and folder fixtures built at test runtime from generated PNGs (see
-//! the test data policy in docs/phase-1-kickoff.md).
+//! the test data policy in docs/archive/phases/phase-1.md).
 
 use std::fs::File;
 use std::io::Write;

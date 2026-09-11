@@ -9,7 +9,7 @@ books display with covers, sort/group/column changes apply, search
 filters, double-click opens the reader, and reading state round-trips
 through a byte-stable ComicDb.xml save.**
 
-Read first: `AGENTS.md` (rules + status), `docs/phase-3-kickoff.md`
+Read first: `AGENTS.md` (rules + status), `docs/archive/phases/phase-3.md`
 (the reader, and the user-test protocol — it stays mandatory),
 `docs/decisions.md` (ADR-008 cairo, ADR-017 reader architecture,
 ADR-018 GTK surface, ADR-019 pool-queue page loads).
@@ -697,7 +697,7 @@ GL renderer swap (ADR-008), drag-out, and the unported state PNGs.
 
 ## Phase 5 pointer
 
-The next phase is the dialogs (`docs/phase-5-kickoff.md`). The
+The next phase is the dialogs (`docs/archive/phases/phase-5.md`). The
 browser shell hooks this phase created (the context-menu stubs, the
 Properties placeholder, the navigator's bare entry dialogs) are the
 integration points.

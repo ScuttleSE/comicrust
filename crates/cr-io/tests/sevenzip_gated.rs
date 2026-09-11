@@ -1,6 +1,6 @@
 //! Subprocess-format tests (7z). Gated: they run only when
 //! `CR_FORMAT_TESTS` is set and a `7z` executable exists — see the
-//! test data policy in docs/phase-1-kickoff.md. 7z cannot create RAR
+//! test data policy in docs/archive/phases/phase-1.md. 7z cannot create RAR
 //! archives, so CBR/RAR5 need real-world smoke files (out of repo).
 
 use std::process::Command;

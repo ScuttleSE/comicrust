@@ -12,7 +12,7 @@
 //! stay (the C# edits the live database books, so Cancel never
 //! reverts anything).
 //!
-//! Deferred within T2 (recorded in `docs/phase-5-kickoff.md`): the
+//! Deferred within T2 (recorded in `docs/archive/phases/phase-5.md`): the
 //! custom-thumbnail set/clear buttons (the pool `type://` loader),
 //! the white-point color pick (double-click), the file write-back
 //! (checkpoint 2: the write-info queue), the library-wide custom

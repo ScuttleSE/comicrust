@@ -2,7 +2,7 @@
 
 Goal: comicrust evaluates ComicRack smart lists identically, runs the background queue machinery, rescans libraries unattended, and manages database backups. Exit gate: **smart lists from the migrated real-world library evaluate identically to the C# matchers (fixture tests); the ProcessingQueue/QueueManager port runs page/thumbnail work through the five C# queues; the scanner and backup manager run unattended** — all headless, zero UI.
 
-Phase 1 remains the reference for doc style: see `phase-1-kickoff.md`. The Phase 0 gate (byte-stable ComicDb.xml round-trip) and the Phase 1 acceptance state must stay green; do not regress them.
+Phase 1 remains the reference for doc style: see `phase-1.md`. The Phase 0 gate (byte-stable ComicDb.xml round-trip) and the Phase 1 acceptance state must stay green; do not regress them.
 
 ## Status (2026-09-03) — COMPLETE
 

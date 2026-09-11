@@ -2,7 +2,7 @@
 
 Goal: comicrust opens every format ComicRack opens, extracts pages, generates thumbnails, and writes metadata back into archives without damage. Exit gate: **`cr-cli` opens, lists, and extracts pages for every supported format; ComicInfo.xml write-back verified against originals; thumbnails generated for all formats** — all headless, zero UI.
 
-Phase 0 remains the reference for doc style: see `phase-0-kickoff.md`. The Phase 0 gate (byte-stable ComicDb.xml round-trip, including the real-world database in `tests/realworld/`) is met and must stay green; do not regress it.
+Phase 0 remains the reference for doc style: see `phase-0.md`. The Phase 0 gate (byte-stable ComicDb.xml round-trip, including the real-world database in `tests/realworld/`) is met and must stay green; do not regress it.
 
 ## Status (2026-09-02, end of phase work)
 

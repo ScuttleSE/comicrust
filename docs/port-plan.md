@@ -52,11 +52,11 @@ Every phase ends shippable and testable. Phases 0-2 are fully headless. They de-
 | 3 | Reader UI | GTK4 shell skeleton, GL renderer port: single/double/adaptive/continuous layouts, fit modes, zoom/pan/rotation, transitions, magnifier, paper texture, gestures, fullscreen/undock, tabs | Comfortable daily-driver reading session | 10-12 wk |
 | 4 | Browser | ItemView port (thumbnail/tile/detail, grouping, stacking, columns, sort, rubber-band, drag-drop), library tree, search popover, QuickOpen, PagesView | Library browse/manage replaces C# browser for common flows | 10-12 wk |
 | 5 | Dialogs | All ~50: book editor, bulk edit, preferences (+ serde-driven options builder), smart-list/matcher editors, export, devices, workspace save/switch | Feature-complete for local-library workflows | 12-14 wk |
-| 5.5 | UI chrome parity | Menubar, toolbars (reader/browser/navigator/pages), multi-panel status bar, book tabs + context menu, Book Display Settings, About/Zoom/QuickRating/Tasks, bundled CR icons, layout persistence — see `phase-5.5-kickoff.md` (ADR-024; dock modes stay Fill-only per ADR-026) — **COMPLETE, all tasks user-tested (2026-09-06)** | Chrome close to original CR with locked omissions; every task user-tested | 8-10 wk |
+| 5.5 | UI chrome parity | Menubar, toolbars (reader/browser/navigator/pages), multi-panel status bar, book tabs + context menu, Book Display Settings, About/Zoom/QuickRating/Tasks, bundled CR icons, layout persistence — see `docs/archive/phases/phase-5.5.md` (ADR-024; dock modes stay Fill-only per ADR-026) — **COMPLETE, all tasks user-tested (2026-09-06)** | Chrome close to original CR with locked omissions; every task user-tested | 8-10 wk |
 | 6 | Native features + de-scripting | Native "New Comic…" fileless flow + "New fileless Book Series…" dialog (the NewComics.py port, ADR-027), `Expression`/plugin matcher parse-compat (not-supported evaluation), Copy Page/Export Page, `cr-script` removal — **COMPLETE, all tasks user-tested (2026-09-06)** | Feature checklist complete with no scripting surface; matcher round-trip stable | 2-3 wk |
 | 7 | Platform | D-Bus single instance + the startup file pipeline (re-scoped 2026-09-06, ADR-028: sync, remote, tray, i18n → `docs/backlog.md` with research records) — **COMPLETE, all tasks user-tested (2026-09-06)** | Second-launch handoff parity: focus, files (`newSlot`/`-p`/hide-browser), restart handshake | 1 wk |
 | 8 | Polish/ship | Flatpak/.deb/AUR packaging, CI, docs, migration tooling, perf passes | 1.0 | 4-6 wk |
-| 9 | Database backend | SQLite canonical store (ADR-029; hot columns + per-book dirty tracking + incremental saves), XML becomes the ComicRack import/export codec, Settings migration + "Export for ComicRack…", backup swap — see `phase-9-kickoff.md` | Migration verified on the real-world fixture; WAL crash-safety + sqlite↔XML round-trip gates green | 3-5 wk |
+| 9 | Database backend | SQLite canonical store (ADR-029; hot columns + per-book dirty tracking + incremental saves), XML becomes the ComicRack import/export codec, Settings migration + "Export for ComicRack…", backup swap — see `docs/archive/phases/phase-9.md` | Migration verified on the real-world fixture; WAL crash-safety + sqlite↔XML round-trip gates green | 3-5 wk |
 
 **Total: ~75-90 weeks (~18-22 months) solo.** Longest-lead items: ItemView behavior parity and dialog volume.
 
@@ -67,29 +67,24 @@ Every phase ends shippable and testable. Phases 0-2 are fully headless. They de-
 3. **Native features at 6 (ADR-027):** the scripting host is dropped; the phase delivers the C#'s native features that the scripts obscured (fileless books) plus the de-scripting cleanup, before platform work (7).
 4. **Platform integration last (7):** the single-instance/startup plumbing is isolated and small. Sync and remote defer to the backlog (ADR-028) — sync is an isolated module, and the remote needs a new wire API plus a client before it has any user.
 
-## 5. Kickoff
+## 5. Phase documents
+
+The active phase lives in `docs/phases/`. `docs/current-status.md` names it.
+The closed phases live in `docs/archive/phases/`, one file per phase, with
+the task breakdown and the acceptance criteria of that phase.
+
+Phase 9 (the SQLite database backend, ADR-029) was spun out of Phase 8 T7 on
+2026-09-07, then DEFERRED to the backlog on 2026-09-08 by user decision. Its
+design stays intact in `docs/archive/phases/phase-9.md`. Whoever picks it up
+must re-home it into a new phase file first, and start at T1 (the spike),
+then T2 (ADR-029 and user sign-off).
 
 ## 6. Backlog
 
-Deferred ideas and non-urgent findings. Anything phase-scoped lives
-in that phase's kickoff tracker instead (`phase-<N>-kickoff.md`,
-"Omitted / postponed per task"); locked scope decisions live in
-`docs/decisions.md`. An agent picking work from here should move
-the entry into the kickoff that will own it.
+The backlog lives in `docs/backlog.md`. It holds the deferred ideas and the
+non-urgent findings.
 
-The collected backlog now lives in **`docs/backlog.md`** (the open
-Phase 1 items + the former entries of this section). Phase task
-breakdowns with acceptance criteria:
-
-- Phase 0: `phase-0-kickoff.md` — built and validated (see `AGENTS.md` status).
-- Phase 1: `phase-1-kickoff.md`.
-- Phase 5.5: `phase-5.5-kickoff.md` — the UI-parity phase (ADR-024), inserted between 5 and 6. COMPLETE (2026-09-06).
-- Phase 6: `phase-6-kickoff.md` — the re-scoped native-features phase (ADR-027). COMPLETE (2026-09-06, user-tested). The original scripting kickoff survives as a superseded record inside that file.
-- Phase 7: `phase-7-kickoff.md` — the platform phase (D-Bus single
-  instance + the startup file pipeline, ADR-028 re-scope). COMPLETE (2026-09-06).
-- Phase 8: `phase-8-kickoff.md` — polish/ship + the user-reported list. CLOSED (2026-09-08); T1-T6, T10, T11 done + user-tested, T7 → Phase 9, T8 + HEIF/AVIF deferred to the backlog.
-- Phase 9: `phase-9-kickoff.md` — the database-backend phase (SQLite
-  canonical, ADR-029 gate). Spun out of Phase 8 T7 (2026-09-07);
-  DEFERRED to the backlog 2026-09-08 (user decision) — no active
-  phase; whoever picks it up re-homes the kickoff first and starts
-  at T1 (the spike) → T2 (ADR-029 + user sign-off).
+Work that is scoped to a phase belongs in that phase file, not here. A
+locked scope decision belongs in `docs/decisions.md`. An agent that picks
+work from the backlog must move the entry into a phase file BEFORE
+implementation starts.

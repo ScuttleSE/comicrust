@@ -1,7 +1,7 @@
 //! DjVu tests. Gated: they run only when the djvulibre tools (`c44`,
 //! `djvm`, `ddjvu`) exist — the C# bundles djvm.exe/ddjvu.exe, and we
 //! never commit binaries to the repo (test data policy in
-//! docs/phase-1-kickoff.md).
+//! docs/archive/phases/phase-1.md).
 
 use std::process::Command;
 

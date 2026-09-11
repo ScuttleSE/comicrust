@@ -14,8 +14,8 @@ starts only after this phase is done.
 
 Read first: `AGENTS.md` (rules + status + all phase lessons),
 `docs/decisions.md` (ADR-004 no libadwaita, ADR-018 GTK 4.0-era
-surface, ADR-024 this phase's scope), `docs/phase-4-kickoff.md`
-(browser shell hooks), `docs/phase-5-kickoff.md` (dialog
+surface, ADR-024 this phase's scope), `docs/archive/phases/phase-4.md`
+(browser shell hooks), `docs/archive/phases/phase-5.md` (dialog
 commits, settings wiring).
 
 ## How tasks work here (mandatory protocol)

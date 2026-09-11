@@ -1,4 +1,4 @@
-//! The T1 single-instance probe (`docs/phase-7-kickoff.md`): proves
+//! The T1 single-instance probe (`docs/archive/phases/phase-7.md`): proves
 //! the GApplication unique-mode handoff — a second launch registers
 //! as remote, forwards its argv to the primary's `command-line`
 //! handler and exits. The primary records every `command-line`

@@ -24,7 +24,7 @@ omissions stay in that phase's kickoff tracker.
   local fixture HTTP server (a std `TcpListener`).
 - **PDF and DjVu writers** (`cr-io`, T5 tail) — the CBZ/CBT/CB7 and
   folder writers are done. These two formats still have no
-  write-back. Low use, as `phase-1-kickoff.md` predicted.
+  write-back. Low use, as `docs/archive/phases/phase-1.md` predicted.
 - **HEIF/AVIF/J2K page decode** — the decode chain reports
   UnsupportedFormat for these formats. The codecs need system
   libraries (libheif, openjpeg). SKIPPED (2026-09-08, user decision
@@ -35,7 +35,7 @@ omissions stay in that phase's kickoff tracker.
 
 - **Packaging (T8: Flatpak / .deb / AUR + release-workflow
   artifacts)** — deferred 2026-09-08 (user decision), then RE-HOMED
-  2026-09-09 into the active `docs/phase-11-kickoff.md` (Arch PKGBUILD
+  2026-09-09 into the active `docs/archive/phases/phase-11.md` (Arch PKGBUILD
   + Flatpak bundle + a dispatch-on-tag packaging workflow; the user
   picked the in-repo-PKGBUILD, self-hosted-bundle, manual-dispatch
   shapes). The remaining scopes — `.deb`/RPM, AUR publishing from CI,
@@ -46,7 +46,7 @@ omissions stay in that phase's kickoff tracker.
 - **The SQLite database backend (the whole phase)** — deferred
   2026-09-08 (user decision, right after Phase 8 closed): no active
   phase owns it now. The FULL design is already written and stands —
-  `docs/phase-9-kickoff.md` (the locked user decisions, the coupling
+  `docs/archive/phases/phase-9.md` (the locked user decisions, the coupling
   audit, the work breakdown ~3-5 wk, the task list T1-T7). Whoever
   picks it up starts at T1 (the spike) → T2 (ADR-029 + user
   sign-off); NO product code before that gate. An agent that picks
@@ -339,7 +339,7 @@ still pays one parse per parse-needing book per evaluation — the
   hot paths are scalar (sort 5000 books 4.5 ms, group pass 78 µs,
   duplicates 1000 books 5.9 ms, CBL import 0.069 s at 2886×255 —
   release; WARM-cache numbers — see the 2026-09-09 correction in
-  `docs/phase-8-kickoff.md` T10: a COLD pass pays one parse per
+  `docs/archive/phases/phase-8.md` T10: a COLD pass pays one parse per
   parse-needing book, which is exactly this plan-B case, now cheaper
   since the OfValues count regex no longer recompiles per parse). No
   remaining user-visible wait justifies the invalidation

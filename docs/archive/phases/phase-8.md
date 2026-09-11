@@ -17,7 +17,7 @@ T11), new packaging files (T8).
    books, delete, the app hung for close to a minute.
 4. Explore moving from the XML file for the database to a
    sqlite/postgres backend instead. (→ Phase 9,
-   `docs/phase-9-kickoff.md`)
+   `docs/archive/phases/phase-9.md`)
 5. Implement the Folders tab (filesystem view) next to the Library
    tab.
 6. Manually resizing columns in the Details view.
@@ -69,7 +69,7 @@ T11), new packaging files (T8).
   The port's T14 workspace already stores the column list — check
   whether widths ride along; add the drag handle + the persistence.
 - Database backend: RE-HOMED to Phase 9
-  (`docs/phase-9-kickoff.md`) on 2026-09-07 — it touches
+  (`docs/archive/phases/phase-9.md`) on 2026-09-07 — it touches
   compatibility invariant 1 (byte-stable ComicDb.xml) and grew into
   a full phase after the exploration + user decisions. ADR-029
   remains REQUIRED before any code.
@@ -382,7 +382,7 @@ the close-a-comic report became the ShowLast change below).
   canonical after migration; Postgres rejected; XML becomes the
   import/export codec; fresh installs keep the XML default). The
   user decisions, the coupling audit, the work breakdown, and the
-  task list now live in `docs/phase-9-kickoff.md`.
+  task list now live in `docs/archive/phases/phase-9.md`.
 - Nothing changed for Phase 8: no code, no ADR yet. Phase 9 T1
   (the spike) starts after Phase 8 closes and produces ADR-029.
 
@@ -696,7 +696,7 @@ T8 → T9 → T11 → T10. The database-backend item is Phase 9 now (see T7).
 
 - Kickoff written 2026-09-06. T1 is next.
 - 2026-09-07: T7 (the database-backend exploration) re-homed to the
-  new Phase 9 (`docs/phase-9-kickoff.md`) with the user decisions
+  new Phase 9 (`docs/archive/phases/phase-9.md`) with the user decisions
   recorded there.
 - 2026-09-07: T11 added (the Windows-path migration dialog, user
   request). Scope + the four user decisions (collapsed roots,
@@ -762,4 +762,4 @@ T8 → T9 → T11 → T10. The database-backend item is Phase 9 now (see T7).
   (three slices), T11 done + user-tested; T7 re-homed to Phase 9;
   T8 + HEIF/AVIF deferred/skipped by user decision (the backlog).
   Next: Phase 9 (the SQLite database backend,
-  `docs/phase-9-kickoff.md`, ADR-029 gate before any code).
+  `docs/archive/phases/phase-9.md`, ADR-029 gate before any code).

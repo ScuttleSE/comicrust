@@ -1,7 +1,7 @@
 //! Archive accessors — ports of `ZipSharpZipEngine.cs` and
 //! `TarSharpZipEngine.cs`. The 7z/RAR subprocess accessor lives in
 //! `sevenzip.rs`; PDF/DjVu are separate T1 follow-ups
-//! (docs/phase-1-kickoff.md).
+//! (docs/archive/phases/phase-1.md).
 
 use std::fs::File;
 use std::io::Read;

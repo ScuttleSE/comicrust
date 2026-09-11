@@ -15,7 +15,7 @@
 //! `7z`, `7za`, `7zz` on `PATH`. Operations spawn one process each,
 //! as the C# exe mode does; pooling is a possible later optimization.
 //!
-//! Known parity gap (subprocess policy in docs/phase-1-kickoff.md):
+//! Known parity gap (subprocess policy in docs/archive/phases/phase-1.md):
 //! 7z cannot *create* RAR archives, so RAR fixtures must come from
 //! real files and those tests stay gated behind `CR_FORMAT_TESTS`.
 
