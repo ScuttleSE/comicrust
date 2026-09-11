@@ -20,11 +20,12 @@ still open.
 
 ## Verification record
 
-- Commit: the GitHub mirror release fix (2026-09-11). `publish_github_release.sh`
-  now pushes the build commit to the mirror's `main` before it creates the
-  release. GitHub cannot create the release tag at a commit it does not
-  have, which failed the rolling publish with 422 on every commit after
-  `f451af7`. The tolerated tag delete no longer prints its 422.
+- Commit: the GitHub mirror publish corrected (2026-09-11). The
+  422 failures were real: the pushed commits were missing on GitHub
+  because a push went to Gitea only. The workflow never pushes git
+  refs; every push goes to both forges (GitHub first), and the
+  workflow only copies release artifacts. The tolerated tag delete no
+  longer prints its 422.
 - Commit: the README rewrite (2026-09-11). Two lists: "Added in
   comicrust" and "Not ported from ComicRack CE". The Windows migration
   section is now one instruction.

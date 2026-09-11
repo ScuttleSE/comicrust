@@ -18,10 +18,10 @@
 # comicrust-<version>-linux-amd64.tar.gz and its .sha256 file must
 # exist in the working directory.
 #
-# The build commit must exist in the mirror repo before a release can
-# tag it, so this script also pushes SHA to the mirror's main branch.
-# GitHub cannot create a tag at a commit it does not have; that fails
-# with 422.
+# The build commit must already exist in the mirror repo: normal pushes
+# go to both forges before this workflow runs. GitHub cannot create the
+# release tag at a commit it does not have; that fails with 422. This
+# script never pushes git refs.
 #
 # Skips with a notice when GH_TOKEN is unset, so the workflow stays
 # green until the secret is configured on Gitea.
@@ -63,12 +63,6 @@ for f in "$asset" "$checksum"; do
         exit 1
     fi
 done
-
-# Give the mirror the commit the release will tag. This is a fast-forward
-# in the normal case; --force keeps the mirror following the built state
-# the same way the rolling flow replaces the tag ref.
-git push --force "https://x-access-token:${GH_TOKEN}@github.com/${GH_REPO}.git" \
-    "${SHA}:refs/heads/main"
 
 API="https://api.github.com"
 UPLOAD="https://uploads.github.com/repos/$GH_REPO/releases"
