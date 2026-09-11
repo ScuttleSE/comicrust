@@ -118,6 +118,41 @@ Update this section at the **end of every work session**. The next agent must kn
 
 ### State summary
 
+- **BACKGROUND SAVE RUNS MID-SCAN (2026-09-11, commit d9262a4; user
+  report: "scanning 4100+ files for several minutes, no ComicDb.xml
+  on disk — aren't you supposed to write every 60 seconds or so?"):**
+  TWO facts. (1) The C# interval is 600 SECONDS, not 60 —
+  `ExtendedSettings.cs:510` `DatabaseBackgroundSaving = 600` (the ini
+  template confirms); the port matches (`BACKGROUND_SAVE_INTERVAL_SECS
+  = 600`). A faster cadence is a `[extended]` `DatabaseBackgroundSaving`
+  set in comicrust.toml — no code change. (2) THE REAL BUG: the
+  port's background save SKIPPED while a scan was in flight
+  (`cr_ui::library::save_if_dirty` returned `Ok(false)` on
+  `scan_in_flight()`), a leftover guard from the OLD take-based scan
+  architecture (ADR-019 — saving mid-scan then wrote the taken,
+  empty book list). After ADR-032 (the clone-not-take fix) the
+  worker scans a CLONE and the main-thread DB stays live (batches
+  append per tick, the pump marks dirty), so the skip was stale: a
+  mid-scan save is safe and matches the C#, which background-saves
+  its LIVE collection while the scanner walks. FIX: the skip is
+  removed; the save persists the books landed so far every 600 s
+  DURING a scan (and at the landing + the unconditional exit save as
+  before). The stale "saving mid-scan would write the taken, empty
+  book list" comment on `library::save()` is corrected (the
+  abort-first order now exists to make the exit save a consistent
+  full set). GATE: scanrefresh_probe grew D2 — inside gate D
+  (mid-scan, count >= 5, before the abort) the probe calls
+  `save_if_dirty()` for real, loads the DB file from disk, and
+  asserts it holds the books landed so far (>= the grid count,
+  > 2). VERIFY-BOTH-WAYS measured: the neutralized (skip restored)
+  build FAILS at "D2 FAIL: save_if_dirty skipped the save mid-scan";
+  the fix passes (1622 books on disk mid-scan of 10002). The probe
+  doc-comment gate list carries D2. 517 tests; fmt/clippy -D
+  warnings green. USER TEST = rebuild, start a scan of a large
+  folder; within ~10 minutes `~/.local/share/comicrust/ComicDb/
+  ComicDb.xml` appears on disk (or set `DatabaseBackgroundSaving`
+  under `[extended]` in comicrust.toml for a shorter cadence) and
+  holds the books found so far.
 - **DOUBLE-CLICK OPEN CRASH FIXED (2026-09-11, commit 140ba4c; user
   crash log: "RefCell already borrowed" at `item_view.rs:562:36` in
   the pressed trampoline, SIGABRT on a double-click open; a previous
@@ -2298,7 +2333,7 @@ Update this section at the **end of every work session**. The next agent must kn
   Phases 0-5 are complete (their gates stay green). Open Phase 1
   gaps: WebComicProvider and the PDF/DjVu writers (tracked in
   `docs/phase-1-kickoff.md`).
-- **State:** `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` are green. 514 tests — 37 suites plus the cr-scrape suites (the Phase 8 perf gates: `reading_list_perf`, `view_perf`, `path_migration_perf`, `list_eval_perf`, `scan_perf`; the cr-ui probes are examples, not tests — the newest are `browserbar_probe` gate D (the column chooser: the open + the submenu-row gate `state_column_chooser_page_rows` reading all=92/a-b=16 through the popover's `visible-submenu` page + the toggle) and D2+D3 (the grouping: ungrouped (1,0) + the disabled action + toggle-groups; the D3 press-sequence machine drives the REAL group-header press paths — label select, single-click collapse/expand of one group, both double-click directions, the true counts on collapsed headers), `statusbar_probe` gates J/J2 (the scan lamp: frames, the visible-only animation, the Cancel-scan menu map + the abort hook), and `smartlistmenu_probe` (the smart-list editor: the rule rows carry the btEdit dropdown + the row menu; the enable states follow `cmEdit_Opening`; delete/cut run through the REAL action path; copy→paste inserts a clone after the row; a group payload is rejected at the cap while a value payload pastes; OK commits — the paste payload rides `probe_paste_payload` because the Xvfb clipboard read stalls, see the state block); `scanrefresh_probe` (gates A-J: the scan-land refresh, the re-scan idempotence, the mid-scan fill, the abort partial landing, the re-scan completion, the mid-add exit save, the mid-RE-scan library liveness (G), the watch-rescan dedupe (H), the non-Library per-tick churn (I), the mid-scan remove/edit survival (J) — it REFUSES a non-isolated XDG pair and wipes it at start, the exit save pollutes it); the real-fixture parts skip in CI without the git-ignored `tests/testfiles/` files; the RAR round-trips skip without `CR_RAR_TESTS` + `rar`). CI runs on the `docker-runner-amd64` container runner (ADR-020) and is LIVE (it caught the 2026-09-09 group-gate flake — the runner + `comicrust-ci:latest` image work). The release tracks are `release.yaml` (rolling prerelease per push) and `tagged-release.yaml` (manual dispatch, stable release for an existing tag — ADR-021, 2026-09-03); `packaging.yaml` (Phase 11) attaches the source tarball, the Arch package, and the .deb to a tagged release. First real tagged-release run (v0.0.273, 2026-09-09) exposed a latent env bug: the "Publish to GitHub mirror" step lacked `TAG` (the Gitea publish succeeded; the mirror step died on `set -u`) — fixed in commit 05483da.
+- **State:** `cargo fmt --check`, `cargo clippy --workspace --all-targets -- -D warnings`, and `cargo test --workspace` are green. 517 tests — 37 suites plus the cr-scrape suites (the Phase 8 perf gates: `reading_list_perf`, `view_perf`, `path_migration_perf`, `list_eval_perf`, `scan_perf`; the cr-ui probes are examples, not tests — the newest are `browserbar_probe` gate D (the column chooser: the open + the submenu-row gate `state_column_chooser_page_rows` reading all=92/a-b=16 through the popover's `visible-submenu` page + the toggle) and D2+D3 (the grouping: ungrouped (1,0) + the disabled action + toggle-groups; the D3 press-sequence machine drives the REAL group-header press paths — label select, single-click collapse/expand of one group, both double-click directions, the true counts on collapsed headers), `statusbar_probe` gates J/J2 (the scan lamp: frames, the visible-only animation, the Cancel-scan menu map + the abort hook), and `smartlistmenu_probe` (the smart-list editor: the rule rows carry the btEdit dropdown + the row menu; the enable states follow `cmEdit_Opening`; delete/cut run through the REAL action path; copy→paste inserts a clone after the row; a group payload is rejected at the cap while a value payload pastes; OK commits — the paste payload rides `probe_paste_payload` because the Xvfb clipboard read stalls, see the state block); `scanrefresh_probe` (gates A-J: the scan-land refresh, the re-scan idempotence, the mid-scan fill, the mid-scan background save to disk (D2), the abort partial landing, the re-scan completion, the mid-add exit save, the mid-RE-scan library liveness (G), the watch-rescan dedupe (H), the non-Library per-tick churn (I), the mid-scan remove/edit survival (J) — it REFUSES a non-isolated XDG pair and wipes it at start, the exit save pollutes it); the real-fixture parts skip in CI without the git-ignored `tests/testfiles/` files; the RAR round-trips skip without `CR_RAR_TESTS` + `rar`). CI runs on the `docker-runner-amd64` container runner (ADR-020) and is LIVE (it caught the 2026-09-09 group-gate flake — the runner + `comicrust-ci:latest` image work). The release tracks are `release.yaml` (rolling prerelease per push) and `tagged-release.yaml` (manual dispatch, stable release for an existing tag — ADR-021, 2026-09-03); `packaging.yaml` (Phase 11) attaches the source tarball, the Arch package, and the .deb to a tagged release. First real tagged-release run (v0.0.273, 2026-09-09) exposed a latent env bug: the "Publish to GitHub mirror" step lacked `TAG` (the Gitea publish succeeded; the mirror step died on `set -u`) — fixed in commit 05483da.
 - **GitHub mirror (2026-09-06):** remote `github` = `git@github.com:ScuttleSE/comicrust.git` — a TRUE mirror (identical SHAs; `.gitea/` rides along but is inert there, GitHub Actions only reads `.github/workflows/`). After every origin push also `git push github main`; stable tags get pushed manually once; the `rolling` tag is CI-managed on BOTH sides (each release run deletes/recreates it) — never push it by hand. Both release workflows also publish the built tarball + sha256 to GitHub Releases through `.gitea/publish_github_release.sh` (build once on Gitea, assets on both); it needs the Gitea secret `MIRROR_RELEASE_TOKEN` (GitHub PAT with Contents read/write on ScuttleSE/comicrust; Gitea forbids a `GITHUB_` prefix) — unset secret = the step skips with a notice.
 - **Phase 0 gate status:** byte-stable ComicDb.xml round-trip proven on all three synthetic fixtures AND the real-world database `tests/realworld/ComicDb.xml` (255 books, 584 KB, 2026-09-02, user-approved commit).
 - **Phase 2 gate status:** every saved smart list in the real-world DB (a) binds to the matcher registry, (b) renders to a `Match` query string that re-parses and re-renders byte-identically, and (c) evaluates to the SAME book sets the C# cached in `CacheStorage` (Never Read = all 255, Files to update = the 3 dirty books, Reading/Read = empty). Evidence: `crates/cr-engine/tests/realworld_query.rs`.
