@@ -75,6 +75,59 @@ Update this section at the **end of every work session**. The next agent must kn
 
 ### State summary
 
+- **LIVE READ RIBBONS + SORT SURVIVES SAME-LIST REFRESH (2026-09-11,
+  commit b4decdd; two user reports: "the green bookmark tag doesn't
+  update as I read — only after clicking away and back" and "while
+  scanning, sort by Series, open Properties on a scanned book, OK →
+  the sorting reverts to Not Sorted"):** ROOT CAUSE (both) — the
+  ItemView draws CLONED book snapshots (`s.view.book()`), and the
+  update paths never reached them. (1) Page turns updated the
+  session book + the library book (`library::record_page_change`)
+  but not the view's copies and never redrew — the ribbons froze
+  until the next full list re-evaluation (the C# ItemView draws the
+  LIVE book objects and repaints per book change; the port must
+  push). (2) `ItemView::set_books` cloned out the FILTER and the
+  GROUPER across the swap but NOT the sort chain — `ViewState::new`
+  reset it to Not Sorted on EVERY full refresh (Properties OK,
+  scan landing, duplicates, rating commits, F5); the scan was
+  incidental. FIXES: (a) `ViewState::update_read_state(id, current,
+  last)` (in-place field update, NO rebuild — a page turn never
+  re-sorts/re-filters; returns changed) + `ItemView::
+  update_read_state` (queue_draw on change only); (b) the reader
+  page-change hook payload grew to `Fn(usize, CrGuid, i32)` (page,
+  session book id, the resulting LastPageRead — captured right
+  after `book.set_current_page`; the `PageChangeFn` type alias
+  keeps clippy type-complexity quiet); (c) the shell handler calls
+  `item_view.update_read_state(...)` alongside the Pages/
+  status-bar updates (borrow-safe: the hook already documents "no
+  reader access inside the reader borrow"); (d) `ViewState::
+  set_sort_chain` + the carry in `ItemView::set_books` next to the
+  filter/grouper re-applies. SCOPE DECISIONS: a REAL list switch
+  still resets the sort (the recorded T14 per-list deviation — the
+  C# keeps the sort per list; the navigator `connect_selected` now
+  clears ONLY when the selected id CHANGED from a previous
+  non-None value, which ALSO fixes a found-through-the-gate latent
+  bug: the boot Library fill wiped the T14-restored sort 200 ms
+  after create — the workspace probe never saw it because its
+  second-shell checks read synchronously, before the debounced
+  selection). Tile mode does NOT draw the ribbons (user decision;
+  the C# does — recorded deviation). GATES: view_state unit tests
+  `update_read_state_touches_one_book_in_place` +
+  `set_books_keeps_the_sort_chain`; statusbar_probe grew D2 (the
+  turn reaches the grid copy — assert Some((1,1)); measured FAIL
+  at Some((0,0)) on the neutralized wiring); browserbar_probe grew
+  E2 (sort by Series → `refresh_after_data_change` → the chain
+  survives — assert; measured FAIL at None without the carry —
+  then a real list switch resets it, the deviation stays);
+  scanrefresh A-J / tabstrip / menubar re-run green. 516 tests;
+  fmt/clippy -D warnings green. USER TEST = rebuild; open an
+  unread comic, read to mid-book → the green ribbon slides down on
+  the thumbnail WHILE reading (the orange current-page ribbon
+  tracks too; Detail Read-% cells update as a side effect); close
+  the tab → the ribbon stays without clicking away. Sort by Series
+  mid-scan → Properties → OK → the sorting stays (every full
+  refresh keeps it now); switching LISTS still shows Not Sorted
+  (the recorded deviation).
 - **PHASE 13: ONE UNIFIED CONFIG FILE + DATA TABLES OUT OF CODE
   (2026-09-11, user ask "consolidate comicrust.ini + Config.xml + the
   plugin configs to one unified config file" + "data like the Imprint
