@@ -1,10 +1,10 @@
 # comicrust
 
-comicrust is a native Linux port of [ComicRack Community Edition](https://github.com/maforget/ComicRackCE), the Windows comic library manager and reader. It reads and writes the same library file and the same comic metadata as ComicRack CE. The goal is full feature parity with the original.
+comicrust is a native Linux port of [ComicRack Community Edition](https://github.com/maforget/ComicRackCE), the Windows comic library manager and reader. It reads and writes the same library database and the same comic metadata as ComicRack CE. The goal is to preserve ComicRack's core library, metadata, and reader behavior on Linux.
 
 ## Status
 
-The core application is complete and ready for daily use. Work continues on polish, packaging, and documentation. Expect occasional bugs. comicrust keeps a backup copy of the library database and can recover it. Still, make your own backups of `ComicDb.xml`.
+comicrust is a usable pre-release. The main workflows work, and validation continues. Expect occasional bugs. comicrust keeps a backup copy of the library database and can recover it. Still, make your own backups of `ComicDb.xml`.
 
 ## Features
 
@@ -16,7 +16,7 @@ The core application is complete and ready for daily use. Work continues on poli
 - Find duplicate books.
 - Edit the details of a book. Bulk-edit many books at once.
 - Track reading state: current page, read percentage, open count, rating, and tags.
-- The Quick Open view shows your recent and favorite lists at startup.
+- The Quick Open view shows your recent lists at startup.
 
 **Reader**
 
@@ -24,20 +24,18 @@ The core application is complete and ready for daily use. Work continues on poli
 - Manga mode (right-to-left). Page rotation, zoom, and pan.
 - Page turn transitions, paper textures, and background colors or images.
 - Bookmarks and a magnifier lens. Full screen mode. Undock the reader into its own window.
-- The full keyboard shortcut set of the original.
+- ComicRack-style keyboard shortcuts.
 
 **Files and metadata**
 
 - Read and write `ComicInfo.xml`, `MetronInfo.xml`, and ComicRack `ComicBook.xml` metadata.
-- comicrust stores embedded metadata as Linux file attributes (xattrs) where ComicRack used NTFS streams.
+- ComicRack's NTFS stream metadata maps to Linux file attributes (xattrs), with sidecar files as fallback.
 - Export comics to CBZ or CBT.
 - Create and restore backups of the library.
 
 **Scraping**
 
-- Scrape book details from [Comic Vine](https://comicvine.gamespot.com/api/) (the native port of the Comic Vine Scraper add-on; see ADR-031).
-- Set it up under File ▸ Comic Vine Scraper Settings… (or the toolbar button): register at comicvine.gamespot.com/api for a free API key and paste it in. Choose which fields each scrape fills, how overwrites behave, and optional KEY=VALUE advanced rules (ignored publishers and search terms, publisher aliases, imprint mappings).
-- Scraped books remember their series: a rescrape reuses the previous choice, auto-scrape matches covers by a perceptual hash, and the browser shows the scraped cover for fileless entries.
+- The Comic Vine Scraper is built in. Set it up under File ▸ Comic Vine Scraper Settings…: register at comicvine.gamespot.com/api for a free API key and paste it in.
 
 ## Supported formats
 
@@ -53,20 +51,9 @@ The core application is complete and ready for daily use. Work continues on poli
 
 Page images: JPEG, PNG, GIF, TIFF, WebP, and JPEG XL. HEIF, AVIF, and JPEG 2000 pages do not decode yet.
 
-Export produces CBZ or CBT archives. Export to PDF, DjVu, or CB7 is not available.
+To convert a comic to another format (for example `.cbr` to `.cbz`), use "Export…" with Target = "Replace source".
 
-To convert a comic to another format (for example `.cbr` to `.cbz`),
-use "Export…" with Target = "Replace source": the book re-points to
-the new file and the old one moves to the trash. "Delete original
-files after export" and "Add exported files to the library" cover the
-other conversions.
-
-Writing metadata into CBR/RAR archives uses the RARLAB `rar` command
-(not included; install it from your package repository or
-[rarlab.com](https://www.rarlab.com/download.htm), or point `CR_RAR`
-at the binary). Old RAR4 archives keep their format when updated.
-Without `rar`, edits stay in the library database and "Update Book
-File(s)" reports the error.
+Writing metadata into CBR/RAR archives needs the RARLAB `rar` command (see Requirements). Without it, edits stay in the library database.
 
 ## Install
 
@@ -79,7 +66,7 @@ makepkg -f
 sudo pacman -U comicrust-<version>-*-x86_64.pkg.tar.zst
 ```
 
-The package installs `/usr/bin/comicrust` with a desktop entry and app icon. Optional packages: `p7zip` (CB7/CBR reading), `djvulibre` (DjVu), `rar` (RAR write-back).
+The package installs `/usr/bin/comicrust` with a desktop entry and app icon.
 
 ### Debian package
 
@@ -89,7 +76,7 @@ Download `comicrust_<version>-1_amd64.deb` from the [Releases page](https://gith
 sudo apt install ./comicrust_<version>-1_amd64.deb
 ```
 
-The package installs `/usr/bin/comicrust` with a desktop entry and app icon. Optional packages: `p7zip-full` (CB7/CBR reading), `djvulibre-bin` (DjVu). The deb is built on Debian 13 (glibc 2.41) — older distros use the portable tarball below.
+The deb is built on Debian 13 (glibc 2.41). Older distros use the portable tarball below.
 
 ### Portable tarball
 
@@ -101,7 +88,7 @@ tar xzf comicrust-*-linux-amd64.tar.gz -C comicrust
 ./comicrust/comicrust
 ```
 
-Keep the `assets` folder next to the `comicrust` binary. It holds the icons, paper textures, and backgrounds.
+Keep the `assets` folder next to the `comicrust` binary.
 
 ### From source
 
@@ -113,12 +100,15 @@ cd comicrust
 cargo run -p cr-app --release
 ```
 
-Run from the repository root. The build then finds its assets in the source tree.## Requirements
+Run from the repository root. The build then finds its assets in the source tree.
+
+## Requirements
 
 - Linux with GTK 4.6 or newer (`libgtk-4-1`)
-- Optional: `7z` (p7zip) for CB7, CBR, and RAR archives
+- Optional: `7z` (p7zip) for CB7 and CBR archives
 - Optional: the pdfium library (`libpdfium.so`) for PDF files
 - Optional: the djvulibre tools for DjVu files
+- Optional: the RARLAB `rar` command for metadata write-back into CBR/RAR
 
 Debian or Ubuntu example:
 
@@ -140,9 +130,7 @@ comicrust runs as a single instance. A second start sends its files to the runni
 
 | Path | Contents |
 |---|---|
-| Path | Contents |
-|---|---|
-| `~/.config/comicrust/comicrust.toml` | the ONE config file: settings, engine/extended options, plugin settings, and the editable data tables |
+| `~/.config/comicrust/comicrust.toml` | the config file: settings, engine/extended options, plugin settings, and the editable data tables |
 | `~/.local/share/comicrust/ComicDb/ComicDb.xml` | the library database |
 | `~/.local/share/comicrust/Cache/` | thumbnail and image caches. Safe to delete. |
 
@@ -150,33 +138,40 @@ comicrust also writes a `ComicDb.xml.bak` copy next to the database and can reco
 
 ### The config file
 
-All configuration lives in one TOML file: `~/.config/comicrust/comicrust.toml`. The `[settings]` section carries the user preferences, `[extended]`/`[engine]` the boot switches and engine options, `[plugins.comic-vine-scraper]` the scraper settings, and `[data.imprints]` the imprint→publisher table the Comic Vine Scraper uses — the table is seeded on first run and hand-editable (add or change an imprint line, then restart). Command-line switches (like `-dark`) still override the file for that run. The file is read once at startup; the app rewrites it at its save points, so hand edits apply at the next start.
-
-**Every changeable key appears in the file** (the app seeds missing keys at their defaults), and every parameter is documented in [docs/config-reference.md](docs/config-reference.md).
+All configuration lives in one TOML file: `~/.config/comicrust/comicrust.toml`. The app seeds every changeable key at its default. Hand edits apply at the next start. Every parameter is documented in [docs/config-reference.md](docs/config-reference.md).
 
 ## Migrate your library from Windows ComicRack
 
-The database format is the same. Your comic files stay where they are.
+Put your ComicRack CE `ComicDb.xml` into `~/.local/share/comicrust/ComicDb/` before you start comicrust. Your comic files stay where they are.
 
-**The easy way** — run the migration helper from the release tarball (or your build):
+## Added in comicrust
 
-```sh
-cr-cli migrate /path/to/ComicRackCE-profile
-```
+Features that ComicRack and ComicRack CE do not have:
 
-Point it at your ComicRack profile folder (on Windows `%APPDATA%\cYo\ComicRack Community Edition`; copy it over if you run comicrust on another machine). The tool verifies the database, copies `ComicDb.xml` into `~/.local/share/comicrust/ComicDb/`, and maps the settings from `ComicRack.ini` that comicrust consumes. Use `--dry-run` to preview, `--out` for a custom target, `--force` to replace an existing database (the old file is kept as `ComicDb.xml.premigrate.bak`).
+- A dark mode toggle at runtime (Browse ▸ Dark Mode). The reader follows the theme.
+- A cache-folder chooser under Preferences ▸ Advanced.
+- An option to turn off automatic thumbnail generation (Preferences ▸ Advanced). File ▸ Generate Cover Thumbnails fills the gaps later.
+- Cover markers. A "?" marks books without metadata, a red "!" marks unreadable files, and an amber "≠" marks format mismatches. The tooltip gives the reason.
+- Scans that never stall on one file: a per-file time limit, a "Skip current file" command, one summary at the end, and problem verdicts you can list with smart lists.
+- Metadata write-back into CBR and RAR archives (needs the `rar` command).
+- Vertical column lines in Detail view.
+- One hand-editable configuration file with editable data tables (the Comic Vine imprint mappings).
+- A Windows-path migration dialog and a `cr-cli migrate` helper for ComicRack CE profiles.
+- The Comic Vine Scraper, ported natively from the add-on.
 
-**The manual way** — copy `ComicDb.xml` from `%APPDATA%\cYo\ComicRack Community Edition\ComicDb\` to `~/.local/share/comicrust/ComicDb/`.
+## Not ported from ComicRack CE
 
-**Windows paths.** A migrated database points at Windows locations (`C:\...`, `\\server\...`). comicrust detects them at startup and offers the migration dialog: pick the Linux folder each Windows root maps to, and the app re-homes every found book (missing ones become fileless entries that keep their metadata). The same dialog is available any time under File ▸ Migrate Windows Paths…. If the comic files themselves moved to different names, add the comic folders to the library instead — the scanner re-links moved books by file name and size.
+- Python plugins and scripts. Popular script features exist as built-in commands instead (for example "New Comic…" and "New fileless Book Series…").
+- The remote library server and the Android app sync.
+- Device sync.
+- Translations. The interface is English only.
+- Web comics (`.cbw`).
+- Export to PDF, DjVu, or CB7.
+- HEIF, AVIF, and JPEG 2000 pages.
+- The system tray icon.
+- The bottom-docked browser layout and the sidebar preview pane.
 
-## Differences from ComicRack CE
-
-- Python plugins do not run. Some popular script features exist as built-in commands instead (for example "New Comic…" and "New fileless Book Series…"). The Comic Vine Scraper is a native port (see ADR-031).
-- No remote server and no Android app sync.
-- English only. The translation files of the original are not loaded yet.
-- Web comics (`.cbw`) are not supported yet.
-- You cannot export to PDF, DjVu, or CB7.
+Other deferred differences are tracked in [docs/backlog.md](docs/backlog.md).
 
 ## For developers
 

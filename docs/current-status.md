@@ -20,6 +20,9 @@ still open.
 
 ## Verification record
 
+- Commit: the README rewrite (2026-09-11). Two lists: "Added in
+  comicrust" and "Not ported from ComicRack CE". The Windows migration
+  section is now one instruction.
 - Commit: the scan-robustness round (2026-09-11).
 - `cargo fmt --all` — green.
 - `cargo clippy --workspace --all-targets -- -D warnings` — green.
