@@ -2813,6 +2813,113 @@ impl ShellState {
         });
     }
 
+    /// "Fill Missing Issues" (Phase 15 T7): the Comic Vine cache
+    /// skeleton knows every issue of the volume, so the difference
+    /// against the issue numbers the library holds becomes fileless
+    /// books. Each new book carries the series, the volume, the issue
+    /// number, and the Comic Vine issue id, so a later scrape needs no
+    /// search.
+    ///
+    /// A library series names a Comic Vine volume only after a scrape.
+    /// With no id the command says so and stops, because a guess from
+    /// the series name would pick the wrong volume.
+    fn fill_missing_issues(self: &Rc<ShellState>) {
+        let ids = self.item_view.selection_ids();
+        if ids.is_empty() {
+            return;
+        }
+        let config = library::scraper_config();
+        let books: Vec<ComicBook> = {
+            let lib = library::session();
+            let l = lib.borrow();
+            ids.iter()
+                .filter_map(|id| l.database().books.iter().find(|b| b.id == *id).cloned())
+                .collect()
+        };
+        if books.is_empty() {
+            return;
+        }
+        // The series of the FIRST selected book decides the target.
+        // The C# context commands all read the selection this way.
+        let series = books[0].info.series.clone();
+        let volume = books[0].info.volume;
+        let of_series: Vec<&ComicBook> = books
+            .iter()
+            .filter(|b| b.info.series.eq_ignore_ascii_case(&series))
+            .collect();
+        let data: Vec<cr_scrape::bookdata::BookData> = of_series
+            .iter()
+            .map(|b| cr_scrape::bookdata::BookData::from_book(b, &config))
+            .collect();
+        let Some(volume_id) =
+            cr_scrape::cache::missing::volume_id_of(data.iter().map(|d| d.series_key.clone()))
+        else {
+            show_error_dialog(
+                &self.app,
+                "Fill Missing Issues",
+                &format!(
+                    "No book of \"{series}\" names a Comic Vine volume. Scrape one book of this series first, then run this command again."
+                ),
+            );
+            return;
+        };
+
+        // Every book of this series in the LIBRARY, not only the
+        // selection, decides what is owned.
+        let owned_numbers: Vec<String> = {
+            let lib = library::session();
+            let l = lib.borrow();
+            l.database()
+                .books
+                .iter()
+                .filter(|b| b.info.series.eq_ignore_ascii_case(&series))
+                .map(|b| b.info.number.clone())
+                .collect()
+        };
+
+        let state = Rc::downgrade(self);
+        crate::dialogs::missing_issues::show(
+            &self.window,
+            crate::dialogs::missing_issues::Request {
+                series: series.clone(),
+                volume,
+                volume_id,
+                owned_numbers,
+                api_key: config.api_key.clone(),
+            },
+            Box::new(move |picked| {
+                let mut new_ids = Vec::with_capacity(picked.len());
+                for issue in picked {
+                    let mut book = crate::dialogs::new_book_series::new_fileless_book();
+                    book.info.series = series.clone();
+                    book.info.number = issue.issue_number.clone();
+                    book.info.volume = volume;
+                    if let Some(name) = &issue.name {
+                        book.info.title = name.clone();
+                    }
+                    // The Comic Vine issue id, so a later scrape
+                    // resolves the book with no search.
+                    cr_scrape::bookdata::set_custom_value(
+                        &mut book,
+                        "comicvine_issue",
+                        &issue.issue_id.to_string(),
+                    );
+                    cr_scrape::bookdata::set_custom_value(
+                        &mut book,
+                        "comicvine_volume",
+                        &volume_id.to_string(),
+                    );
+                    library::insert_new_book(&book);
+                    new_ids.push(book.id);
+                }
+                if let Some(sh) = state.upgrade() {
+                    sh.refresh_view_from_list();
+                    sh.item_view.reselect(&new_ids);
+                }
+            }),
+        );
+    }
+
     fn open_bulk_editor(self: &Rc<ShellState>, books: Vec<ComicBook>) {
         let commit = self.editor_commit();
         crate::dialogs::bulk_edit::show(&self.window, books, commit);
@@ -5064,6 +5171,13 @@ fn show_context_menu(state: &std::rc::Weak<ShellState>, target: Option<CrGuid>, 
                         }
                     });
                 }
+                "fill-missing" => {
+                    // "Fill Missing Issues" (Phase 15 T7): the Comic
+                    // Vine cache knows every issue of the volume, so
+                    // the gap against the owned numbers becomes
+                    // fileless books.
+                    sh.fill_missing_issues();
+                }
                 "export" => {
                     // The export dialog over the selection (the C#
                     // `ConvertComic`).
@@ -5204,6 +5318,7 @@ fn show_context_menu(state: &std::rc::Weak<ShellState>, target: Option<CrGuid>, 
     add_item(&box_, "Rescan Book File(s)", "rescan");
     add_item(&box_, "Export…", "export");
     add_item(&box_, "Scrape from Comic Vine…", "scrape");
+    add_item(&box_, "Fill Missing Issues…", "fill-missing");
     add_item(&box_, "Remove from Library", "remove");
     add_item(&box_, "Properties…", "properties");
     popover.set_child(Some(&box_));

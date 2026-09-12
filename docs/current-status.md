@@ -6,7 +6,7 @@ Do not append a history. History lives in `docs/archive/` and in git.
 ## Active phase
 
 **Phase 15 — Comic Vine cache, rate budget, and missing-issue fill.**
-File: `docs/phases/phase-15.md`. Status: T1 to T4 done, T5 part done, T6 next.
+File: `docs/phases/phase-15.md`. Status: T1 to T4 and T7 done, T5 part done, T6 next.
 **Phase 16 — Comic Vine scraper quality of life** is planned and waits
 for Phase 15 (`docs/phases/phase-16.md`).
 Phase 13 is IMPLEMENTED, user test pending. Phases 0-8 and 10-12 are
@@ -25,6 +25,13 @@ its user test. The navigator tree-state and Detail column-toggle fixes
 
 ## Verification record
 
+- Commit: Phase 15 T7, "Fill Missing Issues" (2026-09-12). The book
+  menu gains a row that compares the cached issue list of the volume
+  against the issue numbers the library holds, then creates fileless
+  books for the ticked gaps. Each new book carries the Comic Vine
+  issue id, so a later scrape needs no search. A series that no book
+  ties to a volume says so and stops; it does not guess from the
+  series name. The number match ignores leading zeros and letter case.
 - Commit: Phase 15 T5 data layer, the per-resource request budget
   (2026-09-12). Every API call passes one `CvClient` chokepoint that
   writes to `request_log`, so the budget survives a restart. The
@@ -64,8 +71,8 @@ its user test. The navigator tree-state and Detail column-toggle fixes
   query found.
 - `cargo fmt --all` and `cargo clippy --workspace --all-targets -- -D
   warnings` — green.
-- `cargo test --workspace` — 634 pass (was 564; 70 new cache, MCL,
-  sweep, freshness, and budget gates).
+- `cargo test --workspace` — 649 pass (was 564; 85 new cache, MCL,
+  sweep, freshness, budget, and missing-issue gates).
 - Commit: navigator tree state + Detail column toggle (2026-09-12).
   The navigator expansion now persists in
   `ComicListItemFolder.Collapsed` (the C# `FillListTree` /

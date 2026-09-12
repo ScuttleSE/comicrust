@@ -81,7 +81,7 @@ series that the library does not hold.
 - [ ] T6 — the warm task. Off by default, budget-capped, cancellable,
       reported in Tasks. Acceptance: the task stops at the budget and on
       cancel.
-- [ ] T7 — "Fill Missing Issues". The command compares the owned issue
+- [x] T7 — "Fill Missing Issues". The command compares the owned issue
       numbers of a series against the skeleton, shows the gaps, and
       creates fileless books through `new_fileless_book()`. Each new
       book carries the series, the volume, the issue number, and the
@@ -93,7 +93,9 @@ series that the library does not hold.
 - `cargo fmt --all`, `cargo clippy --workspace --all-targets -- -D
   warnings`, `cargo test --workspace`.
 - Mock-server tests for the sweep, the freshness rule, and the budget.
-- A probe for the Fill Missing Issues dialog.
+- The Fill Missing Issues logic is gated headless in `cr-scrape`
+  (`cache::missing`). The dialog itself has no probe; the user test
+  covers it, as the navigator list command does in Phase 14.
 - User test: import an MCL file, scrape a large series twice, and
   confirm that the second scrape makes far fewer requests. Then fill the
   missing issues of one series and confirm the new fileless books.

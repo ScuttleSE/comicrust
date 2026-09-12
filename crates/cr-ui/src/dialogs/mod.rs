@@ -7,6 +7,7 @@ pub mod display_settings;
 pub mod export;
 pub mod import_list;
 pub mod list_editor;
+pub mod missing_issues;
 pub mod name_prompt;
 pub mod new_book_series;
 pub mod path_migration;
