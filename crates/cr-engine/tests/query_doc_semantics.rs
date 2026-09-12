@@ -224,3 +224,86 @@ fn the_script_fields_never_match() {
     );
     assert_eq!(hits(r#"Match [User Scripts] None"#, &books), 0);
 }
+
+#[test]
+fn writer_regex_dot_finds_books_that_have_an_author() {
+    // The guide's "books that have an author" recipe. `Writer` has no
+    // file-name fallback, so the result is the stored field.
+    let no_writer = blank();
+    let mut has_writer = blank();
+    has_writer.info.writer = "Alan Moore".into();
+    let mut unlinked = ComicBook {
+        file_path: String::new(),
+        ..blank()
+    };
+    unlinked.info.writer = "Grant Morrison".into();
+    let books = [no_writer, has_writer, unlinked];
+
+    assert_eq!(hits(r#"Match [Writer] regex ".""#, &books), 2);
+    assert_eq!(hits(r#"Match Not [Writer] regex ".""#, &books), 1);
+    // The trap the guide warns about: an empty value is not "is empty".
+    assert_eq!(hits(r#"Match [Writer] contains """#, &books), 3);
+}
+
+#[test]
+fn an_unlinked_book_also_passes_the_empty_file_tests() {
+    // The guide's "finding empty books" trap: a book with no file has
+    // a size of 0 and a page count of 0, so `[Is Linked] equals yes`
+    // is required to keep it out.
+    let unlinked = ComicBook {
+        file_path: String::new(),
+        ..blank()
+    };
+    let mut real = blank();
+    real.file_size = 40 * 1024 * 1024;
+    real.info.page_count = 24;
+    let books = [unlinked, real];
+
+    assert_eq!(hits(r#"Match [File Size] is smaller "0.01""#, &books), 1);
+    assert_eq!(hits(r#"Match [Page Count] equals "0""#, &books), 1);
+    assert_eq!(
+        hits(
+            r#"Match All { [Is Linked] equals yes, [File Size] is smaller "0.01" }"#,
+            &books
+        ),
+        0
+    );
+    assert_eq!(hits(r#"Match [Is Linked] equals no"#, &books), 1);
+}
+
+#[test]
+fn the_empty_book_table_queries_parse() {
+    // The "finding empty books" table holds its queries in table
+    // cells, which `query_doc.rs` does not scan. Pin them here.
+    let bare = blank();
+    let mut tagged = blank();
+    tagged.info.publisher = "Marvel".into();
+    let books = [bare, tagged];
+
+    // Each query parses, and the counts are the ones the table promises
+    // for these two books.
+    assert_eq!(hits(r#"Match [Is Linked] equals no"#, &books), 0);
+    assert_eq!(hits(r#"Match [Is Missing] equals yes"#, &books), 0);
+    assert_eq!(
+        hits(
+            r#"Match All { [Is Linked] equals yes, [File Size] is smaller "0.01" }"#,
+            &books
+        ),
+        2
+    );
+    assert_eq!(
+        hits(
+            r#"Match All { [Is Linked] equals yes, [Page Count] equals "0" }"#,
+            &books
+        ),
+        2
+    );
+    // The "no metadata" row: only the book with nothing stored.
+    assert_eq!(
+        hits(
+            r#"Match Not Match Any { [Writer] regex ".", [Publisher] regex ".", [Summary] regex ".", [Notes] regex "." }"#,
+            &books
+        ),
+        1
+    );
+}

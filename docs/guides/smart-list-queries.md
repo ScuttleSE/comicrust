@@ -378,6 +378,34 @@ Books with no summary text, using the regex trick for "is not empty".
 Match Not [Summary] regex "."
 ```
 
+#### Books that have an author
+
+There is no `Author` field. For a comic, the writing credit is `Writer`.
+The other credits are `Penciller`, `Inker`, `Colorist`, `Letterer`,
+`Editor` and `Translator`. `Writer` has no file-name fallback, so an
+empty result here is really empty.
+
+Books that HAVE a writer, which is the "the field is not empty" form:
+
+```text
+Match [Writer] regex "."
+```
+
+Books with NO writer:
+
+```text
+Match Not [Writer] regex "."
+```
+
+Books that have at least one credit of any kind:
+
+```text
+Match Any { [Writer] regex ".", [Penciller] regex ".", [Inker] regex ".", [Colorist] regex ".", [Letterer] regex ".", [Editor] regex "." }
+```
+
+Do not write `[Writer] contains ""` for this. An empty search value
+matches EVERY book. See the trap in the text-operator section above.
+
 Books the scan could not read:
 
 ```text
@@ -455,6 +483,44 @@ typing `In [...]`:
 
 ```text
 Match All { [Added] is in last days "365", [Read Percentage] is smaller "100", Match Any { [Series: Percent Read] is greater "50", [My Rating] is greater "3" }, Not [Is Missing] equals yes }
+```
+
+## Finding empty books
+
+"Empty" can mean four different things. Each one needs its own query.
+Decide which one you want first.
+
+| Meaning | Query |
+|---|---|
+| No file is attached. The book holds no path. | `Match [Is Linked] equals no` |
+| A path is stored, but the file is gone from disk. | `Match [Is Missing] equals yes` |
+| The file exists but is empty or almost empty. | `Match All { [Is Linked] equals yes, [File Size] is smaller "0.01" }` |
+| The file exists but holds no pages. | `Match All { [Is Linked] equals yes, [Page Count] equals "0" }` |
+| The book has no metadata. | `Match Not Match Any { [Writer] regex ".", [Publisher] regex ".", [Summary] regex ".", [Notes] regex "." }` |
+
+Three traps:
+
+- `File Size` counts in MEGABYTES. `0.01` is about 10 KB. A value of
+  `1` would catch every book under 1 MB, which is not what you want
+  here.
+- A book with no file has a size of 0 and a page count of 0. So it
+  passes the size test and the page test as well. The
+  `[Is Linked] equals yes` rule keeps those books out. It is necessary,
+  not decoration.
+- Do not test `Series` or `Title` for missing metadata. Both fall back
+  to the file name, so they are almost never empty. Use `Writer`,
+  `Publisher`, `Summary` or `Notes`, which read the stored field only.
+
+To find every kind of broken link in one list:
+
+```text
+Match Any { [Is Linked] equals no, [Is Missing] equals yes }
+```
+
+To find real files that are empty, of either kind:
+
+```text
+Match All { [Is Linked] equals yes, [Is Missing] equals no, Match Any { [File Size] is smaller "0.01", [Page Count] equals "0" } }
 ```
 
 ## Notes
