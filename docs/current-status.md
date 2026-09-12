@@ -17,6 +17,13 @@ user-tested on 2026-09-12 and are archived. Phase 9 is DEFERRED to
 Phase 16 T1 — add `cover_date` to `IssueRef` and to the issue queries,
 then derive the year and the month for the issue picker.
 
+Side task done on 2026-09-12, commit `a9873ac`: the smart-list guide now
+holds a "books that have an author" recipe and a "Finding empty books"
+section. No code change. The matcher still has no "is empty" operator,
+and none was added: a new operator index would read as "match nothing"
+in ComicRack (`ComicBookStringMatcher.cs:125`). `regex "."` is the
+supported form.
+
 Read `docs/phases/phase-16.md` first. It names the source of every
 feature: the `Fableton/comic-vine-scraper-ce` fork of the Comic Vine
 Scraper plugin. The port took its scraper from the UPSTREAM v1.0.102
