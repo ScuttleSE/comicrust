@@ -237,6 +237,81 @@ fn retry_failed_forces_a_reopen_of_known_bad_files() {
 }
 
 #[test]
+fn explicit_file_paths_scan_one_batch_and_force_the_retry() {
+    // The "Rescan Book File(s)" / "Scan List Contents" composition
+    // (ADR-036): ONE request of one-file items over the linked paths,
+    // with a one-shot forced retry. Only the given files walk — a
+    // sibling in the same folder stays out (the user's "rescan just
+    // these individual books").
+    let dir = temp_dir("explicit-paths");
+    let broken = dir.join("0-broken.cbz");
+    let good = dir.join("1-good.cbz");
+    write_broken_cbz(&broken);
+    write_good_cbz(&good);
+
+    let file_items = |paths: &[&Path]| -> Vec<ScanItem> {
+        paths
+            .iter()
+            .map(|p| ScanItem {
+                location: p.to_string_lossy().into(),
+                all: false,
+                remove_missing: false,
+                force_refresh_info: false,
+            })
+            .collect()
+    };
+    let now = CrDateTime::min_value();
+
+    // First pass: ONE file requested — the broken sibling in the same
+    // folder must not appear in the library.
+    let mut storage: Vec<ComicBook> = Vec::new();
+    let result = scan_sync(&mut storage, &file_items(&[&good]), &now);
+    assert_eq!(
+        result.added,
+        vec![good.to_string_lossy().to_string()],
+        "{result:?}"
+    );
+    assert_eq!(storage.len(), 1);
+
+    // Second pass over BOTH paths, forced retry: the broken file is
+    // scanned for the first time (added), the good one refreshes.
+    let limits = ScanLimits {
+        retry_failed: true,
+        ..Default::default()
+    };
+    let forced = |storage: &mut Vec<ComicBook>, paths: &[&Path]| {
+        cr_engine::scanner::scan_sync_with_control(
+            storage,
+            &file_items(paths),
+            &now,
+            &mut |_| {},
+            &cr_engine::scanner::ScanControl::inert(),
+            limits,
+            &mut |_| {},
+        )
+    };
+    let result = forced(&mut storage, &[&good, &broken]);
+    assert_eq!(result.added, vec![broken.to_string_lossy().to_string()]);
+    assert_eq!(result.updated, vec![good.to_string_lossy().to_string()]);
+    assert_eq!(
+        scan_status::status(book_for(&storage, &broken)),
+        Some(ScanStatus::Unreadable)
+    );
+
+    // Third pass, same paths, still forced: the known-bad skip does
+    // not apply, so the broken file re-reads and re-reports.
+    let result = forced(&mut storage, &[&good, &broken]);
+    assert!(result.skipped_known_bad.is_empty(), "{result:?}");
+    assert_eq!(result.updated.len(), 2, "{result:?}");
+    assert_eq!(
+        result.unreadable,
+        vec![broken.to_string_lossy().to_string()]
+    );
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
 fn skip_current_file_abandons_one_file_and_keeps_scanning() {
     let dir = temp_dir("skip");
     let first_file = dir.join("0-a.cbz");

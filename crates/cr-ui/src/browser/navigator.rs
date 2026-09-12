@@ -62,6 +62,10 @@ pub enum ListCommand {
     Rename,
     Delete,
     Import,
+    /// "Scan List Contents" (ADR-036, a port addition): scan the
+    /// distinct linked file paths of the selected list's books. Smart
+    /// lists and reading lists only.
+    ScanList,
 }
 
 type SelectedFn = Box<dyn Fn(&CrGuid, &str)>;
@@ -642,6 +646,14 @@ impl Navigator {
     /// Phase 8 T1 report). `ContextMenuStrip.Show(cursor)` parity.
     fn open_menu(self: &Rc<Self>, x: f64, y: f64) {
         let target = self.current_selection().map(|(id, _)| id);
+        // "Scan List Contents" exists only for the list kinds (the
+        // user's scope: smart lists and reading lists — ADR-036). The
+        // Library root, folders, and a missing node never show it.
+        let scanable = target
+            .as_ref()
+            .and_then(crate::library::find_list_item_any)
+            .is_some_and(|item| matches!(item, ComicListItem::Smart(_) | ComicListItem::IdList(_)));
+        crate::trace::trace(format!("nav menu target={target:?} scan-row={scanable}"));
         let popover = Popover::new();
         popover.set_has_arrow(false);
         let box_ = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
@@ -670,6 +682,9 @@ impl Navigator {
         // `miEditSmartList`: the C# routes smart lists, folders and
         // reading lists through their editors from this one item.
         add_item(&box_, "Edit…", ListCommand::Edit);
+        if scanable {
+            add_item(&box_, "Scan List Contents", ListCommand::ScanList);
+        }
         add_item(&box_, "New Folder…", ListCommand::NewFolder);
         add_item(&box_, "Rename…", ListCommand::Rename);
         add_item(&box_, "Delete", ListCommand::Delete);
@@ -689,6 +704,23 @@ impl Navigator {
     /// fires).
     pub fn probe_context_menu(self: &Rc<Self>, x: f64, y: f64) {
         self.context_menu_at(x, y);
+    }
+
+    /// The probe's menu-open path for the CURRENT selection (the
+    /// keyboard-menu shape: no pointer row overrides the selection).
+    /// The menu opens at the selected row's cell area.
+    pub fn probe_context_menu_for_selection(self: &Rc<Self>) {
+        let Some((id, _)) = self.current_selection() else {
+            return;
+        };
+        let text = id.to_d_string();
+        let first = self.store.iter_first();
+        let Some(iter) = first.and_then(|f| self.find_iter(Some(&f), &text)) else {
+            return;
+        };
+        let path = self.store.path(&iter);
+        let rect = self.view.cell_area(Some(&path), None::<&TreeViewColumn>);
+        self.open_menu(rect.x() as f64, rect.y() as f64);
     }
 
     /// The last context menu (the probe's arrow/position gate).

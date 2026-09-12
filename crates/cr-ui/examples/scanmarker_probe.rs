@@ -9,6 +9,9 @@
 //! - B. The two problem books carry their stored verdicts, so a smart
 //!   list can find them after the scan.
 //! - C. The grid draws exactly two scan markers.
+//! - E. The book context menu "Rescan Book File(s)" re-reads a
+//!   known-bad book (ADR-036): the verdict stays and the summary
+//!   reports the failure again (a known-bad skip shows no summary).
 //! - D. Repairing the broken file clears its marker on a rescan.
 //!
 //! Run: Xvfb + `cargo run --release -p cr-ui --example scanmarker_probe`
@@ -72,6 +75,37 @@ fn book_status(path: &std::path::Path) -> Option<ScanStatus> {
     let lib = lib.borrow();
     lib.find_book(&path.to_string_lossy())
         .and_then(scan_status::status)
+}
+
+fn book_id(path: &std::path::Path) -> Option<cr_core::xml::scalar::CrGuid> {
+    let lib = cr_ui::library::session();
+    let lib = lib.borrow();
+    lib.find_book(&path.to_string_lossy()).map(|b| b.id)
+}
+
+/// The menu row button by label (the popover holds a column of
+/// `menu_item_button`s).
+fn find_menu_button(popover: &gtk4::Popover, label: &str) -> Option<gtk4::Button> {
+    let child = popover.child()?;
+    let mut c = child.first_child();
+    while let Some(w) = c {
+        let downcast = w.clone().downcast::<gtk4::Button>();
+        if let Ok(b) = downcast {
+            if b.label().as_deref() == Some(label) {
+                return Some(b);
+            }
+        }
+        c = w.next_sibling();
+    }
+    None
+}
+
+/// The post-scan summary dialog, if one is up (the report fires when
+/// the scan's done callback runs).
+fn find_summary_dialog() -> Option<gtk4::MessageDialog> {
+    gtk4::Window::list_toplevels()
+        .into_iter()
+        .find_map(|w| w.downcast::<gtk4::MessageDialog>().ok())
 }
 
 fn main() {
@@ -162,29 +196,62 @@ fn main() {
                 );
                 println!("C ok: the grid draws {drawn} scan markers");
 
-                // D. Repair the broken file: the next scan clears the
-                //    marker with no user action.
-                write_good_cbz(&broken2);
+                // E. The book context menu "Rescan Book File(s)"
+                //    (ADR-036): right-click the broken book and run the
+                //    command. The forced re-read must RE-READ the
+                //    known-bad file (the summary dialog appears — a
+                //    skipped known-bad file would leave the summary
+                //    empty and show nothing), and the verdict stays.
+                let id = book_id(&broken2).expect("E FAIL: the broken book is in the library");
+                shell2.state_reselect(&[id]);
+                let (x, y) = shell2
+                    .state_book_center(&id)
+                    .expect("E FAIL: the broken book has a placed rect");
+                shell2.state_trigger_context(x, y);
+                let popover = shell2
+                    .state_context_popover()
+                    .expect("E FAIL: the book menu did not open");
+                let button = find_menu_button(&popover, "Rescan Book File(s)")
+                    .expect("E FAIL: the rescan menu row is missing");
+                button.emit_clicked();
                 let shell3 = shell2.clone();
                 let broken3 = broken2.clone();
-                cr_ui::library::add_folder_to_library(work, move |result| {
-                    assert!(result.unreadable.is_empty(), "D FAIL: {result:?}");
+                glib::timeout_add_local(std::time::Duration::from_millis(1500), move || {
                     assert_eq!(
                         book_status(&broken3),
-                        None,
-                        "D FAIL: a repaired file must clear its own marker"
+                        Some(ScanStatus::Unreadable),
+                        "E FAIL: the rescan must leave the verdict on the book"
                     );
-                    shell3.refresh_after_data_change();
-                    glib::timeout_add_local(std::time::Duration::from_millis(1200), move || {
-                        let drawn = shell3.state_grid_scan_marker_draws();
+                    let dialog = find_summary_dialog()
+                        .expect("E FAIL: the forced re-read must report the failure again (a known-bad skip shows no summary)");
+                    println!("E ok: the rescan re-read the known-bad book and reported it");
+                    dialog.destroy();
+
+                    // D. Repair the broken file: the next scan clears the
+                    //    marker with no user action.
+                    write_good_cbz(&broken3);
+                    let shell4 = shell3.clone();
+                    let broken4 = broken3.clone();
+                    cr_ui::library::add_folder_to_library(work, move |result| {
+                        assert!(result.unreadable.is_empty(), "D FAIL: {result:?}");
                         assert_eq!(
-                            drawn, 1,
-                            "D FAIL: only the mislabeled book should still be marked, got {drawn}"
+                            book_status(&broken4),
+                            None,
+                            "D FAIL: a repaired file must clear its own marker"
                         );
-                        println!("D ok: the repaired book cleared its marker ({drawn} left)");
-                        println!("PROBE DONE");
-                        std::process::exit(0);
+                        shell4.refresh_after_data_change();
+                        glib::timeout_add_local(std::time::Duration::from_millis(1200), move || {
+                            let drawn = shell4.state_grid_scan_marker_draws();
+                            assert_eq!(
+                                drawn, 1,
+                                "D FAIL: only the mislabeled book should still be marked, got {drawn}"
+                            );
+                            println!("D ok: the repaired book cleared its marker ({drawn} left)");
+                            println!("PROBE DONE");
+                            std::process::exit(0);
+                        });
                     });
+                    glib::ControlFlow::Break
                 });
                 glib::ControlFlow::Break
             });

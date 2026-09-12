@@ -4,8 +4,10 @@
 //! filters the tree, Expand/Collapse All flips the whole tree, the
 //! Pages Views drop OPENS through its anchor (the unparented-popover
 //! crash class), a radio row click switches the grid to Tile and the
-//! main click cycles it back, and the action state follows the PANEL
-//! (the source of truth).
+//! main click cycles it back, the action state follows the PANEL
+//! (the source of truth), and the navigator menu carries "Scan List
+//! Contents" only on smart and reading lists (F root, G smart, H
+//! reading list + H2 folder absence — ADR-036).
 //! Run: Xvfb + `cargo run -p cr-ui --example navpages_probe` with an
 //! isolated XDG (fresh DB → the default list tree).
 use cr_core::model::comic_book::ComicBook;
@@ -217,6 +219,18 @@ fn main() {
                             "F menu arrow={} rect={rect:?} (expect false / Some(40, 28, 1, 1))",
                             p.has_arrow()
                         );
+                        // The Library root never carries the scan row
+                        // (ADR-036: smart + reading lists only).
+                        let labels = popover_labels(&p);
+                        let has_scan = labels.iter().any(|l| l == "Scan List Contents");
+                        println!(
+                            "F scan-row present={has_scan} (expect false on the Library root)",
+                            has_scan = has_scan
+                        );
+                        assert!(
+                            !has_scan,
+                            "F FAIL: the Library menu shows Scan List Contents: {labels:?}"
+                        );
                     }
                     None => println!("F menu MISSING (no row at {x},{y}?)"),
                 }
@@ -224,7 +238,102 @@ fn main() {
             }
         });
 
-        glib::timeout_add_local(std::time::Duration::from_millis(4000), {
+        // G. "Scan List Contents" on a SMART list (ADR-036): the row
+        //    exists on a smart-list node and fires the ScanList
+        //    command.
+        glib::timeout_add_local(std::time::Duration::from_millis(3800), {
+            let shell = shell.clone();
+            let commands = Rc::clone(&commands);
+            move || {
+                let id = cr_ui::library::new_smart_list(None, "Probe Smart", "")
+                    .expect("G FAIL: the smart list insert");
+                shell
+                    .navigator()
+                    .refill(&cr_ui::library::comic_lists_snapshot());
+                shell.navigator().select_list(&id);
+                // The keyboard-menu shape: the pointer path would
+                // select the row under (40, 20) — the Library root —
+                // first (the C# `tvQueries_MouseDown`).
+                shell.navigator().probe_context_menu_for_selection();
+                let popover = shell
+                    .navigator()
+                    .last_menu_popover()
+                    .expect("G FAIL: the smart-list menu did not open");
+                let labels = popover_labels(&popover);
+                assert!(
+                    labels.iter().any(|l| l == "Scan List Contents"),
+                    "G FAIL: the smart-list menu lacks Scan List Contents: {labels:?}"
+                );
+                find_menu_button(&popover, "Scan List Contents")
+                    .expect("G FAIL: the scan row is not a button")
+                    .emit_clicked();
+                let fired = commands.borrow().iter().any(|c| c.contains("ScanList"));
+                assert!(fired, "G FAIL: the scan row did not fire ScanList");
+                println!("G ok: the smart-list menu carries Scan List Contents and fires it");
+                glib::ControlFlow::Break
+            }
+        });
+
+        // H. The same row on a READING list (IdList), and NOT on the
+        //    folder (the user's scope: smart + reading lists only).
+        glib::timeout_add_local(std::time::Duration::from_millis(4100), {
+            let shell = shell.clone();
+            let commands = Rc::clone(&commands);
+            move || {
+                let id = cr_ui::library::new_id_list(None, "Probe Reading");
+                shell
+                    .navigator()
+                    .refill(&cr_ui::library::comic_lists_snapshot());
+                shell.navigator().select_list(&id);
+                shell.navigator().probe_context_menu_for_selection();
+                let popover = shell
+                    .navigator()
+                    .last_menu_popover()
+                    .expect("H FAIL: the reading-list menu did not open");
+                assert!(
+                    popover_labels(&popover)
+                        .iter()
+                        .any(|l| l == "Scan List Contents"),
+                    "H FAIL: the reading-list menu lacks Scan List Contents"
+                );
+                find_menu_button(&popover, "Scan List Contents")
+                    .expect("H FAIL: the scan row is not a button")
+                    .emit_clicked();
+                assert!(
+                    commands
+                        .borrow()
+                        .iter()
+                        .filter(|c| c.contains("ScanList"))
+                        .count()
+                        >= 2,
+                    "H FAIL: the reading-list scan row did not fire ScanList"
+                );
+                println!("H ok: the reading-list menu carries Scan List Contents and fires it");
+
+                // The FOLDER never carries the row (the user's scope).
+                let folder = cr_ui::library::comic_lists_snapshot()
+                    .into_iter()
+                    .find(|i| matches!(i, cr_core::database::list_items::ComicListItem::Folder(_)));
+                if let Some(folder) = folder {
+                    let fid = folder.base().id;
+                    shell.navigator().select_list(&fid);
+                    shell.navigator().probe_context_menu_for_selection();
+                    let popover = shell
+                        .navigator()
+                        .last_menu_popover()
+                        .expect("H FAIL: the folder menu did not open");
+                    let labels = popover_labels(&popover);
+                    assert!(
+                        !labels.iter().any(|l| l == "Scan List Contents"),
+                        "H FAIL: the folder menu shows Scan List Contents: {labels:?}"
+                    );
+                    println!("H2 ok: the folder menu has no Scan List Contents");
+                }
+                glib::ControlFlow::Break
+            }
+        });
+
+        glib::timeout_add_local(std::time::Duration::from_millis(4400), {
             let app = app.clone();
             move || {
                 println!("PROBE COMPLETE");
@@ -234,4 +343,37 @@ fn main() {
         });
     });
     app.run();
+}
+
+/// The menu row labels of a navigator context popover (the child is
+/// one vertical Box of `menu_item_button`s).
+fn popover_labels(popover: &gtk4::Popover) -> Vec<String> {
+    let Some(child) = popover.child() else {
+        return Vec::new();
+    };
+    let mut labels = Vec::new();
+    let mut c = child.first_child();
+    while let Some(w) = c {
+        if let Ok(b) = w.clone().downcast::<gtk4::Button>() {
+            labels.push(b.label().unwrap_or_default().to_string());
+        }
+        c = w.next_sibling();
+    }
+    labels
+}
+
+/// The menu row button by label.
+fn find_menu_button(popover: &gtk4::Popover, label: &str) -> Option<gtk4::Button> {
+    let child = popover.child()?;
+    let mut c = child.first_child();
+    while let Some(w) = c {
+        let downcast = w.clone().downcast::<gtk4::Button>();
+        if let Ok(b) = downcast {
+            if b.label().as_deref() == Some(label) {
+                return Some(b);
+            }
+        }
+        c = w.next_sibling();
+    }
+    None
 }

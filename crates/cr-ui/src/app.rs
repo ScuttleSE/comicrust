@@ -522,6 +522,33 @@ fn run_list_command(
         ListCommand::Import => {
             import_list_dialog(parent, nav);
         }
+        ListCommand::ScanList => {
+            // The "Scan List Contents" command (ADR-036): evaluate the
+            // selected list the same way the browser fills it, and
+            // scan its distinct linked file paths as ONE request with
+            // a one-shot forced retry. The scan runs on the Book
+            // Scanner worker; this thread only gathers paths.
+            let Some(id) = target else {
+                return;
+            };
+            let Some((name, paths)) = library::list_book_paths(&id) else {
+                return;
+            };
+            if paths.is_empty() {
+                return;
+            }
+            let label = if name.trim().is_empty() {
+                "list contents".to_string()
+            } else {
+                name
+            };
+            let shell = BROWSER.with(|cell| cell.borrow().as_ref().map(|s| s.clone()));
+            library::scan_files(&paths, &label, true, move |_| {
+                if let Some(sh) = shell {
+                    sh.state_report_scan_problems();
+                }
+            });
+        }
     }
 }
 

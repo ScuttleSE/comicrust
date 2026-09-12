@@ -1917,6 +1917,13 @@ impl BrowserShell {
         self.state.item_view.probe_context(x, y);
     }
 
+    /// The post-scan problem summary (the app-level navigator
+    /// commands reach it; the shell-internal actions call it
+    /// directly).
+    pub fn state_report_scan_problems(&self) {
+        self.state.report_scan_problems();
+    }
+
     /// The selected book's rating in the library (the probe).
     pub fn state_selected_book_rating(&self) -> f32 {
         let ids = self.state.item_view.selection_ids();
@@ -4780,18 +4787,6 @@ fn layout_action_name(mode: PageLayoutMode) -> &'static str {
     }
 }
 
-/// The selection ids plus the right-clicked row when it is outside
-/// the selection (the context-menu targeting rule).
-fn selection_ids_with_target(sh: &ShellState, target: Option<CrGuid>) -> Vec<CrGuid> {
-    let mut ids = sh.item_view.selection_ids();
-    if let Some(id) = target {
-        if !ids.contains(&id) {
-            ids.push(id);
-        }
-    }
-    ids
-}
-
 /// The folder scan on a worker thread (the C# wraps the provider
 /// refresh in `AutomaticProgressDialog` with a Cancel button; the
 /// port keeps the UI free instead — the ADR-019 worker pattern).
@@ -4839,6 +4834,11 @@ fn scan_folder_async(state: &std::rc::Weak<ShellState>, path: String, include_su
     });
 }
 
+/// The book context menu (the C# `contextMenuItems`). Every command
+/// reads `item_view.selection_ids()`: the right-click already applied
+/// the C# `UpdateSelectionFromMouse` rule in `emit_context`, so the
+/// selection IS the target set (an unselected target replaced the
+/// selection; a selected target kept the multi-selection).
 fn show_context_menu(state: &std::rc::Weak<ShellState>, target: Option<CrGuid>, x: f64, y: f64) {
     let popover = gtk4::Popover::new();
     // No pointing arrow (the C# ContextMenuStrip shape).
@@ -4889,7 +4889,7 @@ fn show_context_menu(state: &std::rc::Weak<ShellState>, target: Option<CrGuid>, 
                 "edit" => {
                     // The bulk editor over the selection (the C#
                     // `MultipleComicBooksDialog`).
-                    let ids = selection_ids_with_target(&sh, target);
+                    let ids = sh.item_view.selection_ids();
                     if ids.is_empty() {
                         return;
                     }
@@ -4906,13 +4906,7 @@ fn show_context_menu(state: &std::rc::Weak<ShellState>, target: Option<CrGuid>, 
                     // worker; the batch collector reports when the
                     // last write lands (the C# queue parity — the UI
                     // never blocks on an archive rewrite).
-                    let selection = sh.item_view.view_state().selection_snapshot();
-                    let mut ids: Vec<CrGuid> = selection.into_iter().collect();
-                    if let Some(id) = target {
-                        if !ids.contains(&id) {
-                            ids.push(id);
-                        }
-                    }
+                    let ids = sh.item_view.selection_ids();
                     if ids.is_empty() {
                         return;
                     }
@@ -4958,16 +4952,30 @@ fn show_context_menu(state: &std::rc::Weak<ShellState>, target: Option<CrGuid>, 
                         );
                     }
                 }
+                "rescan" => {
+                    // The "Rescan Book File(s)" command (ADR-036): ONE
+                    // explicit request over the selected books' linked
+                    // files, with a one-shot forced retry — a known-bad
+                    // unchanged file re-reads (that is the point of the
+                    // command; the C# Refresh parity is the C# scan
+                    // without the port's known-bad skip).
+                    let paths = library::book_paths_for_ids(&sh.item_view.selection_ids());
+                    if paths.is_empty() {
+                        return;
+                    }
+                    let weak = std::rc::Rc::downgrade(&sh);
+                    library::scan_files(&paths, "selected book(s)", true, move |_| {
+                        if let Some(sh) = weak.upgrade() {
+                            sh.refresh_view_from_list();
+                            sh.sync_enabled();
+                            sh.report_scan_problems();
+                        }
+                    });
+                }
                 "export" => {
                     // The export dialog over the selection (the C#
                     // `ConvertComic`).
-                    let selection = sh.item_view.view_state().selection_snapshot();
-                    let mut ids: Vec<CrGuid> = selection.into_iter().collect();
-                    if let Some(id) = target {
-                        if !ids.contains(&id) {
-                            ids.push(id);
-                        }
-                    }
+                    let ids = sh.item_view.selection_ids();
                     if ids.is_empty() {
                         return;
                     }
@@ -5014,13 +5022,7 @@ fn show_context_menu(state: &std::rc::Weak<ShellState>, target: Option<CrGuid>, 
                     // The C# remove flow asks: remove from the list
                     // only, or from the Library, and whether to move
                     // the files to the trash.
-                    let selection = sh.item_view.view_state().selection_snapshot();
-                    let mut ids: Vec<CrGuid> = selection.into_iter().collect();
-                    if let Some(id) = target {
-                        if !ids.contains(&id) {
-                            ids.push(id);
-                        }
-                    }
+                    let ids = sh.item_view.selection_ids();
                     if ids.is_empty() {
                         return;
                     }
@@ -5085,10 +5087,9 @@ fn show_context_menu(state: &std::rc::Weak<ShellState>, target: Option<CrGuid>, 
                     confirm.present();
                 }
                 "properties" => {
-                    // The selection (plus the right-clicked row when
-                    // it is outside it) — the C# opens the dialog
-                    // over the selected books (prev/next when > 1).
-                    let ids = selection_ids_with_target(&sh, target);
+                    // The selection — the C# opens the dialog over the
+                    // selected books (prev/next when > 1).
+                    let ids = sh.item_view.selection_ids();
                     if ids.is_empty() {
                         return;
                     }
@@ -5108,6 +5109,7 @@ fn show_context_menu(state: &std::rc::Weak<ShellState>, target: Option<CrGuid>, 
     add_item(&box_, "Reveal in File Manager", "reveal");
     add_item(&box_, "Edit…", "edit");
     add_item(&box_, "Update Book File(s)", "update-file");
+    add_item(&box_, "Rescan Book File(s)", "rescan");
     add_item(&box_, "Export…", "export");
     add_item(&box_, "Scrape from Comic Vine…", "scrape");
     add_item(&box_, "Remove from Library", "remove");
@@ -5155,16 +5157,12 @@ fn show_folder_context_menu(
         .upgrade()
         .map(|sh| sh.window.clone())
         .expect("shell alive while the menu opens");
-    // The selected (plus the right-clicked) folder book paths.
-    let target_paths = |sh: &ShellState, target: Option<CrGuid>| -> Vec<(CrGuid, String)> {
+    // The selected folder book paths (the right-click already applied
+    // the C# selection rule in `emit_context` — the selection IS the
+    // target set).
+    let target_paths = |sh: &ShellState| -> Vec<(CrGuid, String)> {
         let view = sh.folders_view.view_state();
-        let selection: Vec<CrGuid> = view.selection_snapshot().into_iter().collect();
-        let mut ids = selection;
-        if let Some(id) = target {
-            if !ids.contains(&id) {
-                ids.push(id);
-            }
-        }
+        let ids: Vec<CrGuid> = view.selection_snapshot().into_iter().collect();
         view.books()
             .iter()
             .filter(|b| ids.contains(&b.id))
@@ -5191,7 +5189,7 @@ fn show_folder_context_menu(
                     }
                 }
                 "reveal" => {
-                    for (_, path) in target_paths(&sh, target) {
+                    for (_, path) in target_paths(&sh) {
                         if !path.is_empty() {
                             let _ = std::process::Command::new("xdg-open")
                                 .arg(Path::new(&path).parent().unwrap_or(Path::new("/")))
@@ -5202,7 +5200,7 @@ fn show_folder_context_menu(
                 }
                 "remove" => {
                     // The C# `RemoveBooks(ask: true)`.
-                    let paths = target_paths(&sh, target);
+                    let paths = target_paths(&sh);
                     if paths.is_empty() {
                         return;
                     }

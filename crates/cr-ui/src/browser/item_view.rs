@@ -814,6 +814,23 @@ impl ItemView {
         let s = state.borrow();
         let hit = hit_test(&s.layout, x, y).map(|d| s.view.book_id(d));
         drop(s);
+        // The C# right-click selection rule (`UpdateSelectionFromMouse`,
+        // ItemView.cs:3855-3900): a hit on an UNSELECTED item replaces
+        // the selection with it; a hit on a SELECTED item keeps the
+        // multi-selection. The menu commands then read the selection.
+        if let Some(id) = hit {
+            let already_selected = state.borrow().view.selection().contains(&id);
+            if !already_selected {
+                let width = state.borrow().config.view_width;
+                {
+                    let mut s = state.borrow_mut();
+                    s.view.select_one(id);
+                    s.relayout(width);
+                }
+                state.borrow().notify_selection();
+                canvas.queue_draw();
+            }
+        }
         let (wx, wy) = Self::toplevel_xy(canvas, x, y);
         crate::trace::trace(format!(
             "context: hit {} toplevel ({wx}, {wy}) — firing menu",

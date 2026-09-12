@@ -1,13 +1,20 @@
 //! Headless probe: the three user-test findings (Phase 6 round 1).
 //! Gates: the right-click context menu does NOT reset the grid
-//! scroll (the vadjustment value survives the menu open), Copy Page
-//! leaves a texture on the clipboard (read-back), and Export Page's
-//! accept path writes the file (the chooser driven through the real
-//! response path with a temp folder).
+//! scroll (the vadjustment value survives the menu open), the
+//! right-click selection rule (an unselected target replaces the
+//! selection; a selected target keeps the multi-selection — the C#
+//! `UpdateSelectionFromMouse`), Copy Page leaves a texture on the
+//! clipboard (read-back), and Export Page's accept path writes the
+//! file (the chooser driven through the real response path with a
+//! temp folder).
 //! Run: Xvfb + `cargo run -p cr-ui --example contextmenu_probe` with
 //! an isolated XDG.
 use gtk4::glib;
 use gtk4::prelude::*;
+use std::cell::RefCell;
+use std::rc::Rc;
+
+use cr_core::xml::scalar::CrGuid;
 
 fn main() {
     gtk4::init().expect("gtk init");
@@ -32,8 +39,11 @@ fn main() {
         std::mem::forget(shell.clone());
 
         // A. Seed 40 fileless books, show the browser workspace, and
-        //    select the Library list.
+        //    select the Library list. The first three ids feed the
+        //    selection gate.
+        let seeded: Rc<RefCell<Vec<CrGuid>>> = Rc::new(RefCell::new(Vec::new()));
         glib::timeout_add_local(std::time::Duration::from_millis(800), {
+            let seeded = seeded.clone();
             let shell = shell.clone();
             move || {
                 for n in 0..40 {
@@ -41,10 +51,17 @@ fn main() {
                     book.info.series = "Scroll Probe".into();
                     book.info.number = n.to_string();
                     cr_ui::library::insert_new_book(&book);
+                    if n < 3 {
+                        seeded.borrow_mut().push(book.id);
+                    }
                 }
                 let _ = shell.state_dispatch("win.view-library");
                 let lists = cr_ui::library::comic_lists_snapshot();
                 shell.navigator().select_list(&lists[0].base().id);
+                // The inserts need one re-evaluation to reach the grid
+                // (the debounced fill — scanmarker_probe does the same
+                // before reading draw counters).
+                shell.refresh_after_data_change();
                 glib::ControlFlow::Break
             }
         });
@@ -67,6 +84,57 @@ fn main() {
                         glib::ControlFlow::Break
                     }
                 });
+                glib::ControlFlow::Break
+            }
+        });
+
+        // S. The right-click selection rule (the C#
+        //    `UpdateSelectionFromMouse`): an unselected target
+        //    REPLACES the selection; a selected target KEEPS the
+        //    multi-selection. The menu commands read the selection.
+        glib::timeout_add_local(std::time::Duration::from_millis(2300), {
+            let shell = shell.clone();
+            let seeded = seeded.clone();
+            move || {
+                let ids = seeded.borrow().clone();
+                let (a, b, c) = (ids[0], ids[1], ids[2]);
+                // 1. A+B selected, right-click C (unselected) → only C.
+                shell.state_reselect(&[a, b]);
+                let (x, y) = shell
+                    .state_book_center(&c)
+                    .expect("S FAIL: book C has no placed rect");
+                shell.state_trigger_context(x, y);
+                let sel = shell.state_grid_selection_ids();
+                assert_eq!(
+                    sel.len(),
+                    1,
+                    "S FAIL: right-click on an unselected book must replace the selection, got {sel:?}"
+                );
+                assert_eq!(sel[0], c, "S FAIL: the selection must be the right-clicked book");
+                println!("S1 ok: right-click on an unselected book selects only it");
+
+                // 2. A+B selected, right-click B (selected) → A+B kept.
+                shell.state_reselect(&[a, b]);
+                let (x, y) = shell
+                    .state_book_center(&b)
+                    .expect("S FAIL: book B has no placed rect");
+                shell.state_trigger_context(x, y);
+                let sel = shell.state_grid_selection_ids();
+                assert_eq!(
+                    sel.len(),
+                    2,
+                    "S FAIL: right-click on a selected book must keep the multi-selection, got {sel:?}"
+                );
+                assert!(
+                    sel.contains(&a) && sel.contains(&b),
+                    "S FAIL: the selection must still hold A and B, got {sel:?}"
+                );
+                println!("S2 ok: right-click on a selected book keeps the selection");
+
+                // Close the menu so the later gates start clean.
+                if let Some(p) = shell.state_context_popover() {
+                    p.popdown();
+                }
                 glib::ControlFlow::Break
             }
         });

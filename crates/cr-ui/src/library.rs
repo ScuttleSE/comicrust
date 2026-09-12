@@ -19,8 +19,16 @@ use cr_engine::scanner::{
 use glib::ControlFlow;
 use gtk4::glib;
 
-/// One queued scan request: the location and the completion callback.
-type QueuedScan = (String, Box<dyn FnOnce(ScanResult)>);
+/// One queued scan request (the C# scan queue): the items to walk,
+/// the per-file limits, and the completion callback. A folder scan
+/// carries one recursive item; an explicit-path scan (`scan_files`)
+/// carries one file item per path.
+struct QueuedScan {
+    label: String,
+    items: Vec<ScanItem>,
+    limits: cr_engine::scanner::ScanLimits,
+    done: Box<dyn FnOnce(ScanResult)>,
+}
 
 /// The shell's per-batch view refresh (a Weak capture lives inside).
 type ScanViewHook = Box<dyn Fn(&[ComicBook])>;
@@ -550,6 +558,83 @@ pub fn add_folder_to_library(path: &Path, done: impl FnOnce(ScanResult) + 'stati
     scan_async(path.to_string_lossy().into_owned(), done);
 }
 
+/// Scans explicit file paths (the context-menu "Rescan Book File(s)"
+/// and the navigator "Scan List Contents", ADR-036): ONE request of
+/// one-file items, no folder walk. `force_retry` re-opens files that
+/// already carry an unchanged failure verdict, for this request only —
+/// the global `ScanRetryFailedFiles` keeps its meaning for folder
+/// scans. `done` runs on the UI thread with the result; an empty path
+/// list completes immediately with an empty result.
+pub fn scan_files(
+    paths: &[String],
+    label: &str,
+    force_retry: bool,
+    done: impl FnOnce(ScanResult) + 'static,
+) {
+    let mut limits = scan_limits();
+    limits.retry_failed |= force_retry;
+    let items: Vec<ScanItem> = distinct_paths(paths.iter().cloned())
+        .into_iter()
+        .map(|path| ScanItem {
+            location: path,
+            all: false,
+            remove_missing: false,
+            force_refresh_info: false,
+        })
+        .collect();
+    if items.is_empty() {
+        done(ScanResult::default());
+        return;
+    }
+    queue_scan(QueuedScan {
+        label: label.to_string(),
+        items,
+        limits,
+        done: Box::new(done),
+    });
+}
+
+/// Distinct non-empty paths, first-seen order. A fileless book (empty
+/// path) has no file to scan, and a file listed twice must be read
+/// once.
+fn distinct_paths<I>(paths: I) -> Vec<String>
+where
+    I: IntoIterator<Item = String>,
+{
+    let mut out: Vec<String> = Vec::new();
+    for path in paths {
+        if path.is_empty() || out.contains(&path) {
+            continue;
+        }
+        out.push(path);
+    }
+    out
+}
+
+/// The distinct non-empty file paths of the given ids, in id order
+/// (the book menu's "Rescan Book File(s)" target set).
+pub fn book_paths_for_ids(ids: &[CrGuid]) -> Vec<String> {
+    let lib = session();
+    let l = lib.borrow();
+    distinct_paths(ids.iter().filter_map(|id| {
+        l.database()
+            .books
+            .iter()
+            .find(|b| b.id == *id)
+            .map(|b| b.file_path.clone())
+    }))
+}
+
+/// The distinct non-empty file paths of one list's books, with the
+/// list's display name (the navigator's "Scan List Contents"). The
+/// evaluation is the same path the browser fills
+/// (`evaluate_books`).
+pub fn list_book_paths(id: &CrGuid) -> Option<(String, Vec<String>)> {
+    let (name, books) = evaluate_books(id)?;
+    let paths = distinct_paths(books.iter().map(|b| b.file_path.clone()));
+    Some((name, paths))
+}
+
 /// The scan worker (the C# `ComicScanner` runs its queue on a
 /// dedicated low-priority "Book Scanner" thread; a synchronous scan
 /// freezes the UI on real libraries). The worker scans a CLONE of the
@@ -564,14 +649,28 @@ pub fn add_folder_to_library(path: &Path, done: impl FnOnce(ScanResult) + 'stati
 /// / removed while the scan ran. Requests arriving mid-scan queue and
 /// run in arrival order.
 fn scan_async(location: String, done: impl FnOnce(ScanResult) + 'static) {
+    queue_scan(QueuedScan {
+        label: location.clone(),
+        items: vec![ScanItem {
+            location,
+            all: true,
+            remove_missing: false,
+            force_refresh_info: false,
+        }],
+        limits: scan_limits(),
+        done: Box::new(done),
+    });
+}
+
+/// Runs the request now, or queues it behind the in-flight scan (the
+/// C# scan queue: requests arriving mid-scan wait, one at a time).
+fn queue_scan(q: QueuedScan) {
     let in_flight = SCAN_IN_FLIGHT.with(|cell| *cell.borrow());
     if in_flight {
-        SCAN_QUEUE.with(|q| {
-            q.borrow_mut().push((location, Box::new(done)));
-        });
+        SCAN_QUEUE.with(|queue| queue.borrow_mut().push(q));
         return;
     }
-    start_scan_worker(location, done);
+    start_scan_worker(q);
 }
 
 /// Worker → pump messages: incremental new-book batches and the
@@ -599,12 +698,13 @@ fn scan_limits() -> cr_engine::scanner::ScanLimits {
 
 /// Takes the book storage, runs the scan on a worker thread, and
 /// pumps batches + the result back onto the UI thread.
-fn start_scan_worker(location: String, done: impl FnOnce(ScanResult) + 'static) {
+fn start_scan_worker(q: QueuedScan) {
+    let location = q.label.clone();
     let library = session();
     let books = {
         let lib = library.borrow_mut();
         SCAN_IN_FLIGHT.with(|cell| *cell.borrow_mut() = true);
-        SCAN_LOCATION.with(|cell| *cell.borrow_mut() = location.clone());
+        SCAN_LOCATION.with(|cell| *cell.borrow_mut() = q.label.clone());
         // A CLONE, not a take: the database keeps the full library
         // while the scan runs. The take emptied it — a re-scan sends
         // zero batches (only NEW files fire `on_new`), so every list
@@ -614,12 +714,8 @@ fn start_scan_worker(location: String, done: impl FnOnce(ScanResult) + 'static) 
         // mid-scan side effects.
         lib.database().books.clone()
     };
-    let items = [ScanItem {
-        location: location.clone(),
-        all: true,
-        remove_missing: false,
-        force_refresh_info: false,
-    }];
+    let items = q.items;
+    let limits = q.limits;
     let now = CrDateTime::now();
     let (tx, rx) = std::sync::mpsc::channel::<ScanWorkerMsg>();
     // The per-file progress (the C# `currentLocation` per walked
@@ -657,7 +753,7 @@ fn start_scan_worker(location: String, done: impl FnOnce(ScanResult) + 'static) 
                     let _ = ptx.send(f.to_string_lossy().into_owned());
                 },
                 &control,
-                scan_limits(),
+                limits,
                 &mut |book: &ComicBook| {
                     batch.push(book.clone());
                     if batch.len() >= SCAN_BATCH_SIZE {
@@ -692,7 +788,7 @@ fn start_scan_worker(location: String, done: impl FnOnce(ScanResult) + 'static) 
 
     // The once-completion callback rides an Option (the pump closure
     // is FnMut — it cannot move `done` out).
-    let mut done = Some(done);
+    let mut done = Some(q.done);
     let mut seen_files: usize = 0;
     glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
         // Drain the progress channel first: the last walked file
@@ -761,11 +857,14 @@ fn start_scan_worker(location: String, done: impl FnOnce(ScanResult) + 'static) 
                     if let Some(d) = done.take() {
                         d(*result);
                     }
-                    // The queued requests run one at a time, in arrival
-                    // order (the C# scan queue).
-                    let next = SCAN_QUEUE.with(|q| q.borrow_mut().pop());
-                    if let Some((location, done_next)) = next {
-                        start_scan_worker(location, done_next);
+                    // The queued requests run one at a time. KNOWN DEFECT: `pop`
+                    // takes the LAST request, so the queue runs in reverse
+                    // arrival order despite the doc comments — the
+                    // out-of-scope LIFO fix (phase 14 keeps each new
+                    // command at ONE request, so it does not hit this).
+                    let next = SCAN_QUEUE.with(|queue| queue.borrow_mut().pop());
+                    if let Some(next) = next {
+                        start_scan_worker(next);
                     }
                     return ControlFlow::Break;
                 }
@@ -2249,5 +2348,18 @@ mod tests {
         let db = vec![a, edited];
         let merged = merge_scan_storage(worker, &db, &HashSet::new(), &touched);
         assert_eq!(merged[1].info.title, "Edited After Pump");
+    }
+
+    #[test]
+    fn distinct_paths_drop_empties_and_duplicates() {
+        // The explicit-scan target set: a fileless book (empty path)
+        // has no file, and a file listed twice must be read once.
+        let paths = distinct_paths([
+            "a.cbz".to_string(),
+            String::new(),
+            "a.cbz".to_string(),
+            "b.cbz".to_string(),
+        ]);
+        assert_eq!(paths, vec!["a.cbz".to_string(), "b.cbz".to_string()]);
     }
 }
