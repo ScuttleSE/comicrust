@@ -2,8 +2,13 @@ name: Rolling release
 
 # Builds the app and republishes the single "rolling" release on every
 # push to main (and on manual dispatch). The version is
-# <major>.<minor>.<build> where build = total commits on main; bump
-# major/minor by editing the Version step below.
+# <major>.<minor>.<commits since the newest stable tag> (ADR-043). The
+# major and minor are READ from that tag, so nothing here needs a hand
+# bump: tagging v0.2.0 makes the next build 0.2.1 on its own.
+#
+# On a push that lands exactly ON a stable tag the job SKIPS its build
+# and publish steps and ends green, because the tagged release already
+# publishes that commit. That is a no-op, not a failure.
 #
 # The release is marked prerelease and its assets (binary tarball +
 # sha256) are replaced on every run. Publishing needs a token with
@@ -65,6 +70,14 @@ jobs:
         # TOTAL commit count, not a per-release counter. Treating one of
         # them as a counter origin would restart the numbering far below
         # what has already shipped.
+        #
+        # When HEAD sits exactly on a stable tag there is nothing to
+        # build: the tagged release already covers that commit. That is
+        # a NO-OP, not an error, so this step sets skip=true and every
+        # later step is gated on it. The job then ends GREEN with its
+        # steps skipped. It must never `exit 1` for this: a red run for
+        # an expected state fires failure notifications and teaches
+        # everyone to ignore the dashboard.
         run: |
           set -euo pipefail
           last="$(git tag -l --merged HEAD \
@@ -79,18 +92,21 @@ jobs:
           else
               count="$(git rev-list --count "${last}..HEAD")"
               if [ "$count" -eq 0 ]; then
-                  echo "HEAD is exactly $last: a rolling build here would" >&2
-                  echo "collide with the stable release. Nothing to do." >&2
-                  exit 1
+                  echo "HEAD is exactly $last, which the tagged release"
+                  echo "already publishes. Skipping the rolling build."
+                  echo "skip=true" >> "$GITHUB_OUTPUT"
+                  exit 0
               fi
               base="${last#v}"
               version="${base%.*}.${count}"
               echo "newest stable tag: $last ($count commits since)"
           fi
+          echo "skip=false" >> "$GITHUB_OUTPUT"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "rolling version: $version"
 
       - name: Build
+        if: steps.version.outputs.skip != 'true'
         env:
           # MUST be set HERE, not only on Package: cr-ui/build.rs reads
           # VERSION at COMPILE time to stamp the About dialog.
@@ -98,6 +114,7 @@ jobs:
         run: cargo build --release --locked -p cr-app
 
       - name: Package
+        if: steps.version.outputs.skip != 'true'
         env:
           VERSION: ${{ steps.version.outputs.version }}
         run: |
@@ -115,6 +132,7 @@ jobs:
           echo "packaged: $asset"
 
       - name: Publish
+        if: steps.version.outputs.skip != 'true'
         env:
           # Prefer a PAT secret; fall back to the default token.
           TOKEN: ${{ secrets.RELEASE_TOKEN || secrets.GITHUB_TOKEN }}
@@ -125,6 +143,7 @@ jobs:
         run: bash .gitea/publish_release.sh rolling "$VERSION" true true
 
       - name: Publish to GitHub mirror
+        if: steps.version.outputs.skip != 'true'
         env:
           # GitHub PAT with Contents read/write on the mirror repo.
           # Unset = the step skips with a notice.
