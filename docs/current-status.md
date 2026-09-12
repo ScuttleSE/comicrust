@@ -119,16 +119,39 @@ its user test. The navigator tree-state and Detail column-toggle fixes
 
 Run in this order. Each one needs a rebuild first.
 
-1. **Navigator tree state** (2026-09-12) — expand some navigator
+1. **Comic Vine cache** (Phase 15, ADR-037, ADR-038) — rebuild first.
+   a. File ▸ Import Comic Vine MCL File…: pick an `.mcl` snapshot. The
+      report gives the volume and issue counts and the snapshot date.
+   b. File ▸ Update Comic Vine Cache: the sweep runs from that date to
+      today and reports its pages. Run it again: it says the cache is
+      current.
+   c. Scrape a book of a large series, then scrape a second book of the
+      SAME series. The second scrape must be much faster, and the
+      budget readout at the bottom of the scrape window must fall by
+      far fewer than the first.
+   d. Set `CACHE_RATE_LIMIT=3` in the scraper advanced settings and
+      scrape again: the window says "budget spent, resuming at HH:MM"
+      instead of stalling with no word.
+   e. File ▸ Warm Comic Vine Cache: it reports the volumes read, the
+      volumes already fresh, and the requests spent. Run it again at
+      once: almost every volume must be "already fresh".
+   f. Right-click a book of a scraped series ▸ Fill Missing Issues…:
+      the gap list appears with issue numbers, years, and titles. Tick
+      some and press Create Books: fileless books appear in the grid,
+      already selected, with the right series, volume, and number.
+      Right-click a book of a series that was NEVER scraped: the
+      command says no book names a Comic Vine volume, and it creates
+      nothing.
+2. **Navigator tree state** (2026-09-12) — expand some navigator
    folders, close the app, and start it again: the same folders come
    back expanded. Collapse them, restart: they come back collapsed. A
    brand-new folder starts expanded.
-2. **Detail column add and remove** (2026-09-12) — switch to Detail,
+3. **Detail column add and remove** (2026-09-12) — switch to Detail,
    right-click the column header, and uncheck "Opened": the column
    goes away at once and the row is unchecked at the next open. Check
    it again from the "All" page and from its letter page: it comes
    back. Restart: the choice holds.
-3. **Right-click rescans** (Phase 14, ADR-036) — rebuild, then select
+4. **Right-click rescans** (Phase 14, ADR-036) — rebuild, then select
    one timed-out book and run the book menu's "Rescan Book File(s)": the
    book re-reads on the Book Scanner worker, a known-bad unchanged file
    re-reads too, and a still-bad file re-marks with a fresh verdict plus
@@ -140,7 +163,7 @@ Run in this order. Each one needs a rebuild first.
    file paths and reports once. The row must NOT appear on the Library
    root or on a folder. The Files view right-click follows the same
    selection rule.
-4. **Scan robustness and problem markers** (ADR-034, ADR-035) — rescan
+5. **Scan robustness and problem markers** (ADR-034, ADR-035) — rescan
    the real library. It must run to the end with no stall: the files
    that used to take minutes each now take under a second. Books that
    could not be read carry a red "!" chip at the top left of the cover;
@@ -153,35 +176,35 @@ Run in this order. Each one needs a rebuild first.
    and its chip disappears without any other action. While a scan runs,
    click the scan lamp and use "Skip current file" (the same row is in
    Tasks): the scan moves on and the skipped book is marked "Skipped".
-5. **Double-click open crash fix** (commit `140ba4c`) — double-click a book
+6. **Double-click open crash fix** (commit `140ba4c`) — double-click a book
    in the grid. The reader opens with no abort. Read some pages, then close
    the tab. The green read-ribbon moves in the grid without a second click.
-6. **Phase 13 config unification** — the full steps are in
+7. **Phase 13 config unification** — the full steps are in
    `docs/phases/phase-13.md`.
-7. **Config seed + reference doc** (commit `d5c52b3`) — the first start
+8. **Config seed + reference doc** (commit `d5c52b3`) — the first start
    writes every `[extended]` and `[engine]` key at its default. Set
    `DatabaseBackgroundSaving = 60`, restart, and the database saves every
    minute mid-scan. Delete a key line, restart, and the key returns at its
    default. Every key you look up is in `docs/config-reference.md`.
-8. **Mid-scan background save** (commit `d9262a4`) — start a scan of a large
+9. **Mid-scan background save** (commit `d9262a4`) — start a scan of a large
    folder. Within about 10 minutes `~/.local/share/comicrust/ComicDb/
    ComicDb.xml` appears on disk and holds the books found so far.
-9. **Smart-list rule delete and clipboard operations** — open a smart list
+10. **Smart-list rule delete and clipboard operations** — open a smart list
    editor. Every rule row and group carries a small ▾ button at the right
    edge with New Rule, New Group, Delete, Cut, Copy, Paste, Move Up, and
    Move Down, with honest enable states. Delete removes a rule. Copy and
    Paste inserts a clone. A Query round trip stays clean. Test the
    Cut/Copy/Paste clipboard round trip on a real desktop, because Xvfb
    stalls those reads.
-10. **"No metadata" tag** — books whose scan found no metadata carry a small
+11. **"No metadata" tag** — books whose scan found no metadata carry a small
    dark "?" chip at the top left of the cover in Thumbnail and Tile view. A
    Properties edit to a key field, or a Comic Vine scrape, removes the chip.
-11. **Scan and open metadata import** — rescan a folder that holds magazines
+12. **Scan and open metadata import** — rescan a folder that holds magazines
    with `ComicInfo.xml`. New files carry series, title, writer, and page
    metadata. Files added through Open carry it too. Properties on a
    non-library comic shows its metadata. Books already imported as empty
    stay empty (the user declined a backfill).
-12. **Detail view round** (commits `c21086a`, `f20a690`) — switch the browser
+13. **Detail view round** (commits `c21086a`, `f20a690`) — switch the browser
    to Detail. After ONE slider drag the text size and row rhythm match
    ComicRack. The saved `ItemRowHeight` 48 artifact must be dragged off the
    slider once; the status-bar slider re-ranges 12..48. Rows alternate grey
@@ -190,7 +213,7 @@ Run in this order. Each one needs a rebuild first.
    the column header: the 13 defaults, All (alphabetical), then A-B, C-F,
    G-O, P-R, S, T-Y. Every row toggles from every page. The smart-list
    editor rule rows pick the type from the All and letter menus.
-13. **Group, lamp, and thumbnail batch** — Group by Series in Thumbnail,
+14. **Group, lamp, and thumbnail batch** — Group by Series in Thumbnail,
     Tile, and Details view gives header strips with true counts. A
     single-click on the disclosure triangle collapses or expands ONE group. A
     double-click collapses or expands ALL groups. The Views menu row does the
@@ -198,18 +221,18 @@ Run in this order. Each one needs a rebuild first.
     scan lamp animates while a scan runs, and a click on it opens the "Cancel
     scan" menu. Preferences ▸ Advanced ▸ Thumbnails off shows placeholders
     until File ▸ Generate Cover Thumbnails backfills them.
-14. **Scan control** — Tasks ▸ Abort Scanning on a real scan. Then a
+15. **Scan control** — Tasks ▸ Abort Scanning on a real scan. Then a
     graceful exit mid-scan: close the window or press Ctrl+C. The app exits
     promptly, and a restart shows the books found so far. (The progressive
     fill and the no-glitch append passed on 2026-09-10.)
-15. **Export freeze fix** — re-run a CBR to CBZ export. The window stays
+16. **Export freeze fix** — re-run a CBR to CBZ export. The window stays
     responsive and the progress ticks.
-16. **Write-back fix** — edit a property of a CBR or CB7 book, then run
+17. **Write-back fix** — edit a property of a CBR or CB7 book, then run
     Update Book File(s). The UI stays responsive, the write lands, and the
     Files-to-update list clears.
-17. **Phase 10 install and duplicate steps** — the steps at the tail of
+18. **Phase 10 install and duplicate steps** — the steps at the tail of
     `docs/archive/phases/phase-10.md`.
-18. **Phase 11 install steps** — the steps at the tail of
+19. **Phase 11 install steps** — the steps at the tail of
     `docs/archive/phases/phase-11.md`.
 
 ## Blockers
