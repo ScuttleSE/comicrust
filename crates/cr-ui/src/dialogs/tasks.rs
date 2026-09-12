@@ -66,6 +66,8 @@ pub const ABORT_UPDATE: &str = "Abort Update";
 pub const ABORT_EXPORT: &str = "Abort Export";
 /// The scan row (`scanComicAbortText`, QueueManager.cs:679).
 pub const ABORT_SCAN: &str = "Abort Scanning";
+/// The Comic Vine cache row (NO C# item — ADR-037, ADR-038).
+pub const ABORT_CV_CACHE: &str = "Abort Comic Vine Cache Job";
 
 /// The snapshot sources (`QueueManager.GetQueues` inputs).
 pub struct TaskSnapshot<'a> {
@@ -76,6 +78,8 @@ pub struct TaskSnapshot<'a> {
     pub write_files: Vec<String>,
     /// The scan walk location while a scan runs (None = idle).
     pub scan_location: Option<String>,
+    /// The Comic Vine cache job line while one runs (None = idle).
+    pub cv_job: Option<String>,
 }
 
 /// The claimed-item rule: the first queued item of an ACTIVE queue is
@@ -249,6 +253,14 @@ pub fn pending_tasks(snapshot: &TaskSnapshot) -> Vec<PendingTasks> {
             Some(ABORT_SCAN),
         );
     }
+    if let Some(job) = &snapshot.cv_job {
+        push(
+            "Comic Vine cache",
+            vec![job.clone()],
+            true,
+            Some(ABORT_CV_CACHE),
+        );
+    }
     out
 }
 
@@ -355,6 +367,7 @@ pub fn show_tasks_dialog(parent: &impl IsA<gtk4::Window>, pool: Arc<ImagePool>) 
                 scan_location: crate::library::is_scanning()
                     .then(crate::library::scan_location)
                     .filter(|l| !l.is_empty()),
+                cv_job: crate::library::cv_job().map(|j| j.text()),
             };
             let tasks = pending_tasks(&snapshot);
             drop(lib_ref);
@@ -428,6 +441,7 @@ pub fn show_tasks_dialog(parent: &impl IsA<gtk4::Window>, pool: Arc<ImagePool>) 
                 .clear();
             crate::library::clear_pending_writes();
             crate::library::abort_scan();
+            crate::library::abort_cv_job();
             refresh();
         });
     }
@@ -518,6 +532,7 @@ mod tests {
             queues: &queues,
             write_files: vec!["/books/b.cbz".into()],
             scan_location: Some("/watch/root".into()),
+            cv_job: Some("Updating the Comic Vine cache \u{2014} page 3 of 53".into()),
         };
         let blocks = pending_tasks(&snapshot);
         let groups: Vec<&str> = blocks.iter().map(|b| b.group).collect();
@@ -533,6 +548,7 @@ mod tests {
                 "Write Info",
                 "Export Books",
                 "Scanning",
+                "Comic Vine cache",
             ]
         );
         // The page rows carry the 1-based index and the file name.
@@ -561,8 +577,15 @@ mod tests {
         // Scanning" → `Scanner.Stop(clearQueue: true)`).
         assert_eq!(blocks[8].tasks[0].text, "Scanning '/watch/root'");
         assert_eq!(blocks[8].abort, Some(ABORT_SCAN));
-        // The abortable set: cover + write + scan (export is empty).
-        assert_eq!(total_pending(&blocks), 3 + 1 + 1 + 1);
+        // The Comic Vine cache row (NO C# item — ADR-037, ADR-038).
+        assert_eq!(
+            blocks[9].tasks[0].text,
+            "Updating the Comic Vine cache \u{2014} page 3 of 53"
+        );
+        assert_eq!(blocks[9].abort, Some(ABORT_CV_CACHE));
+        // The abortable set: cover + write + scan + cache (export is
+        // empty).
+        assert_eq!(total_pending(&blocks), 3 + 1 + 1 + 1 + 1);
     }
 
     #[test]
@@ -587,6 +610,7 @@ mod tests {
             queues: &queues,
             write_files: Vec::new(),
             scan_location: None,
+            cv_job: None,
         };
         let blocks = pending_tasks(&snapshot);
         let create = blocks

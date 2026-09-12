@@ -44,50 +44,73 @@ you could not tell.
 
 You need a Comic Vine API key and an `.mcl` snapshot file.
 
+Every long job in this test shows a **Comic Vine lamp** in the status
+bar at the bottom right. Hover it for the live line. Click it for
+**Cancel Comic Vine cache job**. The same line is a **Comic Vine
+cache** row in **Tasks** (Ctrl+Shift+T).
+
 1. **File ▸ Import Comic Vine MCL File…** Pick the `.mcl` file.
-   *Expect:* a report with the volume count, the issue count, the
-   snapshot date, and the number of skipped lines.
+   *Expect:* the lamp appears, and its tooltip counts up
+   ("Importing an MCL file — 12000 volumes, 84000 issues"). Then a
+   report with the volume count, the issue count, the snapshot date,
+   and the skipped lines.
    *Report:* the four numbers.
 2. **File ▸ Update Comic Vine Cache.**
-   *Expect:* a sweep from the snapshot date to today, then a report of
-   the pages, issues, and volumes, and "The window is complete."
-   *Report:* the counts and how long it took.
-3. Run **Update Comic Vine Cache** again at once.
+   *Expect:* the lamp shows "Updating the Comic Vine cache — page 3
+   of 53", and the page number climbs about once a second. The Tasks
+   window shows the same line. Then a report of the pages, issues, and
+   volumes, and "The window is complete."
+   *Report:* the counts, and whether the page number moved.
+3. Start **Update Comic Vine Cache** again, and while it runs click
+   the lamp ▸ **Cancel Comic Vine cache job**.
+   *Expect:* the job stops within a few seconds and reports "The run
+   stopped early." Run the command once more: it resumes near the page
+   it stopped at, NOT from page 1.
+4. Run **Update Comic Vine Cache** until it completes, then run it
+   again.
    *Expect:* "The cache is already current for today."
-4. Scrape ONE book of a large series (a series with more than 50
-   issues). Watch the bottom of the scrape window.
+5. Start **Update Comic Vine Cache**, and while it runs pick **File ▸
+   Warm Comic Vine Cache**.
+   *Expect:* it refuses with "A Comic Vine cache job is already
+   running."
+6. Scrape ONE book of a large series (more than 50 issues).
+   *Expect:* a **Comic Vine Scraper** window appears with a line per
+   book, a progress line, a budget readout, and a Cancel button. This
+   window was invisible until now.
    *Report:* the "budget N/200 per hour" number before and after.
-5. Scrape a SECOND book of the SAME series.
+7. Scrape a SECOND book of the SAME series.
    *Expect:* it is much faster, and the budget falls by far fewer.
    *Report:* the budget numbers again.
-6. Open **Preferences ▸ Comic Vine Scraper**, and put
+8. Open **Preferences ▸ Comic Vine Scraper**, and put
    `CACHE_RATE_LIMIT=3` on its own line in the advanced settings box.
-   Press OK. Scrape a book.
-   *Expect:* after three requests the window says "budget spent,
-   resuming at HH:MM". It must NOT stall with no word, and it must NOT
-   fail with an error burst.
+   Press OK. Run **Update Comic Vine Cache**.
+   *Expect:* after three requests the lamp tooltip and the Tasks row
+   read "the issues budget is spent, resuming at HH:MM". The job does
+   NOT look frozen and it does NOT fail in a burst. Cancel it from the
+   lamp.
    **Then remove that line and press OK again.**
-7. **File ▸ Warm Comic Vine Cache.**
-   *Expect:* a report of volumes looked at, read, already fresh,
-   failed, and requests spent.
+9. **File ▸ Warm Comic Vine Cache.**
+   *Expect:* the lamp reads "volume 12 of 340 (25 requests spent)".
+   Then a report of volumes looked at, read, already fresh, failed,
+   and requests spent.
    *Report:* the five numbers.
-8. Run **Warm Comic Vine Cache** again at once.
-   *Expect:* almost every volume is "already fresh", and the requests
-   spent is near zero.
-9. Right-click a book of a series you scraped ▸ **Fill Missing
-   Issues…**.
-   *Expect:* a list of the issues the library does not hold, each with
-   its number, its year, and its title. Some rows are ticked.
-10. Untick a few rows, then press **Create Books**.
+10. Run **Warm Comic Vine Cache** again at once.
+    *Expect:* almost every volume is "already fresh", and the requests
+    spent is near zero.
+11. Right-click a book of a series you scraped ▸ **Fill Missing
+    Issues…**.
+    *Expect:* a list of the issues the library does not hold, each with
+    its number, its year, and its title. Some rows are ticked.
+12. Untick a few rows, then press **Create Books**.
     *Expect:* new fileless books appear in the grid, already selected,
     with the right series, volume number, and issue number. Only the
     ticked rows became books.
-11. Right-click a book of a series you have NEVER scraped ▸ **Fill
+13. Right-click a book of a series you have NEVER scraped ▸ **Fill
     Missing Issues…**.
     *Expect:* a message that no book names a Comic Vine volume. No book
     is created.
-
----
+14. Check that every report dialog in this test appeared **in front of**
+    the main window, not behind it.
 
 ## 2. Navigator tree state (2026-09-12)
 

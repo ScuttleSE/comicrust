@@ -79,16 +79,24 @@ series that the library does not hold.
       the ceiling, and the scrape window shows the remaining budget and
       the resume time.
 - [x] T6 — the warm task. Off by default, budget-capped, cancellable.
-      Acceptance: the task stops at the budget and on cancel.
-      DEVIATION: the task reports in a completion dialog, not in the
-      Tasks window. A Tasks queue row needs a new `PendingTasks`
-      source; it is on `docs/backlog.md`.
+      Acceptance: the task stops at the budget and on cancel. The
+      status-bar lamp and the Tasks window "Comic Vine cache" row
+      carry every cache job (2026-09-12, the Phase 15a round); the
+      earlier completion-dialog deviation is CLOSED.
 - [x] T7 — "Fill Missing Issues". The command compares the owned issue
       numbers of a series against the skeleton, shows the gaps, and
       creates fileless books through `new_fileless_book()`. Each new
       book carries the series, the volume, the issue number, and the
       Comic Vine issue id. Acceptance: a series with no known Comic Vine
       id asks the user to pick the volume.
+
+## Visibility
+
+Every cache job shows a Comic Vine lamp in the status bar, with its
+live line in the tooltip and a "Cancel Comic Vine cache job" row on
+click. The same line is a "Comic Vine cache" row in the Tasks window,
+which the "Abort all User Tasks" button also stops. One job runs at a
+time: two sweeps would race on the one `sweep_state` row.
 
 ## Commands
 

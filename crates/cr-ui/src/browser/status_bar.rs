@@ -127,6 +127,11 @@ struct Inner {
     scan_menu: Popover,
     scan_cancel: gtk4::Button,
     scan_skip: gtk4::Button,
+    /// The Comic Vine cache lamp (ADR-037, ADR-038). NO C# item: the
+    /// plugin had no cache, so it had no activity light.
+    lamp_cv: gtk4::Button,
+    cv_menu: Popover,
+    cv_cancel: gtk4::Button,
     book: Label,
     page_button: gtk4::Button,
     page_label: Label,
@@ -140,6 +145,7 @@ struct Inner {
     on_lamp_click: RefCell<Option<LampFn>>,
     on_cancel_scan: RefCell<Option<LampFn>>,
     on_skip_scan_file: RefCell<Option<LampFn>>,
+    on_cancel_cv_job: RefCell<Option<LampFn>>,
     on_page_click: RefCell<Option<LampFn>>,
     on_slider_change: RefCell<Option<SliderFn>>,
 }
@@ -247,7 +253,11 @@ impl StatusBar {
         lamp_scan.set_has_frame(false);
         lamp_scan.set_child(Some(&scan_image));
         lamp_scan.set_tooltip_text(Some("A scan is running..."));
-        for lamp in [&lamp_export, &lamp_write, &lamp_scan] {
+        let lamp_cv = lamp_button(
+            "comicvinescraper.png",
+            "A Comic Vine cache job is running...",
+        );
+        for lamp in [&lamp_export, &lamp_write, &lamp_scan, &lamp_cv] {
             lamp.add_css_class("status-panel");
             widget.append(lamp);
         }
@@ -275,6 +285,24 @@ impl StatusBar {
         menu_box.append(&cancel);
         scan_menu.set_child(Some(&menu_box));
         scan_menu.set_parent(&lamp_scan);
+
+        // The Comic Vine cache lamp's menu. The Tasks window has no
+        // per-row abort, so this is where a targeted cancel lives.
+        let cv_menu = Popover::new();
+        cv_menu.set_position(gtk4::PositionType::Top);
+        cv_menu.set_autohide(true);
+        let cv_box = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+        cv_box.set_margin_top(4);
+        cv_box.set_margin_bottom(4);
+        cv_box.set_margin_start(2);
+        cv_box.set_margin_end(2);
+        let cv_cancel = crate::widgets::menu_item_button("Cancel Comic Vine cache job");
+        cv_cancel.set_tooltip_text(Some(
+            "Stop the job. What it already wrote to the cache stays, and a sweep resumes where it stopped",
+        ));
+        cv_box.append(&cv_cancel);
+        cv_menu.set_child(Some(&cv_box));
+        cv_menu.set_parent(&lamp_cv);
 
         // 3. The data-source light (the local XML database is always
         //    connected — the C# `DataSourceConnected.png` state).
@@ -339,6 +367,9 @@ impl StatusBar {
                 scan_menu,
                 scan_cancel: cancel,
                 scan_skip: skip,
+                lamp_cv,
+                cv_menu,
+                cv_cancel,
                 book,
                 page_button,
                 page_label,
@@ -349,6 +380,7 @@ impl StatusBar {
                 on_lamp_click: RefCell::new(None),
                 on_cancel_scan: RefCell::new(None),
                 on_skip_scan_file: RefCell::new(None),
+                on_cancel_cv_job: RefCell::new(None),
                 on_page_click: RefCell::new(None),
                 on_slider_change: RefCell::new(None),
             }),
@@ -392,6 +424,23 @@ impl StatusBar {
             self.inner.scan_skip.connect_clicked(move |_| {
                 inner.scan_menu.popdown();
                 if let Some(f) = inner.on_skip_scan_file.borrow().as_ref() {
+                    f();
+                }
+            });
+        }
+        {
+            let inner = Rc::clone(&self.inner);
+            self.inner.lamp_cv.connect_clicked(move |_| {
+                if !inner.cv_menu.is_visible() {
+                    inner.cv_menu.popup();
+                }
+            });
+        }
+        {
+            let inner = Rc::clone(&self.inner);
+            self.inner.cv_cancel.connect_clicked(move |_| {
+                inner.cv_menu.popdown();
+                if let Some(f) = inner.on_cancel_cv_job.borrow().as_ref() {
                     f();
                 }
             });
@@ -459,11 +508,20 @@ impl StatusBar {
 
     /// `UpdateActivityTimerTick`'s lamp visibility. The scan lamp
     /// also starts/stops its frame animation with the visibility.
-    pub fn update_lamps(&self, scan: bool, write: bool, export: bool) {
+    pub fn update_lamps(&self, scan: bool, write: bool, export: bool, cv_job: bool) {
         self.inner.lamp_scan.set_visible(scan);
         self.inner.lamp_write.set_visible(write);
         self.inner.lamp_export.set_visible(export);
+        self.inner.lamp_cv.set_visible(cv_job);
         self.sync_scan_anim(scan);
+    }
+
+    /// The Comic Vine cache lamp's tooltip carries the live job line,
+    /// so a hover answers "what is it doing?" with no click.
+    pub fn set_cv_job_text(&self, text: Option<&str>) {
+        self.inner
+            .lamp_cv
+            .set_tooltip_text(Some(text.unwrap_or("A Comic Vine cache job is running...")));
     }
 
     /// The scan-lamp frame timer: runs ONLY while the lamp shows
@@ -518,6 +576,12 @@ impl StatusBar {
         *self.inner.on_skip_scan_file.borrow_mut() = Some(Box::new(f));
     }
 
+    /// The Comic Vine cache lamp's cancel row
+    /// (`library::abort_cv_job` through the shell hook).
+    pub fn connect_cancel_cv_job<F: Fn() + 'static>(&self, f: F) {
+        *self.inner.on_cancel_cv_job.borrow_mut() = Some(Box::new(f));
+    }
+
     pub fn connect_page_click<F: Fn() + 'static>(&self, f: F) {
         *self.inner.on_page_click.borrow_mut() = Some(Box::new(f));
     }
@@ -557,6 +621,7 @@ impl StatusBar {
             "scan" => self.inner.lamp_scan.is_visible(),
             "write" => self.inner.lamp_write.is_visible(),
             "export" => self.inner.lamp_export.is_visible(),
+            "cv" => self.inner.lamp_cv.is_visible(),
             _ => false,
         }
     }
@@ -588,6 +653,24 @@ impl StatusBar {
 
     pub fn cancel_menu_visible(&self) -> bool {
         self.inner.scan_menu.is_visible()
+    }
+
+    /// The probe path: the REAL Comic Vine cache lamp click.
+    pub fn click_cv_lamp(&self) {
+        self.inner.lamp_cv.emit_clicked();
+    }
+
+    /// The probe path: the REAL "Cancel Comic Vine cache job" click.
+    pub fn click_cancel_cv_job(&self) {
+        self.inner.cv_cancel.emit_clicked();
+    }
+
+    pub fn cv_menu_visible(&self) -> bool {
+        self.inner.cv_menu.is_visible()
+    }
+
+    pub fn cv_job_tooltip(&self) -> Option<String> {
+        self.inner.lamp_cv.tooltip_text().map(|t| t.to_string())
     }
 
     pub fn locked_visible(&self) -> bool {

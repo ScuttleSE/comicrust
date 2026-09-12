@@ -248,11 +248,11 @@ let _shell = shell.clone();
             let bar = bar.clone();
             move || {
                 cr_ui::library::set_export_active(true);
-                bar.update_lamps(cr_ui::library::is_scanning(), cr_ui::library::writes_pending() > 0, true);
+                bar.update_lamps(cr_ui::library::is_scanning(), cr_ui::library::writes_pending() > 0, true, false);
                 let export_on = bar.lamp_visible("export");
                 let scan_on = bar.lamp_visible("scan");
                 cr_ui::library::set_export_active(false);
-                bar.update_lamps(false, false, false);
+                bar.update_lamps(false, false, false, false);
                 let export_off = bar.lamp_visible("export");
                 println!(
                     "G export-on={export_on} scan-on={scan_on} export-off={export_off} (expect true/false/false)"
@@ -270,10 +270,10 @@ let _shell = shell.clone();
             let bar = bar.clone();
             move || {
                 let frames = bar.scan_frame_count();
-                bar.update_lamps(true, false, false);
+                bar.update_lamps(true, false, false, false);
                 let visible_on = bar.lamp_visible("scan");
                 let anim_on = bar.scan_anim_running();
-                bar.update_lamps(false, false, false);
+                bar.update_lamps(false, false, false, false);
                 let anim_off = bar.scan_anim_running();
                 println!(
                     "J frames={frames} scan-on={visible_on} anim-on={anim_on} anim-off={anim_off} (expect 4/true/true/false)"
@@ -286,7 +286,7 @@ let _shell = shell.clone();
             move || {
                 // The lamp must SHOW for the popover to map (an
                 // invisible parent cannot host a mapped popover).
-                bar.update_lamps(true, false, false);
+                bar.update_lamps(true, false, false, false);
                 let fired = std::rc::Rc::new(std::cell::Cell::new(false));
                 let flag = fired.clone();
                 bar.connect_cancel_scan(move || flag.set(true));
@@ -308,6 +308,79 @@ let _shell = shell.clone();
                                     "J2 menu-open={menu_open} menu-closed={} cancel-fired={} (expect true/true/true)",
                                     !bar.cancel_menu_visible(),
                                     fired.get(),
+                                );
+                                glib::ControlFlow::Break
+                            }
+                        });
+                        glib::ControlFlow::Break
+                    }
+                });
+                glib::ControlFlow::Break
+            }
+        });
+
+        // K. The Comic Vine cache lamp (ADR-037, ADR-038): it
+        //    follows the job slot, its tooltip carries the live job
+        //    line, and its menu row fires the abort hook. NO C# item.
+        glib::timeout_add_local(std::time::Duration::from_millis(8600), {
+            let bar = bar.clone();
+            move || {
+                let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let claimed = cr_ui::library::start_cv_job(
+                    cr_ui::library::CvJobKind::Sweep,
+                    std::sync::Arc::clone(&cancel),
+                );
+                // A second job must be refused while one runs.
+                let second = cr_ui::library::start_cv_job(
+                    cr_ui::library::CvJobKind::Warm,
+                    std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+                );
+                cr_ui::library::set_cv_job_progress("page 3 of 53".into(), 300, 5300);
+                bar.update_lamps(false, false, false, cr_ui::library::cv_job_active());
+                bar.set_cv_job_text(
+                    cr_ui::library::cv_job().map(|j| j.text()).as_deref(),
+                );
+                let lamp_on = bar.lamp_visible("cv");
+                let tooltip = bar.cv_job_tooltip().unwrap_or_default();
+                println!(
+                    "K claimed={claimed} second-refused={} lamp-on={lamp_on} tooltip={tooltip:?} (expect true/true/true/\"...page 3 of 53\")",
+                    !second
+                );
+
+                // The menu row reaches the worker's cancel flag.
+                let fired = std::rc::Rc::new(std::cell::Cell::new(false));
+                let flag = fired.clone();
+                bar.connect_cancel_cv_job(move || {
+                    cr_ui::library::abort_cv_job();
+                    flag.set(true);
+                });
+                bar.click_cv_lamp();
+                glib::timeout_add_local(std::time::Duration::from_millis(250), {
+                    let bar = bar.clone();
+                    let cancel = std::sync::Arc::clone(&cancel);
+                    let fired = fired.clone();
+                    move || {
+                        let menu_open = bar.cv_menu_visible();
+                        bar.click_cancel_cv_job();
+                        glib::timeout_add_local(std::time::Duration::from_millis(150), {
+                            let bar = bar.clone();
+                            let cancel = std::sync::Arc::clone(&cancel);
+                            let fired = fired.clone();
+                            move || {
+                                let worker_sees_it =
+                                    cancel.load(std::sync::atomic::Ordering::Relaxed);
+                                cr_ui::library::end_cv_job();
+                                bar.update_lamps(
+                                    false,
+                                    false,
+                                    false,
+                                    cr_ui::library::cv_job_active(),
+                                );
+                                println!(
+                                    "K2 menu-open={menu_open} menu-closed={} cancel-fired={} worker-flag={worker_sees_it} lamp-off={} (expect true/true/true/true/true)",
+                                    !bar.cv_menu_visible(),
+                                    fired.get(),
+                                    !bar.lamp_visible("cv"),
                                 );
                                 glib::ControlFlow::Break
                             }

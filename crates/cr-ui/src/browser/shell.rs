@@ -1536,6 +1536,9 @@ impl BrowserShell {
         // The scan lamp's "Cancel scan" row (the C# aborts through
         // the Tasks dialog's scan row — `Scanner.Stop(clearQueue)`).
         state.status_bar.connect_cancel_scan(library::abort_scan);
+        state
+            .status_bar
+            .connect_cancel_cv_job(library::abort_cv_job);
         // "Skip current file": abandon the file in flight, keep the
         // scan running (the manual escape hatch; the scanner's own
         // per-file deadline is the unattended path).
@@ -1570,7 +1573,10 @@ impl BrowserShell {
                         library::is_scanning(),
                         library::writes_pending() > 0,
                         library::export_in_flight(),
+                        library::cv_job_active(),
                     );
+                    sh.status_bar
+                        .set_cv_job_text(library::cv_job().map(|j| j.text()).as_deref());
                 }
             });
         }
@@ -2925,6 +2931,84 @@ impl ShellState {
         );
     }
 
+    /// Runs one Comic Vine cache job on a worker thread, and makes it
+    /// visible while it runs (ADR-037, ADR-038).
+    ///
+    /// The job publishes over a channel and the MAIN thread writes the
+    /// shared state, because a worker that writes a thread-local
+    /// writes its own copy. That is the shape the scan uses.
+    ///
+    /// The job claims the single cache-job slot. It is released on
+    /// every exit, including a failure and a cancel.
+    fn run_cv_job<T: Send + 'static>(
+        self: &Rc<ShellState>,
+        kind: library::CvJobKind,
+        heading: &'static str,
+        cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+        work: impl FnOnce(std::sync::mpsc::Sender<CvProgressMsg>) -> T + Send + 'static,
+        finish: impl Fn(&ApplicationWindow, T) + 'static,
+    ) {
+        if !library::start_cv_job(kind, cancel) {
+            show_failure_dialog(
+                &self.window,
+                heading,
+                "A Comic Vine cache job is already running. Wait for it, or cancel it from the cache lamp in the status bar.",
+            );
+            return;
+        }
+
+        let (result_tx, result_rx) = std::sync::mpsc::channel::<T>();
+        let (progress_tx, progress_rx) = std::sync::mpsc::channel::<CvProgressMsg>();
+        std::thread::Builder::new()
+            .name(format!("Comic Vine {kind:?}"))
+            .spawn(move || {
+                let outcome = work(progress_tx);
+                let _ = result_tx.send(outcome);
+            })
+            .expect("spawn the Comic Vine cache worker");
+
+        let report_window = self.window.clone();
+        let state = Rc::downgrade(self);
+        glib::timeout_add_local(std::time::Duration::from_millis(200), move || {
+            // Drain the progress first, so the last line the user sees
+            // matches the work that landed.
+            while let Ok(message) = progress_rx.try_recv() {
+                match message {
+                    CvProgressMsg::Step {
+                        detail,
+                        done,
+                        total,
+                    } => library::set_cv_job_progress(detail, done, total),
+                    CvProgressMsg::Waiting {
+                        resource,
+                        resume_at,
+                    } => library::set_cv_job_progress(
+                        format!(
+                            "the {resource} budget is spent, resuming at {}",
+                            local_clock(resume_at)
+                        ),
+                        0,
+                        0,
+                    ),
+                }
+            }
+            let Ok(outcome) = result_rx.try_recv() else {
+                return glib::ControlFlow::Continue;
+            };
+            library::end_cv_job();
+            if let Some(sh) = state.upgrade() {
+                sh.status_bar.update_lamps(
+                    library::is_scanning(),
+                    library::writes_pending() > 0,
+                    library::export_in_flight(),
+                    library::cv_job_active(),
+                );
+            }
+            finish(&report_window, outcome);
+            glib::ControlFlow::Break
+        });
+    }
+
     /// "Import Comic Vine MCL File…" (ADR-038): an `.mcl` snapshot
     /// seeds the cache skeleton with no API request. The read runs on
     /// a worker thread, because a full snapshot is large.
@@ -2937,71 +3021,62 @@ impl ShellState {
             );
             return;
         };
-        let report_window = self.window.clone();
+        let state = Rc::downgrade(self);
         open_mcl_dialog(&self.window, move |path| {
+            let Some(sh) = state.upgrade() else {
+                return;
+            };
             let path = path.to_string();
             let cache = std::sync::Arc::clone(&cache);
-            let (tx, rx) = std::sync::mpsc::channel::<Result<String, String>>();
-            std::thread::Builder::new()
-                .name("MCL Import".into())
-                .spawn(move || {
-                    let message = match std::fs::File::open(&path) {
-                        Err(e) => Err(format!("{path}: {e}")),
-                        Ok(file) => {
-                            match cr_scrape::cache::mcl::import(
-                                cache.as_ref(),
-                                std::io::BufReader::new(file),
-                            ) {
-                                Err(e) => Err(e.to_string()),
-                                Ok(report) => {
-                                    // The snapshot date becomes the
-                                    // start of the next incremental
-                                    // sweep (ADR-038).
-                                    if !report.date.trim().is_empty() {
-                                        let _ = cache.put_sweep_state(
-                                            &cr_scrape::cache::SweepState {
-                                                start_date: report.date.clone(),
-                                                end_date: report.date.clone(),
-                                                offset: 0,
-                                                total: 0,
-                                                updated_at: chrono::Utc::now().timestamp(),
-                                            },
-                                        );
-                                    }
-                                    Ok(format!(
-                                    "{} volumes and {} issues loaded (snapshot date {}). {} lines skipped.",
-                                    report.volumes,
-                                    report.issues,
-                                    if report.date.is_empty() {
-                                        "unknown"
-                                    } else {
-                                        &report.date
-                                    },
-                                    report.skipped
-                                ))
-                                }
-                            }
-                        }
-                    };
-                    let _ = tx.send(message);
-                })
-                .expect("spawn the MCL import worker");
-
-            let report_window = report_window.clone();
-            glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
-                let Ok(result) = rx.try_recv() else {
-                    return glib::ControlFlow::Continue;
-                };
-                match result {
-                    Ok(text) => {
-                        show_report_dialog(&report_window, "Import Comic Vine MCL File", &text)
+            let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            sh.run_cv_job(
+                library::CvJobKind::Import,
+                "Import Comic Vine MCL File",
+                cancel,
+                move |progress| -> Result<String, String> {
+                    let file = std::fs::File::open(&path).map_err(|e| format!("{path}: {e}"))?;
+                    let report = cr_scrape::cache::mcl::import_reporting(
+                        cache.as_ref(),
+                        std::io::BufReader::new(file),
+                        |volumes, issues| {
+                            let _ = progress.send(CvProgressMsg::Step {
+                                detail: format!("{volumes} volumes, {issues} issues"),
+                                done: volumes as i64,
+                                total: 0,
+                            });
+                        },
+                    )
+                    .map_err(|e| e.to_string())?;
+                    // The snapshot date becomes the start of the next
+                    // incremental sweep (ADR-038).
+                    if !report.date.trim().is_empty() {
+                        let _ = cache.put_sweep_state(&cr_scrape::cache::SweepState {
+                            start_date: report.date.clone(),
+                            end_date: report.date.clone(),
+                            offset: 0,
+                            total: 0,
+                            updated_at: chrono::Utc::now().timestamp(),
+                        });
                     }
+                    Ok(format!(
+                        "{} volumes and {} issues loaded (snapshot date {}). {} lines skipped.",
+                        report.volumes,
+                        report.issues,
+                        if report.date.is_empty() {
+                            "unknown"
+                        } else {
+                            &report.date
+                        },
+                        report.skipped
+                    ))
+                },
+                |window, outcome| match outcome {
+                    Ok(text) => show_report_dialog(window, "Import Comic Vine MCL File", &text),
                     Err(reason) => {
-                        show_failure_dialog(&report_window, "Import Comic Vine MCL File", &reason)
+                        show_failure_dialog(window, "Import Comic Vine MCL File", &reason)
                     }
-                }
-                glib::ControlFlow::Break
-            });
+                },
+            );
         });
     }
 
@@ -3066,36 +3141,44 @@ impl ShellState {
         }
 
         let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let budget = library::cv_budget(&config, std::sync::Arc::clone(&cancel));
+        let window_text = format!("{} to {}", options.start_date, options.end_date);
         let api_key = config.api_key.clone();
-        let window = format!("{} to {}", options.start_date, options.end_date);
-        let (tx, rx) =
-            std::sync::mpsc::channel::<Result<cr_scrape::cache::sweep::SweepReport, String>>();
-        std::thread::Builder::new()
-            .name("Comic Vine Sweep".into())
-            .spawn(move || {
+        let worker_cancel = std::sync::Arc::clone(&cancel);
+        let budget_config = config.clone();
+        self.run_cv_job(
+            library::CvJobKind::Sweep,
+            "Update Comic Vine Cache",
+            cancel,
+            move |progress| -> Result<cr_scrape::cache::sweep::SweepReport, String> {
                 let mut client = cr_scrape::cv::connection::CvClient::new(&api_key);
-                if let Some(budget) = budget {
+                if let Some(budget) = library::cv_budget(
+                    &budget_config,
+                    std::sync::Arc::clone(&worker_cancel),
+                    Some(wait_reporter(progress.clone())),
+                ) {
                     client.set_budget(budget);
                 }
-                let result = cr_scrape::cache::sweep::run(
+                cr_scrape::cache::sweep::run(
                     &client,
                     cache.as_ref(),
                     &options,
-                    &cancel,
-                    |_| {},
+                    &worker_cancel,
+                    |p| {
+                        // `offset` counts issues; the page size is 100.
+                        // `div_ceil` is unstable for signed integers.
+                        let size = cr_scrape::cache::sweep::PAGE_SIZE;
+                        let page = p.offset / size;
+                        let pages = (p.total + size - 1) / size;
+                        let _ = progress.send(CvProgressMsg::Step {
+                            detail: format!("page {page} of {pages}"),
+                            done: p.offset,
+                            total: p.total,
+                        });
+                    },
                 )
-                .map_err(|e| e.to_string());
-                let _ = tx.send(result);
-            })
-            .expect("spawn the Comic Vine sweep worker");
-
-        let report_window = self.window.clone();
-        glib::timeout_add_local(std::time::Duration::from_millis(250), move || {
-            let Ok(result) = rx.try_recv() else {
-                return glib::ControlFlow::Continue;
-            };
-            match result {
+                .map_err(|e| e.to_string())
+            },
+            move |window, outcome| match outcome {
                 Ok(report) => {
                     let tail = if report.complete {
                         "The window is complete."
@@ -3103,20 +3186,17 @@ impl ShellState {
                         "The run stopped early. Run the command again to continue."
                     };
                     show_report_dialog(
-                        &report_window,
+                        window,
                         "Update Comic Vine Cache",
                         &format!(
-                            "{window}: {} pages, {} issues, {} volumes. {tail}",
+                            "{window_text}: {} pages, {} issues, {} volumes. {tail}",
                             report.pages, report.issues, report.volumes
                         ),
                     );
                 }
-                Err(reason) => {
-                    show_failure_dialog(&report_window, "Update Comic Vine Cache", &reason)
-                }
-            }
-            glib::ControlFlow::Break
-        });
+                Err(reason) => show_failure_dialog(window, "Update Comic Vine Cache", &reason),
+            },
+        );
     }
 
     /// "Warm Comic Vine Cache" (ADR-037): spends the request budget
@@ -3152,53 +3232,61 @@ impl ShellState {
         }
 
         let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let budget = library::cv_budget(&config, std::sync::Arc::clone(&cancel));
         let (_, _, warm_options) = cr_scrape::cache::policies_from(config.advanced());
         let api_key = config.api_key.clone();
-        let (tx, rx) = std::sync::mpsc::channel::<cr_scrape::cache::warm::WarmReport>();
-        std::thread::Builder::new()
-            .name("Comic Vine Warm".into())
-            .spawn(move || {
+        let worker_cancel = std::sync::Arc::clone(&cancel);
+        let budget_config = config.clone();
+        self.run_cv_job(
+            library::CvJobKind::Warm,
+            "Warm Comic Vine Cache",
+            cancel,
+            move |progress| {
                 let mut client = cr_scrape::cv::connection::CvClient::new(&api_key);
-                if let Some(budget) = budget {
+                if let Some(budget) = library::cv_budget(
+                    &budget_config,
+                    std::sync::Arc::clone(&worker_cancel),
+                    Some(wait_reporter(progress.clone())),
+                ) {
                     client.set_budget(budget);
                 }
-                let report = cr_scrape::cache::warm::run(
+                cr_scrape::cache::warm::run(
                     &client,
                     cache.as_ref(),
                     &volume_ids,
                     &warm_options,
-                    &cancel,
-                    |_| {},
+                    &worker_cancel,
+                    |p| {
+                        let _ = progress.send(CvProgressMsg::Step {
+                            detail: format!(
+                                "volume {} of {} ({} requests spent)",
+                                p.done, p.total, p.requests
+                            ),
+                            done: p.done as i64,
+                            total: p.total as i64,
+                        });
+                    },
+                )
+            },
+            |window, report| {
+                let stopped = if report.stopped_early {
+                    " The run stopped early: the request budget, the cap, or a cancel stopped it."
+                } else {
+                    ""
+                };
+                show_report_dialog(
+                    window,
+                    "Warm Comic Vine Cache",
+                    &format!(
+                        "{} volumes looked at. {} read, {} already fresh, {} failed. {} requests spent.{stopped}",
+                        report.considered,
+                        report.warmed,
+                        report.already_fresh,
+                        report.failed,
+                        report.requests
+                    ),
                 );
-                let _ = tx.send(report);
-            })
-            .expect("spawn the Comic Vine warm worker");
-
-        let report_window = self.window.clone();
-        glib::timeout_add_local(std::time::Duration::from_millis(250), move || {
-            let Ok(report) = rx.try_recv() else {
-                return glib::ControlFlow::Continue;
-            };
-            let stopped = if report.stopped_early {
-                " The run stopped early: the request budget or the cap was reached."
-            } else {
-                ""
-            };
-            show_report_dialog(
-                &report_window,
-                "Warm Comic Vine Cache",
-                &format!(
-                    "{} volumes looked at. {} read, {} already fresh, {} failed. {} requests spent.{stopped}",
-                    report.considered,
-                    report.warmed,
-                    report.already_fresh,
-                    report.failed,
-                    report.requests
-                ),
-            );
-            glib::ControlFlow::Break
-        });
+            },
+        );
     }
 
     fn open_bulk_editor(self: &Rc<ShellState>, books: Vec<ComicBook>) {
@@ -6242,6 +6330,42 @@ fn open_mcl_dialog(window: &ApplicationWindow, on_open: impl Fn(&str) + 'static)
         }
     });
     chooser.show();
+}
+
+/// What a Comic Vine cache worker tells the main thread.
+enum CvProgressMsg {
+    Step {
+        detail: String,
+        done: i64,
+        total: i64,
+    },
+    /// The per-resource budget is spent (ADR-037). Without this line
+    /// the job looks frozen for up to an hour.
+    Waiting { resource: String, resume_at: i64 },
+}
+
+/// A budget wait report that forwards to the job's progress channel.
+/// It runs on the WORKER thread, so it only sends.
+fn wait_reporter(
+    progress: std::sync::mpsc::Sender<CvProgressMsg>,
+) -> Box<cr_scrape::cache::budget::WaitFn> {
+    Box::new(move |notice| {
+        let _ = progress.send(CvProgressMsg::Waiting {
+            resource: notice.resource.clone(),
+            resume_at: notice.resume_at,
+        });
+    })
+}
+
+/// Unix seconds as a local wall-clock time, for "resuming at 14:32".
+fn local_clock(unix_seconds: i64) -> String {
+    chrono::DateTime::from_timestamp(unix_seconds, 0)
+        .map(|t| {
+            chrono::DateTime::<chrono::Local>::from(t)
+                .format("%H:%M")
+                .to_string()
+        })
+        .unwrap_or_else(|| "later".to_string())
 }
 
 /// A report a command leaves when it finishes.

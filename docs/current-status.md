@@ -6,8 +6,8 @@ Do not append a history. History lives in `docs/archive/` and in git.
 ## Active phase
 
 **Phase 15 — Comic Vine cache, rate budget, and missing-issue fill.**
-File: `docs/phases/phase-15.md`. Status: IMPLEMENTED (T1 to T7),
-user test pending.
+File: `docs/phases/phase-15.md`. Status: IMPLEMENTED (T1 to T7), plus
+the Phase 15a visibility round. User test pending.
 **Phase 16 — Comic Vine scraper quality of life** is planned and waits
 for Phase 15 (`docs/phases/phase-16.md`).
 Phase 13 is IMPLEMENTED, user test pending. Phases 0-8 and 10-12 are
@@ -16,8 +16,9 @@ COMPLETE (Phase 12 user-tested 2026-09-10); Phase 9 is DEFERRED to
 
 ## Current task
 
-Phase 15 waits for its user test. Phase 16 (the scraper dialog quality
-of life, `docs/phases/phase-16.md`) starts after it.
+Phase 15 waits for its user test, which now covers the status-bar
+lamp, the Tasks row, and the cancel. Phase 16 (the scraper dialog
+quality of life, `docs/phases/phase-16.md`) starts after it.
 
 Phase 14 (right-click rescans, ADR-036) is IMPLEMENTED and waits for
 its user test. The navigator tree-state and Detail column-toggle fixes
@@ -26,44 +27,43 @@ its user test. The navigator tree-state and Detail column-toggle fixes
 
 ## Verification record
 
-Phase 15 (2026-09-12), commits `5aea7c3` to `f930cb8`. The older
-records are in git.
+Phase 15a (2026-09-12), commits `8eba46d` onward: make background work
+visible. Three defects the Phase 15 user test surfaced.
 
-- The cache is a two-layer SQLite file (ADR-037). MEASURED by gate, in
-  API requests: a closed volume 0, an unchanged open volume 1 (the
-  probe only), a changed open volume 2, an unknown volume 1 plus its
-  pages. A second call on a volume just paged asks for nothing.
-- The merge rule is gated: a cheap write (an MCL import, or the sweep's
-  `id,issue_number,volume` field list) never erases what an expensive
-  query found. `fetched_at` merges with MAX, so a probe cannot move the
-  check time backwards.
-- The MCL reader accepts what the `Update Missing` writer really
-  produces, not what its docstring promises: the trailing comma on the
-  number list, the `.&@1` and `.&@2` escapes that the writer never
-  reverses, the quoted list it never emits, and a comma that a space
-  follows inside a number. Fixtures pin all four, plus volume 77901.
-- The sweep uses `filter=date_last_updated:<start>|<end>`. The API
-  reference page renders its per-field filter marks as images, so that
-  page does NOT state the filter is allowed; the production
-  `update_missing.py` is the evidence. Gated: a cancelled sweep
-  resumes and pays for no repeated page, a complete sweep makes zero
-  requests on a re-run, a new window restarts at zero, and the page cap
-  keeps its offset.
-- The budget default is 200 requests per resource per hour, from the
-  user's figure. The API reference page carries NO rate-limit text at
-  all (no "200", no "per resource", no 420, and a `status_code` table
-  that stops at 105), so the figure is NOT verified here and the
-  ceiling is the `CACHE_RATE_LIMIT` key.
-- DEVIATION: the warm task and the sweep report in a completion dialog,
-  not in the Tasks window. A Tasks row is on `docs/backlog.md`.
-- Image downloads do not pass the budget. They come from the image
-  host, not from an API resource.
+- **The scrape progress window was never presented.** It was built,
+  filled, and closed, but `git log -S "window.present()"` shows that
+  call has never existed in `dialogs/scrape.rs`. Every scrape since
+  Phase 12 ran with no status list, no progress line, no budget
+  readout, and NO REACHABLE CANCEL BUTTON. `scrape_probe` GATE V now
+  checks visibility SYNCHRONOUSLY after the call: a timed check races,
+  because the mock has zero delays and the run closes the window in
+  under 200 ms. MEASURED both ways — the gate fails with `present()`
+  removed and passes with it restored.
+- **The report dialogs had no transient parent.** `show_info_dialog`
+  and `show_error_dialog` used `.application(...)` with no
+  `transient_for` and no `modal`, so the window manager put the cache
+  report behind the main window. They were the only two such dialogs
+  in `cr-ui`; the other 30 set a parent. They now take the window and
+  are renamed `show_report_dialog` / `show_failure_dialog`. The forced
+  `"Cannot open {title}"` heading is gone; the page-export path said
+  "Cannot open" for a WRITE failure and now says "Cannot save".
+- **The cache jobs reported nothing and could not be stopped.** The
+  progress callback was `|_| {}` and the cancel flag was held by
+  nothing. Every job now publishes over an mpsc channel that the MAIN
+  thread drains (a worker that writes a thread-local writes its own
+  copy), and it appears as a status-bar lamp with a live tooltip, a
+  Tasks window row, and a working cancel. `Budget::with_wait_report`
+  is wired at last, so a spent budget reads "the issues budget is
+  spent, resuming at 14:32" instead of looking frozen for an hour.
+  One job runs at a time: two sweeps would race on the one
+  `sweep_state` row.
+- Probes (release, Xvfb): `scrape_probe` GATE V plus A/B/C green;
+  `statusbar_probe` A-J2 and I green, with the new K and K2 (the lamp
+  follows the job slot, a second job is refused, the tooltip carries
+  the live line, and the menu row reaches the worker's atomic flag).
 - `cargo fmt --all` and `cargo clippy --workspace --all-targets -- -D
   warnings` — green.
-- `cargo test --workspace` — 660 pass (was 564; 96 new cache, MCL,
-  sweep, freshness, budget, warm, and missing-issue gates).
-- No probe drives the new dialogs or commands; the user test covers
-  them, as the navigator list command does in Phase 14.
+- `cargo test --workspace` — 666 pass (was 660; 6 new cache-job gates).
 
 ## Open user tests
 

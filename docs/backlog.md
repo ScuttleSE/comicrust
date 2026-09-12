@@ -353,12 +353,6 @@ still pays one parse per parse-needing book per evaluation — the
   changes of any kind. The cache key must cover the file path + the
   file modified time, or the invalidation must ride those sites.
 
-## Comic Vine cache: a Tasks window row
-
-The warm task and the incremental sweep (Phase 15, ADR-037, ADR-038)
-report in a completion dialog. A Tasks window row needs a new
-`PendingTasks` source in `cr-ui/src/dialogs/tasks.rs`, with an abort
-command. Not a blocker: both tasks are already cancellable.
 
 ## Fill Missing Issues: a volume picker fallback
 

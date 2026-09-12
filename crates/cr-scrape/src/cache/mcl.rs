@@ -227,6 +227,17 @@ pub fn write<W: Write>(
 /// The import uses the cache merge rule: it adds volumes and issues,
 /// and it erases no field that an earlier API query filled.
 pub fn import<R: BufRead>(cache: &dyn super::CvCache, reader: R) -> std::io::Result<MclReport> {
+    import_reporting(cache, reader, |_, _| {})
+}
+
+/// The same import, with progress. `on_progress` receives the running
+/// volume and issue counts after every batch. It runs on the calling
+/// thread, so it must not block.
+pub fn import_reporting<R: BufRead>(
+    cache: &dyn super::CvCache,
+    reader: R,
+    mut on_progress: impl FnMut(usize, usize),
+) -> std::io::Result<MclReport> {
     /// The number of volumes the import holds before it writes.
     const BATCH: usize = 500;
 
@@ -251,7 +262,11 @@ pub fn import<R: BufRead>(cache: &dyn super::CvCache, reader: R) -> std::io::Res
         issues.clear();
     };
 
+    let seen_volumes = std::cell::Cell::new(0usize);
+    let seen_issues = std::cell::Cell::new(0usize);
     let mut report = read(reader, |volume| {
+        seen_volumes.set(seen_volumes.get() + 1);
+        seen_issues.set(seen_issues.get() + volume.issues.len());
         volumes.push(super::VolumeRow {
             volume_id: volume.volume_id,
             ..Default::default()
@@ -264,6 +279,7 @@ pub fn import<R: BufRead>(cache: &dyn super::CvCache, reader: R) -> std::io::Res
         }));
         if volumes.len() >= BATCH {
             flush(&mut volumes, &mut issues, &mut failed);
+            on_progress(seen_volumes.get(), seen_issues.get());
         }
     })?;
     flush(&mut volumes, &mut issues, &mut failed);

@@ -35,6 +35,20 @@ type ScanViewHook = Box<dyn Fn(&[ComicBook])>;
 
 thread_local! {
     static SESSION: RefCell<Option<Rc<RefCell<Library>>>> = const { RefCell::new(None) };
+    /// The Comic Vine cache job that runs now (ADR-037, ADR-038): the
+    /// MCL import, the incremental sweep, or the warm task. One at a
+    /// time, because the sweep and the warm task share one
+    /// `sweep_state` row and one request budget.
+    ///
+    /// A WORKER THREAD MUST NOT WRITE THIS. A thread-local written
+    /// from a worker writes that worker's own copy. The worker sends
+    /// its progress over an mpsc channel and the main-thread pump
+    /// writes here, which is the same shape the scan uses.
+    static CV_JOB: RefCell<Option<CvJob>> = const { RefCell::new(None) };
+    /// The in-flight cache job's abort flag. `abort_cv_job` sets it;
+    /// the worker reads it between pages and between volumes.
+    static CV_JOB_CANCEL: RefCell<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>> =
+        const { RefCell::new(None) };
     /// One scan at a time (the C# scan queue): requests arriving
     /// while the worker runs wait here, in arrival order.
     static SCAN_QUEUE: RefCell<Vec<QueuedScan>> = const { RefCell::new(Vec::new()) };
@@ -167,6 +181,115 @@ fn merge_scan_storage(
 
 /// `Scanner.Stop(clearQueue: true)` — the Tasks dialog's "Abort
 /// Scanning": drops the queued scan requests and flags the in-flight
+/// Which Comic Vine cache job runs (ADR-037, ADR-038).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CvJobKind {
+    Import,
+    Sweep,
+    Warm,
+}
+
+impl CvJobKind {
+    /// The heading the status bar and the Tasks window show.
+    pub fn label(self) -> &'static str {
+        match self {
+            CvJobKind::Import => "Importing an MCL file",
+            CvJobKind::Sweep => "Updating the Comic Vine cache",
+            CvJobKind::Warm => "Warming the Comic Vine cache",
+        }
+    }
+}
+
+/// The in-flight Comic Vine cache job.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CvJob {
+    pub kind: CvJobKind,
+    /// The line the Tasks window shows and the lamp tooltip carries.
+    pub detail: String,
+    /// The work done and the work expected. `total` of zero means the
+    /// job cannot say how much is left.
+    pub done: i64,
+    pub total: i64,
+}
+
+impl CvJob {
+    /// "Updating the Comic Vine cache — page 12 of 53".
+    pub fn text(&self) -> String {
+        if self.detail.is_empty() {
+            self.kind.label().to_string()
+        } else {
+            format!("{} \u{2014} {}", self.kind.label(), self.detail)
+        }
+    }
+}
+
+/// Claims the single Comic Vine cache job slot.
+///
+/// Returns `false` when a job already runs. Two sweeps would race on
+/// the one `sweep_state` row, and two jobs would each believe they own
+/// the request budget.
+pub fn start_cv_job(
+    kind: CvJobKind,
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> bool {
+    if cv_job().is_some() {
+        return false;
+    }
+    CV_JOB.with(|cell| {
+        *cell.borrow_mut() = Some(CvJob {
+            kind,
+            detail: String::new(),
+            done: 0,
+            total: 0,
+        });
+    });
+    CV_JOB_CANCEL.with(|cell| *cell.borrow_mut() = Some(cancel));
+    crate::trace::trace(format!("cv job started: {}", kind.label()));
+    true
+}
+
+/// Updates the in-flight job. A call after the job ended is dropped.
+pub fn set_cv_job_progress(detail: String, done: i64, total: i64) {
+    CV_JOB.with(|cell| {
+        if let Some(job) = cell.borrow_mut().as_mut() {
+            job.detail = detail;
+            job.done = done;
+            job.total = total;
+        }
+    });
+}
+
+/// Releases the job slot.
+pub fn end_cv_job() {
+    CV_JOB.with(|cell| *cell.borrow_mut() = None);
+    CV_JOB_CANCEL.with(|cell| *cell.borrow_mut() = None);
+}
+
+/// The in-flight Comic Vine cache job, or `None`.
+pub fn cv_job() -> Option<CvJob> {
+    CV_JOB.with(|cell| cell.borrow().clone())
+}
+
+/// True while a Comic Vine cache job runs (the status-bar lamp).
+pub fn cv_job_active() -> bool {
+    CV_JOB.with(|cell| cell.borrow().is_some())
+}
+
+/// Asks the in-flight Comic Vine cache job to stop. The work already
+/// written to the cache stays, and a sweep keeps the offset it
+/// reached, so the next run resumes there.
+pub fn abort_cv_job() {
+    let requested = CV_JOB_CANCEL.with(|cell| {
+        if let Some(flag) = cell.borrow().as_ref() {
+            flag.store(true, std::sync::atomic::Ordering::Relaxed);
+            true
+        } else {
+            false
+        }
+    });
+    crate::trace::trace(format!("cv job abort requested (in flight: {requested})"));
+}
+
 /// scan to stop at the next file. The books found so far stay (the
 /// batches already landed; the worker's partial storage merges back).
 pub fn abort_scan() {
@@ -408,19 +531,23 @@ pub fn cv_cache() -> Option<std::sync::Arc<cr_scrape::cache::SqliteCache>> {
 pub fn cv_budget(
     config: &cr_scrape::config::Configuration,
     cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+    on_wait: Option<Box<cr_scrape::cache::budget::WaitFn>>,
 ) -> Option<std::sync::Arc<cr_scrape::cache::budget::Budget>> {
     if !config.advanced().cache_enabled {
         return None;
     }
     let cache = cv_cache()?;
     let (policy, _, _) = cr_scrape::cache::policies_from(config.advanced());
-    Some(std::sync::Arc::new(
-        cr_scrape::cache::budget::Budget::new(
-            cache as std::sync::Arc<dyn cr_scrape::cache::CvCache>,
-            policy,
-        )
-        .with_cancel(cancel),
-    ))
+    let mut budget = cr_scrape::cache::budget::Budget::new(
+        cache as std::sync::Arc<dyn cr_scrape::cache::CvCache>,
+        policy,
+    )
+    .with_cancel(cancel);
+    // Without this the job looks frozen while it waits out the hour.
+    if let Some(on_wait) = on_wait {
+        budget = budget.with_wait_report(on_wait);
+    }
+    Some(std::sync::Arc::new(budget))
 }
 
 /// The Comic Vine volume ids the library names, most used first. The
@@ -2457,5 +2584,85 @@ mod tests {
             "b.cbz".to_string(),
         ]);
         assert_eq!(paths, vec!["a.cbz".to_string(), "b.cbz".to_string()]);
+    }
+}
+
+#[cfg(test)]
+mod cv_job_tests {
+    use super::*;
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::Arc;
+
+    fn flag() -> Arc<AtomicBool> {
+        Arc::new(AtomicBool::new(false))
+    }
+
+    #[test]
+    fn the_job_slot_holds_one_job_at_a_time() {
+        end_cv_job();
+        assert!(!cv_job_active());
+        assert!(start_cv_job(CvJobKind::Sweep, flag()));
+        assert!(cv_job_active());
+        // A second job is refused. Two sweeps would race on the one
+        // sweep_state row and each would think it owned the budget.
+        assert!(!start_cv_job(CvJobKind::Warm, flag()));
+        assert_eq!(cv_job().map(|j| j.kind), Some(CvJobKind::Sweep));
+        end_cv_job();
+        assert!(!cv_job_active());
+        // The slot is free again.
+        assert!(start_cv_job(CvJobKind::Warm, flag()));
+        end_cv_job();
+    }
+
+    #[test]
+    fn the_job_text_reads_as_a_sentence() {
+        end_cv_job();
+        assert!(start_cv_job(CvJobKind::Sweep, flag()));
+        // No detail yet: the heading alone.
+        assert_eq!(
+            cv_job().map(|j| j.text()),
+            Some("Updating the Comic Vine cache".to_string())
+        );
+        set_cv_job_progress("page 3 of 53".into(), 300, 5300);
+        let job = cv_job().expect("a job runs");
+        assert_eq!(
+            job.text(),
+            "Updating the Comic Vine cache \u{2014} page 3 of 53"
+        );
+        assert_eq!(job.done, 300);
+        assert_eq!(job.total, 5300);
+        end_cv_job();
+    }
+
+    #[test]
+    fn progress_after_the_job_ended_is_dropped() {
+        end_cv_job();
+        set_cv_job_progress("ghost".into(), 1, 2);
+        assert_eq!(cv_job(), None);
+    }
+
+    #[test]
+    fn the_abort_reaches_the_worker_flag() {
+        end_cv_job();
+        let cancel = flag();
+        assert!(start_cv_job(CvJobKind::Warm, Arc::clone(&cancel)));
+        assert!(!cancel.load(Ordering::Relaxed));
+        abort_cv_job();
+        assert!(cancel.load(Ordering::Relaxed), "the worker can see it");
+        end_cv_job();
+    }
+
+    #[test]
+    fn an_abort_with_no_job_is_harmless() {
+        end_cv_job();
+        abort_cv_job();
+        assert!(!cv_job_active());
+    }
+
+    #[test]
+    fn every_kind_has_a_label() {
+        for kind in [CvJobKind::Import, CvJobKind::Sweep, CvJobKind::Warm] {
+            assert!(!kind.label().is_empty());
+        }
     }
 }
