@@ -116,30 +116,7 @@ The book menu gains **Fill Missing Issues…**.
 
 ## User test
 
-Rebuild first.
-
-a. File ▸ Import Comic Vine MCL File…: pick an `.mcl` snapshot. The
-   report gives the volume and issue counts and the snapshot date.
-b. File ▸ Update Comic Vine Cache: the sweep runs from that date to
-   today and reports its pages. Run it again: it says the cache is
-   current.
-c. Scrape a book of a large series, then scrape a second book of the
-   SAME series. The second scrape must be much faster, and the
-   budget readout at the bottom of the scrape window must fall by
-   far fewer than the first.
-d. Set `CACHE_RATE_LIMIT=3` in the scraper advanced settings and
-   scrape again: the window says "budget spent, resuming at HH:MM"
-   instead of stalling with no word.
-e. File ▸ Warm Comic Vine Cache: it reports the volumes read, the
-   volumes already fresh, and the requests spent. Run it again at
-   once: almost every volume must be "already fresh".
-f. Right-click a book of a scraped series ▸ Fill Missing Issues…:
-   the gap list appears with issue numbers, years, and titles. Tick
-   some and press Create Books: fileless books appear in the grid,
-   already selected, with the right series, volume, and number.
-   Right-click a book of a series that was NEVER scraped: the
-   command says no book names a Comic Vine volume, and it creates
-   nothing.
+The steps are test 1 in `docs/open-user-tests.md`.
 
 ## Open issues
 

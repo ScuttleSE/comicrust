@@ -8,7 +8,8 @@ repeat a fact, link to its home instead.
 | File | Holds | Must not hold |
 |---|---|---|
 | `AGENTS.md` | The rules, the startup order, the invariants | Status, history, task records |
-| `docs/current-status.md` | The active phase, the current task, the open user tests, the last verification | Old phases, resolved defects, a session log |
+| `docs/current-status.md` | The active phase, the current task, the list of open user tests, the last verification | Old phases, resolved defects, a session log, user-test steps |
+| `docs/open-user-tests.md` | The steps of every open user test | A status, a verdict, a closed test |
 | `docs/phases/<phase>.md` | The scope, the locked decisions, the tasks, the acceptance criteria | A full debugging narrative |
 | `docs/decisions.md` | The ADRs and their reasons | Task status |
 | `docs/backlog.md` | Unscheduled work | Completed work |
