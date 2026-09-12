@@ -6,7 +6,7 @@ Do not append a history. History lives in `docs/archive/` and in git.
 ## Active phase
 
 **Phase 15 — Comic Vine cache, rate budget, and missing-issue fill.**
-File: `docs/phases/phase-15.md`. Status: T1 and T2 done, T3 next.
+File: `docs/phases/phase-15.md`. Status: T1, T2, and T3 done, T4 next.
 **Phase 16 — Comic Vine scraper quality of life** is planned and waits
 for Phase 15 (`docs/phases/phase-16.md`).
 Phase 13 is IMPLEMENTED, user test pending. Phases 0-8 and 10-12 are
@@ -15,7 +15,7 @@ COMPLETE (Phase 12 user-tested 2026-09-10); Phase 9 is DEFERRED to
 
 ## Current task
 
-Phase 15 T3 — the incremental Comic Vine sweep (ADR-038).
+Phase 15 T4 — the freshness rule for a closed volume (ADR-037).
 
 Phase 14 (right-click rescans, ADR-036) is IMPLEMENTED and waits for
 its user test. The navigator tree-state and Detail column-toggle fixes
@@ -24,6 +24,12 @@ its user test. The navigator tree-state and Detail column-toggle fixes
 
 ## Verification record
 
+- Commit: Phase 15 T3, the incremental sweep (2026-09-12). One paged
+  `/issues` query with `filter=date_last_updated:<start>|<end>` keeps
+  the skeleton current. MEASURED by mock-server gate: a cancelled
+  sweep resumes and pays for no repeated page, a complete sweep makes
+  zero requests on a re-run, a new window restarts at offset zero, and
+  the page cap stops the run with its offset kept.
 - Commit: Phase 15 T2, the MCL reader and writer (2026-09-12). The
   reader accepts what the `Update Missing` writer really produces: the
   trailing comma on the number list, the `.&@1` and `.&@2` escapes that
@@ -40,8 +46,8 @@ its user test. The navigator tree-state and Detail column-toggle fixes
   query found.
 - `cargo fmt --all` and `cargo clippy --workspace --all-targets -- -D
   warnings` — green.
-- `cargo test --workspace` — 597 pass (was 564; 33 new cache and
-  MCL gates).
+- `cargo test --workspace` — 608 pass (was 564; 44 new cache, MCL,
+  and sweep gates).
 - Commit: navigator tree state + Detail column toggle (2026-09-12).
   The navigator expansion now persists in
   `ComicListItemFolder.Collapsed` (the C# `FillListTree` /

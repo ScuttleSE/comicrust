@@ -14,6 +14,7 @@
 
 pub mod mcl;
 mod sqlite;
+pub mod sweep;
 
 pub use sqlite::SqliteCache;
 

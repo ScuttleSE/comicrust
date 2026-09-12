@@ -62,7 +62,7 @@ series that the library does not hold.
       trailing comma, the `.&@1` and `.&@2` escapes, the quoted list
       form, and the volume 77901 issue number `1,5`. A read and a write
       of the same file agree on the data, not on the bytes.
-- [ ] T3 — the incremental sweep on a worker thread. Acceptance: a mock
+- [x] T3 — the incremental sweep on a worker thread. Acceptance: a mock
       server test pages the sweep, stops it, and resumes it from
       `sweep_state`.
 - [ ] T4 — the freshness rule. A volume is closed when the cached
