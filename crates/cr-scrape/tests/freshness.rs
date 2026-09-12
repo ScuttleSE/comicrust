@@ -318,3 +318,152 @@ fn an_mcl_seeded_volume_still_fetches_its_detail() {
     assert_eq!(report.verdict_was, Some(Verdict::Fetch));
     assert_eq!(report.requests, 2);
 }
+
+// --- the warm task (ADR-037, Phase 15 T6) ---
+
+#[test]
+fn the_warm_task_skips_what_is_already_fresh() {
+    use cr_scrape::cache::warm::{self, WarmOptions};
+    use std::sync::atomic::AtomicBool;
+
+    let server = Server::start();
+    let cache = SqliteCache::in_memory().expect("cache");
+    seed_closed(&cache);
+    let cancel = AtomicBool::new(false);
+
+    let report = warm::run(
+        &server.client(),
+        &cache,
+        &[771],
+        &WarmOptions::default(),
+        &cancel,
+        |_| {},
+    );
+    assert_eq!(report.considered, 1);
+    assert_eq!(report.already_fresh, 1);
+    assert_eq!(report.warmed, 0);
+    assert_eq!(report.requests, 0);
+    assert_eq!(server.requests(), 0);
+    assert!(!report.stopped_early);
+}
+
+#[test]
+fn the_warm_task_fills_an_unknown_volume() {
+    use cr_scrape::cache::warm::{self, WarmOptions};
+    use std::sync::atomic::AtomicBool;
+
+    let server = Server::start();
+    server.reply("/volume/4050-771", volume_body(3, "2020-01-01 00:00:00"));
+    server.reply("/issues/", issues_body(1, 3, 3, "2013-06-01"));
+    let cache = SqliteCache::in_memory().expect("cache");
+    let cancel = AtomicBool::new(false);
+
+    let mut seen = Vec::new();
+    let report = warm::run(
+        &server.client(),
+        &cache,
+        &[771],
+        &WarmOptions::default(),
+        &cancel,
+        |p| seen.push((p.volume_id, p.done, p.total)),
+    );
+    assert_eq!(report.warmed, 1);
+    // One probe plus one page.
+    assert_eq!(report.requests, 2);
+    assert_eq!(seen, vec![(771, 1, 1)]);
+    assert_eq!(cache.issue_count(771).expect("count"), 3);
+}
+
+#[test]
+fn the_request_cap_stops_the_warm_task() {
+    use cr_scrape::cache::warm::{self, WarmOptions};
+    use std::sync::atomic::AtomicBool;
+
+    let server = Server::start();
+    server.reply("/volume/4050-771", volume_body(3, "2020-01-01 00:00:00"));
+    server.reply("/issues/", issues_body(1, 3, 3, "2013-06-01"));
+    let cache = SqliteCache::in_memory().expect("cache");
+    let cancel = AtomicBool::new(false);
+
+    let report = warm::run(
+        &server.client(),
+        &cache,
+        &[771, 772, 773],
+        &WarmOptions {
+            max_requests: Some(1),
+            ..WarmOptions::default()
+        },
+        &cancel,
+        |_| {},
+    );
+    // The first volume is allowed to finish; the cap stops the next.
+    assert_eq!(report.considered, 1);
+    assert!(report.stopped_early);
+    assert_eq!(report.stopped_at, Some(772));
+}
+
+#[test]
+fn a_failed_volume_does_not_stop_the_warm_task() {
+    use cr_scrape::cache::warm::{self, WarmOptions};
+    use std::sync::atomic::AtomicBool;
+
+    let server = Server::start();
+    // Volume 771 answers; volume 772 has no route.
+    server.reply("/volume/4050-771", volume_body(3, "2020-01-01 00:00:00"));
+    server.reply("/issues/", issues_body(1, 3, 3, "2013-06-01"));
+    let cache = SqliteCache::in_memory().expect("cache");
+    let cancel = AtomicBool::new(false);
+
+    let report = warm::run(
+        &server.client(),
+        &cache,
+        &[772, 771],
+        &WarmOptions::default(),
+        &cancel,
+        |_| {},
+    );
+    assert_eq!(report.failed, 1);
+    assert_eq!(report.warmed, 1);
+    assert!(!report.stopped_early);
+    assert_eq!(cache.issue_count(771).expect("count"), 3);
+}
+
+#[test]
+fn a_spent_budget_stops_the_warm_task() {
+    use cr_scrape::cache::budget::{Budget, BudgetPolicy};
+    use cr_scrape::cache::warm::{self, WarmOptions};
+    use cr_scrape::cache::CvCache;
+    use std::sync::atomic::AtomicBool;
+
+    let server = Server::start();
+    server.reply("/volume/4050-", volume_body(3, "2020-01-01 00:00:00"));
+    server.reply("/issues/", issues_body(1, 3, 3, "2013-06-01"));
+    let cache = Arc::new(SqliteCache::in_memory().expect("cache"));
+    // One `/volume/` request per hour, so the second volume is
+    // refused at its probe.
+    let budget = Arc::new(
+        Budget::new(
+            Arc::clone(&cache) as Arc<dyn CvCache>,
+            BudgetPolicy {
+                per_resource: 1,
+                window_seconds: 3600,
+            },
+        )
+        .with_clock(Box::new(|| 1_000_000), std::time::Duration::ZERO),
+    );
+    let mut client = server.client();
+    client.set_budget(budget);
+    let cancel = AtomicBool::new(false);
+
+    let report = warm::run(
+        &client,
+        cache.as_ref(),
+        &[771, 772, 773],
+        &WarmOptions::default(),
+        &cancel,
+        |_| {},
+    );
+    assert_eq!(report.warmed, 1);
+    assert!(report.stopped_early);
+    assert_eq!(report.stopped_at, Some(772));
+}

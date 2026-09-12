@@ -52,6 +52,24 @@ pub struct AdvancedSettings {
     pub scrape_delay: i32,
     /// `MAX_SEARCH_RESULTS` — default 100, parsed clamp 10..5000.
     pub max_search_results: i32,
+    /// `CACHE_ENABLED` — default true. The disk cache (ADR-037).
+    pub cache_enabled: bool,
+    /// `CACHE_RATE_LIMIT` — requests per resource per hour, default
+    /// 200, parsed clamp 1..100000. The figure comes from a Comic
+    /// Vine statement, not from the API reference page (ADR-037).
+    pub cache_rate_limit: i32,
+    /// `CACHE_CLOSED_HORIZON_DAYS` — default 365, parsed clamp
+    /// 1..36500. A volume whose last cover date is older than this,
+    /// and whose issue count matches the cache, is closed.
+    pub cache_closed_horizon_days: i32,
+    /// `CACHE_REVALIDATE_HOURS` — default 24, parsed clamp 1..8760.
+    /// An open volume is revalidated at most this often.
+    pub cache_revalidate_hours: i32,
+    /// `CACHE_WARM_ENABLED` — default false. The warm task spends
+    /// idle budget on the volumes the library already names.
+    pub cache_warm_enabled: bool,
+    /// `CACHE_WARM_MAX_REQUESTS` — default 50, parsed clamp 1..10000.
+    pub cache_warm_max_requests: i32,
 }
 
 impl AdvancedSettings {
@@ -73,6 +91,12 @@ impl AdvancedSettings {
             note_scrape_date: false,
             scrape_delay: 1,
             max_search_results: 100,
+            cache_enabled: true,
+            cache_rate_limit: 200,
+            cache_closed_horizon_days: 365,
+            cache_revalidate_hours: 24,
+            cache_warm_enabled: false,
+            cache_warm_max_requests: 50,
         }
     }
 }
@@ -236,7 +260,7 @@ pub fn parse_advanced(raw: &str) -> AdvancedSettings {
 
 /// The advanced-settings line keys (the C# `Configuration` parses
 /// one line per key). Public so the doc drift gate can walk them.
-pub const ADVANCED_KEYS: [&str; 16] = [
+pub const ADVANCED_KEYS: [&str; 22] = [
     "IGNORE_PUBLISHER",
     "IGNORE_SEARCHTERM",
     "IGNORE_BEFORE_YEAR",
@@ -253,6 +277,14 @@ pub const ADVANCED_KEYS: [&str; 16] = [
     "IMPRINT",
     "SCRAPE_DELAY",
     "MAX_SEARCH_RESULTS",
+    // The disk cache (ADR-037). No key is a prefix of another, which
+    // the one-key-per-line match needs.
+    "CACHE_ENABLED",
+    "CACHE_RATE_LIMIT",
+    "CACHE_CLOSED_HORIZON_DAYS",
+    "CACHE_REVALIDATE_HOURS",
+    "CACHE_WARM_ENABLED",
+    "CACHE_WARM_MAX_REQUESTS",
 ];
 
 fn parse_line(line: &str, a: &mut AdvancedSettings) {
@@ -333,6 +365,28 @@ fn apply(key: &str, value: &str, a: &mut AdvancedSettings) {
         "MAX_SEARCH_RESULTS" => {
             if let Some(n) = as_int(value) {
                 a.max_search_results = n.clamp(10, 5000);
+            }
+        }
+        "CACHE_ENABLED" => a.cache_enabled = is_true(value),
+        "CACHE_RATE_LIMIT" => {
+            if let Some(n) = as_int(value) {
+                a.cache_rate_limit = n.clamp(1, 100_000);
+            }
+        }
+        "CACHE_CLOSED_HORIZON_DAYS" => {
+            if let Some(n) = as_int(value) {
+                a.cache_closed_horizon_days = n.clamp(1, 36_500);
+            }
+        }
+        "CACHE_REVALIDATE_HOURS" => {
+            if let Some(n) = as_int(value) {
+                a.cache_revalidate_hours = n.clamp(1, 8_760);
+            }
+        }
+        "CACHE_WARM_ENABLED" => a.cache_warm_enabled = is_true(value),
+        "CACHE_WARM_MAX_REQUESTS" => {
+            if let Some(n) = as_int(value) {
+                a.cache_warm_max_requests = n.clamp(1, 10_000);
             }
         }
         _ => {}

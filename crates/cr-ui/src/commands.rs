@@ -55,6 +55,11 @@ pub const COMMANDS: &[CommandSpec] = &[
     // queue work lands.
     cmd("generate-thumbnails", &[]),
     cmd("tasks", &["<Control><Shift>t"]),
+    // NO C# item — the Comic Vine disk cache (ADR-037, ADR-038,
+    // Phase 15). The C# plugin had no cache, so it had no commands.
+    cmd("cv-import-mcl", &[]),
+    cmd("cv-update", &[]),
+    cmd("cv-warm", &[]),
     cmd("new-book-entry", &["<Control><Shift>n"]),
     // The NewComics.py port (ADR-027) — the script item carried no
     // accelerator.

@@ -6,7 +6,8 @@ Do not append a history. History lives in `docs/archive/` and in git.
 ## Active phase
 
 **Phase 15 — Comic Vine cache, rate budget, and missing-issue fill.**
-File: `docs/phases/phase-15.md`. Status: T1 to T4 and T7 done, T5 part done, T6 next.
+File: `docs/phases/phase-15.md`. Status: IMPLEMENTED (T1 to T7),
+user test pending.
 **Phase 16 — Comic Vine scraper quality of life** is planned and waits
 for Phase 15 (`docs/phases/phase-16.md`).
 Phase 13 is IMPLEMENTED, user test pending. Phases 0-8 and 10-12 are
@@ -15,8 +16,8 @@ COMPLETE (Phase 12 user-tested 2026-09-10); Phase 9 is DEFERRED to
 
 ## Current task
 
-Phase 15 T6 — the warm task, and the scrape-window budget readout
-that T5 still owes.
+Phase 15 waits for its user test. Phase 16 (the scraper dialog quality
+of life, `docs/phases/phase-16.md`) starts after it.
 
 Phase 14 (right-click rescans, ADR-036) is IMPLEMENTED and waits for
 its user test. The navigator tree-state and Detail column-toggle fixes
@@ -25,6 +26,16 @@ its user test. The navigator tree-state and Detail column-toggle fixes
 
 ## Verification record
 
+- Commit: Phase 15 T6 and the T5 readout (2026-09-12). The warm task
+  spends idle budget on the volumes the library names; it stops on the
+  cancel flag, on its request cap, and on a spent budget, and one bad
+  volume does not stop the rest. The File menu gains Import Comic Vine
+  MCL File, Update Comic Vine Cache, and Warm Comic Vine Cache; the
+  scrape window shows the budget left and the resume time. Six new
+  `CACHE_*` advanced keys carry the policies, documented in
+  `docs/config-reference.md` and gated by the doc drift test.
+  DEVIATION: the warm task reports in a completion dialog, not in the
+  Tasks window.
 - Commit: Phase 15 T7, "Fill Missing Issues" (2026-09-12). The book
   menu gains a row that compares the cached issue list of the volume
   against the issue numbers the library holds, then creates fileless
@@ -71,8 +82,8 @@ its user test. The navigator tree-state and Detail column-toggle fixes
   query found.
 - `cargo fmt --all` and `cargo clippy --workspace --all-targets -- -D
   warnings` — green.
-- `cargo test --workspace` — 649 pass (was 564; 85 new cache, MCL,
-  sweep, freshness, budget, and missing-issue gates).
+- `cargo test --workspace` — 660 pass (was 564; 96 new cache, MCL,
+  sweep, freshness, budget, warm, and missing-issue gates).
 - Commit: navigator tree state + Detail column toggle (2026-09-12).
   The navigator expansion now persists in
   `ComicListItemFolder.Collapsed` (the C# `FillListTree` /

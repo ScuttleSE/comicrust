@@ -625,6 +625,18 @@ fn status_text(states: &[(String, Option<BookStatus>)]) -> String {
         .join("\n")
 }
 
+/// The hosts the scrape worker needs. They travel together, because
+/// every one of them is a seam the probes replace.
+#[derive(Default)]
+pub struct ScrapeContext {
+    /// Overrides the Comic Vine API root (the mock-server seam).
+    pub base_url: Option<String>,
+    /// The image pool that installs a fileless book's thumbnail.
+    pub pool: Option<Arc<cr_engine::image_pool::ImagePool>>,
+    /// The disk cache that backs the request budget (ADR-037).
+    pub cache: Option<Arc<dyn cr_scrape::cache::CvCache>>,
+}
+
 /// Opens the non-modal scrape window and starts the engine worker.
 /// `config` is the loaded plugin configuration (the caller owns the
 /// load/save); `base_url` overrides the ComicVine API root (the
@@ -635,11 +647,15 @@ pub fn show_scrape_dialog(
     parent: &impl IsA<gtk4::Window>,
     config: &Configuration,
     books: Vec<ComicBook>,
-    base_url: Option<String>,
-    pool: Option<Arc<cr_engine::image_pool::ImagePool>>,
+    context: ScrapeContext,
     on_done: impl Fn(Option<ScrapeSummary>) + 'static,
     on_scraped: impl Fn() + 'static,
 ) {
+    let ScrapeContext {
+        base_url,
+        pool,
+        cache,
+    } = context;
     if books.is_empty() {
         return;
     }
@@ -662,9 +678,14 @@ pub fn show_scrape_dialog(
         .hexpand(true)
         .build();
     let progress_label = Label::new(Some("Starting…"));
+    // The per-resource request budget readout (ADR-037).
+    let budget_label = Label::new(None);
+    budget_label.set_halign(gtk4::Align::Start);
+    budget_label.set_hexpand(true);
     let cancel = gtk4::Button::with_label("Cancel");
     let bottom = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
     bottom.append(&progress_label);
+    bottom.append(&budget_label);
     bottom.append(&cancel);
 
     let content = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
@@ -691,6 +712,45 @@ pub fn show_scrape_dialog(
         });
     }
 
+    // The per-resource request budget over the shared cache. It uses
+    // the window's own stop flag, so Cancel also frees a request that
+    // waits for its window to open.
+    let budget = cache.filter(|_| config.advanced().cache_enabled).map(|c| {
+        let (policy, _, _) = cr_scrape::cache::policies_from(config.advanced());
+        Arc::new(
+            cr_scrape::cache::budget::Budget::new(c, policy)
+                .with_cancel(std::sync::Arc::clone(&stop)),
+        )
+    });
+    if let Some(budget) = &budget {
+        // The readout names the resource the scrape leans on hardest.
+        let budget_readout = std::sync::Arc::clone(budget);
+        let label = budget_label.clone();
+        let tick = move || {
+            let left = budget_readout.remaining("issues");
+            let ceiling = budget_readout.policy().per_resource;
+            label.set_text(&format!("budget {left}/{ceiling} per hour"));
+            match budget_readout.state("issues") {
+                cr_scrape::cache::budget::BudgetState::Full { resume_at } => {
+                    let when = chrono::DateTime::from_timestamp(resume_at, 0)
+                        .map(|t| {
+                            chrono::DateTime::<chrono::Local>::from(t)
+                                .format("%H:%M")
+                                .to_string()
+                        })
+                        .unwrap_or_else(|| "later".to_string());
+                    label.set_text(&format!("budget spent, resuming at {when}"));
+                }
+                cr_scrape::cache::budget::BudgetState::Ready { .. } => {}
+            }
+        };
+        tick();
+        glib::timeout_add_local(Duration::from_secs(2), move || {
+            tick();
+            glib::ControlFlow::Continue
+        });
+    }
+
     // The channels.
     let (tx, rx) = std::sync::mpsc::channel::<UiRequest>();
     let (answer_tx, answer_rx) = std::sync::mpsc::channel::<UiAnswer>();
@@ -704,7 +764,7 @@ pub fn show_scrape_dialog(
         .spawn(move || {
             let done_tx = tx.clone();
             let mut ui = ChannelUi { tx, answer_rx };
-            let client = match &base_url {
+            let mut client = match &base_url {
                 Some(url) => CvClient::with_delays(
                     &worker_config.api_key,
                     url,
@@ -713,6 +773,9 @@ pub fn show_scrape_dialog(
                 ),
                 None => CvClient::new(&worker_config.api_key),
             };
+            if let Some(budget) = budget {
+                client.set_budget(budget);
+            }
             let mut cv = Cv::new(client);
             let mut engine = ScrapeEngine::new(worker_config, worker_stop, prior);
             // The fileless-book custom-thumbnail install (the C#

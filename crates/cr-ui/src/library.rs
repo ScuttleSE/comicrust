@@ -380,6 +380,69 @@ pub fn store_scraper_config(config: &cr_scrape::config::Configuration) {
     save_settings();
 }
 
+/// The Comic Vine disk cache (ADR-037), opened once per process.
+///
+/// The cache is a file, and the sweep, the warm task, and the scrape
+/// worker all use it. `None` means the file could not be opened; the
+/// caller must then work without a cache, not fail.
+pub fn cv_cache() -> Option<std::sync::Arc<cr_scrape::cache::SqliteCache>> {
+    use std::sync::OnceLock;
+    static CACHE: OnceLock<Option<std::sync::Arc<cr_scrape::cache::SqliteCache>>> = OnceLock::new();
+    CACHE
+        .get_or_init(|| {
+            let path = cr_scrape::cache::default_cache_path();
+            match cr_scrape::cache::SqliteCache::open(&path) {
+                Ok(cache) => Some(std::sync::Arc::new(cache)),
+                Err(e) => {
+                    crate::trace::trace(format!("the Comic Vine cache could not open: {e}"));
+                    None
+                }
+            }
+        })
+        .clone()
+}
+
+/// The per-resource request budget over the shared cache, built from
+/// the scraper configuration. `None` means no budget: either the cache
+/// is off, or its file could not open.
+pub fn cv_budget(
+    config: &cr_scrape::config::Configuration,
+    cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
+) -> Option<std::sync::Arc<cr_scrape::cache::budget::Budget>> {
+    if !config.advanced().cache_enabled {
+        return None;
+    }
+    let cache = cv_cache()?;
+    let (policy, _, _) = cr_scrape::cache::policies_from(config.advanced());
+    Some(std::sync::Arc::new(
+        cr_scrape::cache::budget::Budget::new(
+            cache as std::sync::Arc<dyn cr_scrape::cache::CvCache>,
+            policy,
+        )
+        .with_cancel(cancel),
+    ))
+}
+
+/// The Comic Vine volume ids the library names, most used first. The
+/// warm task spends its budget on these.
+pub fn cv_volume_ids(config: &cr_scrape::config::Configuration) -> Vec<i64> {
+    use std::collections::BTreeMap;
+    let lib = session();
+    let l = lib.borrow();
+    let mut votes: BTreeMap<i64, usize> = BTreeMap::new();
+    for book in &l.database().books {
+        let data = cr_scrape::bookdata::BookData::from_book(book, config);
+        if let Ok(id) = data.series_key.trim().parse::<i64>() {
+            if id > 0 {
+                *votes.entry(id).or_default() += 1;
+            }
+        }
+    }
+    let mut ids: Vec<(i64, usize)> = votes.into_iter().collect();
+    ids.sort_by_key(|&(id, count)| (std::cmp::Reverse(count), id));
+    ids.into_iter().map(|(id, _)| id).collect()
+}
+
 fn open_message(status: OpenStatus) -> Option<String> {
     status.message().map(str::to_string)
 }

@@ -146,8 +146,12 @@ fn main() {
             &host,
             &config,
             vec![book],
-            Some(mock_base.clone()),
-            None,
+            cr_ui::dialogs::scrape::ScrapeContext {
+                base_url: Some(mock_base.clone()),
+                // No pool and no cache: the probe measures the
+                // engine, not the budget.
+                ..Default::default()
+            },
             move |done| {
                 if let Some(summary) = done {
                     summaries.borrow_mut().push(summary);
@@ -228,8 +232,12 @@ fn main() {
             &host,
             &config,
             vec![book_no_key],
-            Some(mock_base.clone()),
-            None,
+            cr_ui::dialogs::scrape::ScrapeContext {
+                base_url: Some(mock_base.clone()),
+                // No pool and no cache: the probe measures the
+                // engine, not the budget.
+                ..Default::default()
+            },
             move |done| {
                 if let Some(summary) = done {
                     summaries.borrow_mut().push(summary);

@@ -18,6 +18,7 @@ pub mod mcl;
 pub mod missing;
 mod sqlite;
 pub mod sweep;
+pub mod warm;
 
 pub use sqlite::SqliteCache;
 
@@ -141,6 +142,34 @@ pub trait CvCache: Send + Sync {
     fn put_sweep_state(&self, state: &SweepState) -> Result<(), CacheError>;
 }
 
+/// The cache policies that the scraper configuration asks for
+/// (ADR-037). The keys live in the `advancedSettings` string, which
+/// Phase 16 T7 gives dedicated widgets.
+pub fn policies_from(
+    advanced: &crate::config::AdvancedSettings,
+) -> (
+    budget::BudgetPolicy,
+    freshness::FreshnessPolicy,
+    warm::WarmOptions,
+) {
+    let freshness = freshness::FreshnessPolicy {
+        closed_horizon_days: i64::from(advanced.cache_closed_horizon_days),
+        revalidate_after_seconds: i64::from(advanced.cache_revalidate_hours) * 3600,
+    };
+    (
+        budget::BudgetPolicy {
+            per_resource: i64::from(advanced.cache_rate_limit),
+            window_seconds: budget::DEFAULT_WINDOW_SECONDS,
+        },
+        freshness,
+        warm::WarmOptions {
+            max_requests: Some(advanced.cache_warm_max_requests.max(1) as usize),
+            max_volumes: None,
+            policy: freshness,
+        },
+    )
+}
+
 /// The cache file:
 /// `$XDG_DATA_HOME/comicrust/plugins/comic-vine-scraper/cvcache.sqlite`
 /// (default `~/.local/share/...`). ADR-037 keeps it out of `~/.cache`,
@@ -197,5 +226,47 @@ mod tests {
         );
         let empty = cache_path_from(Some(PathBuf::new()), Some(PathBuf::from("/home/u")));
         assert_eq!(empty, p);
+    }
+}
+
+#[cfg(test)]
+mod policy_tests {
+    use super::*;
+    use crate::config::AdvancedSettings;
+
+    #[test]
+    fn the_defaults_match_the_policy_defaults() {
+        let advanced = crate::config::parse_advanced("");
+        let (budget, fresh, warm) = policies_from(&advanced);
+        assert_eq!(budget, budget::BudgetPolicy::default());
+        assert_eq!(fresh, freshness::FreshnessPolicy::default());
+        assert_eq!(warm, warm::WarmOptions::default());
+    }
+
+    #[test]
+    fn the_keys_reach_the_policies() {
+        let advanced = crate::config::parse_advanced(
+            "CACHE_RATE_LIMIT=25\n\
+             CACHE_CLOSED_HORIZON_DAYS=90\n\
+             CACHE_REVALIDATE_HOURS=6\n\
+             CACHE_WARM_MAX_REQUESTS=7\n",
+        );
+        let (budget, fresh, warm) = policies_from(&advanced);
+        assert_eq!(budget.per_resource, 25);
+        assert_eq!(fresh.closed_horizon_days, 90);
+        assert_eq!(fresh.revalidate_after_seconds, 6 * 3600);
+        assert_eq!(warm.max_requests, Some(7));
+        // The warm task shares the freshness policy.
+        assert_eq!(warm.policy, fresh);
+    }
+
+    #[test]
+    fn the_cache_switches_are_off_only_when_asked() {
+        let advanced: AdvancedSettings = crate::config::parse_advanced("");
+        assert!(advanced.cache_enabled, "the cache is on by default");
+        assert!(!advanced.cache_warm_enabled, "the warm task is off");
+        let off = crate::config::parse_advanced("CACHE_ENABLED=false\nCACHE_WARM_ENABLED=true\n");
+        assert!(!off.cache_enabled);
+        assert!(off.cache_warm_enabled);
     }
 }

@@ -421,6 +421,17 @@ name to the right name.
 | `IMPRINT` | (map) | `Imprint --> Publisher` lines. |
 | `SCRAPE_DELAY` | 1 | Delay in seconds between API calls. Clamped to 2-3600. |
 | `MAX_SEARCH_RESULTS` | 100 | Maximum search results. Clamped to 10-5000. |
+| `CACHE_ENABLED` | true | Uses the Comic Vine disk cache (ADR-037). |
+| `CACHE_RATE_LIMIT` | 200 | Requests per API resource per hour. Clamped to 1-100000. The figure comes from a Comic Vine statement, not from the API reference page. |
+| `CACHE_CLOSED_HORIZON_DAYS` | 365 | A volume whose last cover date is older than this, and whose issue count matches the cache, is closed. A closed volume makes no request. Clamped to 1-36500. |
+| `CACHE_REVALIDATE_HOURS` | 24 | How often an open volume is revalidated. One request. Clamped to 1-8760. |
+| `CACHE_WARM_ENABLED` | false | Runs the cache warm task. |
+| `CACHE_WARM_MAX_REQUESTS` | 50 | The request cap of one warm run. Clamped to 1-10000. |
+
+The cache file is
+`$XDG_DATA_HOME/comicrust/plugins/comic-vine-scraper/cvcache.sqlite`.
+It is disposable: delete it and the app rebuilds it, at the cost of API
+budget. Import an MCL file to seed it with no request.
 
 ## `[data]`
 

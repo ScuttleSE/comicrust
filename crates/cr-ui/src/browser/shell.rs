@@ -19,6 +19,7 @@ use cr_core::model::comic_book::ComicBook;
 use cr_core::xml::scalar::CrGuid;
 use cr_engine::image_pool::ImagePool;
 use cr_engine::matcher::tree::Matcher;
+use cr_scrape::cache::CvCache;
 
 use crate::library;
 use crate::reader::display::ImageFitMode;
@@ -2920,6 +2921,276 @@ impl ShellState {
         );
     }
 
+    /// "Import Comic Vine MCL File…" (ADR-038): an `.mcl` snapshot
+    /// seeds the cache skeleton with no API request. The read runs on
+    /// a worker thread, because a full snapshot is large.
+    fn import_cv_mcl(self: &Rc<ShellState>) {
+        let Some(cache) = library::cv_cache() else {
+            show_error_dialog(
+                &self.app,
+                "Import Comic Vine MCL File",
+                "The Comic Vine cache file could not be opened.",
+            );
+            return;
+        };
+        let app = self.app.clone();
+        open_mcl_dialog(&self.window, move |path| {
+            let path = path.to_string();
+            let cache = std::sync::Arc::clone(&cache);
+            let (tx, rx) = std::sync::mpsc::channel::<Result<String, String>>();
+            std::thread::Builder::new()
+                .name("MCL Import".into())
+                .spawn(move || {
+                    let message = match std::fs::File::open(&path) {
+                        Err(e) => Err(format!("{path}: {e}")),
+                        Ok(file) => {
+                            match cr_scrape::cache::mcl::import(
+                                cache.as_ref(),
+                                std::io::BufReader::new(file),
+                            ) {
+                                Err(e) => Err(e.to_string()),
+                                Ok(report) => {
+                                    // The snapshot date becomes the
+                                    // start of the next incremental
+                                    // sweep (ADR-038).
+                                    if !report.date.trim().is_empty() {
+                                        let _ = cache.put_sweep_state(
+                                            &cr_scrape::cache::SweepState {
+                                                start_date: report.date.clone(),
+                                                end_date: report.date.clone(),
+                                                offset: 0,
+                                                total: 0,
+                                                updated_at: chrono::Utc::now().timestamp(),
+                                            },
+                                        );
+                                    }
+                                    Ok(format!(
+                                    "{} volumes and {} issues loaded (snapshot date {}). {} lines skipped.",
+                                    report.volumes,
+                                    report.issues,
+                                    if report.date.is_empty() {
+                                        "unknown"
+                                    } else {
+                                        &report.date
+                                    },
+                                    report.skipped
+                                ))
+                                }
+                            }
+                        }
+                    };
+                    let _ = tx.send(message);
+                })
+                .expect("spawn the MCL import worker");
+
+            let app = app.clone();
+            glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
+                let Ok(result) = rx.try_recv() else {
+                    return glib::ControlFlow::Continue;
+                };
+                match result {
+                    Ok(text) => show_info_dialog(&app, "Import Comic Vine MCL File", &text),
+                    Err(reason) => show_error_dialog(&app, "Import Comic Vine MCL File", &reason),
+                }
+                glib::ControlFlow::Break
+            });
+        });
+    }
+
+    /// "Update Comic Vine Cache" (ADR-038): one paged sweep over the
+    /// issues that changed since the last sweep, or since the MCL
+    /// snapshot date. It keeps the skeleton current for far fewer
+    /// requests than one revalidation per volume.
+    fn update_cv_cache(self: &Rc<ShellState>) {
+        let config = library::scraper_config();
+        if !config.has_api_key() {
+            show_error_dialog(
+                &self.app,
+                "Update Comic Vine Cache",
+                "No Comic Vine API key is set. Set it in Preferences ▸ Comic Vine Scraper.",
+            );
+            return;
+        }
+        let Some(cache) = library::cv_cache() else {
+            show_error_dialog(
+                &self.app,
+                "Update Comic Vine Cache",
+                "The Comic Vine cache file could not be opened.",
+            );
+            return;
+        };
+
+        let today = chrono::Local::now().date_naive();
+        let stored = cache.sweep_state().ok().flatten();
+        // An unfinished sweep of the SAME window resumes. A finished
+        // one, or an MCL import, starts a window at its end date.
+        let options = match &stored {
+            Some(state) if state.total > 0 && state.offset < state.total => {
+                cr_scrape::cache::sweep::SweepOptions {
+                    start_date: state.start_date.clone(),
+                    end_date: state.end_date.clone(),
+                    max_pages: None,
+                }
+            }
+            Some(state) if !state.end_date.trim().is_empty() => {
+                cr_scrape::cache::sweep::SweepOptions {
+                    start_date: state.end_date.clone(),
+                    end_date: today.format("%Y-%m-%d").to_string(),
+                    max_pages: None,
+                }
+            }
+            _ => {
+                show_error_dialog(
+                    &self.app,
+                    "Update Comic Vine Cache",
+                    "The cache has no starting point. Import an MCL file first, so the sweep knows which date to start from.",
+                );
+                return;
+            }
+        };
+        if options.start_date == options.end_date {
+            show_info_dialog(
+                &self.app,
+                "Update Comic Vine Cache",
+                "The cache is already current for today.",
+            );
+            return;
+        }
+
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let budget = library::cv_budget(&config, std::sync::Arc::clone(&cancel));
+        let api_key = config.api_key.clone();
+        let window = format!("{} to {}", options.start_date, options.end_date);
+        let (tx, rx) =
+            std::sync::mpsc::channel::<Result<cr_scrape::cache::sweep::SweepReport, String>>();
+        std::thread::Builder::new()
+            .name("Comic Vine Sweep".into())
+            .spawn(move || {
+                let mut client = cr_scrape::cv::connection::CvClient::new(&api_key);
+                if let Some(budget) = budget {
+                    client.set_budget(budget);
+                }
+                let result = cr_scrape::cache::sweep::run(
+                    &client,
+                    cache.as_ref(),
+                    &options,
+                    &cancel,
+                    |_| {},
+                )
+                .map_err(|e| e.to_string());
+                let _ = tx.send(result);
+            })
+            .expect("spawn the Comic Vine sweep worker");
+
+        let app = self.app.clone();
+        glib::timeout_add_local(std::time::Duration::from_millis(250), move || {
+            let Ok(result) = rx.try_recv() else {
+                return glib::ControlFlow::Continue;
+            };
+            match result {
+                Ok(report) => {
+                    let tail = if report.complete {
+                        "The window is complete."
+                    } else {
+                        "The run stopped early. Run the command again to continue."
+                    };
+                    show_info_dialog(
+                        &app,
+                        "Update Comic Vine Cache",
+                        &format!(
+                            "{window}: {} pages, {} issues, {} volumes. {tail}",
+                            report.pages, report.issues, report.volumes
+                        ),
+                    );
+                }
+                Err(reason) => show_error_dialog(&app, "Update Comic Vine Cache", &reason),
+            }
+            glib::ControlFlow::Break
+        });
+    }
+
+    /// "Warm Comic Vine Cache" (ADR-037): spends the request budget
+    /// on the volumes the library already names, so a later scrape
+    /// reads from the cache. The run is capped and it stops the
+    /// moment the budget refuses a request.
+    fn warm_cv_cache(self: &Rc<ShellState>) {
+        let config = library::scraper_config();
+        if !config.has_api_key() {
+            show_error_dialog(
+                &self.app,
+                "Warm Comic Vine Cache",
+                "No Comic Vine API key is set. Set it in Preferences ▸ Comic Vine Scraper.",
+            );
+            return;
+        }
+        let Some(cache) = library::cv_cache() else {
+            show_error_dialog(
+                &self.app,
+                "Warm Comic Vine Cache",
+                "The Comic Vine cache file could not be opened.",
+            );
+            return;
+        };
+        let volume_ids = library::cv_volume_ids(&config);
+        if volume_ids.is_empty() {
+            show_error_dialog(
+                &self.app,
+                "Warm Comic Vine Cache",
+                "No book in the library names a Comic Vine volume. Scrape some books first.",
+            );
+            return;
+        }
+
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let budget = library::cv_budget(&config, std::sync::Arc::clone(&cancel));
+        let (_, _, warm_options) = cr_scrape::cache::policies_from(config.advanced());
+        let api_key = config.api_key.clone();
+        let (tx, rx) = std::sync::mpsc::channel::<cr_scrape::cache::warm::WarmReport>();
+        std::thread::Builder::new()
+            .name("Comic Vine Warm".into())
+            .spawn(move || {
+                let mut client = cr_scrape::cv::connection::CvClient::new(&api_key);
+                if let Some(budget) = budget {
+                    client.set_budget(budget);
+                }
+                let report = cr_scrape::cache::warm::run(
+                    &client,
+                    cache.as_ref(),
+                    &volume_ids,
+                    &warm_options,
+                    &cancel,
+                    |_| {},
+                );
+                let _ = tx.send(report);
+            })
+            .expect("spawn the Comic Vine warm worker");
+
+        let app = self.app.clone();
+        glib::timeout_add_local(std::time::Duration::from_millis(250), move || {
+            let Ok(report) = rx.try_recv() else {
+                return glib::ControlFlow::Continue;
+            };
+            let stopped = if report.stopped_early {
+                " The run stopped early: the request budget or the cap was reached."
+            } else {
+                ""
+            };
+            show_info_dialog(
+                &app,
+                "Warm Comic Vine Cache",
+                &format!(
+                    "{} volumes looked at. {} read, {} already fresh, {} failed. {} requests spent.{stopped}",
+                    report.considered,
+                    report.warmed,
+                    report.already_fresh,
+                    report.failed,
+                    report.requests
+                ),
+            );
+            glib::ControlFlow::Break
+        });
+    }
+
     fn open_bulk_editor(self: &Rc<ShellState>, books: Vec<ComicBook>) {
         let commit = self.editor_commit();
         crate::dialogs::bulk_edit::show(&self.window, books, commit);
@@ -2970,8 +3241,11 @@ impl ShellState {
             &self.window,
             &config,
             books,
-            None,
-            Some(Arc::clone(&self.pool)),
+            crate::dialogs::scrape::ScrapeContext {
+                base_url: None,
+                pool: Some(Arc::clone(&self.pool)),
+                cache: library::cv_cache().map(|c| c as Arc<dyn cr_scrape::cache::CvCache>),
+            },
             move |_summary| {
                 if let Some(sh) = state.upgrade() {
                     sh.refresh_view_from_list();
@@ -4165,6 +4439,12 @@ any value with at least one character.)",
         // the scrape wizard over the selection.
         self.add_simple(&group, "scrape-config", ShellState::show_scrape_config);
         self.add_simple(&group, "scrape-books", ShellState::open_scrape);
+        // The Comic Vine disk cache (ADR-037, Phase 15): the MCL
+        // seed import and the warm task. The C# plugin had no cache,
+        // so it had no such commands.
+        self.add_simple(&group, "cv-import-mcl", ShellState::import_cv_mcl);
+        self.add_simple(&group, "cv-update", ShellState::update_cv_cache);
+        self.add_simple(&group, "cv-warm", ShellState::warm_cv_cache);
         // generate-thumbnails — the C# `CacheThumbnails` queue
         // command: one unlimited-queue warm-up job per library book
         // (the worker skips covers already in the thumbnail disk
@@ -5925,6 +6205,44 @@ fn open_file_dialog(window: &ApplicationWindow, on_open: impl Fn(&str) + 'static
         }
     });
     chooser.show();
+}
+
+/// Opens the `.mcl` file chooser (ADR-038).
+fn open_mcl_dialog(window: &ApplicationWindow, on_open: impl Fn(&str) + 'static) {
+    let chooser = gtk4::FileChooserNative::builder()
+        .title("Import Comic Vine MCL File")
+        .action(gtk4::FileChooserAction::Open)
+        .transient_for(window)
+        .modal(true)
+        .build();
+    let filter = gtk4::FileFilter::new();
+    filter.set_name(Some("Comic Vine MCL files"));
+    filter.add_pattern("*.mcl");
+    chooser.add_filter(&filter);
+    chooser.connect_response(move |chooser, response| {
+        if response != gtk4::ResponseType::Accept {
+            return;
+        }
+        if let Some(path) = chooser.file().and_then(|f| f.path()) {
+            on_open(&path.to_string_lossy());
+        }
+    });
+    chooser.show();
+}
+
+/// A plain report dialog. `show_error_dialog` reads as a failure, and
+/// a finished import is not one.
+fn show_info_dialog(parent: &Application, title: &str, message: &str) {
+    let dialog = gtk4::MessageDialog::builder()
+        .application(parent)
+        .title("comicrust")
+        .text(title.to_string())
+        .secondary_text(message.to_string())
+        .message_type(gtk4::MessageType::Info)
+        .buttons(gtk4::ButtonsType::Close)
+        .build();
+    dialog.connect_response(|dialog, _| dialog.destroy());
+    dialog.present();
 }
 
 fn show_error_dialog(parent: &Application, title: &str, message: &str) {

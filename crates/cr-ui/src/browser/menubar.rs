@@ -95,6 +95,11 @@ pub const FILE: &[MenuNode] = &[
         "<Control><Shift>t",
         "BackgroundJob",
     ),
+    // NO C# item — the Comic Vine disk cache (ADR-037, Phase 15).
+    // The C# plugin had no cache, so it needed no command.
+    Item("Import Comic Vine MCL File...", "win.cv-import-mcl", "", ""),
+    Item("Update Comic Vine Cache", "win.cv-update", "", ""),
+    Item("Warm Comic Vine Cache", "win.cv-warm", "", ""),
     Sep,
     Item(
         "_New fileless Book Entry...",

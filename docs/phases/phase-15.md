@@ -2,7 +2,7 @@
 
 ## Status
 
-Planned.
+Implemented, user test pending.
 
 ## Goal
 
@@ -67,26 +67,43 @@ series that the library does not hold.
       of the same file agree on the data, not on the bytes.
 - [x] T3 — the incremental sweep on a worker thread. Acceptance: a mock
       server test pages the sweep, stops it, and resumes it from
-      `sweep_state`.
+      `sweep_state`. The File menu drives it through "Update Comic Vine
+      Cache", which sweeps from the last window end, or from the MCL
+      snapshot date, to today.
 - [x] T4 — the freshness rule. A volume is closed when the cached
       `count_of_issues` equals the cached issue count and the last cover
       date is older than the horizon. Acceptance: a closed volume makes
       zero requests, an open volume makes one revalidation request.
-- [~] T5 — request accounting. One chokepoint logs every request.
+- [x] T5 — request accounting. One chokepoint logs every request.
       Acceptance: the budget survives a restart, the client blocks at
       the ceiling, and the scrape window shows the remaining budget and
-      the resume time. DONE: the `Budget` type, the `CvClient`
-      chokepoint, and the gates. OPEN: the scrape-window readout, which
-      lands with the T6 and T7 wiring.
-- [ ] T6 — the warm task. Off by default, budget-capped, cancellable,
-      reported in Tasks. Acceptance: the task stops at the budget and on
-      cancel.
+      the resume time.
+- [x] T6 — the warm task. Off by default, budget-capped, cancellable.
+      Acceptance: the task stops at the budget and on cancel.
+      DEVIATION: the task reports in a completion dialog, not in the
+      Tasks window. A Tasks queue row needs a new `PendingTasks`
+      source; it is on `docs/backlog.md`.
 - [x] T7 — "Fill Missing Issues". The command compares the owned issue
       numbers of a series against the skeleton, shows the gaps, and
       creates fileless books through `new_fileless_book()`. Each new
       book carries the series, the volume, the issue number, and the
       Comic Vine issue id. Acceptance: a series with no known Comic Vine
       id asks the user to pick the volume.
+
+## Commands
+
+The File menu gains three rows. The C# plugin had no cache, so it had
+no such commands.
+
+- **Import Comic Vine MCL File…** — seeds the skeleton from a file the
+  user supplies. No API request. The snapshot date becomes the start of
+  the next sweep.
+- **Update Comic Vine Cache** — one incremental sweep over the issues
+  that changed since that date.
+- **Warm Comic Vine Cache** — spends idle budget on the volumes the
+  library already names.
+
+The book menu gains **Fill Missing Issues…**.
 
 ## Verification
 
