@@ -10,6 +10,18 @@
 //! (`tvQueries_MouseDown`), Library renames but never removes
 //! (`RemoveListOrFolder` guard).
 //!
+//! Drag and drop moves one list or folder inside the tree
+//! (`tvQueries_ItemDrag` + `tvQueries_DragDrop`): a drop ON a folder
+//! appends the item to it, a drop on any other row — or in the top
+//! 4 px of a folder row — puts the item BEFORE that row, and a drop on
+//! empty space moves it to the root end. The Library root never drags,
+//! and a folder refuses a drop into its own subtree. Absent against
+//! the C#: Ctrl-drag copy, the `.cbl` file and book drop branches, the
+//! `treeSkin` drop highlight, and drag auto-scroll.
+//!
+//! The "Sort" command (`SortList`, `miNodeSort`) sorts ONE folder's
+//! items: folders first, then the rest by name.
+//!
 //! The T7 toolbar (the control's own `toolStrip`, Designer:320-331):
 //! New Folder / New List / New Smart List (the SAME commands as the
 //! context menu, acting on the selection), Expand/Collapse All
@@ -44,6 +56,10 @@ use crate::icon;
 /// Selection-change debounce (`updateTimer`; large sets re-evaluate).
 const SELECT_DEBOUNCE_MS: u64 = 200;
 
+/// The height of a row's top strip that makes a drop insert BEFORE the
+/// row instead of into it (`SetDropEffects`: `point2.Y < 4`).
+const SEPARATOR_EDGE_PX: i32 = 4;
+
 /// The tree columns.
 const COL_NAME: u32 = 0;
 const COL_ICON: u32 = 1;
@@ -62,6 +78,10 @@ pub enum ListCommand {
     Rename,
     Delete,
     Import,
+    /// `SortList` (`miNodeSort`, "&Sort"): sorts the selected FOLDER's
+    /// items — folders first, then the rest by name. Folder rows only,
+    /// which is the C# enable rule.
+    Sort,
     /// "Scan List Contents" (ADR-036, a port addition): scan the
     /// distinct linked file paths of the selected list's books. Smart
     /// lists and reading lists only.
@@ -326,6 +346,143 @@ impl Navigator {
             });
             self.view.add_controller(gesture);
         }
+        // Drag and drop inside the tree (`tvQueries_ItemDrag` +
+        // `tvQueries_DragDrop`): a list or a folder moves into a
+        // folder, lands before a row, or goes to the root end. The
+        // payload is the dragged item id.
+        //
+        // The source runs in the CAPTURE phase: the TreeView claims
+        // the pointer sequence for its own selection handling in the
+        // bubble phase, and a source behind it never reaches the drag
+        // threshold. A click that does not pass the threshold is not
+        // claimed, so row selection still works.
+        {
+            let nav = Rc::downgrade(self);
+            let source = gtk4::DragSource::new();
+            source.set_actions(gdk::DragAction::MOVE);
+            source.set_propagation_phase(gtk4::PropagationPhase::Capture);
+            source.connect_prepare(move |_, x, y| {
+                let nav = nav.upgrade()?;
+                let id = nav.row_id_at(x, y)?;
+                // The C# clears the drag node for the Library root.
+                if matches!(
+                    crate::library::find_list_item_any(&id),
+                    Some(ComicListItem::Library(_))
+                ) {
+                    return None;
+                }
+                Some(gdk::ContentProvider::for_value(
+                    &id.to_d_string().to_value(),
+                ))
+            });
+            self.view.add_controller(source);
+        }
+        {
+            let nav = Rc::downgrade(self);
+            let target = gtk4::DropTarget::new(String::static_type(), gdk::DragAction::MOVE);
+            target.connect_drop(move |_, value, x, y| {
+                let Some(nav) = nav.upgrade() else {
+                    return false;
+                };
+                let Ok(text) = value.get::<String>() else {
+                    return false;
+                };
+                let Ok(id) = CrGuid::parse(&text) else {
+                    return false;
+                };
+                nav.apply_drop(&id, x, y)
+            });
+            self.view.add_controller(target);
+        }
+    }
+
+    /// The item id of the row under a widget-relative point.
+    fn row_id_at(&self, x: f64, y: f64) -> Option<CrGuid> {
+        let (bx, by) = self
+            .view
+            .convert_widget_to_bin_window_coords(x as i32, y as i32);
+        let (Some(path), ..) = self.view.path_at_pos(bx, by)? else {
+            return None;
+        };
+        let iter = self.store.iter(&path)?;
+        self.row_id(&iter)
+    }
+
+    /// Where a drop at this point lands (`SetDropEffects`,
+    /// `ComicListLibraryBrowser.cs:979`): no row under the pointer is
+    /// the root end; the top 4 px of a row, and every row that is not
+    /// a folder, insert BEFORE that row; a folder row takes the item
+    /// as its last child.
+    pub fn drop_target_at(&self, x: f64, y: f64) -> crate::library::ListDrop {
+        use crate::library::ListDrop;
+        let (bx, by) = self
+            .view
+            .convert_widget_to_bin_window_coords(x as i32, y as i32);
+        let Some((Some(path), ..)) = self.view.path_at_pos(bx, by) else {
+            return ListDrop::RootEnd;
+        };
+        let Some(iter) = self.store.iter(&path) else {
+            return ListDrop::RootEnd;
+        };
+        let Some(id) = self.row_id(&iter) else {
+            return ListDrop::RootEnd;
+        };
+        let is_folder = matches!(
+            crate::library::find_list_item_any(&id),
+            Some(ComicListItem::Folder(_))
+        );
+        let area = self.view.cell_area(Some(&path), None::<&TreeViewColumn>);
+        let offset = by - area.y();
+        let on_top_edge = (0..SEPARATOR_EDGE_PX).contains(&offset);
+        if on_top_edge || !is_folder {
+            ListDrop::BeforeItem(id)
+        } else {
+            ListDrop::IntoFolder(id)
+        }
+    }
+
+    /// The shared drop body: move the item in the ComicLists model,
+    /// then refill and re-select it (the C# `FindItemNode` re-select,
+    /// :1088). Returns whether the tree changed. An impossible move —
+    /// the item onto itself or into its own subtree — returns false
+    /// and leaves the tree alone.
+    fn apply_drop(&self, src: &CrGuid, x: f64, y: f64) -> bool {
+        let drop = self.drop_target_at(x, y);
+        if !crate::library::move_list_item(src, &drop) {
+            return false;
+        }
+        self.refill(&crate::library::comic_lists_snapshot());
+        self.select_list(src);
+        true
+    }
+
+    /// The probe's drop path (the same body the DropTarget fires).
+    pub fn probe_drop(&self, src: &CrGuid, x: f64, y: f64) -> bool {
+        self.apply_drop(src, x, y)
+    }
+
+    /// The probe's drop geometry: the widget-relative centre of a
+    /// row, and a point 1 px inside its top edge (the separator
+    /// strip). `None` when the row is absent or has no allocation.
+    pub fn probe_row_points(&self, id: &CrGuid) -> Option<((f64, f64), (f64, f64))> {
+        let text = id.to_d_string();
+        let first = self.store.iter_first()?;
+        let iter = self.find_iter(Some(&first), &text)?;
+        let path = self.store.path(&iter);
+        let area = self.view.cell_area(Some(&path), None::<&TreeViewColumn>);
+        if area.height() == 0 {
+            return None;
+        }
+        let centre = self
+            .view
+            .convert_bin_window_to_widget_coords(20, area.y() + area.height() / 2);
+        let top = self
+            .view
+            .convert_bin_window_to_widget_coords(20, area.y() + 1);
+        Some((
+            (centre.0 as f64, centre.1 as f64),
+            (top.0 as f64, top.1 as f64),
+        ))
     }
 
     /// The right-click path: select the row under the cursor and
@@ -702,6 +859,13 @@ impl Navigator {
         let has_own_view = target
             .as_ref()
             .is_some_and(|id| crate::library::list_view_config(id).is_some());
+        // "Sort" is a folder-row command in the C#
+        // (`commands.Add(SortList, () => ... is ComicListItemFolder)`,
+        // ComicListLibraryBrowser.cs:338).
+        let sortable = target
+            .as_ref()
+            .and_then(crate::library::find_list_item_any)
+            .is_some_and(|item| matches!(item, ComicListItem::Folder(_)));
         crate::trace::trace(format!("nav menu target={target:?} scan-row={scanable}"));
         let popover = Popover::new();
         popover.set_has_arrow(false);
@@ -736,6 +900,11 @@ impl Navigator {
         }
         add_item(&box_, "New Folder…", ListCommand::NewFolder);
         add_item(&box_, "Rename…", ListCommand::Rename);
+        // The C# context menu order is Edit, Rename, Sort
+        // (`treeContextMenu.Items`, Designer:142-144).
+        if sortable {
+            add_item(&box_, "Sort", ListCommand::Sort);
+        }
         add_item(&box_, "Delete", ListCommand::Delete);
         // `miImportReadingList` (the C# menu sits between the
         // Export/Import pair and the Open commands).

@@ -14,6 +14,54 @@ user-tested on 2026-09-12 and are archived. Phase 9 is DEFERRED to
 
 ## Current task
 
+**Side task after v0.1.0: the navigator tree gained drag-and-drop and
+the Sort command** (two user findings, 2026-09-12). Both were missing
+ports, not regressions.
+
+1. **Drag and drop inside the list tree** (`tvQueries_ItemDrag` +
+   `tvQueries_DragDrop`). There was NO drag-and-drop code anywhere in
+   cr-ui before this. The ported rules: a drop ON a folder appends the
+   item to that folder; a drop on any other row — and on the top 4 px
+   of a folder row — puts the item BEFORE that row, which is the free
+   ordering inside a folder the user asked for; a drop on empty space
+   moves the item to the root end. The Library root never drags, and a
+   folder refuses a drop into its own subtree. The model move lives in
+   `library::move_list_item` (`ListDrop`), so it is unit-tested without
+   a widget; the C# `sourceIndex < dropIndex` decrement is unnecessary
+   because the port removes the item before it reads the destination
+   index.
+2. **The "Sort" command** (`SortList`, `miNodeSort`). It is NOT an
+   automatic sort in ComicRack either: it is a context-menu command
+   that the C# enables only on a folder row, and it sorts that folder's
+   items — folders first, then by name. The port shows the row in the
+   same place (Edit, Rename, Sort). `cr-io/extended_compare.rs` gained
+   the `ZeroesFirst` mode the C# passes with `IgnoreArticles |
+   IgnoreCase`; it orders by LEADING-ZERO COUNT before value, so "010"
+   sorts before "9".
+
+Deviations from the C#, taken knowingly:
+
+- **No Ctrl-drag copy.** The C# clones a shareable item on Ctrl. Out of
+  scope by the user's choice; a Ctrl-drag moves.
+- **A drop in the top 4 px of the Library root inserts AFTER the root.**
+  The C# inserts before it and then paints the list above the Library
+  row.
+- **No drop highlight, no drag auto-scroll, no `.cbl` file drops and no
+  book drops from the browser.** The C# `treeSkin` drop paint and the
+  external drop branches are not ported.
+
+The drag SOURCE runs in the CAPTURE propagation phase. In the bubble
+phase the TreeView claims the pointer sequence for its own selection
+handling and a source behind it never reaches the drag threshold; a
+click that does not pass the threshold is still not claimed, so row
+selection keeps working. This is the one part a probe cannot gate — it
+needs the user test below.
+
+Phase 16 T1 (add `cover_date` to `IssueRef` and the issue queries) is
+unchanged and NOT STARTED.
+
+## Previous task
+
 **v0.1.0 is TAGGED.** The first stable release. The tag is annotated
 and points at the thumbnail-warm-up fix. Publishing is manual and is
 the user's step, in this order, both from the Gitea Actions UI:
@@ -99,6 +147,40 @@ GPL-3.0-or-later, under which Apache-2.0 is compatible. No claim is
 made that the present combination is permissible.
 
 ## Verification record
+
+The navigator side task (2026-09-12): `cargo fmt --all` and `cargo
+clippy --workspace --all-targets -- -D warnings` — green.
+`CR_FORMAT_TESTS=1 cargo test --workspace --locked` — 692 passed, 0
+failed (680 + 12 new: 2 for the `ZeroesFirst` comparer mode, 10 for the
+tree move and sort). `cargo build --release --locked -p cr-app` —
+green.
+
+New probe `navtree_probe` (release, Xvfb :99, isolated XDG), gates A to
+F2 all green: A the drop geometry resolves to IntoFolder / BeforeItem /
+RootEnd from real row rectangles, B a drop on a folder appends, C a
+drop on a row inserts before it, D the subtree and Library-root drops
+are refused, E "Sort" shows on a folder only and fires
+`ListCommand::Sort`, F the folder sorts by name, F2 the order survives
+a save and a reload from ComicDb.xml. `listorder_probe`,
+`browserbar_probe` and `navpages_probe` re-run unchanged and green.
+
+UNKNOWN, stated plainly: gate E clicks the real menu button and runs
+the same `sort_folder` body `app.rs` runs, because `run_list_command`
+is private. The `ListCommand::Sort` arm in `app.rs` is therefore
+compile-checked only, like the other arms that `navpages_probe` gates
+the same way.
+
+MEASURED while gating: the `gtk_css_node_insert_after` Gtk-CRITICAL
+that appears on every context-menu open is PRE-EXISTING. The untouched
+`navpages_probe` emits the same line once per popover open.
+
+MEASURED constraint: one drop per main-loop turn. A drop refills the
+tree, and `TreeView::cell_area` reports the new row geometry only after
+the view lays out again, so two drops in one turn aim the second at
+stale rectangles. The first `navtree_probe` run failed exactly this way
+and the probe TIMING was corrected, not the expectation.
+
+## Earlier verification record
 
 `cargo build --release --locked -p cr-app` — the command the release
 workflows run — green. `cargo fmt --all --check` and `cargo clippy
@@ -206,8 +288,21 @@ The 2026-09-12 side task (ADR-039, ADR-040):
 
 ## User tests
 
-Two of four passed against the v0.1.0 build. The other two were NOT
-run against it. Recorded as-is: an unrun test is not a passing test.
+**NEW, from the navigator side task (not yet run):**
+
+4. **Tree drag-and-drop.** Drag a reading list onto a folder: it must
+   become a child of that folder. Drag a list onto another list inside
+   a folder: it must land ABOVE that list, and the order you build by
+   hand must stay. Drag a list to the empty space below the rows: it
+   must move to the bottom of the top level. Try to drag a folder into
+   one of its own sub-folders: nothing must happen. The Library row
+   must not drag at all. Restart the app: every order must be as you
+   left it. This test also covers the one thing no probe can gate — a
+   plain click must still select a row.
+5. **Sort.** Right-click a folder: "Sort" must be there, between
+   Rename and Delete. Click it: sub-folders come first, then the lists
+   by name ("The Batman" sorts under B). Right-click a LIST: there must
+   be no "Sort" row. Restart and confirm the sorted order survived.
 
 **PASSED 2026-09-12 (user confirmation):**
 

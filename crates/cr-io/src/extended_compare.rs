@@ -28,7 +28,7 @@ fn compare_chars(c1: char, c2: char, ignore_case: bool) -> Ordering {
 
 /// Port of `ExtendedStringComparer.Compare(s1, s2, IgnoreCase)`.
 pub fn extended_compare_ignore_case(s1: &str, s2: &str) -> Ordering {
-    scan_extended(s1, s2, 0, 0, Ordering::Equal)
+    scan_extended(s1, s2, 0, 0, Ordering::Equal, false)
 }
 
 /// `StringUtility.IndexAfterArticle` with the default article list (the
@@ -52,6 +52,19 @@ fn index_after_article(s: &str) -> usize {
 /// C# compares the skipped-prefix lengths first and returns that
 /// verdict when both strings exhaust together.
 pub fn extended_compare_ignore_articles_case(s1: &str, s2: &str) -> Ordering {
+    compare_articles_case(s1, s2, false)
+}
+
+/// Port of `ExtendedStringComparer.Compare(s1, s2, ZeroesFirst |
+/// IgnoreArticles | IgnoreCase)` — the mode the list-tree `SortList`
+/// command uses (`ComicListLibraryBrowser.cs:1172`). `ZeroesFirst`
+/// compares the LEADING-ZERO COUNT of two numbers before their value
+/// (`ExtendedStringComparer.cs:162-171`), so "010" sorts before "9".
+pub fn extended_compare_zeroes_first_articles_case(s1: &str, s2: &str) -> Ordering {
+    compare_articles_case(s1, s2, true)
+}
+
+fn compare_articles_case(s1: &str, s2: &str, zeroes_first: bool) -> Ordering {
     if s1.is_empty() {
         return if s2.is_empty() {
             Ordering::Equal
@@ -68,12 +81,19 @@ pub fn extended_compare_ignore_articles_case(s1: &str, s2: &str) -> Ordering {
     let i1 = index_after_article(s1);
     let i2 = index_after_article(s2);
     let result = i1.cmp(&i2);
-    scan_extended(s1, s2, i1, i2, result)
+    scan_extended(s1, s2, i1, i2, result, zeroes_first)
 }
 
 /// The shared `Compare` scan body (default mode is i1=i2=0 with
 /// `Ordering::Equal` on simultaneous exhaustion).
-fn scan_extended(s1: &str, s2: &str, start1: usize, start2: usize, on_equal: Ordering) -> Ordering {
+fn scan_extended(
+    s1: &str,
+    s2: &str,
+    start1: usize,
+    start2: usize,
+    on_equal: Ordering,
+    zeroes_first: bool,
+) -> Ordering {
     if s1.is_empty() {
         return if s2.is_empty() {
             Ordering::Equal
@@ -140,7 +160,7 @@ fn scan_extended(s1: &str, s2: &str, start1: usize, start2: usize, on_equal: Ord
                 Ordering::Greater
             };
         } else {
-            let ord = compare_numbers(&v1, &mut i1, &v2, &mut i2);
+            let ord = compare_numbers(&v1, &mut i1, &v2, &mut i2, zeroes_first);
             if ord != Ordering::Equal {
                 return ord;
             }
@@ -158,10 +178,17 @@ fn scan_extended(s1: &str, s2: &str, start1: usize, start2: usize, on_equal: Ord
     }
 }
 
-/// Port of `ExtendedStringComparer.CompareNumbers` (default mode: no
-/// zeroes-first flag). On return `i1`/`i2` sit on the last digit of
-/// each number; the caller advances past them.
-fn compare_numbers(v1: &[char], i1: &mut usize, v2: &[char], i2: &mut usize) -> Ordering {
+/// Port of `ExtendedStringComparer.CompareNumbers`. On return `i1`/`i2`
+/// sit on the last digit of each number; the caller advances past them.
+/// With `zeroes_first`, the leading-zero COUNT decides first
+/// (`ExtendedStringComparer.cs:162-171`).
+fn compare_numbers(
+    v1: &[char],
+    i1: &mut usize,
+    v2: &[char],
+    i2: &mut usize,
+    zeroes_first: bool,
+) -> Ordering {
     let start1 = *i1;
     let start2 = *i2;
     let mut nz_start1 = *i1;
@@ -173,6 +200,16 @@ fn compare_numbers(v1: &[char], i1: &mut usize, v2: &[char], i2: &mut usize) -> 
 
     *i1 = end1 - 1;
     *i2 = end2 - 1;
+
+    if zeroes_first {
+        let leading_zeros1 = nz_start1 - start1;
+        let leading_zeros2 = nz_start2 - start2;
+        match leading_zeros1.cmp(&leading_zeros2) {
+            Ordering::Greater => return Ordering::Less,
+            Ordering::Less => return Ordering::Greater,
+            Ordering::Equal => {}
+        }
+    }
 
     // significandLength1 is the digit count of s2's number and vice
     // versa — the swap is in the C# source and the comparison intent.
@@ -312,5 +349,26 @@ mod tests {
                 "Chapter 12 - Fix.jpg",
             ]
         );
+    }
+
+    #[test]
+    fn zeroes_first_orders_by_leading_zero_count() {
+        use super::extended_compare_ignore_articles_case as acmp;
+        use super::extended_compare_zeroes_first_articles_case as zcmp;
+        // The flag compares the leading-zero COUNT before the value,
+        // so a padded number wins over a larger unpadded one. Without
+        // the flag the values decide: 9 < 10.
+        assert_eq!(zcmp("010 - Alpha", "9 - Beta"), std::cmp::Ordering::Less);
+        assert_eq!(acmp("010 - Alpha", "9 - Beta"), std::cmp::Ordering::Greater);
+        // Equal leading-zero counts fall through to the value: 9 < 10.
+        assert_eq!(zcmp("09 - Alpha", "010 - Beta"), std::cmp::Ordering::Less);
+    }
+
+    #[test]
+    fn zeroes_first_keeps_article_and_case_rules() {
+        use super::extended_compare_zeroes_first_articles_case as zcmp;
+        // "The Batman" compares as "Batman", so it sorts before "Cat".
+        assert_eq!(zcmp("The Batman", "Cat"), std::cmp::Ordering::Less);
+        assert_eq!(zcmp("batman", "BATMAN"), std::cmp::Ordering::Equal);
     }
 }

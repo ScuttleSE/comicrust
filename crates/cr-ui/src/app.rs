@@ -519,6 +519,16 @@ fn run_list_command(
                 nav.refill(&library::comic_lists_snapshot());
             }
         }
+        ListCommand::Sort => {
+            // The C# `SortList`: the selected folder's items sort
+            // folders first, then by name.
+            let Some(id) = target else {
+                return;
+            };
+            if library::sort_folder(&id) {
+                nav.refill(&library::comic_lists_snapshot());
+            }
+        }
         ListCommand::Import => {
             import_list_dialog(parent, nav);
         }

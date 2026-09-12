@@ -1614,6 +1614,190 @@ pub fn remove_list(id: &CrGuid) {
     }
 }
 
+/// Where a dragged navigator row lands (`tvQueries_DragDrop`,
+/// `ComicListLibraryBrowser.cs:1045`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ListDrop {
+    /// Dropped ON a folder row: the item becomes the folder's LAST
+    /// child (the C# `((ComicListItemFolder)dropNode.Tag).Items.Add`).
+    IntoFolder(CrGuid),
+    /// The C# "separator" style: the item lands BEFORE this row inside
+    /// that row's own container. It applies when the pointer is in the
+    /// top 4 px of a row, and always when the row is not a folder.
+    BeforeItem(CrGuid),
+    /// Dropped on empty space: the item moves to the end of the root
+    /// list (the C# `dropNode == null` branch).
+    RootEnd,
+}
+
+/// Moves one list or folder inside the ComicLists tree — the internal
+/// drag of `tvQueries_DragDrop`. Returns whether the tree changed.
+///
+/// Refused: the Library root (it never drags), a drop on the item
+/// itself, and a drop into the item's own subtree (the C# refuses
+/// these at `SetDropEffects` time through the recursive `Nodes.Find`,
+/// `FormUtility.cs:399`).
+pub fn move_list_item(id: &CrGuid, drop: &ListDrop) -> bool {
+    let lib = session();
+    let mut l = lib.borrow_mut();
+    let moved = apply_list_move(&mut l.database_mut().comic_lists, id, drop);
+    if moved {
+        l.mark_dirty();
+    }
+    moved
+}
+
+/// `SortList` (`ComicListLibraryBrowser.cs:1162`): sorts ONE folder's
+/// items — folders first, then the rest by name with the
+/// `ZeroesFirst | IgnoreArticles | IgnoreCase` comparer. The C# enables
+/// the command only for a folder row, so the root list never sorts.
+pub fn sort_folder(id: &CrGuid) -> bool {
+    let lib = session();
+    let mut l = lib.borrow_mut();
+    let Some(folder) = find_folder_mut(&mut l.database_mut().comic_lists, id) else {
+        return false;
+    };
+    sort_list_items(&mut folder.items);
+    l.mark_dirty();
+    true
+}
+
+/// The pure body of [`move_list_item`], over the tree itself.
+fn apply_list_move(
+    items: &mut Vec<cr_core::database::list_items::ComicListItem>,
+    id: &CrGuid,
+    drop: &ListDrop,
+) -> bool {
+    use cr_core::database::list_items::ComicListItem;
+
+    // The Library root never moves (`tvQueries_ItemDrag` clears the
+    // drag node for it).
+    let Some(source) = find_list_item_in(items, id) else {
+        return false;
+    };
+    if matches!(source, ComicListItem::Library(_)) {
+        return false;
+    }
+    // A drop on the item itself, or anywhere inside its own subtree,
+    // would build a cycle.
+    let target = match drop {
+        ListDrop::IntoFolder(t) | ListDrop::BeforeItem(t) => Some(*t),
+        ListDrop::RootEnd => None,
+    };
+    if let Some(target) = target {
+        if target == *id || contains_item(source, &target) {
+            return false;
+        }
+    }
+
+    // Take the item out first; every destination index is then read
+    // from the tree as it stands, which is what the C# achieves with
+    // its `sourceIndex < dropIndex` decrement (:1076).
+    let Some(container) = find_container(items, id) else {
+        return false;
+    };
+    let Some(position) = container.iter().position(|i| i.base().id == *id) else {
+        return false;
+    };
+    let item = container.remove(position);
+    let restore = |items: &mut Vec<ComicListItem>, item: ComicListItem| {
+        // The destination vanished: put the item back where it was.
+        if let Some(container) = find_container(items, id) {
+            let at = position.min(container.len());
+            container.insert(at, item);
+        } else {
+            items.push(item);
+        }
+    };
+
+    match drop {
+        ListDrop::RootEnd => {
+            items.push(item);
+            true
+        }
+        ListDrop::IntoFolder(folder_id) => match find_folder_mut(items, folder_id) {
+            Some(folder) => {
+                folder.items.push(item);
+                true
+            }
+            None => {
+                restore(items, item);
+                false
+            }
+        },
+        ListDrop::BeforeItem(target_id) => {
+            let Some(container) = find_container(items, target_id) else {
+                restore(items, item);
+                return false;
+            };
+            let Some(at) = container.iter().position(|i| i.base().id == *target_id) else {
+                restore(items, item);
+                return false;
+            };
+            // Deviation from the C#, which inserts above the Library
+            // root when the drop lands in its top 4 px and paints the
+            // list above it. The root stays first here.
+            let at = if matches!(container[at], ComicListItem::Library(_)) {
+                at + 1
+            } else {
+                at
+            };
+            container.insert(at, item);
+            true
+        }
+    }
+}
+
+/// The `SortList` comparator: folders before everything else, then the
+/// name compare the C# passes (`:1167-1173`).
+fn sort_list_items(items: &mut [cr_core::database::list_items::ComicListItem]) {
+    use cr_core::database::list_items::ComicListItem;
+    items.sort_by(|a, b| {
+        let folder_a = matches!(a, ComicListItem::Folder(_));
+        let folder_b = matches!(b, ComicListItem::Folder(_));
+        match folder_b.cmp(&folder_a) {
+            std::cmp::Ordering::Equal => {
+                cr_io::extended_compare::extended_compare_zeroes_first_articles_case(
+                    a.base().name.as_deref().unwrap_or(""),
+                    b.base().name.as_deref().unwrap_or(""),
+                )
+            }
+            other => other,
+        }
+    });
+}
+
+/// Whether `id` is `item` itself or sits anywhere under it.
+fn contains_item(item: &cr_core::database::list_items::ComicListItem, id: &CrGuid) -> bool {
+    if item.base().id == *id {
+        return true;
+    }
+    match item {
+        cr_core::database::list_items::ComicListItem::Folder(f) => {
+            f.items.iter().any(|child| contains_item(child, id))
+        }
+        _ => false,
+    }
+}
+
+/// Depth-first borrow of one item in a tree.
+fn find_list_item_in<'a>(
+    items: &'a [cr_core::database::list_items::ComicListItem],
+    id: &CrGuid,
+) -> Option<&'a cr_core::database::list_items::ComicListItem> {
+    for item in items {
+        if item.base().id == *id {
+            return Some(item);
+        }
+        if let cr_core::database::list_items::ComicListItem::Folder(f) = item {
+            if let Some(found) = find_list_item_in(&f.items, id) {
+                return Some(found);
+            }
+        }
+    }
+    None
+}
+
 fn find_container<'a>(
     items: &'a mut Vec<cr_core::database::list_items::ComicListItem>,
     id: &CrGuid,
@@ -2757,5 +2941,264 @@ mod cv_job_tests {
         for kind in [CvJobKind::Import, CvJobKind::Sweep, CvJobKind::Warm] {
             assert!(!kind.label().is_empty());
         }
+    }
+}
+
+#[cfg(test)]
+mod list_tree_tests {
+    use super::*;
+    use cr_core::database::list_items::{
+        ComicListItem, FolderItem, IdListItem, LibraryListItem, ListItemBase, SmartListItem,
+    };
+
+    fn base(name: &str) -> ListItemBase {
+        ListItemBase {
+            id: CrGuid::new_random(),
+            name: Some(name.to_string()),
+            ..Default::default()
+        }
+    }
+
+    fn list(name: &str) -> ComicListItem {
+        ComicListItem::IdList(IdListItem {
+            base: base(name),
+            ..Default::default()
+        })
+    }
+
+    fn smart(name: &str) -> ComicListItem {
+        ComicListItem::Smart(SmartListItem {
+            base: base(name),
+            ..Default::default()
+        })
+    }
+
+    fn folder(name: &str, items: Vec<ComicListItem>) -> ComicListItem {
+        ComicListItem::Folder(FolderItem {
+            base: base(name),
+            items,
+            ..Default::default()
+        })
+    }
+
+    fn library_root() -> ComicListItem {
+        ComicListItem::Library(LibraryListItem {
+            base: base("Library"),
+        })
+    }
+
+    /// The names of one container, in order.
+    fn names(items: &[ComicListItem]) -> Vec<String> {
+        items
+            .iter()
+            .map(|i| i.base().name.clone().unwrap_or_default())
+            .collect()
+    }
+
+    fn id_of(items: &[ComicListItem], name: &str) -> CrGuid {
+        find_named(items, name).expect("the test item exists")
+    }
+
+    fn find_named(items: &[ComicListItem], name: &str) -> Option<CrGuid> {
+        for item in items {
+            if item.base().name.as_deref() == Some(name) {
+                return Some(item.base().id);
+            }
+            if let ComicListItem::Folder(f) = item {
+                if let Some(found) = find_named(&f.items, name) {
+                    return Some(found);
+                }
+            }
+        }
+        None
+    }
+
+    fn folder_items<'a>(items: &'a [ComicListItem], name: &str) -> &'a [ComicListItem] {
+        for item in items {
+            if let ComicListItem::Folder(f) = item {
+                if f.base.name.as_deref() == Some(name) {
+                    return &f.items;
+                }
+                let nested = folder_items(&f.items, name);
+                if !nested.is_empty() {
+                    return nested;
+                }
+            }
+        }
+        &[]
+    }
+
+    #[test]
+    fn drop_on_a_folder_appends_the_item_to_it() {
+        let mut tree = vec![
+            library_root(),
+            folder("Marvel", vec![list("Avengers")]),
+            list("Batman"),
+        ];
+        let moved = id_of(&tree, "Batman");
+        let target = id_of(&tree, "Marvel");
+        assert!(apply_list_move(
+            &mut tree,
+            &moved,
+            &ListDrop::IntoFolder(target)
+        ));
+        assert_eq!(names(&tree), vec!["Library", "Marvel"]);
+        assert_eq!(
+            names(folder_items(&tree, "Marvel")),
+            vec!["Avengers", "Batman"]
+        );
+    }
+
+    #[test]
+    fn drop_before_a_row_reorders_inside_one_container() {
+        // The user's ask: free ordering inside a folder.
+        let mut tree = vec![folder(
+            "Reading",
+            vec![list("Alpha"), list("Beta"), list("Gamma")],
+        )];
+        let moved = id_of(&tree, "Gamma");
+        let target = id_of(&tree, "Alpha");
+        assert!(apply_list_move(
+            &mut tree,
+            &moved,
+            &ListDrop::BeforeItem(target)
+        ));
+        assert_eq!(
+            names(folder_items(&tree, "Reading")),
+            vec!["Gamma", "Alpha", "Beta"]
+        );
+    }
+
+    #[test]
+    fn a_downward_move_lands_before_the_target_row() {
+        // The C# decrements its drop index for this case (:1076); the
+        // port removes first, so the fresh index already accounts for
+        // it.
+        let mut tree = vec![list("Alpha"), list("Beta"), list("Gamma")];
+        let moved = id_of(&tree, "Alpha");
+        let target = id_of(&tree, "Gamma");
+        assert!(apply_list_move(
+            &mut tree,
+            &moved,
+            &ListDrop::BeforeItem(target)
+        ));
+        assert_eq!(names(&tree), vec!["Beta", "Alpha", "Gamma"]);
+    }
+
+    #[test]
+    fn drop_before_a_row_moves_across_containers() {
+        let mut tree = vec![
+            folder("Marvel", vec![list("Avengers"), list("X-Men")]),
+            list("Batman"),
+        ];
+        let moved = id_of(&tree, "Batman");
+        let target = id_of(&tree, "X-Men");
+        assert!(apply_list_move(
+            &mut tree,
+            &moved,
+            &ListDrop::BeforeItem(target)
+        ));
+        assert_eq!(names(&tree), vec!["Marvel"]);
+        assert_eq!(
+            names(folder_items(&tree, "Marvel")),
+            vec!["Avengers", "Batman", "X-Men"]
+        );
+    }
+
+    #[test]
+    fn a_drop_on_empty_space_moves_to_the_root_end() {
+        let mut tree = vec![
+            library_root(),
+            folder("Marvel", vec![list("Avengers")]),
+            list("Batman"),
+        ];
+        let moved = id_of(&tree, "Avengers");
+        assert!(apply_list_move(&mut tree, &moved, &ListDrop::RootEnd));
+        assert_eq!(
+            names(&tree),
+            vec!["Library", "Marvel", "Batman", "Avengers"]
+        );
+        assert!(folder_items(&tree, "Marvel").is_empty());
+    }
+
+    #[test]
+    fn a_drop_before_the_library_root_keeps_the_root_first() {
+        // The stated deviation: the C# would insert above the root.
+        let mut tree = vec![library_root(), list("Batman")];
+        let moved = id_of(&tree, "Batman");
+        let root = id_of(&tree, "Library");
+        assert!(apply_list_move(
+            &mut tree,
+            &moved,
+            &ListDrop::BeforeItem(root)
+        ));
+        assert_eq!(names(&tree), vec!["Library", "Batman"]);
+    }
+
+    #[test]
+    fn the_library_root_never_moves() {
+        let mut tree = vec![library_root(), folder("Marvel", vec![])];
+        let root = id_of(&tree, "Library");
+        let target = id_of(&tree, "Marvel");
+        assert!(!apply_list_move(
+            &mut tree,
+            &root,
+            &ListDrop::IntoFolder(target)
+        ));
+        assert_eq!(names(&tree), vec!["Library", "Marvel"]);
+    }
+
+    #[test]
+    fn a_folder_refuses_a_drop_into_itself_or_its_subtree() {
+        let mut tree = vec![folder(
+            "Outer",
+            vec![folder("Inner", vec![list("Deep")]), list("Alpha")],
+        )];
+        let outer = id_of(&tree, "Outer");
+        let inner = id_of(&tree, "Inner");
+        let deep = id_of(&tree, "Deep");
+        // Into its own child folder.
+        assert!(!apply_list_move(
+            &mut tree,
+            &outer,
+            &ListDrop::IntoFolder(inner)
+        ));
+        // Before a row inside its own subtree.
+        assert!(!apply_list_move(
+            &mut tree,
+            &outer,
+            &ListDrop::BeforeItem(deep)
+        ));
+        // On itself.
+        assert!(!apply_list_move(
+            &mut tree,
+            &outer,
+            &ListDrop::IntoFolder(outer)
+        ));
+        assert_eq!(names(&tree), vec!["Outer"]);
+        assert_eq!(names(folder_items(&tree, "Outer")), vec!["Inner", "Alpha"]);
+    }
+
+    #[test]
+    fn sort_puts_folders_first_then_names_without_articles() {
+        let mut items = vec![
+            list("The Zebra"),
+            smart("apple"),
+            folder("Zulu", vec![]),
+            list("Bravo"),
+            folder("Alpha", vec![]),
+        ];
+        sort_list_items(&mut items);
+        assert_eq!(
+            names(&items),
+            vec!["Alpha", "Zulu", "apple", "Bravo", "The Zebra"]
+        );
+    }
+
+    #[test]
+    fn sort_uses_the_zeroes_first_number_rule() {
+        let mut items = vec![list("9 - Nine"), list("010 - Ten")];
+        sort_list_items(&mut items);
+        assert_eq!(names(&items), vec!["010 - Ten", "9 - Nine"]);
     }
 }
