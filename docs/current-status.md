@@ -14,8 +14,20 @@ user-tested on 2026-09-12 and are archived. Phase 9 is DEFERRED to
 
 ## Current task
 
-**Release preparation for v0.1.0.** The code work is done and gated.
-The tag is NOT cut yet: it waits on the three open user tests below.
+**v0.1.0 is TAGGED.** The first stable release. The tag is annotated
+and points at the thumbnail-warm-up fix. Publishing is manual and is
+the user's step, in this order, both from the Gitea Actions UI:
+
+1. **Tagged release** — enter `v0.1.0`. It re-runs fmt, clippy and the
+   tests at the tag, then builds and publishes the portable tarball.
+2. **Packaging** — enter `v0.1.0`. It must run SECOND: it attaches the
+   vendored source tarball, the Arch package and the `.deb` to the
+   release that step 1 created, and fails hard if that release is
+   missing.
+
+After the release is out, bump nothing by hand: ADR-043 derives the
+rolling version from the newest stable tag, so the next push to main
+publishes `0.1.1`.
 
 Done 2026-09-12 (the release-readiness pass):
 
@@ -68,8 +80,13 @@ Done 2026-09-12 (the release-readiness pass):
    passes `appstreamcli validate`. It still has NO `<screenshots>`:
    that element needs hosted image URLs the project does not have.
 
+7. **Generate Cover Thumbnails no longer freezes the app.** A Rule 9
+   violation found by the user test that gated this tag; the detail is
+   in the user-test section below. `statusbar_probe` gained gate M,
+   which invokes the real action instead of the lamp widget.
+
 Phase 16 T1 (add `cover_date` to `IssueRef` and the issue queries) is
-unchanged and NOT STARTED. It does not block the tag.
+unchanged and NOT STARTED.
 
 ## Open licence question (inherited by v0.1.0 knowingly)
 
@@ -187,38 +204,37 @@ The 2026-09-12 side task (ADR-039, ADR-040):
   failed on exactly this; the probe timing was corrected, not the
   expectation.
 
-## Open user tests
+## User tests
 
-Four. A passing probe is not a passing user test.
+Two of four passed against the v0.1.0 build. The other two were NOT
+run against it. Recorded as-is: an unrun test is not a passing test.
 
-0. **Generate Cover Thumbnails must not freeze the app.** FIXED
-   2026-09-12 after a user test FAILED: the command hung the whole
-   window while `Cache/Thumbnails` kept filling, and no lamp ever
-   appeared. Cause, measured: `library::cache_thumbnails` ran its
-   enqueue loop inline on the GTK thread, and the per-book key carries
-   the file size and modified time, so
-   `front_cover_thumbnail_key` -> `ImageKey::from_file` -> `file_stats`
-   -> `std::fs::metadata` made it one `stat()` syscall per book plus
-   one contended queue-mutex acquisition per book. A blocked main loop
-   serves no redraws and no timers, which is why the lamp could not
-   appear: its visibility poll is a `glib::timeout_add_local` tick.
-   The rendering was always on worker threads, hence the filling
-   cache. The loop now runs on a "Thumbnail Warmup" worker; only the
-   storage snapshot stays on the main thread, because `session()` is a
-   UI thread-local. RETEST: run it on a large library — the window
-   must stay responsive, the lamp must appear, and a click on it must
-   open Tasks.
-1. **The thumbnail lamp.** Run Generate Thumbnails on a large list.
-   A small animated icon must appear in the status bar while the work
-   runs and disappear when it ends. A click on it must open Tasks.
-   Run this one against a BUILT TARBALL, not the dev tree. The dev
-   tree finds the frames through its own asset root and passes either
-   way, which is exactly how the missing `assets/pages` copy stayed
-   hidden.
+**PASSED 2026-09-12 (user confirmation):**
+
+0. **Generate Cover Thumbnails must not freeze the app.** The first
+   run of this test FAILED and stopped the tag. Cause, measured:
+   `library::cache_thumbnails` ran its enqueue loop inline on the GTK
+   thread, and the per-book key carries the file size and modified
+   time, so `front_cover_thumbnail_key` -> `ImageKey::from_file` ->
+   `file_stats` -> `std::fs::metadata` made it one `stat()` syscall
+   per book plus one contended queue-mutex acquisition per book. A
+   blocked main loop serves no redraws and no timers, which is why the
+   lamp could not appear: its visibility poll is a
+   `glib::timeout_add_local` tick. Rendering was always on worker
+   threads, hence the filling cache during the freeze. The loop now
+   runs on a "Thumbnail Warmup" worker; only the storage snapshot
+   stays on the main thread, because `session()` is a UI thread-local.
+   Retested by the user: works.
+1. **The thumbnail lamp.** Covered by the same retest: the window
+   stayed responsive, the lamp appeared, and the click opened Tasks.
+
+**NOT RUN against the v0.1.0 build:**
+
 2. **Detail-column overflow.** Switch to Details and narrow a column
    that holds long text (Series, or Title). The text must end in an
    ellipsis at the column edge and must NOT paint over the next
-   column.
+   column. Covered by `detailresize_probe` A-D, which is a probe, not
+   a user test.
 3. **Per-list view settings.** Set list A to Details with a small row
    height, and list B to Thumbnails with a large thumbnail. Switch
    between them: each must come back the way you left it. Then make a
@@ -226,7 +242,11 @@ Four. A passing probe is not a passing user test.
    must not change until you change it. Right-click list B, choose
    "Reset View Settings", leave it and come back: it must no longer
    force its own view. Restart the app and confirm all of it
-   survived.
+   survived. Covered by `browserbar_probe` G1-G4, which is a probe,
+   not a user test.
+
+Both remaining tests exercise code that shipped in v0.1.0. Run them on
+the released build; a defect becomes a v0.1.1 fix.
 
 ## Blockers
 
