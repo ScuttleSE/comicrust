@@ -1,5 +1,31 @@
 # Guide: development
 
+## When you set up a clone
+
+The project has two forges. Gitea (`origin`) runs CI. GitHub
+(`ScuttleSE/comicrust`) is the public mirror and holds the releases.
+One `git push` must reach both. Configure the clone with both commands:
+
+```sh
+git remote set-url --add --push origin \
+    git@github.com:ScuttleSE/comicrust.git
+git remote set-url --add --push origin \
+    ssh://git@git.hemmalab.se:2222/scuttle/comicrust.git
+```
+
+Add both URLs. The first `--add --push` replaces the implicit default
+push URL. If you add only the GitHub URL, all pushes go to GitHub and
+none go to Gitea.
+
+Confirm the result with `git config --get-all remote.origin.pushurl`.
+It must print two lines, GitHub first. GitHub must be first, because the
+push to Gitea starts the release workflow.
+
+This configuration is local to the clone. Git does not keep it in the
+repository. If you push from a clone without it, the mirror falls
+behind and the release workflow fails. See
+`.gitea/publish_github_release.sh`.
+
 ## Before you write code
 
 1. Find and read the C# source for the behavior. The reference is the
@@ -29,7 +55,8 @@ exceptions. Port the behavior, not the style.
 3. Confirm no user library data is staged. See
    `docs/guides/data-safety.md`.
 4. Write an imperative, concise subject line.
-5. Commit, then push. A push starts CI.
+5. Commit, then push. A push starts CI. The push must also reach the
+   GitHub mirror. See "When you set up a clone".
 
 ## When a change fixes a defect
 

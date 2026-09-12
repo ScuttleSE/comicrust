@@ -18,10 +18,23 @@
 # comicrust-<version>-linux-amd64.tar.gz and its .sha256 file must
 # exist in the working directory.
 #
-# The build commit must already exist in the mirror repo: normal pushes
-# go to both forges before this workflow runs. GitHub cannot create the
-# release tag at a commit it does not have; that fails with 422. This
-# script never pushes git refs.
+# The build commit must already exist in the mirror repo. This script
+# never pushes git refs. Each clone replicates the commit with a
+# dual-push "origin" remote: origin holds two push URLs, GitHub first,
+# then Gitea. Configure a new clone with both commands:
+#
+#   git remote set-url --add --push origin \
+#       git@github.com:ScuttleSE/comicrust.git
+#   git remote set-url --add --push origin \
+#       ssh://git@git.hemmalab.se:2222/scuttle/comicrust.git
+#
+# Add both URLs. The first --add --push replaces the implicit default
+# push URL. If you add only the GitHub URL, all pushes go to GitHub and
+# none go to Gitea.
+#
+# A push from a clone without this configuration leaves the mirror
+# behind. GitHub cannot create the release tag at a commit it does not
+# have. It answers 422 and this script fails.
 #
 # Skips with a notice when GH_TOKEN is unset, so the workflow stays
 # green until the secret is configured on Gitea.
