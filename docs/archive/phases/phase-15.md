@@ -2,7 +2,7 @@
 
 ## Status
 
-Implemented, user test pending.
+COMPLETE. User-tested 2026-09-12.
 
 ## Goal
 
@@ -138,5 +138,39 @@ The steps are test 1 in `docs/open-user-tests.md`.
 
 ## Completion record
 
-Not closed. Fill this in after the user test passes, then move this
-file to `docs/archive/phases/phase-15.md`.
+COMPLETE. User-tested 2026-09-12, including the Phase 15a visibility
+round.
+
+Delivered: a two-layer SQLite cache (ADR-037), MCL import and export
+(ADR-038), the incremental `date_last_updated` sweep, freshness by
+evidence, a per-resource request budget that survives a restart, the
+warm task, and "Fill Missing Issues".
+
+Measured, in API requests: a closed volume 0, an unchanged open volume
+1, a changed open volume 2, an unknown volume 1 plus its pages.
+
+### Phase 15a — the visibility round
+
+The user test found that the cache commands showed nothing and could
+not be stopped. Three defects, all fixed and gated.
+
+1. The scrape progress window had NEVER been presented (since Phase
+   12). Every scrape ran with no status list and no reachable Cancel
+   button. `scrape_probe` GATE V now checks visibility.
+2. `show_info_dialog` and `show_error_dialog` had no transient parent,
+   so the report appeared behind the main window. They were the only
+   two such dialogs in `cr-ui`.
+3. The cache jobs discarded their progress callback and held their
+   cancel flag nowhere. They now show a status-bar lamp with a live
+   tooltip, a Tasks window row, and a working cancel. The Phase 15
+   Tasks deviation is CLOSED.
+
+A fourth defect came from test 5: the cover-chip tooltip described the
+scan chip only, so a book with both the "?" and the "!" chip explained
+one of them.
+
+### Deviation that stands
+
+"Fill Missing Issues" needs a Comic Vine volume id, which a series
+carries only after a scrape. With no id the command says so and stops.
+A volume picker is on `docs/backlog.md`.

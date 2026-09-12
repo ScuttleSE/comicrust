@@ -5,121 +5,106 @@ Do not append a history. History lives in `docs/archive/` and in git.
 
 ## Active phase
 
-**Phase 15 — Comic Vine cache, rate budget, and missing-issue fill.**
-File: `docs/phases/phase-15.md`. Status: IMPLEMENTED (T1 to T7), plus
-the Phase 15a visibility round. User test pending.
-**Phase 16 — Comic Vine scraper quality of life** is planned and waits
-for Phase 15 (`docs/phases/phase-16.md`).
-Phase 13 is IMPLEMENTED, user test pending. Phases 0-8 and 10-12 are
-COMPLETE (Phase 12 user-tested 2026-09-10); Phase 9 is DEFERRED to
+**Phase 16 — Comic Vine scraper quality of life.**
+File: `docs/phases/phase-16.md`. Status: PLANNED. No task started.
+
+Phases 0-8 and 10-15 are COMPLETE. Phases 13, 14, and 15 were
+user-tested on 2026-09-12 and are archived. Phase 9 is DEFERRED to
 `docs/backlog.md`.
 
 ## Current task
 
-Phase 15 waits for its user test, which now covers the status-bar
-lamp, the Tasks row, and the cancel. Phase 16 (the scraper dialog
-quality of life, `docs/phases/phase-16.md`) starts after it.
+Phase 16 T1 — add `cover_date` to `IssueRef` and to the issue queries,
+then derive the year and the month for the issue picker.
 
-Phase 14 (right-click rescans, ADR-036) is IMPLEMENTED and waits for
-its user test. The navigator tree-state and Detail column-toggle fixes
-(2026-09-12) wait for their user tests too. The scan-robustness round
-(ADR-034, ADR-035) and the Phase 13 user tests are still open.
+Read `docs/phases/phase-16.md` first. It names the source of every
+feature: the `Fableton/comic-vine-scraper-ce` fork of the Comic Vine
+Scraper plugin. The port took its scraper from the UPSTREAM v1.0.102
+release, so none of that fork's work is present.
 
 ## Verification record
 
-Phase 15a (2026-09-12), commits `8eba46d` onward: make background work
-visible. Three defects the Phase 15 user test surfaced.
+Phases 13, 14, and 15 all passed their user tests on 2026-09-12. Their
+records are in `docs/archive/phases/`.
 
-- **The scrape progress window was never presented.** It was built,
-  filled, and closed, but `git log -S "window.present()"` shows that
-  call has never existed in `dialogs/scrape.rs`. Every scrape since
-  Phase 12 ran with no status list, no progress line, no budget
-  readout, and NO REACHABLE CANCEL BUTTON. `scrape_probe` GATE V now
-  checks visibility SYNCHRONOUSLY after the call: a timed check races,
-  because the mock has zero delays and the run closes the window in
-  under 200 ms. MEASURED both ways — the gate fails with `present()`
-  removed and passes with it restored.
-- **The report dialogs had no transient parent.** `show_info_dialog`
-  and `show_error_dialog` used `.application(...)` with no
-  `transient_for` and no `modal`, so the window manager put the cache
-  report behind the main window. They were the only two such dialogs
-  in `cr-ui`; the other 30 set a parent. They now take the window and
-  are renamed `show_report_dialog` / `show_failure_dialog`. The forced
-  `"Cannot open {title}"` heading is gone; the page-export path said
-  "Cannot open" for a WRITE failure and now says "Cannot save".
-- **The cache jobs reported nothing and could not be stopped.** The
-  progress callback was `|_| {}` and the cancel flag was held by
-  nothing. Every job now publishes over an mpsc channel that the MAIN
-  thread drains (a worker that writes a thread-local writes its own
-  copy), and it appears as a status-bar lamp with a live tooltip, a
-  Tasks window row, and a working cancel. `Budget::with_wait_report`
-  is wired at last, so a spent budget reads "the issues budget is
-  spent, resuming at 14:32" instead of looking frozen for an hour.
-  One job runs at a time: two sweeps would race on the one
-  `sweep_state` row.
-- The cover-chip tooltip described the SCAN marker only, so a book
-  carrying both the "?" and the "!" chip explained one of them, and a
-  book carrying only the "?" chip explained nothing (user test 5,
-  2026-09-12). `chip_tooltip` now walks every chip in draw order and
-  prefixes each block with its own glyph. Five unit gates cover none,
-  "?" alone, "!" alone, "\u{2260}" alone, and both.
-- Probes (release, Xvfb): `scanmarker` A-E and `metadatatag` A/B
-  green; `scrape_probe` GATE V plus A/B/C green;
-  `statusbar_probe` A-J2 and I green, with the new K and K2 (the lamp
-  follows the job slot, a second job is refused, the tooltip carries
-  the live line, and the menu row reaches the worker's atomic flag).
+Last commits, `5aea7c3` to `7cb852b` (Phase 15 and the 15a visibility
+round):
+
+- The Comic Vine cache is a two-layer SQLite file (ADR-037). MEASURED
+  by mock-server gate, in API requests: a closed volume 0, an unchanged
+  open volume 1 (the probe only), a changed open volume 2, an unknown
+  volume 1 plus its pages.
+- The sweep uses `filter=date_last_updated:<start>|<end>`. The API
+  reference page renders its per-field filter marks as images, so that
+  page does NOT state the filter is allowed; the production
+  `update_missing.py` is the evidence.
+- The budget default is 200 requests per resource per hour, from the
+  user's figure. The API reference page carries NO rate-limit text at
+  all, so the figure is NOT verified and the ceiling is the
+  `CACHE_RATE_LIMIT` key.
 - `cargo fmt --all` and `cargo clippy --workspace --all-targets -- -D
   warnings` — green.
-- `cargo test --workspace` — 671 pass (was 660; 6 cache-job gates and
-  5 chip-tooltip gates).
+- `cargo test --workspace` — 671 pass, 0 fail.
+- Probes (release, Xvfb): `scrape_probe` GATE V and A/B/C,
+  `statusbar_probe` A-K2, `scanmarker` A-E, `metadatatag` A/B.
 
 ## Open user tests
 
-The steps are in `docs/open-user-tests.md`. Run them in this order.
-
-1. Comic Vine cache (Phase 15, ADR-037, ADR-038)
-2. Navigator tree state (2026-09-12)
-3. Detail column add and remove (2026-09-12)
-4. Right-click rescans (Phase 14, ADR-036)
-5. Scan robustness and problem markers (ADR-034, ADR-035)
-6. Double-click open crash fix (commit `140ba4c`)
-7. Phase 13 config unification (ADR-033)
-8. Config seed and reference document (commit `d5c52b3`)
-9. Mid-scan background save (commit `d9262a4`)
-10. Smart-list rule delete and clipboard
-11. "No metadata" tag
-12. Scan and open metadata import
-13. Detail view round (commits `c21086a`, `f20a690`)
-14. Group, lamp, and thumbnail batch
-15. Scan control
-16. Export freeze fix
-17. Write-back fix
-18. Phase 10 export and write-back steps
-19. Phase 11 install steps
-
-Delete a line here AND its section there when a test passes.
+None. `docs/open-user-tests.md` explains how to add one.
 
 ## Blockers
 
 None.
 
+## Lessons from the Phase 15 user test
+
+Four defects reached the user because no gate watched them. Read these
+before starting Phase 16; the same traps are in the dialogs it touches.
+
+1. **A GTK4 window is invisible until `present()` is called.** The
+   scrape progress window was built, filled, and closed but never
+   presented, from Phase 12 until 2026-09-12. `scrape_probe` GATE V now
+   checks it. Add the same check for any new window.
+2. **A dialog with `.application(...)` and no `.transient_for(...)`
+   lands behind the main window.** Every dialog needs the window as its
+   parent. Use `show_report_dialog` or `show_failure_dialog` in
+   `browser/shell.rs`, which do it correctly.
+3. **A worker thread must never write the UI thread-locals.** It writes
+   its own copy. Send over an `mpsc` channel and let the main-thread
+   pump write the state. The scan and the Comic Vine cache jobs both
+   use this shape.
+4. **Long work must show progress and offer a cancel.** A job with no
+   indicator reads as a job that did nothing. The status-bar lamp and
+   the Tasks window row are the two surfaces; see
+   `library::start_cv_job` and the `Comic Vine cache` block in
+   `dialogs/tasks.rs`.
+
+One process lesson: when a user reports "nothing happened", read the
+presentation path before theorising about the engine.
+
 ## Known gaps
 
-Tracked in `docs/backlog.md`; they do not block the active phase.
+Tracked in `docs/backlog.md`; they do not block Phase 16.
 
 - `WebComicProvider` is not ported.
 - PDF and DjVu writers are missing.
 - The `LICENSE` file is missing (a Phase 11 packaging gap).
 - The T14 per-list sort deviation stands.
 - HEIF and AVIF decode is missing.
+- "Fill Missing Issues" has no volume picker for an unscraped series.
+- The Comic Vine cache jobs have no per-row abort in the Tasks window;
+  the lamp menu carries the targeted cancel.
 
 ## Environment notes
 
-- `scanrefresh` gate E stalls mid-scan in a DEBUG build on this machine;
-  the unmodified base HEAD fails the same gate the same way (a
-  debug-timing environment flake, not a regression). Use the RELEASE run.
+- Run UI probes in RELEASE with `Xvfb :99`, `GDK_BACKEND=x11`,
+  `DISPLAY=:99`, and isolated `XDG_DATA_HOME` and `XDG_CONFIG_HOME`
+  under `/tmp/opencode/`. The probes refuse to run against the real
+  library.
+- `scanrefresh` gate E stalls mid-scan in a DEBUG build on this
+  machine; the unmodified base HEAD fails the same way. Use RELEASE.
 - `newbook` and `exportpage` probes reach "PROBE DONE", then their
-  internal watchdog fires with `rc=2` (the unmodified base HEAD shows
-  the same shape — a pre-existing probe quirk). `contextmenu`
-  completed with `rc=0` on 2026-09-12; the quirk no longer shows there.
-- `editor_probe` runs a main loop forever by design; a kill under timeout is its normal completion.
+  internal watchdog fires with `rc=2`. The unmodified base HEAD shows
+  the same shape — a pre-existing probe quirk.
+- `editor_probe` runs a main loop forever by design; a kill under
+  timeout is its normal completion.

@@ -2,7 +2,7 @@
 
 ## Status
 
-Implemented, user test pending.
+COMPLETE. User-tested 2026-09-12.
 
 ## Goal
 
@@ -79,5 +79,10 @@ None. The phase waits on the user test.
 
 ## Completion record
 
-Not closed. Fill this in after the user test passes, then move this file
-to `docs/archive/phases/phase-14.md`.
+COMPLETE. User-tested 2026-09-12.
+
+The book menu's "Rescan Book File(s)" re-reads the selected files with
+a one-shot forced retry, so a known-bad unchanged file re-reads. The
+navigator's "Scan List Contents" scans a smart or reading list. The
+right-click selection follows the C# `UpdateSelectionFromMouse` rule in
+both the browser grid and the Files grid.

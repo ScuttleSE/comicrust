@@ -60,6 +60,26 @@ Every phase ends shippable and testable. Phases 0-2 are fully headless. They de-
 
 **Total: ~75-90 weeks (~18-22 months) solo.** Longest-lead items: ItemView behavior parity and dialog volume.
 
+### Phases past 9
+
+The numbering continued past the original roadmap. Phases 10 onward are
+targeted rounds, each opened from a user request or from the backlog.
+
+| # | Phase | Result |
+|---|---|---|
+| 10 | CBR/RAR write-back (ADR-030) | COMPLETE, user-tested |
+| 11 | Packaging: Arch and Debian (Flatpak dropped) | COMPLETE, user-tested |
+| 12 | Native modules I: the Comic Vine Scraper (ADR-031) | COMPLETE, user-tested 2026-09-10 |
+| 13 | One unified config file (ADR-033) | COMPLETE, user-tested 2026-09-12 |
+| 14 | Right-click rescans (ADR-036) | COMPLETE, user-tested 2026-09-12 |
+| 15 | Comic Vine cache, rate budget, missing-issue fill (ADR-037, ADR-038) | COMPLETE, user-tested 2026-09-12 |
+| 16 | Comic Vine scraper quality of life | ACTIVE |
+
+Phases 12 and 15-16 follow ADR-031: one crate per former plugin, behind
+a thin UI seam. Phase 16 ports the usability work of the
+`Fableton/comic-vine-scraper-ce` fork; the port's scraper came from the
+upstream v1.0.102 release.
+
 ## 4. Sequencing rationale
 
 1. **Data compat first (0-2):** the database is the only unlosable artifact. Proving a byte-stable round-trip before UI means the riskiest compat work happens while the codebase is small.

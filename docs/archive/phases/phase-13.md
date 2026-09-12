@@ -2,7 +2,7 @@
 
 ## Status
 
-IMPLEMENTED, user test pending.
+COMPLETE. User-tested 2026-09-12.
 
 ## Goal
 
@@ -116,5 +116,12 @@ None. The phase waits on the user test.
 
 ## Completion record
 
-Not closed. Fill this in after the user test passes, then move this file to
-`docs/archive/phases/phase-13.md`.
+COMPLETE. User-tested 2026-09-12.
+
+One TOML file at `~/.config/comicrust/comicrust.toml` replaced
+`Config.xml`, the `comicrust.ini` chain, and the plugin `settings.json`.
+The Comic Vine imprint table moved into `[data.imprints]`, so a new
+imprint needs no rebuild. Every parameter is in
+`docs/config-reference.md`, held there by two drift gates.
+
+`ComicDb.xml` was untouched, as ADR-033 required.
