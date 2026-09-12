@@ -114,17 +114,64 @@ fn main() {
             }
         });
 
-        // C. Expand/Collapse All: any-expanded → collapse, else
-        //    expand (`ExpandCollapseAllNodes`).
+        // C. Expand/Collapse All: any row expanded → collapse all,
+        //    else expand all (`ExpandCollapseAllNodes`). The start
+        //    state is EXPANDED, because a fresh folder carries
+        //    `Collapsed=false` and `FillListTree` honours it — so the
+        //    first click collapses. The gate rides the toggle, not a
+        //    fixed direction.
         glib::timeout_add_local(std::time::Duration::from_millis(1600), {
             let shell = shell.clone();
             move || {
-                shell.nav_click_button("expand-collapse-all");
-                let expanded = shell.nav_expanded_count();
-                println!("C expand-all expanded={expanded} (expect > 0)");
+                let start = shell.nav_expanded_count();
+                println!(
+                    "C start expanded={start} (expect > 0 — folders default to NOT collapsed) rows={:?}",
+                    shell.nav_expanded_dump()
+                );
+                assert!(start > 0, "C FAIL: the tree came up fully collapsed");
                 shell.nav_click_button("expand-collapse-all");
                 let collapsed = shell.nav_expanded_count();
                 println!("C collapse-all expanded={collapsed} (expect 0)");
+                assert_eq!(collapsed, 0, "C FAIL: collapse-all left rows expanded");
+                shell.nav_click_button("expand-collapse-all");
+                let expanded = shell.nav_expanded_count();
+                println!("C expand-all expanded={expanded} (expect > 0)");
+                assert!(expanded > 0, "C FAIL: expand-all expanded nothing");
+                glib::ControlFlow::Break
+            }
+        });
+
+        // C2. The USER REPORT (2026-09-12): the tree was always
+        //     collapsed at start. The state lives in
+        //     `ComicListItemFolder.Collapsed`, which the expand and
+        //     collapse signals write and `FillListTree` reads back.
+        //     Collapse all, save, re-initialize the session (the
+        //     restart), refill: the tree must come back collapsed.
+        //     Then expand all and repeat: it must come back expanded.
+        glib::timeout_add_local(std::time::Duration::from_millis(1800), {
+            let shell = shell.clone();
+            move || {
+                let restart = |shell: &cr_ui::browser::shell::BrowserShell| {
+                    cr_ui::library::save().expect("C2 save");
+                    cr_ui::library::initialize().expect("C2 restart init");
+                    shell
+                        .navigator()
+                        .refill(&cr_ui::library::comic_lists_snapshot());
+                    shell.nav_expanded_count()
+                };
+                shell.nav_click_button("expand-collapse-all");
+                let collapsed = shell.nav_expanded_count();
+                assert_eq!(collapsed, 0, "C2 FAIL: collapse-all");
+                let after = restart(&shell);
+                println!("C2 collapsed {collapsed} -> after restart {after} (expect 0)");
+                assert_eq!(after, 0, "C2 FAIL: the collapsed state did not persist");
+                shell.nav_click_button("expand-collapse-all");
+                let expanded = shell.nav_expanded_count();
+                assert!(expanded > 0, "C2 FAIL: expand-all expanded nothing");
+                let after = restart(&shell);
+                println!("C2 expanded {expanded} -> after restart {after} (expect equal)");
+                assert_eq!(after, expanded, "C2 FAIL: the expanded state did not persist");
+                println!("C2 PASS");
                 glib::ControlFlow::Break
             }
         });

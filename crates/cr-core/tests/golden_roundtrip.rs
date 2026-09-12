@@ -478,3 +478,67 @@ fn plugin_host_matchers_round_trip_byte_identical() {
 
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// The navigator's expand/collapse state persists through
+/// `ComicListItemFolder.Collapsed` — the only carrier of the tree state
+/// across a restart (`FillListTree` reads it back). A collapsed folder
+/// writes the attribute; an expanded one writes nothing (the C#
+/// `XmlSerializer` omits the default), and both survive a round trip at
+/// any nesting depth.
+#[test]
+fn folder_collapsed_round_trips_at_depth() {
+    use cr_core::database::list_items::FolderItem;
+
+    let leaf = ComicListItem::Folder(FolderItem {
+        base: cr_core::database::list_items::ListItemBase {
+            id: CrGuid::new_random(),
+            name: Some("Inner".into()),
+            ..Default::default()
+        },
+        collapsed: true,
+        ..Default::default()
+    });
+    let outer = ComicListItem::Folder(FolderItem {
+        base: cr_core::database::list_items::ListItemBase {
+            id: CrGuid::new_random(),
+            name: Some("Outer".into()),
+            ..Default::default()
+        },
+        collapsed: false,
+        items: vec![leaf],
+        ..Default::default()
+    });
+    let mut db = ComicDatabase::default();
+    db.comic_lists.push(outer);
+
+    let bytes = save_bytes(&db).expect("serialize");
+    let text = String::from_utf8(bytes.clone()).expect("utf8");
+    assert_eq!(
+        text.matches("Collapsed=\"true\"").count(),
+        1,
+        "only the collapsed folder carries the attribute:\n{text}"
+    );
+
+    let path = std::env::temp_dir().join("comicrust-folder-collapsed.xml");
+    save(&db, &path).expect("save");
+    let back = load(&path).expect("load");
+    // Only the collapse flags matter here (the reader fills a default
+    // `Display` block that the writer always emits — unrelated).
+    let flags = |items: &[ComicListItem]| -> Vec<(String, bool)> {
+        fn walk(items: &[ComicListItem], out: &mut Vec<(String, bool)>) {
+            for item in items {
+                if let ComicListItem::Folder(f) = item {
+                    out.push((f.base.name.clone().unwrap_or_default(), f.collapsed));
+                    walk(&f.items, out);
+                }
+            }
+        }
+        let mut out = Vec::new();
+        walk(items, &mut out);
+        out
+    };
+    assert_eq!(
+        flags(&back.comic_lists),
+        vec![("Outer".to_string(), false), ("Inner".to_string(), true)]
+    );
+}

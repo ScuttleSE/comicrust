@@ -277,6 +277,98 @@ fn main() {
             }
         });
 
+        // D4. The USER REPORT (2026-09-12): unchecking "Opened" in the
+        //     right-click header menu did nothing — the row stayed
+        //     checked and the column stayed. The rows carry the
+        //     `cols.col<id>` group action (NOT `win.toggle-column`,
+        //     which the D gate rode). This gate rides the REAL user
+        //     path: the MAPPED `GtkModelButton` on the page the user
+        //     looks at, driven by its own `clicked` signal.
+        glib::timeout_add_local(std::time::Duration::from_millis(2600), {
+            let shell = shell.clone();
+            move || {
+                let id = shell
+                    .state_columns_snapshot()
+                    .iter()
+                    .find(|(_, n, _)| n == "Opened")
+                    .map(|c| c.0);
+                let Some(id) = id else {
+                    println!("D4 FAIL: no Opened column");
+                    return glib::ControlFlow::Break;
+                };
+                let visible_now = |shell: &cr_ui::browser::shell::BrowserShell| {
+                    shell
+                        .state_columns_snapshot()
+                        .iter()
+                        .find(|(i, _, _)| *i == id)
+                        .map(|c| c.2)
+                };
+                // Opened is still visible here, so its row sits in the
+                // TOP section of the main page — exactly where the user
+                // clicked it.
+                let opened = shell.state_open_column_chooser(40.0, 10.0);
+                let before = visible_now(&shell);
+                let Some(row) = shell.state_column_chooser_row("Opened") else {
+                    println!("D4 FAIL: no MAPPED Opened row (open={opened} visible={before:?})");
+                    println!("{}", shell.state_column_chooser_dump());
+                    return glib::ControlFlow::Break;
+                };
+                println!(
+                    "D4 open={opened} before={before:?} row sensitive={} mapped={} checked={:?}",
+                    row.is_sensitive(),
+                    row.is_mapped(),
+                    row.property_value("active"),
+                );
+                row.emit_by_name::<()>("clicked", &[]);
+                let after = visible_now(&shell);
+                println!("D4 clicked before={before:?} after={after:?} (expect Some(true) -> Some(false))");
+                assert_eq!(before, Some(true), "D4 FAIL: Opened was not visible first");
+                assert_eq!(
+                    after,
+                    Some(false),
+                    "D4 FAIL: the rendered Opened row did not drive the action"
+                );
+                // Reopen: the row must now be UNCHECKED, and it must
+                // live on a letter page (the top section holds only
+                // the visible columns).
+                let reopened = shell.state_open_column_chooser(40.0, 10.0);
+                let top_row = shell.state_column_chooser_row("Opened");
+                println!(
+                    "D4 reopen={reopened} top-row-present={} (expect false — Opened is hidden)",
+                    top_row.is_some()
+                );
+                assert!(top_row.is_none(), "D4 FAIL: a hidden column kept its top row");
+                // The letter page carries it, unchecked, and a click
+                // brings the column back.
+                let page_rows = shell.state_column_chooser_page_rows("All");
+                let Some(row) = shell.state_column_chooser_row("Opened") else {
+                    println!("D4 FAIL: no MAPPED Opened row on the All page (rows={page_rows})");
+                    println!("{}", shell.state_column_chooser_dump());
+                    return glib::ControlFlow::Break;
+                };
+                println!(
+                    "D4 All-page rows={page_rows} active={:?} (expect FALSE)",
+                    row.property_value("active")
+                );
+                row.emit_by_name::<()>("clicked", &[]);
+                let back = visible_now(&shell);
+                println!("D4 second click visible={back:?} (expect Some(true))");
+                assert_eq!(back, Some(true), "D4 FAIL: the All-page row did not toggle back");
+                // And the workspace carries it (the restart half of
+                // the report).
+                let ws = shell.state_collect_workspace();
+                let saved = ws
+                    .view
+                    .columns
+                    .iter()
+                    .find(|c| c.id == id)
+                    .map(|c| c.visible);
+                println!("D4 workspace visible={saved:?} (expect Some(true))");
+                assert_eq!(saved, Some(true), "D4 FAIL: the workspace lost the column state");
+                glib::ControlFlow::Break
+            }
+        });
+
         // D2. Grouping (the user-reported gap): the Views drop
         //     carries "Collapse/Expand all Groups"; headers show in
         //     EVERY mode while a grouper is set, the action

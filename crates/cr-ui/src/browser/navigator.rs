@@ -335,12 +335,14 @@ impl Navigator {
     }
 
     fn track_expanded(&self, iter: &TreeIter, expanded: bool) {
-        if let Some(id) = self.row_id(iter) {
-            if expanded {
-                self.expanded.borrow_mut().insert(id);
-            } else {
-                self.expanded.borrow_mut().remove(&id);
-            }
+        let Some(id) = self.row_id(iter) else {
+            return;
+        };
+        crate::library::set_folder_collapsed(&id, !expanded);
+        if expanded {
+            self.expanded.borrow_mut().insert(id);
+        } else {
+            self.expanded.borrow_mut().remove(&id);
         }
     }
 
@@ -391,7 +393,12 @@ impl Navigator {
     /// quick-search text filters the items (`FillListTree(filter)`).
     pub fn refill(&self, items: &[ComicListItem]) {
         let previous = self.current_selection().map(|(id, _)| id);
-        let expanded = self.expanded.borrow().clone();
+        // The persisted folder state drives the expansion (`FillListTree`:
+        // a folder expands while NOT `Collapsed`, the Library root always
+        // expands). The user expand/collapse writes the field back
+        // (`tvQueries_AfterExpand`/`AfterCollapse`).
+        let mut expanded = HashSet::new();
+        collect_expanded(items, &mut expanded);
         let filter = self.search_entry.text().to_string();
         let items = filter_items(items, filter.trim());
         self.store.clear();
@@ -492,6 +499,38 @@ impl Navigator {
             count += self.count_expanded(Some(&first));
         }
         count
+    }
+
+    /// (name, expanded) per row in depth-first order (the probe's
+    /// expand/collapse debugging seam).
+    pub fn expanded_dump(&self) -> Vec<(String, bool)> {
+        let mut out = Vec::new();
+        if let Some(first) = self.store.iter_first() {
+            self.dump_expanded(Some(&first), &mut out);
+        }
+        out
+    }
+
+    fn dump_expanded(&self, iter: Option<&TreeIter>, out: &mut Vec<(String, bool)>) {
+        let mut iter = match iter {
+            Some(i) => *i,
+            None => return,
+        };
+        loop {
+            let name = self
+                .store
+                .get_value(&iter, COL_NAME_I)
+                .get::<String>()
+                .unwrap_or_default();
+            let path = self.store.path(&iter);
+            out.push((name, self.view.row_expanded(&path)));
+            if let Some(child) = self.store.iter_children(Some(&iter)) {
+                self.dump_expanded(Some(&child), out);
+            }
+            if !self.store.iter_next(&mut iter) {
+                break;
+            }
+        }
     }
 
     fn count_expanded(&self, iter: Option<&TreeIter>) -> usize {
@@ -807,6 +846,25 @@ fn filter_items(items: &[ComicListItem], filter: &str) -> Vec<ComicListItem> {
         .filter(|item| item_matches(item, &needle))
         .cloned()
         .collect()
+}
+
+/// The ids whose rows must expand after a fill (`FillListTree`'s
+/// `flag`): a folder expands while NOT `Collapsed`, the Library root
+/// always expands.
+fn collect_expanded(items: &[ComicListItem], out: &mut HashSet<CrGuid>) {
+    for item in items {
+        match item {
+            ComicListItem::Library(_) => out.insert(item.base().id),
+            ComicListItem::Folder(folder) => {
+                if !folder.collapsed {
+                    out.insert(folder.base.id);
+                }
+                collect_expanded(&folder.items, out);
+                false
+            }
+            _ => false,
+        };
+    }
 }
 
 fn item_matches(item: &ComicListItem, needle: &str) -> bool {

@@ -2059,6 +2059,72 @@ impl BrowserShell {
             .unwrap_or(0)
     }
 
+    /// The rendered chooser row by caption (the probe's REAL-click
+    /// path): walks the mapped popover for the `GtkModelButton` whose
+    /// label matches AND which is MAPPED — that is the row the user
+    /// looks at. Rows on the other (hidden) submenu pages stay out,
+    /// because a click cannot reach them.
+    pub fn state_column_chooser_row(&self, caption: &str) -> Option<gtk4::Widget> {
+        use gtk4::prelude::*;
+        let columns_drop = self.state.columns_drop.borrow();
+        let popover = columns_drop.as_ref()?;
+        fn walk(w: &gtk4::Widget, caption: &str) -> Option<gtk4::Widget> {
+            if w.widget_name() == "GtkModelButton" && w.is_mapped() {
+                let mut c = w.first_child();
+                while let Some(cur) = c {
+                    if let Ok(l) = cur.clone().downcast::<gtk4::Label>() {
+                        if l.text() == caption {
+                            return Some(w.clone());
+                        }
+                    }
+                    c = cur.next_sibling();
+                }
+            }
+            let mut c = w.first_child();
+            while let Some(cur) = c {
+                if let Some(hit) = walk(&cur, caption) {
+                    return Some(hit);
+                }
+                c = cur.next_sibling();
+            }
+            None
+        }
+        popover.child().and_then(|child| walk(&child, caption))
+    }
+
+    /// The mapped popover's widget tree dump (the probe's row-walk
+    /// debugging seam).
+    pub fn state_column_chooser_dump(&self) -> String {
+        use gtk4::prelude::*;
+        let columns_drop = self.state.columns_drop.borrow();
+        let Some(popover) = columns_drop.as_ref() else {
+            return "no popover".into();
+        };
+        fn dump(w: &gtk4::Widget, depth: usize, out: &mut String) {
+            for _ in 0..depth {
+                out.push_str("  ");
+            }
+            out.push_str(w.widget_name().as_ref());
+            if let Ok(l) = w.clone().downcast::<gtk4::Label>() {
+                out.push_str(&format!(" {:?}", l.text()));
+            }
+            out.push('\n');
+            if depth > 8 {
+                return;
+            }
+            let mut c = w.first_child();
+            while let Some(cur) = c {
+                dump(&cur, depth + 1, out);
+                c = cur.next_sibling();
+            }
+        }
+        let mut out = String::new();
+        if let Some(child) = popover.child() {
+            dump(&child, 0, &mut out);
+        }
+        out
+    }
+
     /// Switches the open chooser to a submenu page (the
     /// `visible-submenu` property drives the popover's stack) and
     /// counts its menu rows — the probe gate for the EMPTY-submenu
@@ -2135,6 +2201,11 @@ impl BrowserShell {
     /// The expanded navigator rows (the expand/collapse-all evidence).
     pub fn nav_expanded_count(&self) -> usize {
         self.state.navigator.expanded_count()
+    }
+
+    /// (name, expanded) per row (the probe's debugging seam).
+    pub fn nav_expanded_dump(&self) -> Vec<(String, bool)> {
+        self.state.navigator.expanded_dump()
     }
 
     /// The Pages grid mode.
@@ -3186,6 +3257,17 @@ impl ShellState {
     /// `add_child` returns false, leaving the page empty. So the
     /// submenus are REAL model submenus, not custom pages.
     fn popup_column_chooser(self: &Rc<ShellState>, wx: f64, wy: f64) {
+        // Release the previous chooser. This popover is built fresh
+        // per open and parented to the window, and it is NOT unparented
+        // on close (see the note below the model build), so without
+        // this every right-click would leave one more popover attached
+        // to the window for the rest of the session. The dismissal is
+        // safe here because it runs at popup time, never inside a row
+        // click.
+        if let Some(old) = self.columns_drop.borrow_mut().take() {
+            old.popdown();
+            old.unparent();
+        }
         let snapshot = self.item_view.detail_columns_snapshot();
         // The per-column check actions (one stateful bool per column
         // id — the model items' checkmarks). Created once; the states
@@ -3199,6 +3281,7 @@ impl ShellState {
                     gio::SimpleAction::new_stateful(&format!("col{id}"), None, &false.to_variant());
                 let state = Rc::downgrade(self);
                 action.connect_activate(move |a, _| {
+                    crate::trace::trace(format!("cols.col{id} activate handler entered"));
                     let Some(sh) = state.upgrade() else {
                         return;
                     };
@@ -3249,7 +3332,16 @@ impl ShellState {
         // No pointing arrow (the C# ContextMenuStrip shape).
         popover.set_has_arrow(false);
         popover.set_parent(&self.window);
-        popover.connect_closed(|p| p.unparent());
+        // NO `connect_closed(unparent)` here. MEASURED (GTK 4.22.4,
+        // `GTK_DEBUG=actions`): a row click runs the model button's
+        // default handler FIRST, which pops the menu down. An unparent
+        // inside `closed` then tears the action muxer down, every
+        // tracker item logs "action cols.col<id> was removed" and turns
+        // `can_activate` off, and the row handler that runs next finds
+        // a dead item and activates NOTHING. That was the
+        // 2026-09-12 report: the row stayed checked and the column
+        // stayed. The previous popover is dismissed at the top of this
+        // function instead, which is outside any click.
         let rect = gtk4::gdk::Rectangle::new(wx as i32, wy as i32 + 4, 1, 1);
         popover.set_pointing_to(Some(&rect));
         *self.columns_drop.borrow_mut() = Some(popover.clone().upcast::<gtk4::Popover>());

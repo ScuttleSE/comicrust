@@ -1272,8 +1272,15 @@ impl ItemView {
         let width = self.state.borrow().config.view_width;
         {
             let mut s = self.state.borrow_mut();
-            if let Some(c) = s.detail_columns.iter_mut().find(|c| c.id == id) {
-                c.visible = !c.visible;
+            match s.detail_columns.iter_mut().find(|c| c.id == id) {
+                Some(c) => {
+                    c.visible = !c.visible;
+                    crate::trace::trace(format!(
+                        "toggle_column_visible id={id} -> visible={}",
+                        c.visible
+                    ));
+                }
+                None => crate::trace::trace(format!("toggle_column_visible id={id} NOT FOUND")),
             }
             s.relayout(width);
         }

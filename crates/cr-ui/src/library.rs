@@ -1259,6 +1259,39 @@ pub fn rename_list(id: &CrGuid, name: &str) {
     }
 }
 
+/// `tvQueries_AfterExpand` / `tvQueries_AfterCollapse` port: sets a
+/// navigator folder's persisted `Collapsed` flag
+/// (`ComicListItemFolder.Collapsed`, the flag `FillListTree` reads back
+/// at the next start). The database goes dirty only on a real change.
+/// An id that is not a folder (the Library root, a list) is inert.
+pub fn set_folder_collapsed(id: &CrGuid, collapsed: bool) {
+    use cr_core::database::list_items::ComicListItem;
+    /// True when this subtree changed.
+    fn walk(items: &mut [ComicListItem], id: &CrGuid, collapsed: bool) -> bool {
+        for item in items.iter_mut() {
+            let ComicListItem::Folder(folder) = item else {
+                continue;
+            };
+            if folder.base.id == *id {
+                if folder.collapsed == collapsed {
+                    return false;
+                }
+                folder.collapsed = collapsed;
+                return true;
+            }
+            if walk(&mut folder.items, id, collapsed) {
+                return true;
+            }
+        }
+        false
+    }
+    let lib = session();
+    let mut l = lib.borrow_mut();
+    if walk(&mut l.database_mut().comic_lists, id, collapsed) {
+        l.mark_dirty();
+    }
+}
+
 /// Is this list id the Library root (the all-books list)? The scan
 /// batches take the incremental-append path only for it.
 pub fn is_library_list(id: &CrGuid) -> bool {
