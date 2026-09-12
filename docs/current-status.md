@@ -57,13 +57,21 @@ visible. Three defects the Phase 15 user test surfaced.
   spent, resuming at 14:32" instead of looking frozen for an hour.
   One job runs at a time: two sweeps would race on the one
   `sweep_state` row.
-- Probes (release, Xvfb): `scrape_probe` GATE V plus A/B/C green;
+- The cover-chip tooltip described the SCAN marker only, so a book
+  carrying both the "?" and the "!" chip explained one of them, and a
+  book carrying only the "?" chip explained nothing (user test 5,
+  2026-09-12). `chip_tooltip` now walks every chip in draw order and
+  prefixes each block with its own glyph. Five unit gates cover none,
+  "?" alone, "!" alone, "\u{2260}" alone, and both.
+- Probes (release, Xvfb): `scanmarker` A-E and `metadatatag` A/B
+  green; `scrape_probe` GATE V plus A/B/C green;
   `statusbar_probe` A-J2 and I green, with the new K and K2 (the lamp
   follows the job slot, a second job is refused, the tooltip carries
   the live line, and the menu row reaches the worker's atomic flag).
 - `cargo fmt --all` and `cargo clippy --workspace --all-targets -- -D
   warnings` — green.
-- `cargo test --workspace` — 666 pass (was 660; 6 new cache-job gates).
+- `cargo test --workspace` — 671 pass (was 660; 6 cache-job gates and
+  5 chip-tooltip gates).
 
 ## Open user tests
 

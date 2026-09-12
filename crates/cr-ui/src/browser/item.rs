@@ -500,7 +500,7 @@ pub enum ScanMarker {
 }
 
 impl ScanMarker {
-    fn glyph(self) -> &'static str {
+    pub(crate) fn glyph(self) -> &'static str {
         match self {
             ScanMarker::Failed => "!",
             ScanMarker::Mismatch => "≠",
@@ -528,6 +528,33 @@ pub fn scan_marker(book: &ComicBook) -> Option<ScanMarker> {
         s if s.is_failure() => Some(ScanMarker::Failed),
         cr_core::scan_status::ScanStatus::FormatMismatch => Some(ScanMarker::Mismatch),
         _ => None,
+    }
+}
+
+/// The tooltip for EVERY chip a book carries, in the order the chips
+/// are drawn: the "?" no-metadata tag first, then the scan marker.
+///
+/// A book can carry both. The tooltip used to describe the scan
+/// marker alone, so a book with both chips explained only one of them
+/// and a book with only the "?" chip explained nothing.
+pub fn chip_tooltip(book: &ComicBook) -> Option<String> {
+    let mut parts: Vec<String> = Vec::new();
+    if metadata_missing(book) {
+        parts.push(
+            "?  No metadata was found for this book.\n\
+             Edit a key field in Properties, or scrape it, to clear this."
+                .to_string(),
+        );
+    }
+    if let (Some(marker), Some(scan)) = (scan_marker(book), scan_marker_tooltip(book)) {
+        parts.push(format!("{}  {scan}", marker.glyph()));
+    }
+    if parts.is_empty() {
+        None
+    } else {
+        // A blank line between the chips, so two reasons do not read
+        // as one.
+        Some(parts.join("\n\n"))
     }
 }
 
@@ -680,5 +707,98 @@ mod tests {
             ..Default::default()
         };
         assert!(!metadata_missing(&missing));
+    }
+
+    /// A book with metadata, so only the scan chip can show.
+    fn scanned(status: cr_core::scan_status::ScanStatus, error: &str) -> ComicBook {
+        let mut book = ComicBook {
+            file_path: "/comics/x.cbz".into(),
+            ..Default::default()
+        };
+        book.info.series = "Blacksad".into();
+        cr_core::scan_status::apply(
+            &mut book,
+            &cr_core::scan_status::ScanVerdict {
+                status: Some(status),
+                error: Some(error.to_string()),
+                ..Default::default()
+            },
+            "2026-09-12",
+        );
+        book
+    }
+
+    #[test]
+    fn a_book_with_no_chip_has_no_tooltip() {
+        let mut clean = ComicBook {
+            file_path: "/comics/x.cbz".into(),
+            ..Default::default()
+        };
+        clean.info.series = "Blacksad".into();
+        assert_eq!(chip_tooltip(&clean), None);
+    }
+
+    #[test]
+    fn the_no_metadata_chip_explains_itself() {
+        // It used to explain NOTHING: the tooltip read the scan
+        // status only, and this book has none.
+        let empty = ComicBook {
+            file_path: "/comics/magazine 2024-05.cbz".into(),
+            ..Default::default()
+        };
+        let text = chip_tooltip(&empty).expect("the ? chip has a tooltip");
+        assert!(text.starts_with("?  No metadata"), "{text}");
+        assert!(text.contains("Properties"), "{text}");
+    }
+
+    #[test]
+    fn the_scan_chip_keeps_its_reason_and_gains_its_glyph() {
+        let book = scanned(
+            cr_core::scan_status::ScanStatus::Unreadable,
+            "bad central directory",
+        );
+        let text = chip_tooltip(&book).expect("the ! chip has a tooltip");
+        assert!(text.starts_with("!  Unreadable"), "{text}");
+        assert!(text.contains("bad central directory"), "{text}");
+    }
+
+    #[test]
+    fn a_book_with_both_chips_explains_both() {
+        // The defect the user found: only the "!" reason showed.
+        let mut book = scanned(
+            cr_core::scan_status::ScanStatus::Unreadable,
+            "unreadable header",
+        );
+        // Strip the metadata back out, so both chips apply.
+        book.info.series = String::new();
+        assert!(metadata_missing(&book), "the ? chip applies");
+        assert!(scan_marker(&book).is_some(), "the ! chip applies");
+
+        let text = chip_tooltip(&book).expect("both chips have a tooltip");
+        // Both reasons, in the order the chips are drawn.
+        let question = text.find("?  No metadata").expect("the ? reason is there");
+        let bang = text.find("!  Unreadable").expect("the ! reason is there");
+        assert!(question < bang, "the ? chip is drawn first: {text}");
+        assert!(text.contains("unreadable header"), "{text}");
+        // A blank line keeps the two reasons apart.
+        assert!(text.contains("\n\n"), "{text}");
+    }
+
+    #[test]
+    fn the_mismatch_chip_carries_its_own_glyph() {
+        let mut book = scanned(cr_core::scan_status::ScanStatus::FormatMismatch, "");
+        cr_core::scan_status::apply(
+            &mut book,
+            &cr_core::scan_status::ScanVerdict {
+                status: Some(cr_core::scan_status::ScanStatus::FormatMismatch),
+                detected_format: Some("rar".into()),
+                expected_format: Some("zip".into()),
+                ..Default::default()
+            },
+            "2026-09-12",
+        );
+        let text = chip_tooltip(&book).expect("the mismatch chip has a tooltip");
+        assert!(text.starts_with("\u{2260}  Format mismatch"), "{text}");
+        assert!(text.contains("Content is rar, the name says zip"), "{text}");
     }
 }

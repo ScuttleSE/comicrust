@@ -179,7 +179,9 @@ Back up `ComicDb.xml` first.
    file name carries an amber "≠" chip AND still shows its pages.
 3. Hover over a chip.
    *Expect:* the tooltip gives the verdict, the format disagreement,
-   and the reason.
+   and the reason. A book that carries TWO chips (for example "?" and
+   "!") must explain BOTH, one block per chip, each starting with its
+   own symbol, in the order the chips are drawn.
 4. *Expect:* one summary window at the end of the scan.
 5. Make a smart list. Paste this query:
    `Match [Custom Value] regex "comicrust.scan.status" "."`

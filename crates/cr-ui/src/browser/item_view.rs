@@ -404,9 +404,10 @@ impl ItemView {
             });
         }
 
-        // The scan-marker tooltip: hovering a book that failed its
-        // scan explains why, so the red "!" and amber "≠" chips are
-        // self-describing (PORT ADDITION, user request 2026-09-11).
+        // The chip tooltip: hovering a book explains EVERY chip it
+        // carries — the "?" no-metadata tag, the red "!" failure, and
+        // the amber "≠" mismatch (PORT ADDITION, user request
+        // 2026-09-11; the both-chips case fixed 2026-09-12).
         {
             let state = Rc::downgrade(&state);
             canvas.set_has_tooltip(true);
@@ -419,7 +420,7 @@ impl ItemView {
                 let text = {
                     let s = state.borrow();
                     hit_test(&s.layout, x as f64, y as f64)
-                        .and_then(|d| super::item::scan_marker_tooltip(s.view.book(d)))
+                        .and_then(|d| super::item::chip_tooltip(s.view.book(d)))
                 };
                 match text {
                     Some(text) => {
