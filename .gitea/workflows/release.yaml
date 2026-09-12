@@ -35,19 +35,58 @@ jobs:
       image: comicrust-ci:latest
 
     steps:
-      - name: Checkout (full history for the version number)
+      - name: Checkout (full history and tags for the version number)
         uses: actions/checkout@v4
         with:
+          # fetch-depth 0 brings the tags too. The version below is
+          # derived from the nearest stable tag, so a shallow checkout
+          # would silently produce the wrong number.
           fetch-depth: 0
 
       - name: Version
         id: version
-        # 0.1.<build> (ADR-042). The prefix MUST stay above the newest
-        # stable tag, or package managers order the rolling build below
-        # it; bump it by hand at each stable tag. The build number keeps
-        # counting all commits on main.
+        # <major>.<minor>.<commits since the newest stable tag>
+        # (ADR-043). The counter RESTARTS at every stable tag: after
+        # v0.1.0 the builds are 0.1.1, 0.1.2, ...; after v0.2.0 they are
+        # 0.2.1, 0.2.2, ... The major and minor come from the tag, so no
+        # hand bump is needed here.
+        #
+        # The tag filter is a STRICT regex, not a git glob. `git
+        # describe --match` takes an fnmatch pattern, in which
+        # `v[0-9]*.[0-9]*.[0-9]*` also matches v0.1.0-rc1 and similar,
+        # because `[0-9]*` is "a digit then anything". Listing the tags
+        # reachable from HEAD and filtering with grep -E excludes both
+        # the moving "rolling" tag and any prerelease suffix. `sort -V`
+        # then takes the HIGHEST reachable stable version, so the number
+        # can never fall below a release that is already an ancestor.
+        #
+        # Tags below v0.1.0 are EXCLUDED. v0.0.280 and v0.0.283 were cut
+        # under the old ADR-020 scheme, in which the patch field was the
+        # TOTAL commit count, not a per-release counter. Treating one of
+        # them as a counter origin would restart the numbering far below
+        # what has already shipped.
         run: |
-          version="0.1.$(git rev-list --count HEAD)"
+          set -euo pipefail
+          last="$(git tag -l --merged HEAD \
+              | grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$' \
+              | grep -vE '^v0\.0\.' \
+              | sort -V | tail -n1 || true)"
+          if [ -z "$last" ]; then
+              # No stable tag yet. Fall back to counting everything
+              # under 0.0, which stays below any future 0.1.0 tag.
+              version="0.0.$(git rev-list --count HEAD)"
+              echo "no stable tag found; falling back to $version"
+          else
+              count="$(git rev-list --count "${last}..HEAD")"
+              if [ "$count" -eq 0 ]; then
+                  echo "HEAD is exactly $last: a rolling build here would" >&2
+                  echo "collide with the stable release. Nothing to do." >&2
+                  exit 1
+              fi
+              base="${last#v}"
+              version="${base%.*}.${count}"
+              echo "newest stable tag: $last ($count commits since)"
+          fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "rolling version: $version"
 

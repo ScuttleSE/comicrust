@@ -50,7 +50,8 @@ This index is navigation only. The entry below each ADR is the decision.
 | ADR-039 | View settings belong to the list, and an absent `<View>` means inherit | accepted | — |
 | ADR-040 | The page and thumbnail activity lamp | accepted | — |
 | ADR-041 | The license is GPL-2.0-only | accepted | — |
-| ADR-042 | The rolling version counts from 0.1 | accepted | — |
+| ADR-042 | The rolling version counts from 0.1 | superseded | ADR-043 |
+| ADR-043 | The rolling build counter restarts at every stable tag | accepted | — |
 
 ADR-029 is reserved for the deferred Phase 9 (SQLite) decision. It is not written yet.
 
@@ -365,7 +366,19 @@ request. The budget bucket is `volume`, not `volumes`.
 
 ## ADR-042: The rolling version counts from 0.1
 
-- **Status:** accepted (2026-09-12, user directive). Amends ADR-020.
+- **Status:** superseded by ADR-043 (2026-09-12). Amends ADR-020.
 - **Context:** ADR-020 gives the rolling prerelease the version `0.0.<commit count>` (`.gitea/workflows/release.yaml`). The v0.1.0 tag breaks that scheme: the count at the tag is 369, so every later rolling build reports `0.0.37x`, which every version comparison — `pacman`, `dpkg`, and AppStream — orders BELOW `0.1.0`. A user on the rolling track would see the stable release as newer and would then never be offered a rolling upgrade again.
 - **Decision:** The rolling version becomes `0.1.<commit count>`. The prefix is bumped by hand at each stable tag, so the rolling track always sorts above the newest stable release, and the build number keeps counting every commit on `main` as before.
 - **Consequences:** Rolling stays ahead of stable, which matches the two-track model of ADR-021. The prefix bump is a manual step in the release checklist: after tagging `vX.Y.0`, `release.yaml` must move to `X.Y.<count>`. If that step is missed, the symptom is the same ordering inversion described above. The rolling numbers jump from `0.0.369` to `0.1.370`; the count itself is continuous, so no build number is reused.
+
+## ADR-043: The rolling build counter restarts at every stable tag
+
+- **Status:** accepted (2026-09-12, user directive). Supersedes ADR-042.
+- **Context:** ADR-042 set the rolling version to `0.1.<total commits on main>` and required a hand bump of the prefix at each stable tag. The first build under it published `0.1.371` while no `v0.1.0` tag existed at all, which reads as a release far AHEAD of a stable version that has not shipped yet. The user's rule is different and simpler to explain: the build number counts from the last stable release, so the build after `v0.1.0` is `0.1.1`.
+- **Decision:** The rolling version is `<major>.<minor>.<commits since the newest stable tag>`. The major and minor are READ from that tag, so no hand bump is needed and the prefix can never drift from the newest release. After `v0.1.0` the builds are `0.1.1`, `0.1.2`, …; after `v0.2.0` they restart as `0.2.1`, `0.2.2`, …. Four rules make the derivation safe, and each answers a MEASURED failure of a simpler version:
+  1. The tag list is filtered with a strict `grep -E '^v[0-9]+\.[0-9]+\.[0-9]+$'`, not with `git describe --match`. A git glob is fnmatch, so `v[0-9]*.[0-9]*.[0-9]*` also matches `v0.1.0-rc1`, because `[0-9]*` means "a digit then anything". Measured: a scratch tag `v0.1.0-simulation-test` was accepted as a stable tag by the glob form.
+  2. The repository carries a MOVING `rolling` tag. Any unfiltered `git describe --tags` picks it. The regex excludes it.
+  3. Tags below `v0.1.0` are excluded. `v0.0.280` and `v0.0.283` were cut under ADR-020, where the patch field was the TOTAL commit count rather than a per-release counter. Using one as a counter origin restarts the numbering far below what has already shipped: measured, `v0.0.283..HEAD` is 88 commits, so the next rolling build would have been `0.0.88`, below both the legacy tag and every rolling build ever published.
+  4. `sort -V | tail -n1` takes the HIGHEST reachable stable tag rather than the nearest ancestor, so the number cannot fall below a release that is already an ancestor of HEAD. A count of zero — HEAD sitting exactly on a stable tag — fails the step, because that build would carry the stable release's own version.
+  With no qualifying tag present, the step falls back to `0.0.<total commits>`, which stays below any future `0.1.0`.
+- **Consequences:** The rolling track always sorts above the stable release it follows and below the next one, and the manual prefix bump ADR-042 demanded is gone. There is ONE unavoidable regression at changeover: `0.1.371` was already published under ADR-042, and every number this scheme produces before a `v0.2.0` tag is lower than it. `dpkg` and `pacman` therefore treat a machine holding `0.1.371` as newer than the v0.1.0 release and newer than the rolling builds that follow it, so such a machine needs one manual reinstall. The blast radius is limited to installs taken from that single build. The alternative that avoids the regression entirely — making the first stable tag `v0.2.0` — was considered and not taken.

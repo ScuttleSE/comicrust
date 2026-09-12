@@ -44,11 +44,15 @@ Done 2026-09-12 (the release-readiness pass):
    COMPILE time, so a v0.1.0 tarball would have reported `0.0.369`.
    The Build step of both workflows now sets it. The rolling track was
    hiding the same bug, because its version is the commit count.
-4. **The rolling version moves to `0.1.<commit count>` (ADR-042).** At
-   `0.0.<count>` every rolling build after the tag would sort BELOW
-   0.1.0 for pacman, dpkg, and AppStream, and rolling users would stop
-   being offered upgrades. The prefix is a manual bump at each stable
-   tag.
+4. **The rolling build counter restarts at every stable tag
+   (ADR-043, supersedes ADR-042).** The version is
+   `<major>.<minor>.<commits since the newest stable tag>`, with the
+   major and minor READ from that tag, so the build after `v0.1.0` is
+   `0.1.1` and a `v0.2.0` tag restarts the count as `0.2.1`. ADR-042
+   was wrong: it published `0.1.371` while no `v0.1.0` tag existed.
+   The tag filter is a strict regex, because a git glob would accept
+   `v0.1.0-rc1`; it also excludes the moving `rolling` tag and the
+   legacy `v0.0.*` tags, whose patch field was a total commit count.
 5. **Dependency licence audit.** `zopfli` (Apache-2.0) was REMOVED,
    not excepted. It arrived through the zip crate's `deflate`
    meta-feature, which is defined as `["flate2/rust_backend",
@@ -186,7 +190,17 @@ passing user test.
 
 ## Blockers
 
-None.
+One, and it needs a decision before the tag.
+
+**A rolling build at `0.1.371` is already published** (the single build
+that ran under the superseded ADR-042). Every number ADR-043 produces
+before a `v0.2.0` tag is LOWER than it: the interim is `0.0.371`, and
+after the tag the builds are `0.1.1`, `0.1.2`, …. A machine holding
+`0.1.371` therefore sees v0.1.0 and all later rolling builds as older
+and needs one manual reinstall. The blast radius is limited to installs
+taken from that one build. Two exits: accept it, or make the first
+stable tag `v0.2.0`, under which rolling becomes `0.2.1` and no
+regression occurs. NOT decided.
 
 ## Lessons from the Phase 15 user test
 
