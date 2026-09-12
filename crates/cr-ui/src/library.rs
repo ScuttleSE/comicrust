@@ -654,15 +654,73 @@ pub fn install_cache_events(pool: &std::sync::Arc<cr_engine::image_pool::ImagePo
     });
 }
 
+/// How many times [`cache_thumbnails`] has dispatched its enqueue
+/// loop to a worker thread. This exists so a gate can assert the
+/// DISPATCH itself, not just the lamp widget: `statusbar_probe` gate L
+/// drove `update_lamps` with synthetic booleans and so could not see
+/// that the real command ran its loop inline on the GTK thread and
+/// froze the app. A count that does not rise means the work went back
+/// onto the main thread.
+static THUMBNAIL_WARMUP_SPAWNS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+/// The [`THUMBNAIL_WARMUP_SPAWNS`] counter.
+pub fn thumbnail_warmup_spawns() -> usize {
+    THUMBNAIL_WARMUP_SPAWNS.load(std::sync::atomic::Ordering::SeqCst)
+}
+
 /// `MainForm.GenerateFrontCoverCache` — the "Generate Cover
 /// Thumbnails" command: one unlimited-queue warm-up job per library
 /// book. The worker skips entries already in the thumbnail disk
 /// cache, so a repeated command is cheap.
+///
+/// The enqueue loop runs on a WORKER thread (Rule 9). It used to run
+/// inline in the menu action and froze the whole app on a large
+/// library, because the per-book key carries the file size and the
+/// modified time: `front_cover_thumbnail_key` reaches
+/// `ImageKey::from_file` -> `file_stats` -> `std::fs::metadata`, so
+/// the loop is one `stat()` syscall per book, plus one contended
+/// queue-mutex acquisition per book against the running render
+/// workers. While the GTK thread sat in that loop it served no
+/// redraws and no timers, so the window stopped painting AND the
+/// activity lamp could not appear — its visibility poll is a
+/// `glib::timeout_add_local` tick that cannot fire on a blocked main
+/// loop. The thumbnails themselves were produced the whole time,
+/// which is why the cache directory kept filling during the freeze.
+///
+/// Only the storage snapshot stays on the main thread, because
+/// `session()` is a UI thread-local and a worker must never touch it.
+/// That clone is pure memory work with no syscalls, and it mirrors
+/// the Book Scanner, which also scans a clone of the book storage
+/// (ADR-032).
 pub fn cache_thumbnails(pool: &std::sync::Arc<cr_engine::image_pool::ImagePool>) {
     let books: Vec<ComicBook> = session().borrow().database().books.clone();
-    for book in &books {
-        let key = cr_engine::image_pool::front_cover_thumbnail_key(book);
-        pool.generate_front_cover_thumbnail(key);
+    let pool = std::sync::Arc::clone(pool);
+    let spawned = std::thread::Builder::new()
+        .name("Thumbnail Warmup".into())
+        .spawn(move || {
+            let count = books.len();
+            let t = std::time::Instant::now();
+            crate::trace::trace(format!("thumbnail warmup queueing {count} books"));
+            for book in &books {
+                let key = cr_engine::image_pool::front_cover_thumbnail_key(book);
+                pool.generate_front_cover_thumbnail(key);
+            }
+            crate::trace::trace(format!(
+                "thumbnail warmup queued {count} books in {:?}",
+                t.elapsed()
+            ));
+        });
+    match spawned {
+        Ok(_) => {
+            THUMBNAIL_WARMUP_SPAWNS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+        Err(err) => {
+            // Spawning failed, so nothing would ever be queued. Say so
+            // rather than fail silently; do NOT fall back to the inline
+            // loop, which is the freeze this function exists to avoid.
+            crate::trace::trace(format!("thumbnail warmup could not start a thread: {err}"));
+        }
     }
 }
 

@@ -93,11 +93,35 @@ contains uppercase letters, left alone because the desktop file and
 the install paths depend on it). YAML parse of all four workflows —
 clean.
 
+`statusbar_probe` (release, Xvfb :99, isolated XDG dirs) — gates A
+through M all green, including the new M. Re-run after the thumbnail
+fix.
+
 UNKNOWN: the `.deb` is NOT verified locally. `dpkg-deb` is absent on
 this machine, so `packaging/deb/build.sh` and the new copyright file
 have had only a `bash -n` syntax check and a check of the indentation
 the machine-readable format needs. The packaging workflow's own
 content assertions are their first real test.
+
+### Lesson: a widget gate is not a command gate
+
+`statusbar_probe` gate L asserted the page lamp in full — 16 frames,
+hidden at rest, the timer runs only while visible, the click reaches
+Tasks — and it passed on code whose Generate Cover Thumbnails command
+froze the app. L drives `update_lamps` with SYNTHETIC booleans, so it
+never invoked the command and never needed a live main loop.
+
+New gate M invokes the real `win.generate-thumbnails` action and
+asserts that the enqueue left the main thread, through a
+`library::thumbnail_warmup_spawns` counter. Proven to catch the
+defect: with the inline loop restored, M reported `spawned=false`
+while L stayed all-true. The timing and heartbeat halves of M cannot
+separate the two on the 3-book probe library — `spawned` is the
+load-bearing assertion.
+
+The rule: when a feature has a UI surface AND a command that drives
+it, gate the COMMAND. A gate that only drives the surface directly
+will pass on a broken command.
 
 ### Lesson: `cargo test --workspace` is not the release build
 
@@ -165,9 +189,25 @@ The 2026-09-12 side task (ADR-039, ADR-040):
 
 ## Open user tests
 
-Three, all from the 2026-09-12 side task. A passing probe is not a
-passing user test.
+Four. A passing probe is not a passing user test.
 
+0. **Generate Cover Thumbnails must not freeze the app.** FIXED
+   2026-09-12 after a user test FAILED: the command hung the whole
+   window while `Cache/Thumbnails` kept filling, and no lamp ever
+   appeared. Cause, measured: `library::cache_thumbnails` ran its
+   enqueue loop inline on the GTK thread, and the per-book key carries
+   the file size and modified time, so
+   `front_cover_thumbnail_key` -> `ImageKey::from_file` -> `file_stats`
+   -> `std::fs::metadata` made it one `stat()` syscall per book plus
+   one contended queue-mutex acquisition per book. A blocked main loop
+   serves no redraws and no timers, which is why the lamp could not
+   appear: its visibility poll is a `glib::timeout_add_local` tick.
+   The rendering was always on worker threads, hence the filling
+   cache. The loop now runs on a "Thumbnail Warmup" worker; only the
+   storage snapshot stays on the main thread, because `session()` is a
+   UI thread-local. RETEST: run it on a large library — the window
+   must stay responsive, the lamp must appear, and a click on it must
+   open Tasks.
 1. **The thumbnail lamp.** Run Generate Thumbnails on a large list.
    A small animated icon must appear in the status bar while the work
    runs and disappear when it ends. A click on it must open Tasks.

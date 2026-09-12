@@ -426,6 +426,65 @@ let _shell = shell.clone();
             }
         });
 
+        // M. "Generate Cover Thumbnails" must NOT block the GTK
+        //    thread (Rule 9). Gate L above proves the lamp WIDGET
+        //    works, but it drives `update_lamps` with synthetic
+        //    booleans, so it never touched the real command — and the
+        //    real command ran its enqueue loop inline, one
+        //    `std::fs::metadata` per book, freezing the app and
+        //    preventing the lamp from ever appearing, because the
+        //    lamp poll is a `glib::timeout_add_local` tick that a
+        //    blocked main loop cannot serve. This gate invokes the
+        //    ACTION and checks two things: the spawn counter rises
+        //    (the loop went to a worker), and a heartbeat timer keeps
+        //    ticking across the call (the main loop stayed alive).
+        //
+        //    `spawned` is the load-bearing half. The probe library
+        //    holds 3 books, so the inline loop returns fast too and
+        //    the timing and beat counts CANNOT separate the two: with
+        //    the inline loop restored this gate still reported
+        //    call=397us and beats=29, but spawned=false. Gate L stayed
+        //    all-true throughout, which is the blind spot M closes.
+        glib::timeout_add_local(std::time::Duration::from_millis(9000), {
+            let shell = shell.clone();
+            move || {
+                let beats = std::rc::Rc::new(std::cell::Cell::new(0u32));
+                let tick = beats.clone();
+                let beat_id = glib::timeout_add_local(
+                    std::time::Duration::from_millis(10),
+                    move || {
+                        tick.set(tick.get() + 1);
+                        glib::ControlFlow::Continue
+                    },
+                );
+                let before = cr_ui::library::thumbnail_warmup_spawns();
+                let t = std::time::Instant::now();
+                let _ = gtk4::prelude::WidgetExt::activate_action(
+                    &shell.window(),
+                    "win.generate-thumbnails",
+                    None,
+                );
+                let call = t.elapsed();
+                let after = cr_ui::library::thumbnail_warmup_spawns();
+                // Let the main loop run: a blocked one cannot beat.
+                let beat_id = std::cell::Cell::new(Some(beat_id));
+                glib::timeout_add_local(std::time::Duration::from_millis(300), {
+                    move || {
+                        println!(
+                            "M spawned={} call={call:?} beats={} (expect spawn +1 and beats>0)",
+                            after == before + 1,
+                            beats.get()
+                        );
+                        if let Some(id) = beat_id.take() {
+                            id.remove();
+                        }
+                        glib::ControlFlow::Break
+                    }
+                });
+                glib::ControlFlow::Break
+            }
+        });
+
         // I. The boot-configure re-entrancy gate (the 2026-09-06
         //    boot crash): a persisted workspace size applied, then
         //    a list selection — the selection notify syncs the
