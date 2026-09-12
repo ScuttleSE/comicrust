@@ -696,6 +696,11 @@ pub fn show_scrape_dialog(
     content.append(&scroll);
     content.append(&bottom);
     window.set_child(Some(&content));
+    // A GTK4 window is invisible until it is presented. Without this
+    // the whole scrape runs with no status list, no progress line,
+    // and NO REACHABLE CANCEL BUTTON. The `scrape_probe` visibility
+    // gate keeps it that way.
+    window.present();
 
     let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
     {

@@ -136,6 +136,8 @@ fn main() {
     let mock_base = mock_url.clone();
 
     let book_id = book.id;
+    let scrape_window_visible: std::rc::Rc<std::cell::Cell<bool>> =
+        std::rc::Rc::new(std::cell::Cell::new(false));
     let counter2 = std::rc::Rc::clone(&counter);
     let loop_ = gtk4::glib::MainLoop::new(None, false);
     let quit = loop_.clone();
@@ -164,6 +166,26 @@ fn main() {
         );
     }
 
+    // GATE V: the progress window must be VISIBLE. It was built,
+    // filled, and closed but never presented from Phase 12 until
+    // 2026-09-12, so every scrape ran with no status list and no
+    // reachable Cancel button. A toplevel is checked, not a returned
+    // handle, so the gate needs no signature change.
+    // GATE V: the progress window must be VISIBLE. It was built,
+    // filled, and closed but never presented from Phase 12 until
+    // 2026-09-12, so every scrape ran with no status list, no
+    // progress line, and NO REACHABLE CANCEL BUTTON.
+    //
+    // The check is SYNCHRONOUS, right after `show_scrape_dialog`
+    // returns. A timed check races: the mock server has zero delays,
+    // so the run reaches `Done` and closes the window in under 200 ms.
+    scrape_window_visible.set(
+        gtk4::Window::list_toplevels()
+            .into_iter()
+            .filter_map(|w| w.downcast::<gtk4::Window>().ok())
+            .any(|w| w.title().is_some_and(|t| t == "Comic Vine Scraper") && w.is_visible()),
+    );
+
     // The dialogs + the engine ride the main loop; give the run 10 s.
     let watchdog = loop_.clone();
     gtk4::glib::timeout_add_local(std::time::Duration::from_secs(10), move || {
@@ -171,6 +193,16 @@ fn main() {
         gtk4::glib::ControlFlow::Break
     });
     loop_.run();
+
+    if scrape_window_visible.get() {
+        println!("GATE V OK: the scrape progress window is visible");
+    } else {
+        eprintln!(
+            "FAIL: the scrape progress window is NOT visible \
+             (a gtk4::Window is invisible until present() is called)"
+        );
+        std::process::exit(1);
+    }
 
     let summaries = summaries.borrow();
     if summaries.len() != 1 {
