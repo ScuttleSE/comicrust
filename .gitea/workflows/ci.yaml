@@ -51,3 +51,14 @@ jobs:
         env:
           CR_FORMAT_TESTS: "1"
         run: cargo test --workspace
+
+      - name: Check the release binary graph
+        # The steps above all build DEV-dependencies, which are
+        # feature-unified into the workspace graph and can supply a
+        # feature the shipped binary does not get. That masked a broken
+        # zip feature set on 2026-09-12: fmt, clippy and 680 tests were
+        # green while `cargo build -p cr-app` failed in the release
+        # workflow. This step resolves cr-app's graph WITHOUT
+        # dev-dependencies, which is what the release workflows build.
+        # `--locked` also proves Cargo.lock is current.
+        run: cargo check --locked -p cr-app

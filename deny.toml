@@ -64,17 +64,27 @@ name = "webpki-roots"
 allow = ["CDLA-Permissive-2.0"]
 
 # RESOLVED 2026-09-12: zopfli (Apache-2.0) was removed, not excepted.
-# It arrived through the zip crate's "deflate" meta-feature, which
-# enables both flate2 and zopfli. No comicrust code requests zopfli
-# compression — the writers use Stored and Deflated only — so the
-# workspace now asks for "deflate-flate2" and the crate is gone from
-# the graph. Verified: `cargo tree -e normal -p cr-app -i zopfli`
-# matches no package, and the test suite is unchanged at 680 passing.
-# NOTE: zopfli stays listed in Cargo.lock as an optional dependency of
-# the zip crate, so `cargo vendor` still copies its source into the
-# release source tarball. It is never compiled or linked. That is
-# aggregation of unmodified Apache-2.0 source next to the work, not
-# combination with it.
+# It arrived through the zip crate's "deflate" meta-feature, defined as
+#   deflate = ["flate2/rust_backend", "deflate-zopfli", "deflate-flate2"]
+# so taking "deflate" pulls zopfli in unconditionally. No comicrust code
+# requests zopfli compression -- the writers use Stored and Deflated
+# only -- so the workspace takes the two halves it needs instead:
+# "deflate-flate2" (a marker) plus "flate2" (the implicit feature of
+# zip's optional flate2 dependency, which resolves to the pure-Rust
+# rust_backend/miniz_oxide path, exactly as "deflate" did).
+# The cr-engine dev-dependency was moved onto the same workspace entry:
+# as a bare `zip = "2"` it took zip's DEFAULT features and dragged
+# zopfli back in, and -- because dev-dependencies are feature-unified
+# into `cargo test --workspace` -- it also HID a broken feature set
+# from the test gate while `cargo build -p cr-app` failed.
+# Verified: `cargo tree -e normal,dev --workspace -i zopfli` matches no
+# package; `cargo build --release --locked -p cr-app` succeeds; the test
+# suite is unchanged at 680 passing.
+# Side effect: zip's default tail (aes, bzip2, lzma, xz, zstd, time)
+# left the lock file too, removing the bzip2-sys, lzma-sys and zstd-sys
+# C builds. No test depended on them. Because zopfli left Cargo.lock as
+# well (`grep -c zopfli Cargo.lock` = 0), `cargo vendor` no longer
+# copies its source into the release source tarball either.
 
 [bans]
 multiple-versions = "warn"

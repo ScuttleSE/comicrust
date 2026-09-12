@@ -50,9 +50,13 @@ Done 2026-09-12 (the release-readiness pass):
    being offered upgrades. The prefix is a manual bump at each stable
    tag.
 5. **Dependency licence audit.** `zopfli` (Apache-2.0) was REMOVED,
-   not excepted: it arrived through the zip crate's `deflate`
-   meta-feature and no code asks for zopfli compression, so the
-   workspace now requests `deflate-flate2`. Two findings remain
+   not excepted. It arrived through the zip crate's `deflate`
+   meta-feature, which is defined as `["flate2/rust_backend",
+   "deflate-zopfli", "deflate-flate2"]` and so pulls zopfli in
+   unconditionally. No code asks for zopfli compression, so the
+   workspace takes `deflate-flate2` plus `flate2` instead. zip's
+   default tail (aes, bzip2, lzma, xz, zstd, time) left the lock file
+   with it, removing three `-sys` C builds. Two findings remain
    unresolved and are recorded in `deny.toml` as explicit exceptions —
    `ring` and `webpki-roots`, both reached through `ureq` in
    cr-scrape. `cargo deny` is therefore NOT a CI gate yet.
@@ -75,14 +79,42 @@ made that the present combination is permissible.
 
 ## Verification record
 
-`cargo fmt --all`, `cargo clippy --workspace --all-targets -- -D
-warnings` — green. `CR_FORMAT_TESTS=1 cargo test --workspace` — 680
-passed, 0 failed, unchanged from the pre-change baseline, so the zip
-feature change caused no regression. `appstreamcli validate` — passes
-(one pedantic note: the component id contains uppercase letters, left
-alone because the desktop file and the install paths depend on it).
-`bash -n packaging/deb/build.sh` and a YAML parse of all four
-workflows — clean.
+`cargo build --release --locked -p cr-app` — the command the release
+workflows run — green. `cargo fmt --all --check` and `cargo clippy
+--workspace --all-targets -- -D warnings` — green.
+`CR_FORMAT_TESTS=1 cargo test --workspace --locked` — 680 passed, 0
+failed, unchanged from the pre-change baseline.
+`appstreamcli validate` — passes (one pedantic note: the component id
+contains uppercase letters, left alone because the desktop file and
+the install paths depend on it). YAML parse of all four workflows —
+clean.
+
+UNKNOWN: the `.deb` is NOT verified locally. `dpkg-deb` is absent on
+this machine, so `packaging/deb/build.sh` and the new copyright file
+have had only a `bash -n` syntax check and a check of the indentation
+the machine-readable format needs. The packaging workflow's own
+content assertions are their first real test.
+
+### Lesson: `cargo test --workspace` is not the release build
+
+The first attempt at the zopfli removal passed fmt, clippy, and 680
+workspace tests locally, then FAILED in CI with "unresolved import
+`flate2`" inside the zip crate. Two causes, both measured:
+
+1. `deflate-flate2` is a MARKER feature (`= ["_deflate-any"]`). It
+   supplies no backend. The backend lives in `flate2/rust_backend`,
+   which only the `deflate` meta-feature enabled. Removing `deflate`
+   removed the backend along with zopfli.
+2. `cr-engine` declared a bare `zip = "2"` DEV-dependency, which took
+   zip's default features. Dev-dependencies are feature-unified into
+   `cargo test --workspace`, so the workspace test run supplied the
+   missing backend and compiled. `cargo build -p cr-app` excludes
+   dev-dependencies and failed. The dev-dependency now points at the
+   workspace entry, which closes the masking path.
+
+The rule this produces: when a change touches FEATURES or
+DEPENDENCIES, run `cargo build --release --locked -p cr-app` as well.
+A green `cargo test --workspace` is not evidence about it.
 
 Phases 13, 14, and 15 all passed their user tests on 2026-09-12. Their
 records are in `docs/archive/phases/`.

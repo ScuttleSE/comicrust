@@ -16,5 +16,11 @@ notify = "6"
 workspace = true
 
 [dev-dependencies]
-zip = "2"
+# MUST be the workspace entry, not a bare `zip = "2"`. A bare entry
+# takes zip's DEFAULT features, which include the "deflate"
+# meta-feature and so drag zopfli back in (ADR-041). It also masks
+# feature breakage: dev-dependencies are feature-unified into
+# `cargo test --workspace`, so a workspace test run compiled while
+# `cargo build -p cr-app` -- what the release workflow runs -- failed.
+zip.workspace = true
 tar.workspace = true
