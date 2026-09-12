@@ -26,122 +26,51 @@ its user test. The navigator tree-state and Detail column-toggle fixes
 
 ## Verification record
 
-- Commit: Phase 15 T6 and the T5 readout (2026-09-12). The warm task
-  spends idle budget on the volumes the library names; it stops on the
-  cancel flag, on its request cap, and on a spent budget, and one bad
-  volume does not stop the rest. The File menu gains Import Comic Vine
-  MCL File, Update Comic Vine Cache, and Warm Comic Vine Cache; the
-  scrape window shows the budget left and the resume time. Six new
-  `CACHE_*` advanced keys carry the policies, documented in
-  `docs/config-reference.md` and gated by the doc drift test.
-  DEVIATION: the warm task reports in a completion dialog, not in the
-  Tasks window.
-- Commit: Phase 15 T7, "Fill Missing Issues" (2026-09-12). The book
-  menu gains a row that compares the cached issue list of the volume
-  against the issue numbers the library holds, then creates fileless
-  books for the ticked gaps. Each new book carries the Comic Vine
-  issue id, so a later scrape needs no search. A series that no book
-  ties to a volume says so and stops; it does not guess from the
-  series name. The number match ignores leading zeros and letter case.
-- Commit: Phase 15 T5 data layer, the per-resource request budget
-  (2026-09-12). Every API call passes one `CvClient` chokepoint that
-  writes to `request_log`, so the budget survives a restart. The
-  default ceiling is 200 per resource per hour, from the user's
-  figure; the API reference page carries no rate-limit text, so the
-  figure is NOT verified and the ceiling is a policy value. MEASURED
-  by gate: a spent budget stops the sweep, the sweep offset of the
-  pages that landed survives, and `/issues/` and `/volume/` count in
-  separate buckets. The scrape-window readout is still open.
-- Commit: Phase 15 T4, the freshness rule (2026-09-12). A volume is
-  closed when its stored `count_of_issues` equals the cached issue
-  count and its last cover date is past the horizon. MEASURED by
-  mock-server gate, in requests: a closed volume 0, an unchanged open
-  volume 1 (the probe only), a changed open volume 2, an unknown
-  volume 1 + its pages. The probe uses `/volume/4050-<id>/`, the
-  resource the scraper already queries, because a `/volumes` filter on
-  `id` is not confirmed by the API reference page.
-- Commit: Phase 15 T3, the incremental sweep (2026-09-12). One paged
-  `/issues` query with `filter=date_last_updated:<start>|<end>` keeps
-  the skeleton current. MEASURED by mock-server gate: a cancelled
-  sweep resumes and pays for no repeated page, a complete sweep makes
-  zero requests on a re-run, a new window restarts at offset zero, and
-  the page cap stops the run with its offset kept.
-- Commit: Phase 15 T2, the MCL reader and writer (2026-09-12). The
-  reader accepts what the `Update Missing` writer really produces: the
-  trailing comma on the number list, the `.&@1` and `.&@2` escapes that
-  that writer never reverses, the quoted list its docstring promises
-  but it never emits, and a comma that a space follows inside a number.
-  `mcl::import` seeds the skeleton layer in batches with no API
-  request.
-- Commit: Phase 15 T1, the Comic Vine cache store (2026-09-12).
-  `cr-scrape` gains `rusqlite` (bundled) and the `cache` module: a
-  `CvCache` trait over a two-layer SQLite file (ADR-037), with
-  `SqliteCache::in_memory` behind the tests. The merge rule is
-  measured by gate: a cheap write (an MCL import, or the sweep's
+Phase 15 (2026-09-12), commits `5aea7c3` to `f930cb8`. The older
+records are in git.
+
+- The cache is a two-layer SQLite file (ADR-037). MEASURED by gate, in
+  API requests: a closed volume 0, an unchanged open volume 1 (the
+  probe only), a changed open volume 2, an unknown volume 1 plus its
+  pages. A second call on a volume just paged asks for nothing.
+- The merge rule is gated: a cheap write (an MCL import, or the sweep's
   `id,issue_number,volume` field list) never erases what an expensive
-  query found.
+  query found. `fetched_at` merges with MAX, so a probe cannot move the
+  check time backwards.
+- The MCL reader accepts what the `Update Missing` writer really
+  produces, not what its docstring promises: the trailing comma on the
+  number list, the `.&@1` and `.&@2` escapes that the writer never
+  reverses, the quoted list it never emits, and a comma that a space
+  follows inside a number. Fixtures pin all four, plus volume 77901.
+- The sweep uses `filter=date_last_updated:<start>|<end>`. The API
+  reference page renders its per-field filter marks as images, so that
+  page does NOT state the filter is allowed; the production
+  `update_missing.py` is the evidence. Gated: a cancelled sweep
+  resumes and pays for no repeated page, a complete sweep makes zero
+  requests on a re-run, a new window restarts at zero, and the page cap
+  keeps its offset.
+- The budget default is 200 requests per resource per hour, from the
+  user's figure. The API reference page carries NO rate-limit text at
+  all (no "200", no "per resource", no 420, and a `status_code` table
+  that stops at 105), so the figure is NOT verified here and the
+  ceiling is the `CACHE_RATE_LIMIT` key.
+- DEVIATION: the warm task and the sweep report in a completion dialog,
+  not in the Tasks window. A Tasks row is on `docs/backlog.md`.
+- Image downloads do not pass the budget. They come from the image
+  host, not from an API resource.
 - `cargo fmt --all` and `cargo clippy --workspace --all-targets -- -D
   warnings` — green.
 - `cargo test --workspace` — 660 pass (was 564; 96 new cache, MCL,
   sweep, freshness, budget, warm, and missing-issue gates).
-- Commit: navigator tree state + Detail column toggle (2026-09-12).
-  The navigator expansion now persists in
-  `ComicListItemFolder.Collapsed` (the C# `FillListTree` /
-  `tvQueries_AfterExpand` / `AfterCollapse`), so the tree no longer
-  comes up fully collapsed. The Detail column chooser rows now
-  activate: the popover no longer unparents itself on close.
-  MEASURED with `GTK_DEBUG=actions` on GTK 4.22.4 — a row click runs
-  the model button's default handler first, which pops the menu down;
-  an unparent inside `closed` tore the action muxer down, every
-  tracker item logged "action cols.col<id> was removed", `can_activate`
-  went off, and the row handler that ran next activated nothing.
-- Probes (release, Xvfb): `browserbar` gate D4 (the new
-  rendered-row click round) green, `navpages` gates C and C2 (the new
-  expand/collapse persistence round) green.
-- `cargo fmt --all` and `cargo clippy --workspace --all-targets -- -D
-  warnings` — green.
-- `cargo test --workspace` — 564 pass (was 563; the new
-  `folder_collapsed_round_trips_at_depth` golden gate).
-- Commit: Phase 14 (2026-09-12). The book menu gains "Rescan Book
-  File(s)" (one explicit scan request over the selected files, forced
-  one-shot retry); the navigator menu gains "Scan List Contents" on
-  smart and reading lists; the right-click selection follows the C#
-  rule and every menu command reads the selection (the C#
-  `UpdateSelectionFromMouse`, ItemView.cs:3855).
-- Probes (release, Xvfb): `scanmarker` A-E green (E is the new
-  book-menu rescan round), `contextmenu` ALL PASS (S1/S2 the new
-  selection gates), `navpages` ALL PASS (F/G/H/H2 the new navigator
-  menu gates), `scanrefresh` A-K green (release).
-- `docs/guides/smart-list-queries.md` stays gated by its doc tests.
-- The ADR-034 archive-reader measurements live in `docs/decisions.md`.
+- No probe drives the new dialogs or commands; the user test covers
+  them, as the navigator list command does in Phase 14.
 
 ## Open user tests
 
 Run in this order. Each one needs a rebuild first.
 
-1. **Comic Vine cache** (Phase 15, ADR-037, ADR-038) — rebuild first.
-   a. File ▸ Import Comic Vine MCL File…: pick an `.mcl` snapshot. The
-      report gives the volume and issue counts and the snapshot date.
-   b. File ▸ Update Comic Vine Cache: the sweep runs from that date to
-      today and reports its pages. Run it again: it says the cache is
-      current.
-   c. Scrape a book of a large series, then scrape a second book of the
-      SAME series. The second scrape must be much faster, and the
-      budget readout at the bottom of the scrape window must fall by
-      far fewer than the first.
-   d. Set `CACHE_RATE_LIMIT=3` in the scraper advanced settings and
-      scrape again: the window says "budget spent, resuming at HH:MM"
-      instead of stalling with no word.
-   e. File ▸ Warm Comic Vine Cache: it reports the volumes read, the
-      volumes already fresh, and the requests spent. Run it again at
-      once: almost every volume must be "already fresh".
-   f. Right-click a book of a scraped series ▸ Fill Missing Issues…:
-      the gap list appears with issue numbers, years, and titles. Tick
-      some and press Create Books: fileless books appear in the grid,
-      already selected, with the right series, volume, and number.
-      Right-click a book of a series that was NEVER scraped: the
-      command says no book names a Comic Vine volume, and it creates
-      nothing.
+1. **Comic Vine cache** (Phase 15) — the steps are in
+   `docs/phases/phase-15.md`.
 2. **Navigator tree state** (2026-09-12) — expand some navigator
    folders, close the app, and start it again: the same folders come
    back expanded. Collapse them, restart: they come back collapsed. A

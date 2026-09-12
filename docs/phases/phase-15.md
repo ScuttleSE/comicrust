@@ -113,9 +113,33 @@ The book menu gains **Fill Missing Issues…**.
 - The Fill Missing Issues logic is gated headless in `cr-scrape`
   (`cache::missing`). The dialog itself has no probe; the user test
   covers it, as the navigator list command does in Phase 14.
-- User test: import an MCL file, scrape a large series twice, and
-  confirm that the second scrape makes far fewer requests. Then fill the
-  missing issues of one series and confirm the new fileless books.
+
+## User test
+
+Rebuild first.
+
+a. File ▸ Import Comic Vine MCL File…: pick an `.mcl` snapshot. The
+   report gives the volume and issue counts and the snapshot date.
+b. File ▸ Update Comic Vine Cache: the sweep runs from that date to
+   today and reports its pages. Run it again: it says the cache is
+   current.
+c. Scrape a book of a large series, then scrape a second book of the
+   SAME series. The second scrape must be much faster, and the
+   budget readout at the bottom of the scrape window must fall by
+   far fewer than the first.
+d. Set `CACHE_RATE_LIMIT=3` in the scraper advanced settings and
+   scrape again: the window says "budget spent, resuming at HH:MM"
+   instead of stalling with no word.
+e. File ▸ Warm Comic Vine Cache: it reports the volumes read, the
+   volumes already fresh, and the requests spent. Run it again at
+   once: almost every volume must be "already fresh".
+f. Right-click a book of a scraped series ▸ Fill Missing Issues…:
+   the gap list appears with issue numbers, years, and titles. Tick
+   some and press Create Books: fileless books appear in the grid,
+   already selected, with the right series, volume, and number.
+   Right-click a book of a series that was NEVER scraped: the
+   command says no book names a Comic Vine volume, and it creates
+   nothing.
 
 ## Open issues
 
@@ -123,8 +147,11 @@ The book menu gains **Fill Missing Issues…**.
   Vine reference documentation. The figure comes from a Comic Vine
   statement elsewhere. The key is configurable for this reason.
 - A library series carries a Comic Vine volume id only after a scrape.
-  T7 must ask the user to pick the volume when the id is not known.
+  T7 tells the user to scrape one book first. It does NOT offer a
+  volume picker yet; that is the smaller half of the planned fallback
+  and it goes to `docs/backlog.md`.
 
 ## Completion record
 
-Not started.
+Not closed. Fill this in after the user test passes, then move this
+file to `docs/archive/phases/phase-15.md`.

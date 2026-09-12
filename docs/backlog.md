@@ -359,3 +359,10 @@ The warm task and the incremental sweep (Phase 15, ADR-037, ADR-038)
 report in a completion dialog. A Tasks window row needs a new
 `PendingTasks` source in `cr-ui/src/dialogs/tasks.rs`, with an abort
 command. Not a blocker: both tasks are already cancellable.
+
+## Fill Missing Issues: a volume picker fallback
+
+"Fill Missing Issues" (Phase 15 T7) needs a Comic Vine volume id, which
+a series carries only after a scrape. Today the command says so and
+stops. A volume picker (the series search, then the user's choice)
+would let the command work on a series that was never scraped.
