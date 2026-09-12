@@ -12,6 +12,7 @@
 //! `request_log` counts every API request per resource, so the budget
 //! survives a restart. `sweep_state` lets an interrupted sweep resume.
 
+pub mod freshness;
 pub mod mcl;
 mod sqlite;
 pub mod sweep;

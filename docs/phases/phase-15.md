@@ -65,7 +65,7 @@ series that the library does not hold.
 - [x] T3 — the incremental sweep on a worker thread. Acceptance: a mock
       server test pages the sweep, stops it, and resumes it from
       `sweep_state`.
-- [ ] T4 — the freshness rule. A volume is closed when the cached
+- [x] T4 — the freshness rule. A volume is closed when the cached
       `count_of_issues` equals the cached issue count and the last cover
       date is older than the horizon. Acceptance: a closed volume makes
       zero requests, an open volume makes one revalidation request.

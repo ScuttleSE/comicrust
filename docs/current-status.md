@@ -6,7 +6,7 @@ Do not append a history. History lives in `docs/archive/` and in git.
 ## Active phase
 
 **Phase 15 — Comic Vine cache, rate budget, and missing-issue fill.**
-File: `docs/phases/phase-15.md`. Status: T1, T2, and T3 done, T4 next.
+File: `docs/phases/phase-15.md`. Status: T1 to T4 done, T5 next.
 **Phase 16 — Comic Vine scraper quality of life** is planned and waits
 for Phase 15 (`docs/phases/phase-16.md`).
 Phase 13 is IMPLEMENTED, user test pending. Phases 0-8 and 10-12 are
@@ -15,7 +15,7 @@ COMPLETE (Phase 12 user-tested 2026-09-10); Phase 9 is DEFERRED to
 
 ## Current task
 
-Phase 15 T4 — the freshness rule for a closed volume (ADR-037).
+Phase 15 T5 — per-resource request accounting (ADR-037).
 
 Phase 14 (right-click rescans, ADR-036) is IMPLEMENTED and waits for
 its user test. The navigator tree-state and Detail column-toggle fixes
@@ -24,6 +24,14 @@ its user test. The navigator tree-state and Detail column-toggle fixes
 
 ## Verification record
 
+- Commit: Phase 15 T4, the freshness rule (2026-09-12). A volume is
+  closed when its stored `count_of_issues` equals the cached issue
+  count and its last cover date is past the horizon. MEASURED by
+  mock-server gate, in requests: a closed volume 0, an unchanged open
+  volume 1 (the probe only), a changed open volume 2, an unknown
+  volume 1 + its pages. The probe uses `/volume/4050-<id>/`, the
+  resource the scraper already queries, because a `/volumes` filter on
+  `id` is not confirmed by the API reference page.
 - Commit: Phase 15 T3, the incremental sweep (2026-09-12). One paged
   `/issues` query with `filter=date_last_updated:<start>|<end>` keeps
   the skeleton current. MEASURED by mock-server gate: a cancelled
@@ -46,8 +54,8 @@ its user test. The navigator tree-state and Detail column-toggle fixes
   query found.
 - `cargo fmt --all` and `cargo clippy --workspace --all-targets -- -D
   warnings` — green.
-- `cargo test --workspace` — 608 pass (was 564; 44 new cache, MCL,
-  and sweep gates).
+- `cargo test --workspace` — 624 pass (was 564; 60 new cache, MCL,
+  sweep, and freshness gates).
 - Commit: navigator tree state + Detail column toggle (2026-09-12).
   The navigator expansion now persists in
   `ComicListItemFolder.Collapsed` (the C# `FillListTree` /
