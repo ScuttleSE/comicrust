@@ -6,7 +6,7 @@ Do not append a history. History lives in `docs/archive/` and in git.
 ## Active phase
 
 **Phase 15 — Comic Vine cache, rate budget, and missing-issue fill.**
-File: `docs/phases/phase-15.md`. Status: T1 to T4 done, T5 next.
+File: `docs/phases/phase-15.md`. Status: T1 to T4 done, T5 part done, T6 next.
 **Phase 16 — Comic Vine scraper quality of life** is planned and waits
 for Phase 15 (`docs/phases/phase-16.md`).
 Phase 13 is IMPLEMENTED, user test pending. Phases 0-8 and 10-12 are
@@ -15,7 +15,8 @@ COMPLETE (Phase 12 user-tested 2026-09-10); Phase 9 is DEFERRED to
 
 ## Current task
 
-Phase 15 T5 — per-resource request accounting (ADR-037).
+Phase 15 T6 — the warm task, and the scrape-window budget readout
+that T5 still owes.
 
 Phase 14 (right-click rescans, ADR-036) is IMPLEMENTED and waits for
 its user test. The navigator tree-state and Detail column-toggle fixes
@@ -24,6 +25,15 @@ its user test. The navigator tree-state and Detail column-toggle fixes
 
 ## Verification record
 
+- Commit: Phase 15 T5 data layer, the per-resource request budget
+  (2026-09-12). Every API call passes one `CvClient` chokepoint that
+  writes to `request_log`, so the budget survives a restart. The
+  default ceiling is 200 per resource per hour, from the user's
+  figure; the API reference page carries no rate-limit text, so the
+  figure is NOT verified and the ceiling is a policy value. MEASURED
+  by gate: a spent budget stops the sweep, the sweep offset of the
+  pages that landed survives, and `/issues/` and `/volume/` count in
+  separate buckets. The scrape-window readout is still open.
 - Commit: Phase 15 T4, the freshness rule (2026-09-12). A volume is
   closed when its stored `count_of_issues` equals the cached issue
   count and its last cover date is past the horizon. MEASURED by
@@ -54,8 +64,8 @@ its user test. The navigator tree-state and Detail column-toggle fixes
   query found.
 - `cargo fmt --all` and `cargo clippy --workspace --all-targets -- -D
   warnings` — green.
-- `cargo test --workspace` — 624 pass (was 564; 60 new cache, MCL,
-  sweep, and freshness gates).
+- `cargo test --workspace` — 634 pass (was 564; 70 new cache, MCL,
+  sweep, freshness, and budget gates).
 - Commit: navigator tree state + Detail column toggle (2026-09-12).
   The navigator expansion now persists in
   `ComicListItemFolder.Collapsed` (the C# `FillListTree` /

@@ -222,3 +222,73 @@ fn a_cancel_before_the_first_page_makes_no_request() {
     assert_eq!(report.pages, 0);
     assert_eq!(served.load(Ordering::Relaxed), 0);
 }
+
+// --- the request budget at the client chokepoint (ADR-037, T5) ---
+
+#[test]
+fn the_budget_stops_the_sweep_and_the_state_survives() {
+    use cr_scrape::cache::budget::{Budget, BudgetPolicy};
+
+    let (base, served) = serve(THREE_PAGES);
+    let cache = Arc::new(SqliteCache::in_memory().expect("cache"));
+    // Two requests per resource per hour, and no sleeping.
+    let budget = Arc::new(
+        Budget::new(
+            Arc::clone(&cache) as Arc<dyn CvCache>,
+            BudgetPolicy {
+                per_resource: 2,
+                window_seconds: 3600,
+            },
+        )
+        .with_clock(Box::new(|| 1_000_000), std::time::Duration::ZERO),
+    );
+    let mut c = client(&base);
+    c.set_budget(Arc::clone(&budget));
+
+    let cancel = AtomicBool::new(false);
+    let err = sweep::run(&c, cache.as_ref(), &options(), &cancel, |_| {})
+        .expect_err("the third page must be refused");
+    assert!(
+        matches!(err, cr_scrape::cv::connection::CvError::BudgetSpent(ref r) if r == "issues"),
+        "got {err:?}"
+    );
+    // Two pages went out, and no more.
+    assert_eq!(served.load(Ordering::Relaxed), 2);
+    assert_eq!(budget.remaining("issues"), 0);
+    // The offset of the pages that DID land is stored, so the run
+    // resumes when the window frees.
+    assert_eq!(
+        cache.sweep_state().expect("read").expect("present").offset,
+        200
+    );
+    assert_eq!(cache.issue_count(10).expect("count"), 200);
+}
+
+#[test]
+fn the_budget_counts_each_resource_on_its_own() {
+    use cr_scrape::cache::budget::{Budget, BudgetPolicy};
+
+    let (base, _) = serve(THREE_PAGES);
+    let cache = Arc::new(SqliteCache::in_memory().expect("cache"));
+    let budget = Arc::new(
+        Budget::new(
+            Arc::clone(&cache) as Arc<dyn CvCache>,
+            BudgetPolicy {
+                per_resource: 3,
+                window_seconds: 3600,
+            },
+        )
+        .with_clock(Box::new(|| 1_000_000), std::time::Duration::ZERO),
+    );
+    let mut c = client(&base);
+    c.set_budget(Arc::clone(&budget));
+
+    let cancel = AtomicBool::new(false);
+    sweep::run(&c, cache.as_ref(), &options(), &cancel, |_| {}).expect("sweep");
+
+    assert_eq!(budget.remaining("issues"), 0);
+    // `/volume/` is a different bucket and is untouched.
+    assert_eq!(budget.remaining("volume"), 3);
+    assert_eq!(c.remaining_budget("/issues/"), Some(0));
+    assert_eq!(c.remaining_budget("/volume/4050-771/"), Some(3));
+}

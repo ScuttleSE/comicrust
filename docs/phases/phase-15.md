@@ -33,6 +33,9 @@ series that the library does not hold.
 
 ## Exclusions
 
+- Image downloads do not pass the budget. They come from the image
+  host, not from an API resource, so they belong to no bucket.
+
 - No scraper dialog changes. Those are Phase 16.
 - No automatic download of an MCL snapshot from a third-party host.
 - No change to `ComicDb.xml`. The cache is a separate file.
@@ -69,10 +72,12 @@ series that the library does not hold.
       `count_of_issues` equals the cached issue count and the last cover
       date is older than the horizon. Acceptance: a closed volume makes
       zero requests, an open volume makes one revalidation request.
-- [ ] T5 — request accounting. One chokepoint logs every request.
+- [~] T5 — request accounting. One chokepoint logs every request.
       Acceptance: the budget survives a restart, the client blocks at
       the ceiling, and the scrape window shows the remaining budget and
-      the resume time.
+      the resume time. DONE: the `Budget` type, the `CvClient`
+      chokepoint, and the gates. OPEN: the scrape-window readout, which
+      lands with the T6 and T7 wiring.
 - [ ] T6 — the warm task. Off by default, budget-capped, cancellable,
       reported in Tasks. Acceptance: the task stops at the budget and on
       cancel.

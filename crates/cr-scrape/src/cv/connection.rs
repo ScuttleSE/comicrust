@@ -4,7 +4,7 @@
 //! 2.5 s, and responses must carry `status_code == 1`.
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use serde_json::Value;
@@ -32,6 +32,10 @@ pub enum CvError {
     /// An empty or malformed document (the C# empty-dom guards).
     #[error("bad response from Comic Vine: {0}")]
     BadResponse(String),
+    /// The per-resource budget refused the request (ADR-037). The
+    /// caller made no request.
+    #[error("the Comic Vine request budget for {0} is spent")]
+    BudgetSpent(String),
 }
 
 /// The blocking ComicVine client: request throttling, one retry per
@@ -47,6 +51,10 @@ pub struct CvClient {
     agent: ureq::Agent,
     /// `__series_details_cache` — (volume_year, publisher) per series.
     pub(crate) series_details_cache: Mutex<HashMap<i64, (i32, String)>>,
+    /// The per-resource request budget (ADR-037). Every API call
+    /// passes it. `None` counts nothing, which is what the older
+    /// mock-server gates expect.
+    budget: Option<Arc<crate::cache::budget::Budget>>,
 }
 
 impl CvClient {
@@ -83,6 +91,33 @@ impl CvClient {
                 .timeout(Duration::from_secs(60))
                 .build(),
             series_details_cache: Mutex::new(HashMap::new()),
+            budget: None,
+        }
+    }
+
+    /// Installs the per-resource request budget. Every API call then
+    /// waits for its resource to have room, and records itself.
+    pub fn set_budget(&mut self, budget: Arc<crate::cache::budget::Budget>) {
+        self.budget = Some(budget);
+    }
+
+    /// The requests left for one API path in the current window, or
+    /// `None` when no budget is installed.
+    pub fn remaining_budget(&self, path: &str) -> Option<i64> {
+        let budget = self.budget.as_ref()?;
+        Some(budget.remaining(&crate::cache::budget::resource_of(path)))
+    }
+
+    /// The chokepoint: every API request passes here first.
+    fn take_budget(&self, path: &str) -> Result<(), CvError> {
+        let Some(budget) = &self.budget else {
+            return Ok(());
+        };
+        let resource = crate::cache::budget::resource_of(path);
+        if budget.acquire(&resource) {
+            Ok(())
+        } else {
+            Err(CvError::BudgetSpent(resource))
         }
     }
 
@@ -109,6 +144,7 @@ impl CvClient {
     /// `__get_page`): non-200 statuses and transport errors become
     /// `CvError::Connection`.
     fn get_page(&self, path: &str, query: &[(&str, String)]) -> Result<String, CvError> {
+        self.take_budget(path)?;
         self.wait_until_ready();
         let url = format!("{}{}", self.base_url, path);
         let ua = self.user_agent();
@@ -152,6 +188,9 @@ impl CvClient {
     pub(crate) fn get_dom(&self, path: &str, query: &[(&str, String)]) -> Result<Value, CvError> {
         match self.try_get_dom(path, query) {
             Ok(dom) => Ok(dom),
+            // A budget refusal made no request, so a retry would only
+            // refuse again.
+            Err(CvError::BudgetSpent(r)) => Err(CvError::BudgetSpent(r)),
             Err(first) => {
                 std::thread::sleep(self.retry_delay);
                 self.try_get_dom(path, query).map_err(|second| {

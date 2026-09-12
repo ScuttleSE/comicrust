@@ -12,6 +12,7 @@
 //! `request_log` counts every API request per resource, so the budget
 //! survives a restart. `sweep_state` lets an interrupted sweep resume.
 
+pub mod budget;
 pub mod freshness;
 pub mod mcl;
 mod sqlite;
@@ -78,7 +79,7 @@ pub struct SweepState {
 
 /// The store behind the scraper. `SqliteCache` is the only
 /// implementation; `SqliteCache::in_memory` backs the tests.
-pub trait CvCache {
+pub trait CvCache: Send + Sync {
     // --- skeleton layer ---
 
     /// Inserts or updates volumes. Only the fields that are `Some`
