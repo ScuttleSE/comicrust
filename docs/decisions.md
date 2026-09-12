@@ -382,3 +382,19 @@ request. The budget bucket is `volume`, not `volumes`.
   4. `sort -V | tail -n1` takes the HIGHEST reachable stable tag rather than the nearest ancestor, so the number cannot fall below a release that is already an ancestor of HEAD. A count of zero — HEAD sitting exactly on a stable tag — fails the step, because that build would carry the stable release's own version.
   With no qualifying tag present, the step falls back to `0.0.<total commits>`, which stays below any future `0.1.0`.
 - **Consequences:** The rolling track always sorts above the stable release it follows and below the next one, and the manual prefix bump ADR-042 demanded is gone. There is ONE unavoidable regression at changeover: `0.1.371` was already published under ADR-042, and every number this scheme produces before a `v0.2.0` tag is lower than it. `dpkg` and `pacman` therefore treat a machine holding `0.1.371` as newer than the v0.1.0 release and newer than the rolling builds that follow it, so such a machine needs one manual reinstall. The blast radius is limited to installs taken from that single build. The alternative that avoids the regression entirely — making the first stable tag `v0.2.0` — was considered and not taken.
+
+**Correction (2026-09-12, measured after the decision was written).** The
+consequences above state that the already-published `0.1.371` build forces a
+manual reinstall and that making the first stable tag `v0.2.0` was the
+alternative. Both statements are obsolete, and the reason is the release
+mechanism, not a change of decision. `publish_release.sh` is called for the
+rolling track as `publish_release.sh rolling "$VERSION" true true`: it DELETES
+the previous `rolling` release, its assets, and its tag, then recreates them at
+the current commit. The `0.1.371` artifacts were therefore removed by the very
+next run and were never reachable again. Measured on both remotes: the only
+release present is `rolling` = `v0.0.372` at commit `6b947592`, and the GitHub
+mirror carries exactly one release and one tag. The resulting order —
+`0.0.372` < `0.1.0` < `0.1.1` — carries no regression, so the `v0.2.0`
+alternative is moot and is not taken. The single case that survives is a
+machine that installed `0.1.371` while it was published; that install outranks
+v0.1.0 and every rolling build after it, and one manual reinstall clears it.

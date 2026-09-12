@@ -190,17 +190,28 @@ passing user test.
 
 ## Blockers
 
-One, and it needs a decision before the tag.
+None.
 
-**A rolling build at `0.1.371` is already published** (the single build
-that ran under the superseded ADR-042). Every number ADR-043 produces
-before a `v0.2.0` tag is LOWER than it: the interim is `0.0.371`, and
-after the tag the builds are `0.1.1`, `0.1.2`, …. A machine holding
-`0.1.371` therefore sees v0.1.0 and all later rolling builds as older
-and needs one manual reinstall. The blast radius is limited to installs
-taken from that one build. Two exits: accept it, or make the first
-stable tag `v0.2.0`, under which rolling becomes `0.2.1` and no
-regression occurs. NOT decided.
+The `0.1.371` concern is CLOSED, and it needed no action. The rolling
+release replaces itself: `publish_release.sh` deletes the previous
+`rolling` release, its assets, and its tag, then recreates all three at
+the current commit. The `0.1.371` artifacts were therefore already
+deleted by the next run. MEASURED 2026-09-12 on both remotes: the only
+release that exists is `rolling` = `v0.0.372` at commit `6b947592`, and
+the mirror carries exactly one release and one tag.
+
+The ordering that follows is clean, with no regression anywhere:
+
+    0.0.372  (published rolling now)
+      < 0.1.0    (the stable tag)
+        < 0.1.1  (the next rolling build)
+
+The one remaining trace is a MACHINE that installed the `0.1.371`
+build while it was up. Nothing can reach back to it, and it outranks
+both v0.1.0 and the rolling builds after it, so it would refuse the
+upgrade. Check Help ▸ About on any machine used on 2026-09-12; if it
+reads `0.1.371`, reinstall once from the release page. There is no
+`--version` flag; the About dialog is the only surface.
 
 ## Lessons from the Phase 15 user test
 
