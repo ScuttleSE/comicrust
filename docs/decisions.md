@@ -18,7 +18,7 @@ This index is navigation only. The entry below each ADR is the decision.
 | ADR-006 | Windows-only metadata/storage replaced by freedesktop equivalents | accepted | — |
 | ADR-007 | No static-linking of unrar | accepted | — |
 | ADR-008 | Cairo-first rendering, GL second | accepted | — |
-| ADR-009 | License deferred | accepted | — |
+| ADR-009 | License deferred | superseded | ADR-041 |
 | ADR-010 | Reuse upstream translation XMLs verbatim | accepted | — |
 | ADR-011 | The ComicDb.xml layer is a hand-rolled writer, not serde | accepted | — |
 | ADR-012 | Metadata write-back rewrites zip/tar natively, not through 7z | accepted | — |
@@ -47,6 +47,10 @@ This index is navigation only. The entry below each ADR is the decision.
 | ADR-036 | An explicit scan is one request with a one-shot forced retry | accepted | — |
 | ADR-037 | The Comic Vine cache is a plugin-local SQLite file with two layers | accepted | — |
 | ADR-038 | The MCL interchange format and the incremental Comic Vine sweep | accepted | — |
+| ADR-039 | View settings belong to the list, and an absent `<View>` means inherit | accepted | — |
+| ADR-040 | The page and thumbnail activity lamp | accepted | — |
+| ADR-041 | The license is GPL-2.0-only | accepted | — |
+| ADR-042 | The rolling version counts from 0.1 | accepted | — |
 
 ADR-029 is reserved for the deferred Phase 9 (SQLite) decision. It is not written yet.
 
@@ -110,7 +114,7 @@ ADR-029 is reserved for the deferred Phase 9 (SQLite) decision. It is not writte
 
 ## ADR-009: License deferred
 
-- **Status:** accepted (2026-09-02)
+- **Status:** superseded by ADR-041 (2026-09-12)
 - **Context:** Upstream ComicRack CE has a nonstandard provenance (decompiled commercial app, revived with author-approval caveats — see upstream README). Third-party constraints: unrar (worked around, ADR-007), embedded CPython (PSF, fine), gtk4-rs (MIT, fine).
 - **Decision:** No LICENSE file yet. This must be resolved before any binary distribution. A future ADR will pick the license after a review of upstream obligations.
 - **Consequences:** The repo stays private-planning until licensing lands. Keep a third-party dependency license inventory as we add crates.
@@ -346,3 +350,22 @@ request. The budget bucket is `volume`, not `volumes`.
 - **Context:** The user asked for an animated status-bar icon for thumbnail generation, like the one the library scan already shows. This is a parity gap, not a new feature. The C# status strip carries `tsPageActivity` with `ReadPagesAnimation.gif` (`MainForm.Designer.cs:1903`), made visible once a second by `UpdateActivityTimerTick` from `Program.ImagePool.IsWorking` (`MainForm.cs:3975`), and a click calls `ShowPendingTasks` (`MainForm.cs:3517`). The port built four lamps (scan, write, export, Comic Vine) and omitted this one, so a Generate Thumbnails run showed no indicator at all.
 - **Decision:** Port `tsPageActivity`. `ImagePool::is_working()` is the OR of `is_active()` over the five queues, exactly as the C# property is. The lamp animates the coalesced frames of `ReadPagesAnimation.gif`, bundled as `assets/pages/frame-N.png` on the same precedent as the existing `assets/scan/` frames, and the click opens the Tasks window, which already lists the three thumbnail queues. The per-lamp animation machinery in the status bar is refactored into one `AnimLamp` type shared by the scan lamp and this one, so the frame timer runs only while its lamp is visible.
 - **Consequences:** The lamp reports page decoding as well as thumbnail creation, because `IsWorking` covers all five queues; that matches the C# name and behavior. It gives no count and no percentage — the Tasks window carries the pending rows and the "Abort Cover Generation" action. The packaging scripts gained `pages` in their asset-kind list; an asset directory missing at runtime degrades to the static `ThumbView.png` with no animation rather than failing.
+
+## ADR-041: The license is GPL-2.0-only
+
+- **Status:** accepted (2026-09-12, user directive). Supersedes ADR-009.
+- **Context:** ADR-009 deferred the license and stated that it must be resolved before any binary distribution. The v0.1.0 tag distributes binaries, so the decision came due. Four facts were MEASURED before the choice.
+  1. ComicRack CE is licensed GPL-2.0. Its `LICENSE.txt` is the canonical Free Software Foundation GPL version 2 text (sha256 `8177f975…b880643`, 339 lines).
+  2. Upstream does NOT elect "or any later version". No `.cs` file in the CE tree carries a GPL header (`grep -rl "General Public License" --include=*.cs` returns nothing), and the CE `README.md` carries no license statement. The "or later" strings inside `LICENSE.txt` belong to section 9 and to the "How to Apply" appendix, which are parts of the license text itself and are not an election by the licensor. The safe reading is therefore GPL-2.0-only.
+  3. comicrust redistributes CE material VERBATIM. This is the binding fact, not the behavioral port. The bundled assets are copies of CE resources: 186 files in `crates/cr-ui/assets/icons` (for example `AddFavorites.png` ↔ `ComicRack/Resources/AddFavorites.png`), the background and paper textures (`BrushedMetal.jpg` ↔ `ComicRack/Output/Resources/Textures/Backgrounds/BrushedMetal.jpg`), and the 16 frames in `assets/pages`, which are the coalesced frames of `ComicRack/Resources/ReadPagesAnimation.gif` (ADR-040).
+  4. `cr-scrape` is a port of the Comic Vine Scraper add-on by Cory Banack, which is licensed Apache-2.0 (`crates/cr-scrape/src/lib.rs:3-11`).
+- **Decision:** comicrust is licensed **GPL-2.0-only**. The `LICENSE` file at the repository root is byte-identical to the CE `LICENSE.txt`. The identifier is recorded in `Cargo.toml`, in `packaging/arch/PKGBUILD`, in the AppStream metainfo, and in a Debian `copyright` file, replacing the `LicenseRef-Proprietary` placeholders that the packaging carried since Phase 11. A permissive license was requested and is NOT available: fact 3 places verbatim GPL-2.0 material in every artifact the project distributes, independently of how the Rust code was written.
+- **Consequences:** The ADR-009 distribution blocker is cleared and the packaging placeholders are gone. Every dependency must be GPL-2.0 compatible; `deny.toml` is the inventory and `cargo deny check licenses` is the gate. A crate offered as `MIT OR Apache-2.0` satisfies this through its MIT arm.
+- **OPEN RISK — recorded, not resolved.** Apache-2.0 is incompatible with GPL-2.0-only, because its patent and indemnity terms are further restrictions that GPL version 2 does not permit. Fact 4 therefore puts `cr-scrape` in tension with this decision. No claim is made here that the combination is permissible. Two exits exist, and neither is taken yet: (a) ask maforget to elect "GPL-2.0-or-later" for ComicRack CE, after which comicrust can move to GPL-3.0-or-later, under which Apache-2.0 is compatible; or (b) establish that the `cr-scrape` port is an independent implementation that carries no Apache-2.0 obligation, or re-derive it so that it does not. Exit (a) is the cheaper one and is the recommended next step. This risk is inherited by v0.1.0 knowingly.
+
+## ADR-042: The rolling version counts from 0.1
+
+- **Status:** accepted (2026-09-12, user directive). Amends ADR-020.
+- **Context:** ADR-020 gives the rolling prerelease the version `0.0.<commit count>` (`.gitea/workflows/release.yaml`). The v0.1.0 tag breaks that scheme: the count at the tag is 369, so every later rolling build reports `0.0.37x`, which every version comparison — `pacman`, `dpkg`, and AppStream — orders BELOW `0.1.0`. A user on the rolling track would see the stable release as newer and would then never be offered a rolling upgrade again.
+- **Decision:** The rolling version becomes `0.1.<commit count>`. The prefix is bumped by hand at each stable tag, so the rolling track always sorts above the newest stable release, and the build number keeps counting every commit on `main` as before.
+- **Consequences:** Rolling stays ahead of stable, which matches the two-track model of ADR-021. The prefix bump is a manual step in the release checklist: after tagging `vX.Y.0`, `release.yaml` must move to `X.Y.<count>`. If that step is missed, the symptom is the same ordering inversion described above. The rolling numbers jump from `0.0.369` to `0.1.370`; the count itself is continuous, so no build number is reused.

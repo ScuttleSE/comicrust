@@ -5,6 +5,8 @@ members = ["crates/*"]
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
+# ADR-041. The LICENSE file at the repository root is the full text.
+license = "GPL-2.0-only"
 
 [workspace.dependencies]
 cr-core = { path = "crates/cr-core" }
@@ -23,7 +25,11 @@ chrono = { version = "0.4", default-features = false, features = ["std", "clock"
 serde_json = "1"
 toml = "0.9"
 clap = { version = "4", features = ["derive"] }
-zip = { version = "2", default-features = false, features = ["deflate", "deflate64"] }
+# ADR-041: "deflate-flate2", NOT the "deflate" meta-feature. "deflate"
+# also pulls in zopfli, which is Apache-2.0 and therefore in tension
+# with GPL-2.0-only. No code asks for zopfli compression (the writers
+# use Stored and Deflated only), so the feature is pure licence cost.
+zip = { version = "2", default-features = false, features = ["deflate-flate2", "deflate64"] }
 tar = "0.4"
 sha1 = "0.10"
 xattr = "1"

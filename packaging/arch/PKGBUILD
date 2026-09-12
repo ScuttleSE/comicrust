@@ -23,8 +23,8 @@ pkgrel=1
 pkgdesc="Comic library manager and reader (ComicRack port)"
 arch=(x86_64)
 url="https://github.com/ScuttleSE/comicrust"
-# PLACEHOLDER until the repo picks a LICENSE file (Phase 11 open gap).
-license=(LicenseRef-Proprietary)
+# ADR-041: GPL-2.0-only, matching ComicRack CE upstream.
+license=(GPL-2.0-only)
 depends=(gtk4)
 makedepends=(rust)
 optdepends=(

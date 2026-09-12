@@ -14,49 +14,75 @@ user-tested on 2026-09-12 and are archived. Phase 9 is DEFERRED to
 
 ## Current task
 
-Phase 16 T1 — add `cover_date` to `IssueRef` and to the issue queries,
-then derive the year and the month for the issue picker. NOT STARTED.
+**Release preparation for v0.1.0.** The code work is done and gated.
+The tag is NOT cut yet: it waits on the three open user tests below.
 
-Side task done on 2026-09-12: three user requests, all landed and
-gated (ADR-039, ADR-040).
+Done 2026-09-12 (the release-readiness pass):
 
-1. The page and thumbnail activity lamp (ADR-040) — a parity gap. The
-   C# `tsPageActivity` was never ported. `ImagePool::is_working()`
-   drives it; `ReadPagesAnimation.gif` is bundled as
-   `assets/pages/frame-N.png` (16 frames); a click opens Tasks.
-   MEASURED by `statusbar_probe` gate L.
-2. Detail-view cells no longer spill into the next column. The header
-   draw and the tile draw both clipped; the detail cell draw did
-   neither (`item_view.rs:2449`). It now ellipsizes to the column
-   width and clips as a backstop, through one shared
-   `ellipsize_to_width` the tile path uses too. Four unit tests.
-3. Per-list view settings (ADR-039). This CLOSES the T14 per-list
-   sort deviation. The `<Item>/<Display>/<View>` subtree was already
-   serde-complete and dead; it is now applied on list entry and
-   stored on list leave, gated on a dirty flag. An absent `<View>`
-   means inherit: the browser keeps the view it shows, which is the
-   C# null-config behavior and the user's explicit choice over
-   inheriting from the Library. "Reset View Settings" on the
-   navigator context menu clears it. MEASURED by `browserbar_probe`
-   gates G1-G4.
+1. **The licence is decided — GPL-2.0-only (ADR-041, supersedes
+   ADR-009).** The deciding fact is MEASURED, and it is not the code
+   port: comicrust redistributes ComicRack CE artwork verbatim — 186
+   icons, the paper and background textures, and the 16 `assets/pages`
+   frames of `ReadPagesAnimation.gif`. Upstream `LICENSE.txt` is the
+   canonical FSF GPLv2 text (sha256 `8177f975…b880643`), and upstream
+   never elects "or later": no `.cs` file carries a GPL header and the
+   CE README carries no licence statement. A permissive licence was
+   asked for and is not available. `LICENSE` is now at the repo root,
+   byte-identical to upstream. The `LicenseRef-Proprietary`
+   placeholders are gone from the PKGBUILD and the metainfo;
+   `Cargo.toml` carries the identifier; the `.deb` now ships
+   `/usr/share/doc/comicrust/copyright` (Debian policy 12.5).
+2. **The portable tarball dropped the page-lamp assets.** Both release
+   workflows copied four asset kinds and omitted `pages`, so the
+   ADR-040 lamp could not animate in a tarball install and degraded
+   silently (`assets::find` returns `None`). The PKGBUILD and the deb
+   script were already correct. Both workflows now loop over all five
+   kinds, and the `.deb` content check asserts every kind plus the
+   copyright file instead of `papers` alone.
+3. **A tagged build stamped the wrong version into About.** `VERSION`
+   was set only on the Package step, but `cr-ui/build.rs` reads it at
+   COMPILE time, so a v0.1.0 tarball would have reported `0.0.369`.
+   The Build step of both workflows now sets it. The rolling track was
+   hiding the same bug, because its version is the commit count.
+4. **The rolling version moves to `0.1.<commit count>` (ADR-042).** At
+   `0.0.<count>` every rolling build after the tag would sort BELOW
+   0.1.0 for pacman, dpkg, and AppStream, and rolling users would stop
+   being offered upgrades. The prefix is a manual bump at each stable
+   tag.
+5. **Dependency licence audit.** `zopfli` (Apache-2.0) was REMOVED,
+   not excepted: it arrived through the zip crate's `deflate`
+   meta-feature and no code asks for zopfli compression, so the
+   workspace now requests `deflate-flate2`. Two findings remain
+   unresolved and are recorded in `deny.toml` as explicit exceptions —
+   `ring` and `webpki-roots`, both reached through `ureq` in
+   cr-scrape. `cargo deny` is therefore NOT a CI gate yet.
+6. Metainfo gained homepage, bugtracker, and developer entries and now
+   passes `appstreamcli validate`. It still has NO `<screenshots>`:
+   that element needs hosted image URLs the project does not have.
 
-`browserbar_probe` gate E2 asserted that a list switch CLEARED the
-sort — the deviation ADR-039 removes. Its expectation changed with
-the behavior, not to make a failing gate pass.
+Phase 16 T1 (add `cover_date` to `IssueRef` and the issue queries) is
+unchanged and NOT STARTED. It does not block the tag.
 
-Side task done on 2026-09-12, commit `a9873ac`: the smart-list guide now
-holds a "books that have an author" recipe and a "Finding empty books"
-section. No code change. The matcher still has no "is empty" operator,
-and none was added: a new operator index would read as "match nothing"
-in ComicRack (`ComicBookStringMatcher.cs:125`). `regex "."` is the
-supported form.
+## Open licence question (inherited by v0.1.0 knowingly)
 
-Read `docs/phases/phase-16.md` first. It names the source of every
-feature: the `Fableton/comic-vine-scraper-ce` fork of the Comic Vine
-Scraper plugin. The port took its scraper from the UPSTREAM v1.0.102
-release, so none of that fork's work is present.
+Apache-2.0 is incompatible with GPL-2.0-only. Three dependencies sit
+on that line: the `cr-scrape` port of Cory Banack's Apache-2.0 Comic
+Vine Scraper, plus `ring` and `webpki-roots`. ADR-041 records the two
+exits and takes neither. The cheaper one is to ask maforget to elect
+"GPL-2.0-or-later" for ComicRack CE; comicrust could then move to
+GPL-3.0-or-later, under which Apache-2.0 is compatible. No claim is
+made that the present combination is permissible.
 
 ## Verification record
+
+`cargo fmt --all`, `cargo clippy --workspace --all-targets -- -D
+warnings` — green. `CR_FORMAT_TESTS=1 cargo test --workspace` — 680
+passed, 0 failed, unchanged from the pre-change baseline, so the zip
+feature change caused no regression. `appstreamcli validate` — passes
+(one pedantic note: the component id contains uppercase letters, left
+alone because the desktop file and the install paths depend on it).
+`bash -n packaging/deb/build.sh` and a YAML parse of all four
+workflows — clean.
 
 Phases 13, 14, and 15 all passed their user tests on 2026-09-12. Their
 records are in `docs/archive/phases/`.
@@ -109,6 +135,10 @@ passing user test.
 1. **The thumbnail lamp.** Run Generate Thumbnails on a large list.
    A small animated icon must appear in the status bar while the work
    runs and disappear when it ends. A click on it must open Tasks.
+   Run this one against a BUILT TARBALL, not the dev tree. The dev
+   tree finds the frames through its own asset root and passes either
+   way, which is exactly how the missing `assets/pages` copy stayed
+   hidden.
 2. **Detail-column overflow.** Switch to Details and narrow a column
    that holds long text (Series, or Title). The text must end in an
    ellipsis at the column edge and must NOT paint over the next
@@ -158,7 +188,10 @@ Tracked in `docs/backlog.md`; they do not block Phase 16.
 
 - `WebComicProvider` is not ported.
 - PDF and DjVu writers are missing.
-- The `LICENSE` file is missing (a Phase 11 packaging gap).
+- The AppStream metainfo has no `<screenshots>`. The element needs
+  hosted image URLs, which the project does not have yet.
+- `cargo deny check licenses` is not a CI gate: `ring` and
+  `webpki-roots` are unresolved exceptions (ADR-041).
 - HEIF and AVIF decode is missing.
 - "Fill Missing Issues" has no volume picker for an unscraped series.
 - The Comic Vine cache jobs have no per-row abort in the Tasks window;

@@ -7,8 +7,9 @@
 #
 # The layout mirrors the PKGBUILD:
 #   /usr/bin/comicrust
-#   /usr/share/comicrust/assets/{icons,papers,backgrounds}
+#   /usr/share/comicrust/assets/{icons,papers,backgrounds,scan,pages}
 #   /usr/share/applications + /usr/share/icons/hicolor + metainfo
+#   /usr/share/doc/comicrust/copyright (Debian policy 12.5)
 #
 # Depends floor: the binary is built on Debian trixie (glibc 2.41), so
 # the deb targets Debian 13 and equivalent-glibc derivatives; older
@@ -31,6 +32,7 @@ trap 'rm -rf "$stage"' EXIT
 
 install -d "$stage/DEBIAN" "$stage/usr/bin" "$stage/usr/share/comicrust/assets" \
     "$stage/usr/share/applications" "$stage/usr/share/metainfo" \
+    "$stage/usr/share/doc/comicrust" \
     "$stage/usr/share/icons/hicolor/128x128/apps" \
     "$stage/usr/share/icons/hicolor/256x256/apps"
 
@@ -46,6 +48,44 @@ install -m644 packaging/icons/io.github.ScuttleSE.comicrust.256.png \
     "$stage/usr/share/icons/hicolor/256x256/apps/io.github.ScuttleSE.comicrust.png"
 install -m644 packaging/io.github.ScuttleSE.comicrust.metainfo.xml \
     "$stage/usr/share/metainfo/io.github.ScuttleSE.comicrust.metainfo.xml"
+
+# Debian policy 12.5 requires a copyright file. ADR-041: GPL-2.0-only.
+# The machine-readable format needs the full license text indented,
+# so the root LICENSE is appended with a leading space on each line
+# and a "." standing in for every blank line.
+{
+    cat <<'EOF'
+Format: https://www.debian.org/doc/packaging-manuals/copyright-format/1.0/
+Upstream-Name: comicrust
+Upstream-Contact: ScuttleSE <https://github.com/ScuttleSE>
+Source: https://github.com/ScuttleSE/comicrust
+
+Files: *
+Copyright: 2026 ScuttleSE and the comicrust contributors
+License: GPL-2.0-only
+
+Files: crates/cr-ui/assets/icons/* crates/cr-ui/assets/papers/*
+ crates/cr-ui/assets/backgrounds/* crates/cr-ui/assets/scan/*
+ crates/cr-ui/assets/pages/*
+Copyright: Markus Eisenstoeck (cYo) and the ComicRack Community Edition
+ contributors
+License: GPL-2.0-only
+Comment: Redistributed without change from ComicRack Community Edition
+ (https://github.com/maforget/ComicRackCE). See ADR-041.
+
+Files: crates/cr-scrape/*
+Copyright: Cory Banack
+License: Apache-2.0 and GPL-2.0-only
+Comment: A port of the Comic Vine Scraper add-on
+ (https://github.com/cbanack/comic-vine-scraper), which is licensed
+ Apache-2.0. ADR-041 records an unresolved compatibility question
+ between that license and GPL-2.0-only.
+
+License: GPL-2.0-only
+EOF
+    sed -e 's/^/ /' -e 's/^ $/ ./' LICENSE
+} > "$stage/usr/share/doc/comicrust/copyright"
+chmod 644 "$stage/usr/share/doc/comicrust/copyright"
 
 cat > "$stage/DEBIAN/control" <<EOF
 Package: comicrust

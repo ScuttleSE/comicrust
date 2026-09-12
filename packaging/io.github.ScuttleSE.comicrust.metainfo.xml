@@ -2,14 +2,25 @@
 <!-- AppStream metainfo for the packaged app (the PKGBUILD and the
      Flatpak manifest both install this file). The release CI seds the
      built version+date into the <release> entry; the committed entry
-     below stays a generic dev record. project_license is a PLACEHOLDER
-     until the repo picks a LICENSE file (the Phase 11 open gap). -->
+     below stays a generic dev record.
+
+     NO <screenshots> element is present. AppStream needs a HOSTED
+     image URL for each screenshot, and the project has none yet. Add
+     the element when the images exist; do not invent a URL. -->
 <component type="desktop-application">
   <id>io.github.ScuttleSE.comicrust</id>
   <metadata_license>CC0-1.0</metadata_license>
-  <project_license>LicenseRef-Proprietary</project_license>
+  <!-- ADR-041: GPL-2.0-only, matching ComicRack CE upstream. -->
+  <project_license>GPL-2.0-only</project_license>
   <name>ComicRust</name>
   <summary>Comic library manager and reader</summary>
+  <!-- Lowercase: appstreamcli rejects a developer id with uppercase
+       letters (developer-id-invalid). The component id above keeps its
+       original casing, because the desktop file and the install paths
+       depend on it. -->
+  <developer id="io.github.scuttlese">
+    <name>ScuttleSE</name>
+  </developer>
   <description>
     <p>
       ComicRust is a Linux-native port of the ComicRack comic library
@@ -19,6 +30,8 @@
       ComicInfo.xml metadata without damaging the archives.
     </p>
   </description>
+  <url type="homepage">https://github.com/ScuttleSE/comicrust</url>
+  <url type="bugtracker">https://github.com/ScuttleSE/comicrust/issues</url>
   <launchable type="desktop-id">io.github.ScuttleSE.comicrust.desktop</launchable>
   <provides>
     <binary>comicrust</binary>

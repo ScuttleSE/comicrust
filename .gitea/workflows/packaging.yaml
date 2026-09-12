@@ -305,7 +305,16 @@ jobs:
           packaging/deb/build.sh "$GITHUB_WORKSPACE"
           dpkg-deb --info "$GITHUB_WORKSPACE/$deb" > /dev/null
           dpkg-deb --contents "$GITHUB_WORKSPACE/$deb" > /tmp/deb-contents.txt
-          grep "usr/share/comicrust/assets/papers" /tmp/deb-contents.txt > /dev/null
+          # Assert EVERY asset kind, not just papers: a single-kind
+          # check let the missing `pages` tree (the ADR-040 lamp) ship
+          # unnoticed in the portable tarball.
+          for kind in icons papers backgrounds scan pages; do
+              grep -q "usr/share/comicrust/assets/$kind/" /tmp/deb-contents.txt \
+                  || { echo "deb is missing assets/$kind" >&2; exit 1; }
+          done
+          # Debian policy 12.5 (ADR-041).
+          grep -q "usr/share/doc/comicrust/copyright" /tmp/deb-contents.txt \
+              || { echo "deb is missing the copyright file" >&2; exit 1; }
           cd "$GITHUB_WORKSPACE"
           sha256sum "$deb" > "${deb}.sha256"
           echo "packaged: $deb"

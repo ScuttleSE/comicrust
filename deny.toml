@@ -1,5 +1,19 @@
-# cargo-deny configuration. Not run in CI yet; this file is the license
-# and advisory inventory that feeds ADR-009 (license decision deferred).
+# cargo-deny configuration. This file is the dependency licence
+# inventory for ADR-041 (comicrust is GPL-2.0-only).
+#
+# NOT YET A CI GATE. `cargo deny check licenses` does NOT pass today:
+# the `exceptions` block below lists three crates whose licences are
+# in tension with GPL-2.0-only and which have no decided remedy. The
+# check becomes a CI step when that block is empty or when each entry
+# carries a recorded resolution. Do NOT move an unresolved crate into
+# `allow` to make the check green.
+#
+# Audit method (2026-09-12): `cargo metadata --all-features`, licence
+# field per non-workspace package, then `cargo tree -e normal -p
+# cr-app -i <crate>` to confirm the crate really links into the
+# shipped binary. Build-only dependencies are out of scope:
+# target-lexicon (Apache-2.0 WITH LLVM-exception) is one, and it
+# reaches no shipped artifact.
 
 [graph]
 all-features = false
@@ -7,18 +21,60 @@ no-default-features = false
 
 [licenses]
 version = 2
+
+# Permissive and GPL-2.0 compatible. A crate offered as "MIT OR
+# Apache-2.0" satisfies GPL-2.0-only through its MIT arm; cargo-deny
+# picks a satisfying arm from this list on its own.
 allow = [
     "MIT",
-    "Apache-2.0",
-    "Apache-2.0 WITH LLVM-exception",
+    "MIT-0",
     "BSD-2-Clause",
     "BSD-3-Clause",
     "ISC",
     "Zlib",
+    "0BSD",
+    "Unlicense",
     "MPL-2.0",
+    "CC0-1.0",
+    "IJG",
+    # The Unicode licence (the ICU crates). Treated as permissive and
+    # GPL compatible; 18 crates depend on it and none has an alternative.
     "Unicode-3.0",
-    "CDLA-Permissive-2.0",
+    "GPL-2.0-only",
 ]
+
+# UNRESOLVED — each entry is a recorded risk, not an approval.
+# Apache-2.0 imposes patent and indemnity terms that GPL version 2
+# does not permit, so these sit in the same open question ADR-041
+# records for cr-scrape.
+[[licenses.exceptions]]
+# Via ureq -> rustls, for the Comic Vine HTTPS client (cr-scrape).
+# ring's own tree mixes Apache-2.0 with ISC-licensed, OpenSSL-derived
+# code. No cheap remedy: every rustls crypto backend the ecosystem
+# offers is Apache-2.0 too.
+name = "ring"
+allow = ["Apache-2.0", "ISC"]
+
+[[licenses.exceptions]]
+# The bundled Mozilla CA set, via ureq. CDLA-Permissive-2.0 is a DATA
+# licence and its GPL compatibility is not established here.
+# Candidate remedy: rustls-native-certs, which reads the system CA
+# store and drops this dependency.
+name = "webpki-roots"
+allow = ["CDLA-Permissive-2.0"]
+
+# RESOLVED 2026-09-12: zopfli (Apache-2.0) was removed, not excepted.
+# It arrived through the zip crate's "deflate" meta-feature, which
+# enables both flate2 and zopfli. No comicrust code requests zopfli
+# compression — the writers use Stored and Deflated only — so the
+# workspace now asks for "deflate-flate2" and the crate is gone from
+# the graph. Verified: `cargo tree -e normal -p cr-app -i zopfli`
+# matches no package, and the test suite is unchanged at 680 passing.
+# NOTE: zopfli stays listed in Cargo.lock as an optional dependency of
+# the zip crate, so `cargo vendor` still copies its source into the
+# release source tarball. It is never compiled or linked. That is
+# aggregation of unmodified Apache-2.0 source next to the work, not
+# combination with it.
 
 [bans]
 multiple-versions = "warn"

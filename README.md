@@ -183,4 +183,8 @@ ComicRack was created by Markus Eisenstöck (cYo) and continued as [Community Ed
 
 The Comic Vine Scraper port is based on the add-on by Cory Banack (`https://github.com/cbanack/comic-vine-scraper`), Apache 2.0.
 
-The project has no license yet. The decision is deliberate and planned (see `docs/decisions.md`, ADR-009).
+comicrust bundles artwork from ComicRack CE without changes: the toolbar and menu icons, the reader paper and background textures, and the page-activity animation frames. All of it stays under the license below.
+
+## License
+
+comicrust is licensed **GPL-2.0-only**, the same license as ComicRack CE. The full text is in [LICENSE](LICENSE). See ADR-041 in [docs/decisions.md](docs/decisions.md) for the reasoning and for one recorded open question about the Apache-2.0 Comic Vine Scraper port.

@@ -42,14 +42,20 @@ jobs:
 
       - name: Version
         id: version
-        # 0.0.<build>. Bump major/minor here at milestones; the build
-        # number keeps counting all commits on main.
+        # 0.1.<build> (ADR-042). The prefix MUST stay above the newest
+        # stable tag, or package managers order the rolling build below
+        # it; bump it by hand at each stable tag. The build number keeps
+        # counting all commits on main.
         run: |
-          version="0.0.$(git rev-list --count HEAD)"
+          version="0.1.$(git rev-list --count HEAD)"
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "rolling version: $version"
 
       - name: Build
+        env:
+          # MUST be set HERE, not only on Package: cr-ui/build.rs reads
+          # VERSION at COMPILE time to stamp the About dialog.
+          VERSION: ${{ steps.version.outputs.version }}
         run: cargo build --release --locked -p cr-app
 
       - name: Package
@@ -60,10 +66,11 @@ jobs:
           asset="comicrust-${VERSION}-linux-amd64.tar.gz"
           mkdir -p dist/assets
           cp target/release/cr-app dist/comicrust
-          cp -r crates/cr-ui/assets/papers dist/assets/papers
-          cp -r crates/cr-ui/assets/backgrounds dist/assets/backgrounds
-          cp -r crates/cr-ui/assets/icons dist/assets/icons
-          cp -r crates/cr-ui/assets/scan dist/assets/scan
+          # Every asset kind the app looks up at runtime. Keep this list
+          # in step with packaging/deb/build.sh and packaging/arch/PKGBUILD.
+          for kind in papers backgrounds icons scan pages; do
+              cp -r "crates/cr-ui/assets/$kind" "dist/assets/$kind"
+          done
           tar -czf "$asset" -C dist comicrust assets
           sha256sum "$asset" > "${asset}.sha256"
           echo "packaged: $asset"
