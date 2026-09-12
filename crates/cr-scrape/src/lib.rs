@@ -13,6 +13,7 @@
 //! requires a user-supplied key.
 
 pub mod bookdata;
+pub mod cache;
 pub mod config;
 pub mod cv;
 pub mod engine;

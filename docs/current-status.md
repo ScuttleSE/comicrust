@@ -5,12 +5,17 @@ Do not append a history. History lives in `docs/archive/` and in git.
 
 ## Active phase
 
-**Phase 13 — one unified config file + data tables out of code.**
-File: `docs/phases/phase-13.md`. Status: IMPLEMENTED, user test
-pending. Phases 0-8 and 10-12 are COMPLETE (Phase 12 user-tested
-2026-09-10); Phase 9 is DEFERRED to `docs/backlog.md`.
+**Phase 15 — Comic Vine cache, rate budget, and missing-issue fill.**
+File: `docs/phases/phase-15.md`. Status: T1 done, T2 next.
+**Phase 16 — Comic Vine scraper quality of life** is planned and waits
+for Phase 15 (`docs/phases/phase-16.md`).
+Phase 13 is IMPLEMENTED, user test pending. Phases 0-8 and 10-12 are
+COMPLETE (Phase 12 user-tested 2026-09-10); Phase 9 is DEFERRED to
+`docs/backlog.md`.
 
 ## Current task
+
+Phase 15 T2 — the MCL reader and writer (ADR-038).
 
 Phase 14 (right-click rescans, ADR-036) is IMPLEMENTED and waits for
 its user test. The navigator tree-state and Detail column-toggle fixes
@@ -19,6 +24,16 @@ its user test. The navigator tree-state and Detail column-toggle fixes
 
 ## Verification record
 
+- Commit: Phase 15 T1, the Comic Vine cache store (2026-09-12).
+  `cr-scrape` gains `rusqlite` (bundled) and the `cache` module: a
+  `CvCache` trait over a two-layer SQLite file (ADR-037), with
+  `SqliteCache::in_memory` behind the tests. The merge rule is
+  measured by gate: a cheap write (an MCL import, or the sweep's
+  `id,issue_number,volume` field list) never erases what an expensive
+  query found.
+- `cargo fmt --all` and `cargo clippy --workspace --all-targets -- -D
+  warnings` — green.
+- `cargo test --workspace` — 580 pass (was 564; 16 new cache gates).
 - Commit: navigator tree state + Detail column toggle (2026-09-12).
   The navigator expansion now persists in
   `ComicListItemFolder.Collapsed` (the C# `FillListTree` /

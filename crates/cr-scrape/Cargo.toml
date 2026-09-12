@@ -14,6 +14,7 @@ serde = { workspace = true, features = ["derive"] }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 ureq = { version = "2", default-features = false, features = ["tls", "gzip"] }
+rusqlite = { version = "0.40.2", features = ["bundled"] }
 
 [lints]
 workspace = true
