@@ -178,7 +178,11 @@ impl ShellState {
                 self.window.present();
             }
             Err(err) => {
-                show_error_dialog(&self.app, &path.to_string_lossy(), &format!("{err:#}"));
+                show_failure_dialog(
+                    &self.window,
+                    &format!("Cannot open {}", path.to_string_lossy()),
+                    &format!("{err:#}"),
+                );
             }
         }
     }
@@ -2855,8 +2859,8 @@ impl ShellState {
         let Some(volume_id) =
             cr_scrape::cache::missing::volume_id_of(data.iter().map(|d| d.series_key.clone()))
         else {
-            show_error_dialog(
-                &self.app,
+            show_failure_dialog(
+                &self.window,
                 "Fill Missing Issues",
                 &format!(
                     "No book of \"{series}\" names a Comic Vine volume. Scrape one book of this series first, then run this command again."
@@ -2926,14 +2930,14 @@ impl ShellState {
     /// a worker thread, because a full snapshot is large.
     fn import_cv_mcl(self: &Rc<ShellState>) {
         let Some(cache) = library::cv_cache() else {
-            show_error_dialog(
-                &self.app,
+            show_failure_dialog(
+                &self.window,
                 "Import Comic Vine MCL File",
                 "The Comic Vine cache file could not be opened.",
             );
             return;
         };
-        let app = self.app.clone();
+        let report_window = self.window.clone();
         open_mcl_dialog(&self.window, move |path| {
             let path = path.to_string();
             let cache = std::sync::Arc::clone(&cache);
@@ -2983,14 +2987,18 @@ impl ShellState {
                 })
                 .expect("spawn the MCL import worker");
 
-            let app = app.clone();
+            let report_window = report_window.clone();
             glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
                 let Ok(result) = rx.try_recv() else {
                     return glib::ControlFlow::Continue;
                 };
                 match result {
-                    Ok(text) => show_info_dialog(&app, "Import Comic Vine MCL File", &text),
-                    Err(reason) => show_error_dialog(&app, "Import Comic Vine MCL File", &reason),
+                    Ok(text) => {
+                        show_report_dialog(&report_window, "Import Comic Vine MCL File", &text)
+                    }
+                    Err(reason) => {
+                        show_failure_dialog(&report_window, "Import Comic Vine MCL File", &reason)
+                    }
                 }
                 glib::ControlFlow::Break
             });
@@ -3004,16 +3012,16 @@ impl ShellState {
     fn update_cv_cache(self: &Rc<ShellState>) {
         let config = library::scraper_config();
         if !config.has_api_key() {
-            show_error_dialog(
-                &self.app,
+            show_failure_dialog(
+                &self.window,
                 "Update Comic Vine Cache",
                 "No Comic Vine API key is set. Set it in Preferences ▸ Comic Vine Scraper.",
             );
             return;
         }
         let Some(cache) = library::cv_cache() else {
-            show_error_dialog(
-                &self.app,
+            show_failure_dialog(
+                &self.window,
                 "Update Comic Vine Cache",
                 "The Comic Vine cache file could not be opened.",
             );
@@ -3040,8 +3048,8 @@ impl ShellState {
                 }
             }
             _ => {
-                show_error_dialog(
-                    &self.app,
+                show_failure_dialog(
+                    &self.window,
                     "Update Comic Vine Cache",
                     "The cache has no starting point. Import an MCL file first, so the sweep knows which date to start from.",
                 );
@@ -3049,8 +3057,8 @@ impl ShellState {
             }
         };
         if options.start_date == options.end_date {
-            show_info_dialog(
-                &self.app,
+            show_report_dialog(
+                &self.window,
                 "Update Comic Vine Cache",
                 "The cache is already current for today.",
             );
@@ -3082,7 +3090,7 @@ impl ShellState {
             })
             .expect("spawn the Comic Vine sweep worker");
 
-        let app = self.app.clone();
+        let report_window = self.window.clone();
         glib::timeout_add_local(std::time::Duration::from_millis(250), move || {
             let Ok(result) = rx.try_recv() else {
                 return glib::ControlFlow::Continue;
@@ -3094,8 +3102,8 @@ impl ShellState {
                     } else {
                         "The run stopped early. Run the command again to continue."
                     };
-                    show_info_dialog(
-                        &app,
+                    show_report_dialog(
+                        &report_window,
                         "Update Comic Vine Cache",
                         &format!(
                             "{window}: {} pages, {} issues, {} volumes. {tail}",
@@ -3103,7 +3111,9 @@ impl ShellState {
                         ),
                     );
                 }
-                Err(reason) => show_error_dialog(&app, "Update Comic Vine Cache", &reason),
+                Err(reason) => {
+                    show_failure_dialog(&report_window, "Update Comic Vine Cache", &reason)
+                }
             }
             glib::ControlFlow::Break
         });
@@ -3116,16 +3126,16 @@ impl ShellState {
     fn warm_cv_cache(self: &Rc<ShellState>) {
         let config = library::scraper_config();
         if !config.has_api_key() {
-            show_error_dialog(
-                &self.app,
+            show_failure_dialog(
+                &self.window,
                 "Warm Comic Vine Cache",
                 "No Comic Vine API key is set. Set it in Preferences ▸ Comic Vine Scraper.",
             );
             return;
         }
         let Some(cache) = library::cv_cache() else {
-            show_error_dialog(
-                &self.app,
+            show_failure_dialog(
+                &self.window,
                 "Warm Comic Vine Cache",
                 "The Comic Vine cache file could not be opened.",
             );
@@ -3133,8 +3143,8 @@ impl ShellState {
         };
         let volume_ids = library::cv_volume_ids(&config);
         if volume_ids.is_empty() {
-            show_error_dialog(
-                &self.app,
+            show_failure_dialog(
+                &self.window,
                 "Warm Comic Vine Cache",
                 "No book in the library names a Comic Vine volume. Scrape some books first.",
             );
@@ -3165,7 +3175,7 @@ impl ShellState {
             })
             .expect("spawn the Comic Vine warm worker");
 
-        let app = self.app.clone();
+        let report_window = self.window.clone();
         glib::timeout_add_local(std::time::Duration::from_millis(250), move || {
             let Ok(report) = rx.try_recv() else {
                 return glib::ControlFlow::Continue;
@@ -3175,8 +3185,8 @@ impl ShellState {
             } else {
                 ""
             };
-            show_info_dialog(
-                &app,
+            show_report_dialog(
+                &report_window,
                 "Warm Comic Vine Cache",
                 &format!(
                     "{} volumes looked at. {} read, {} already fresh, {} failed. {} requests spent.{stopped}",
@@ -5413,8 +5423,8 @@ fn show_context_menu(state: &std::rc::Weak<ShellState>, target: Option<CrGuid>, 
                                     if let Some(sh) = sh_w.upgrade() {
                                         let errs = errors.borrow();
                                         if let Some(last) = errs.last() {
-                                            show_error_dialog(
-                                                &sh.app,
+                                            show_failure_dialog(
+                                                &sh.window,
                                                 "Update Book Files",
                                                 &format!(
                                                     "{}/{} written. Last error: {last}",
@@ -6127,7 +6137,7 @@ fn export_page_dialog(
     );
     chooser.set_current_name(&name);
     crate::trace::trace(format!("export-page: chooser shown, initial name {name:?}"));
-    let app = window.application();
+    let window_for_errors = window.clone();
     chooser.connect_response(move |chooser, response| {
         crate::trace::trace(format!(
             "export-page: response {response:?} (accept={:?})",
@@ -6165,18 +6175,22 @@ fn export_page_dialog(
                 if let Err(err) = std::fs::write(&path, bytes) {
                     // `CouldNotSaveImage` parity — an error dialog.
                     crate::trace::trace(format!("export-page: write failed: {err}"));
-                    if let Some(app) = &app {
-                        show_error_dialog(app, &path.to_string_lossy(), &err.to_string());
-                    }
+                    show_failure_dialog(
+                        &window_for_errors,
+                        &format!("Cannot save {}", path.to_string_lossy()),
+                        &err.to_string(),
+                    );
                 } else {
                     crate::trace::trace("export-page: file written");
                 }
             }
             Err(err) => {
                 crate::trace::trace(format!("export-page: encode failed: {err}"));
-                if let Some(app) = &app {
-                    show_error_dialog(app, &path.to_string_lossy(), &err.to_string());
-                }
+                show_failure_dialog(
+                    &window_for_errors,
+                    &format!("Cannot save {}", path.to_string_lossy()),
+                    &err.to_string(),
+                );
             }
         }
     });
@@ -6230,28 +6244,38 @@ fn open_mcl_dialog(window: &ApplicationWindow, on_open: impl Fn(&str) + 'static)
     chooser.show();
 }
 
-/// A plain report dialog. `show_error_dialog` reads as a failure, and
-/// a finished import is not one.
-fn show_info_dialog(parent: &Application, title: &str, message: &str) {
-    let dialog = gtk4::MessageDialog::builder()
-        .application(parent)
-        .title("comicrust")
-        .text(title.to_string())
-        .secondary_text(message.to_string())
-        .message_type(gtk4::MessageType::Info)
-        .buttons(gtk4::ButtonsType::Close)
-        .build();
-    dialog.connect_response(|dialog, _| dialog.destroy());
-    dialog.present();
+/// A report a command leaves when it finishes.
+///
+/// `heading` is shown as written. The dialog is transient over the
+/// window and modal: an `application`-parented dialog gets no parent
+/// hint, so the window manager is free to put it BEHIND the main
+/// window, which is what it did.
+fn show_report_dialog(parent: &impl IsA<gtk4::Window>, heading: &str, message: &str) {
+    message_dialog(parent, heading, message, gtk4::MessageType::Info);
 }
 
-fn show_error_dialog(parent: &Application, title: &str, message: &str) {
+/// A failure a command leaves when it stops.
+///
+/// `heading` is shown as written. It used to be forced through
+/// `format!("Cannot open {title}")`, which was wrong for every caller
+/// that was not opening a file.
+fn show_failure_dialog(parent: &impl IsA<gtk4::Window>, heading: &str, message: &str) {
+    message_dialog(parent, heading, message, gtk4::MessageType::Error);
+}
+
+fn message_dialog(
+    parent: &impl IsA<gtk4::Window>,
+    heading: &str,
+    message: &str,
+    kind: gtk4::MessageType,
+) {
     let dialog = gtk4::MessageDialog::builder()
-        .application(parent)
+        .transient_for(parent)
+        .modal(true)
         .title("comicrust")
-        .text(format!("Cannot open {title}"))
+        .text(heading.to_string())
         .secondary_text(message.to_string())
-        .message_type(gtk4::MessageType::Error)
+        .message_type(kind)
         .buttons(gtk4::ButtonsType::Close)
         .build();
     dialog.connect_response(|dialog, _| dialog.destroy());
