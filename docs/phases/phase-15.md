@@ -52,13 +52,13 @@ series that the library does not hold.
 
 ## Tasks
 
-- [ ] T1 — the cache store. `rusqlite` (bundled) behind a `CvCache`
+- [x] T1 — the cache store. `rusqlite` (bundled) behind a `CvCache`
       trait. Tables: `volume`, `issue_skeleton`, `issue_detail`,
       `image_blob`, `search_result`, `sweep_state`, `request_log`. The
       file is `$XDG_DATA_HOME/comicrust/plugins/comic-vine-scraper/
       cvcache.sqlite`. Acceptance: the trait has an in-memory test
       implementation, and the schema migrates from empty.
-- [ ] T2 — the MCL reader and writer. Acceptance: fixtures pin the
+- [x] T2 — the MCL reader and writer. Acceptance: fixtures pin the
       trailing comma, the `.&@1` and `.&@2` escapes, the quoted list
       form, and the volume 77901 issue number `1,5`. A read and a write
       of the same file agree on the data, not on the bytes.

@@ -6,7 +6,7 @@ Do not append a history. History lives in `docs/archive/` and in git.
 ## Active phase
 
 **Phase 15 — Comic Vine cache, rate budget, and missing-issue fill.**
-File: `docs/phases/phase-15.md`. Status: T1 done, T2 next.
+File: `docs/phases/phase-15.md`. Status: T1 and T2 done, T3 next.
 **Phase 16 — Comic Vine scraper quality of life** is planned and waits
 for Phase 15 (`docs/phases/phase-16.md`).
 Phase 13 is IMPLEMENTED, user test pending. Phases 0-8 and 10-12 are
@@ -15,7 +15,7 @@ COMPLETE (Phase 12 user-tested 2026-09-10); Phase 9 is DEFERRED to
 
 ## Current task
 
-Phase 15 T2 — the MCL reader and writer (ADR-038).
+Phase 15 T3 — the incremental Comic Vine sweep (ADR-038).
 
 Phase 14 (right-click rescans, ADR-036) is IMPLEMENTED and waits for
 its user test. The navigator tree-state and Detail column-toggle fixes
@@ -24,6 +24,13 @@ its user test. The navigator tree-state and Detail column-toggle fixes
 
 ## Verification record
 
+- Commit: Phase 15 T2, the MCL reader and writer (2026-09-12). The
+  reader accepts what the `Update Missing` writer really produces: the
+  trailing comma on the number list, the `.&@1` and `.&@2` escapes that
+  that writer never reverses, the quoted list its docstring promises
+  but it never emits, and a comma that a space follows inside a number.
+  `mcl::import` seeds the skeleton layer in batches with no API
+  request.
 - Commit: Phase 15 T1, the Comic Vine cache store (2026-09-12).
   `cr-scrape` gains `rusqlite` (bundled) and the `cache` module: a
   `CvCache` trait over a two-layer SQLite file (ADR-037), with
@@ -33,7 +40,8 @@ its user test. The navigator tree-state and Detail column-toggle fixes
   query found.
 - `cargo fmt --all` and `cargo clippy --workspace --all-targets -- -D
   warnings` — green.
-- `cargo test --workspace` — 580 pass (was 564; 16 new cache gates).
+- `cargo test --workspace` — 597 pass (was 564; 33 new cache and
+  MCL gates).
 - Commit: navigator tree state + Detail column toggle (2026-09-12).
   The navigator expansion now persists in
   `ComicListItemFolder.Collapsed` (the C# `FillListTree` /
