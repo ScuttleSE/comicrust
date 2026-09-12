@@ -66,6 +66,10 @@ pub enum ListCommand {
     /// distinct linked file paths of the selected list's books. Smart
     /// lists and reading lists only.
     ScanList,
+    /// "Reset View Settings" (ADR-039, a port addition): clears the
+    /// list's own `<Display><View>` so it inherits again. Shown only
+    /// for a list that HAS settings of its own.
+    ResetViewSettings,
 }
 
 type SelectedFn = Box<dyn Fn(&CrGuid, &str)>;
@@ -692,6 +696,12 @@ impl Navigator {
             .as_ref()
             .and_then(crate::library::find_list_item_any)
             .is_some_and(|item| matches!(item, ComicListItem::Smart(_) | ComicListItem::IdList(_)));
+        // "Reset View Settings" shows only for a list that HAS its
+        // own settings; an inheriting list has nothing to reset
+        // (ADR-039).
+        let has_own_view = target
+            .as_ref()
+            .is_some_and(|id| crate::library::list_view_config(id).is_some());
         crate::trace::trace(format!("nav menu target={target:?} scan-row={scanable}"));
         let popover = Popover::new();
         popover.set_has_arrow(false);
@@ -730,6 +740,9 @@ impl Navigator {
         // `miImportReadingList` (the C# menu sits between the
         // Export/Import pair and the Open commands).
         add_item(&box_, "Import Reading List…", ListCommand::Import);
+        if has_own_view {
+            add_item(&box_, "Reset View Settings", ListCommand::ResetViewSettings);
+        }
         popover.set_child(Some(&box_));
         popover.set_parent(&self.view);
         popover.connect_closed(|p| p.unparent());

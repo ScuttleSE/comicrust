@@ -1438,6 +1438,41 @@ pub fn duplicate_smart_list(
     }
 }
 
+/// The list's own view settings (`ComicListItem.Display.View`).
+/// `None` = the list has no settings of its own and inherits.
+pub fn list_view_config(id: &CrGuid) -> Option<cr_core::database::display_config::ItemViewConfig> {
+    let lib = session();
+    let mut l = lib.borrow_mut();
+    let lists = &mut l.database_mut().comic_lists;
+    find_base_mut(lists, id)?.display.as_ref()?.view.clone()
+}
+
+/// Writes the list's own view settings (the C#
+/// `ComicBrowserControl.UpdateViewConfig`, `:3355-3390`). `None`
+/// clears them, which returns the list to inheriting.
+///
+/// The C# `Display` getter is never null, so a list with no `<Display>`
+/// yet gets a default one rather than losing the sibling fields
+/// (`ShowComicType`, `QuickSearch`, and the rest).
+pub fn set_list_view_config(
+    id: &CrGuid,
+    view: Option<cr_core::database::display_config::ItemViewConfig>,
+) -> bool {
+    let lib = session();
+    let mut l = lib.borrow_mut();
+    let lists = &mut l.database_mut().comic_lists;
+    let Some(base) = find_base_mut(lists, id) else {
+        return false;
+    };
+    let display = base.display.get_or_insert_with(Default::default);
+    if display.view == view {
+        return false;
+    }
+    display.view = view;
+    l.mark_dirty();
+    true
+}
+
 /// Rename (the C# `AfterLabelEdit` → `comicListItem.Name = label`).
 pub fn rename_list(id: &CrGuid, name: &str) {
     let lib = session();

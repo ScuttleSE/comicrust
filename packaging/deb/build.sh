@@ -35,7 +35,7 @@ install -d "$stage/DEBIAN" "$stage/usr/bin" "$stage/usr/share/comicrust/assets" 
     "$stage/usr/share/icons/hicolor/256x256/apps"
 
 install -m755 target/release/cr-app "$stage/usr/bin/comicrust"
-for kind in icons papers backgrounds scan; do
+for kind in icons papers backgrounds scan pages; do
     cp -r "crates/cr-ui/assets/$kind" "$stage/usr/share/comicrust/assets/$kind"
 done
 install -m644 packaging/io.github.ScuttleSE.comicrust.desktop \

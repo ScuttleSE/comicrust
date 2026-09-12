@@ -80,6 +80,11 @@ struct ResizeState {
 type ActivateFn = Rc<dyn Fn(&CrGuid)>;
 type SelectionFn = Rc<dyn Fn(usize)>;
 type HeaderContextFn = Rc<dyn Fn(f64, f64)>;
+/// Fired when a user gesture INSIDE the widget changed the view
+/// config (a Ctrl+wheel resize, a column-width drag, a header
+/// auto-size). The shell uses it to mark the current list's
+/// settings as its own (ADR-039).
+type ViewConfigFn = Rc<dyn Fn()>;
 type BookContextFn = Rc<dyn Fn(Option<CrGuid>, f64, f64)>;
 
 struct ThumbDone {
@@ -149,6 +154,8 @@ pub struct ItemViewState {
     resize: Option<ResizeState>,
     on_activate: Option<ActivateFn>,
     on_selection_changed: Option<SelectionFn>,
+    /// The in-widget view-config change hook (ADR-039).
+    on_view_config_changed: Option<ViewConfigFn>,
     /// The Detail header right-click (the T6 column chooser).
     on_header_context: Option<HeaderContextFn>,
     /// The book right-click (the context menu).
@@ -360,6 +367,7 @@ impl ItemView {
             resize: None,
             on_activate: None,
             on_selection_changed: None,
+            on_view_config_changed: None,
             on_header_context: None,
             on_book_context: None,
             type_ahead: String::new(),
@@ -604,6 +612,22 @@ impl ItemView {
         self.notify_and_redraw();
     }
 
+    /// The in-widget view-config change hook (ADR-039): a Ctrl+wheel
+    /// item resize, a column-width drag, or a header auto-size. The
+    /// menu and toolbar paths mark the shell flag directly.
+    pub fn connect_view_config_changed<F: Fn() + 'static>(&self, f: F) {
+        self.state.borrow_mut().on_view_config_changed = Some(Rc::new(f));
+    }
+
+    /// Fires the view-config hook with NO state borrow held (the
+    /// re-entrancy rule: the hook reaches back into the shell).
+    fn fire_view_config_changed(&self) {
+        let hook = self.state.borrow().on_view_config_changed.clone();
+        if let Some(f) = hook {
+            f();
+        }
+    }
+
     pub fn view_state(&self) -> ViewState {
         self.state.borrow().view.clone()
     }
@@ -673,6 +697,7 @@ impl ItemView {
         }
         self.update_size_request();
         self.canvas.queue_draw();
+        self.fire_view_config_changed();
     }
 
     /// The pre-filter book count (`totalCount` — the C# fills it
@@ -1356,6 +1381,7 @@ impl ItemView {
     pub fn autosize_column(&self, id: i32) -> f64 {
         let width = autosize_column_state(&self.state, id);
         self.canvas.queue_draw();
+        self.fire_view_config_changed();
         width
     }
 
@@ -1387,6 +1413,7 @@ impl ItemView {
         };
         self.state.borrow_mut().end_resize();
         self.canvas.queue_draw();
+        self.fire_view_config_changed();
         width
     }
 
@@ -1443,9 +1470,14 @@ impl ItemView {
             gesture.set_state(gtk4::EventSequenceState::Claimed);
             let mut s = state.borrow_mut();
             if s.resize.take().is_some() {
-                // `OnMouseUpResizeColumnHeader`.
+                // `OnMouseUpResizeColumnHeader`. The widths changed:
+                // the current list owns its settings now (ADR-039).
+                let hook = s.on_view_config_changed.clone();
                 drop(s);
                 canvas_released.queue_draw();
+                if let Some(f) = hook {
+                    f();
+                }
                 return;
             }
             if let Some(band) = s.band.take() {
@@ -2404,10 +2436,7 @@ fn tile_segments(
             // binary search over the prefix (the old per-character
             // walk measured long summaries hundreds of times per
             // frame).
-            let mut line = truncate_to_width(ctx, text, text_w);
-            if line != *text {
-                line.push('…');
-            }
+            let line = ellipsize_to_width(ctx, text, text_w);
             segs.push(TileSeg {
                 label: None,
                 text: line,
@@ -2444,6 +2473,26 @@ fn truncate_to_width(ctx: &cairo::Context, text: &str, width: f64) -> String {
         }
     }
     text.chars().take(lo).collect()
+}
+
+/// `text` shortened to fit `width`, with a trailing `…` when it did
+/// not fit. The ellipsis width is reserved BEFORE the truncation, so
+/// the result measures no wider than `width`.
+fn ellipsize_to_width(ctx: &cairo::Context, text: &str, width: f64) -> String {
+    if width <= 0.0 {
+        return String::new();
+    }
+    let fits = ctx
+        .text_extents(text)
+        .map(|e| e.width() <= width)
+        .unwrap_or(true);
+    if fits {
+        return text.to_string();
+    }
+    let ellipsis_w = ctx.text_extents("…").map(|e| e.width()).unwrap_or(0.0);
+    let mut line = truncate_to_width(ctx, text, (width - ellipsis_w).max(0.0));
+    line.push('…');
+    line
 }
 
 fn draw_detail_item(
@@ -2521,14 +2570,29 @@ fn draw_detail_item(
         // the per-column alignment and the 2 px inset — the widths
         // measured, not estimated (the old 6.6/char estimate drifts
         // on proportional text).
+        //
+        // Text wider than its column is cut with an ellipsis, and the
+        // draw is clipped to the cell as a backstop. The C# header
+        // draw clips the same way (`gr.IntersectClip(
+        // columnHeaderRectangle)`); without it a long value paints
+        // over the next column.
+        let avail = cell.w - 2.0 * DETAIL_CELL_PAD;
+        let text = ellipsize_to_width(ctx, &text, avail);
+        if text.is_empty() {
+            continue;
+        }
         let w = ctx.text_extents(&text).map(|e| e.width()).unwrap_or(0.0);
         let tx = match column.alignment {
             columns::ColumnAlignment::Far => cell.x + cell.w - DETAIL_CELL_PAD - w,
             columns::ColumnAlignment::Center => cell.x + (cell.w - w) / 2.0,
             columns::ColumnAlignment::Near => cell.x + DETAIL_CELL_PAD,
         };
+        ctx.save().ok();
+        ctx.rectangle(cell.x, cell.y, cell.w.max(0.0), cell.h);
+        ctx.clip();
         ctx.move_to(tx.max(cell.x), cell.y + cell.h * 0.75);
         ctx.show_text(&text).ok();
+        ctx.restore().ok();
     }
 }
 
@@ -2604,5 +2668,62 @@ fn format_year(year: i32) -> String {
         year.to_string()
     } else {
         String::new()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A display-free cairo context: the text metrics come from the
+    /// font backend, not from a window.
+    fn test_ctx() -> cairo::Context {
+        let surface = cairo::ImageSurface::create(cairo::Format::ARgb32, 400, 40).unwrap();
+        let ctx = cairo::Context::new(&surface).unwrap();
+        ctx.select_font_face("Sans", cairo::FontSlant::Normal, cairo::FontWeight::Normal);
+        ctx.set_font_size(DETAIL_FONT_SIZE);
+        ctx
+    }
+
+    fn width_of(ctx: &cairo::Context, text: &str) -> f64 {
+        ctx.text_extents(text).map(|e| e.width()).unwrap_or(0.0)
+    }
+
+    #[test]
+    fn short_text_is_untouched() {
+        let ctx = test_ctx();
+        let text = "Batman";
+        let wide = width_of(&ctx, text) + 50.0;
+        assert_eq!(ellipsize_to_width(&ctx, text, wide), text);
+    }
+
+    #[test]
+    fn long_text_gets_an_ellipsis_and_fits() {
+        let ctx = test_ctx();
+        let text = "The Amazing Spider-Man Annual Special Edition";
+        let full = width_of(&ctx, text);
+        let limit = full / 3.0;
+        let cut = ellipsize_to_width(&ctx, text, limit);
+        assert!(cut.ends_with('…'), "no ellipsis in {cut:?}");
+        assert!(cut != text);
+        // The whole point: the result must not spill past the column.
+        assert!(
+            width_of(&ctx, &cut) <= limit,
+            "{cut:?} measures {} > {limit}",
+            width_of(&ctx, &cut)
+        );
+    }
+
+    #[test]
+    fn zero_width_draws_nothing() {
+        let ctx = test_ctx();
+        assert_eq!(ellipsize_to_width(&ctx, "Batman", 0.0), "");
+        assert_eq!(ellipsize_to_width(&ctx, "Batman", -5.0), "");
+    }
+
+    #[test]
+    fn empty_text_stays_empty() {
+        let ctx = test_ctx();
+        assert_eq!(ellipsize_to_width(&ctx, "", 100.0), "");
     }
 }

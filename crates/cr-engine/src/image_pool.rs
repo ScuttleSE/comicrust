@@ -242,6 +242,18 @@ impl ImagePool {
         }
     }
 
+    /// `ImagePool.IsWorking` — true while ANY of the five queues has
+    /// work. The C# `MainForm.UpdateActivityTimerTick` reads this once
+    /// a second to show the page/thumbnail activity lamp
+    /// (`MainForm.cs:3975`).
+    pub fn is_working(&self) -> bool {
+        self.fast_page_queue.is_active()
+            || self.slow_page_queue.is_active()
+            || self.fast_thumbnail_queue.is_active()
+            || self.slow_thumbnail_queue.is_active()
+            || self.slow_thumbnail_queue_unlimited.is_active()
+    }
+
     /// `ImagePool.PageCached`/`ThumbnailCached` wiring: the sink the
     /// UI thread drains (the C# `CacheManager` handlers ride the
     /// cache events directly; the port bridges over mpsc — the

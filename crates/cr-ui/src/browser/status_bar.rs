@@ -107,23 +107,92 @@ pub fn page_text(page: Option<usize>) -> String {
 type LampFn = Box<dyn Fn()>;
 type SliderFn = Box<dyn Fn(f64)>;
 
-/// The scan-lamp animation step (the GIF's frame cadence; WinForms
+/// The animated-lamp frame step (the GIF's frame cadence; WinForms
 /// plays the resx GIF at the file's own delays — the port steps
 /// evenly).
 const SCAN_ANIM_MS: u64 = 120;
+
+/// One image-only lamp whose icon is a coalesced resx animation.
+///
+/// The C# `ToolStripStatusLabel` plays its resx GIF by itself while
+/// it is visible. GTK has no animated `Image`, so the port swaps the
+/// paintable on a timer that runs ONLY while the lamp shows.
+struct AnimLamp {
+    button: gtk4::Button,
+    image: Image,
+    /// The coalesced frames; empty = the static PNG fallback, and
+    /// then no timer ever starts.
+    frames: Vec<gdk::Texture>,
+    frame: Cell<usize>,
+    anim: RefCell<Option<glib::SourceId>>,
+}
+
+impl AnimLamp {
+    /// `asset_dir` holds `frame-0.png`, `frame-1.png`, ...;
+    /// `fallback_icon` is the static PNG used when none are bundled.
+    fn new(asset_dir: &str, fallback_icon: &str, tooltip: &str) -> Rc<Self> {
+        let frames = anim_frames(asset_dir);
+        let image = match frames.first() {
+            Some(texture) => Image::from_paintable(Some(texture)),
+            None => icon_image(fallback_icon),
+        };
+        let button = gtk4::Button::new();
+        button.set_has_frame(false);
+        button.set_child(Some(&image));
+        button.set_tooltip_text(Some(tooltip));
+        Rc::new(AnimLamp {
+            button,
+            image,
+            frames,
+            frame: Cell::new(0),
+            anim: RefCell::new(None),
+        })
+    }
+
+    /// Show or hide the lamp and start or stop its frame timer with
+    /// it.
+    fn set_active(self: &Rc<Self>, active: bool) {
+        self.button.set_visible(active);
+        if active && !self.frames.is_empty() {
+            if self.anim.borrow().is_some() {
+                return;
+            }
+            let weak = Rc::downgrade(self);
+            let source = glib::timeout_add_local(
+                std::time::Duration::from_millis(SCAN_ANIM_MS),
+                move || {
+                    let Some(lamp) = weak.upgrade() else {
+                        return glib::ControlFlow::Break;
+                    };
+                    if !lamp.button.is_visible() || lamp.frames.is_empty() {
+                        *lamp.anim.borrow_mut() = None;
+                        return glib::ControlFlow::Break;
+                    }
+                    let next = (lamp.frame.get() + 1) % lamp.frames.len();
+                    lamp.frame.set(next);
+                    lamp.image.set_paintable(Some(&lamp.frames[next]));
+                    glib::ControlFlow::Continue
+                },
+            );
+            *self.anim.borrow_mut() = Some(source);
+            return;
+        }
+        if let Some(source) = self.anim.borrow_mut().take() {
+            source.remove();
+        }
+    }
+}
 
 struct Inner {
     widget: gtk4::Box,
     info: Label,
     lamp_export: gtk4::Button,
     lamp_write: gtk4::Button,
-    lamp_scan: gtk4::Button,
-    /// The animated scan frames (`ScanAnimation.gif` coalesced);
-    /// empty = the static PNG fallback.
-    scan_frames: Vec<gdk::Texture>,
-    scan_image: Image,
-    scan_frame: Cell<usize>,
-    anim: RefCell<Option<glib::SourceId>>,
+    scan: Rc<AnimLamp>,
+    /// The page/thumbnail activity lamp (the C# `tsPageActivity`,
+    /// `ReadPagesAnimation.gif`, driven by `ImagePool.IsWorking` —
+    /// `MainForm.cs:3975`). A click opens the Tasks window.
+    pages: Rc<AnimLamp>,
     scan_menu: Popover,
     scan_cancel: gtk4::Button,
     scan_skip: gtk4::Button,
@@ -180,13 +249,13 @@ fn icon_image(icon_name: &str) -> Image {
     }
 }
 
-/// The coalesced `ScanAnimation.gif` frames (the C# resx animation,
-/// extracted to `assets/scan/frame-N.png`; the resx GIFs were not
-/// bundled in T2). Stops at the first missing frame.
-fn scan_frames() -> Vec<gdk::Texture> {
+/// The coalesced frames of a bundled resx animation, from
+/// `assets/<dir>/frame-N.png` (the resx GIFs were not bundled in T2).
+/// Stops at the first missing frame.
+fn anim_frames(dir: &str) -> Vec<gdk::Texture> {
     let mut frames = Vec::new();
     for i in 0..u32::MAX {
-        let Some(path) = crate::assets::find(&format!("scan/frame-{i}.png")) else {
+        let Some(path) = crate::assets::find(&format!("{dir}/frame-{i}.png")) else {
             break;
         };
         match gdk::Texture::from_file(&gio::File::for_path(&path)) {
@@ -239,25 +308,30 @@ impl StatusBar {
         // 2. The activity lamps (image-only, hidden unless active).
         //    The C# order in the strip: backup, device-sync, export,
         //    read-info, write-info, page, scan — the port shows the
-        //    ported activities: export, write, scan. The scan lamp
-        //    animates the bundled ScanAnimation frames and opens the
-        //    Cancel-scan menu on click (the other lamps open Tasks).
+        //    ported activities: export, write, page, scan. The scan
+        //    and page lamps animate bundled resx frames; the scan one
+        //    opens the Cancel-scan menu on click, the others open
+        //    Tasks.
         let lamp_export = lamp_button("Export.png", "Exporting comics...");
         let lamp_write = lamp_button("UpdateBig.png", "Writing info data to files...");
-        let scan_frames = scan_frames();
-        let scan_image = match scan_frames.first() {
-            Some(texture) => Image::from_paintable(Some(texture)),
-            None => icon_image("Scan.png"),
-        };
-        let lamp_scan = gtk4::Button::new();
-        lamp_scan.set_has_frame(false);
-        lamp_scan.set_child(Some(&scan_image));
-        lamp_scan.set_tooltip_text(Some("A scan is running..."));
+        let pages = AnimLamp::new(
+            "pages",
+            "ThumbView.png",
+            "Loading pages and creating thumbnails...",
+        );
+        let scan = AnimLamp::new("scan", "Scan.png", "A scan is running...");
+        let lamp_scan = scan.button.clone();
         let lamp_cv = lamp_button(
             "comicvinescraper.png",
             "A Comic Vine cache job is running...",
         );
-        for lamp in [&lamp_export, &lamp_write, &lamp_scan, &lamp_cv] {
+        for lamp in [
+            &lamp_export,
+            &lamp_write,
+            &pages.button,
+            &lamp_scan,
+            &lamp_cv,
+        ] {
             lamp.add_css_class("status-panel");
             widget.append(lamp);
         }
@@ -359,11 +433,8 @@ impl StatusBar {
                 info,
                 lamp_export,
                 lamp_write,
-                lamp_scan,
-                scan_frames,
-                scan_image,
-                scan_frame: Cell::new(0),
-                anim: RefCell::new(None),
+                scan,
+                pages,
                 scan_menu,
                 scan_cancel: cancel,
                 scan_skip: skip,
@@ -390,11 +461,15 @@ impl StatusBar {
     }
 
     fn wire(&self) {
-        // The export/write lamps open the Tasks dialog (the C#
-        // `ShowPendingTasks` handlers; the export lamp shows the
-        // errors dialog first — T13). The SCAN lamp opens the
-        // Cancel-scan menu instead.
-        for lamp in [&self.inner.lamp_export, &self.inner.lamp_write] {
+        // The export/write/page lamps open the Tasks dialog (the C#
+        // `ShowPendingTasks` handlers, `MainForm.cs:3517-3535`; the
+        // export lamp shows the errors dialog first — T13). The SCAN
+        // lamp opens the Cancel-scan menu instead.
+        for lamp in [
+            &self.inner.lamp_export,
+            &self.inner.lamp_write,
+            &self.inner.pages.button,
+        ] {
             let inner = Rc::clone(&self.inner);
             lamp.connect_clicked(move |_| {
                 if let Some(f) = inner.on_lamp_click.borrow().as_ref() {
@@ -404,7 +479,7 @@ impl StatusBar {
         }
         {
             let inner = Rc::clone(&self.inner);
-            self.inner.lamp_scan.connect_clicked(move |_| {
+            self.inner.scan.button.connect_clicked(move |_| {
                 if !inner.scan_menu.is_visible() {
                     inner.scan_menu.popup();
                 }
@@ -506,14 +581,15 @@ impl StatusBar {
         self.inner.slider_syncing.set(false);
     }
 
-    /// `UpdateActivityTimerTick`'s lamp visibility. The scan lamp
-    /// also starts/stops its frame animation with the visibility.
-    pub fn update_lamps(&self, scan: bool, write: bool, export: bool, cv_job: bool) {
-        self.inner.lamp_scan.set_visible(scan);
+    /// `UpdateActivityTimerTick`'s lamp visibility. The scan and page
+    /// lamps also start/stop their frame animation with the
+    /// visibility.
+    pub fn update_lamps(&self, scan: bool, write: bool, export: bool, cv_job: bool, pages: bool) {
         self.inner.lamp_write.set_visible(write);
         self.inner.lamp_export.set_visible(export);
         self.inner.lamp_cv.set_visible(cv_job);
-        self.sync_scan_anim(scan);
+        self.inner.scan.set_active(scan);
+        self.inner.pages.set_active(pages);
     }
 
     /// The Comic Vine cache lamp's tooltip carries the live job line,
@@ -522,42 +598,6 @@ impl StatusBar {
         self.inner
             .lamp_cv
             .set_tooltip_text(Some(text.unwrap_or("A Comic Vine cache job is running...")));
-    }
-
-    /// The scan-lamp frame timer: runs ONLY while the lamp shows
-    /// (the C# animates the resx GIF natively whenever visible).
-    fn sync_scan_anim(&self, scan: bool) {
-        if scan && !self.inner.scan_frames.is_empty() {
-            let anim = self.inner.anim.borrow().is_some();
-            if anim {
-                return;
-            }
-            let inner = Rc::downgrade(&self.inner);
-            let source = glib::timeout_add_local(
-                std::time::Duration::from_millis(SCAN_ANIM_MS),
-                move || {
-                    let Some(inner) = inner.upgrade() else {
-                        return glib::ControlFlow::Break;
-                    };
-                    if !inner.lamp_scan.is_visible() || inner.scan_frames.is_empty() {
-                        *inner.anim.borrow_mut() = None;
-                        return glib::ControlFlow::Break;
-                    }
-                    let count = inner.scan_frames.len();
-                    let next = (inner.scan_frame.get() + 1) % count;
-                    inner.scan_frame.set(next);
-                    inner
-                        .scan_image
-                        .set_paintable(Some(&inner.scan_frames[next]));
-                    glib::ControlFlow::Continue
-                },
-            );
-            *self.inner.anim.borrow_mut() = Some(source);
-            return;
-        }
-        if let Some(source) = self.inner.anim.borrow_mut().take() {
-            source.remove();
-        }
     }
 
     pub fn connect_lamp_click<F: Fn() + 'static>(&self, f: F) {
@@ -618,27 +658,51 @@ impl StatusBar {
 
     pub fn lamp_visible(&self, which: &str) -> bool {
         match which {
-            "scan" => self.inner.lamp_scan.is_visible(),
+            "scan" => self.inner.scan.button.is_visible(),
             "write" => self.inner.lamp_write.is_visible(),
             "export" => self.inner.lamp_export.is_visible(),
             "cv" => self.inner.lamp_cv.is_visible(),
+            "pages" => self.inner.pages.button.is_visible(),
             _ => false,
+        }
+    }
+
+    /// An animated lamp is running (a frame timer is live). `which`
+    /// takes "scan" or "pages".
+    pub fn anim_running(&self, which: &str) -> bool {
+        match which {
+            "pages" => self.inner.pages.anim.borrow().is_some(),
+            _ => self.inner.scan.anim.borrow().is_some(),
         }
     }
 
     /// The scan animation is running (a frame timer is live).
     pub fn scan_anim_running(&self) -> bool {
-        self.inner.anim.borrow().is_some()
+        self.anim_running("scan")
+    }
+
+    /// The bundled frame count of an animated lamp. `which` takes
+    /// "scan" or "pages".
+    pub fn anim_frame_count(&self, which: &str) -> usize {
+        match which {
+            "pages" => self.inner.pages.frames.len(),
+            _ => self.inner.scan.frames.len(),
+        }
     }
 
     /// The scan-lamp frame count (the bundled animation).
     pub fn scan_frame_count(&self) -> usize {
-        self.inner.scan_frames.len()
+        self.anim_frame_count("scan")
     }
 
     /// The probe path: the REAL scan-lamp click (the menu opens).
     pub fn click_scan_lamp(&self) {
-        self.inner.lamp_scan.emit_clicked();
+        self.inner.scan.button.emit_clicked();
+    }
+
+    /// The probe path: the REAL page-lamp click (Tasks opens).
+    pub fn click_pages_lamp(&self) {
+        self.inner.pages.button.emit_clicked();
     }
 
     /// The probe path: the REAL "Cancel scan" row click.

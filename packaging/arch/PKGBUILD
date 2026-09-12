@@ -47,7 +47,7 @@ package() {
   install -Dm755 target/release/cr-app "$pkgdir/usr/bin/comicrust"
 
   install -d "$pkgdir/usr/share/comicrust/assets"
-  for kind in icons papers backgrounds scan; do
+  for kind in icons papers backgrounds scan pages; do
     cp -r "crates/cr-ui/assets/$kind" "$pkgdir/usr/share/comicrust/assets/$kind"
   done
 

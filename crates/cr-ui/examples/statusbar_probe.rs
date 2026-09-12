@@ -248,11 +248,11 @@ let _shell = shell.clone();
             let bar = bar.clone();
             move || {
                 cr_ui::library::set_export_active(true);
-                bar.update_lamps(cr_ui::library::is_scanning(), cr_ui::library::writes_pending() > 0, true, false);
+                bar.update_lamps(cr_ui::library::is_scanning(), cr_ui::library::writes_pending() > 0, true, false, false);
                 let export_on = bar.lamp_visible("export");
                 let scan_on = bar.lamp_visible("scan");
                 cr_ui::library::set_export_active(false);
-                bar.update_lamps(false, false, false, false);
+                bar.update_lamps(false, false, false, false, false);
                 let export_off = bar.lamp_visible("export");
                 println!(
                     "G export-on={export_on} scan-on={scan_on} export-off={export_off} (expect true/false/false)"
@@ -270,10 +270,10 @@ let _shell = shell.clone();
             let bar = bar.clone();
             move || {
                 let frames = bar.scan_frame_count();
-                bar.update_lamps(true, false, false, false);
+                bar.update_lamps(true, false, false, false, false);
                 let visible_on = bar.lamp_visible("scan");
                 let anim_on = bar.scan_anim_running();
-                bar.update_lamps(false, false, false, false);
+                bar.update_lamps(false, false, false, false, false);
                 let anim_off = bar.scan_anim_running();
                 println!(
                     "J frames={frames} scan-on={visible_on} anim-on={anim_on} anim-off={anim_off} (expect 4/true/true/false)"
@@ -286,7 +286,7 @@ let _shell = shell.clone();
             move || {
                 // The lamp must SHOW for the popover to map (an
                 // invisible parent cannot host a mapped popover).
-                bar.update_lamps(true, false, false, false);
+                bar.update_lamps(true, false, false, false, false);
                 let fired = std::rc::Rc::new(std::cell::Cell::new(false));
                 let flag = fired.clone();
                 bar.connect_cancel_scan(move || flag.set(true));
@@ -336,7 +336,7 @@ let _shell = shell.clone();
                     std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
                 );
                 cr_ui::library::set_cv_job_progress("page 3 of 53".into(), 300, 5300);
-                bar.update_lamps(false, false, false, cr_ui::library::cv_job_active());
+                bar.update_lamps(false, false, false, cr_ui::library::cv_job_active(), false);
                 bar.set_cv_job_text(
                     cr_ui::library::cv_job().map(|j| j.text()).as_deref(),
                 );
@@ -375,6 +375,7 @@ let _shell = shell.clone();
                                     false,
                                     false,
                                     cr_ui::library::cv_job_active(),
+                                    false,
                                 );
                                 println!(
                                     "K2 menu-open={menu_open} menu-closed={} cancel-fired={} worker-flag={worker_sees_it} lamp-off={} (expect true/true/true/true/true)",
@@ -388,6 +389,39 @@ let _shell = shell.clone();
                         glib::ControlFlow::Break
                     }
                 });
+                glib::ControlFlow::Break
+            }
+        });
+
+        // L. The page/thumbnail activity lamp (the C#
+        //    `tsPageActivity`, `ReadPagesAnimation.gif`, driven by
+        //    `ImagePool.IsWorking` — `MainForm.cs:3975`): the frames
+        //    load, the lamp is hidden at rest, and its timer runs
+        //    ONLY while the lamp shows. The click opens Tasks (the
+        //    C# `tsPageActivity_Click` → `ShowPendingTasks`).
+        glib::timeout_add_local(std::time::Duration::from_millis(8400), {
+            let bar = bar.clone();
+            move || {
+                let frames = bar.anim_frame_count("pages");
+                bar.update_lamps(false, false, false, false, false);
+                let off = bar.lamp_visible("pages");
+                let anim_off = bar.anim_running("pages");
+                bar.update_lamps(false, false, false, false, true);
+                let on = bar.lamp_visible("pages");
+                let anim_on = bar.anim_running("pages");
+                let clicked = std::rc::Rc::new(std::cell::Cell::new(false));
+                let flag = clicked.clone();
+                bar.connect_lamp_click(move || flag.set(true));
+                bar.click_pages_lamp();
+                bar.update_lamps(false, false, false, false, false);
+                let anim_stopped = bar.anim_running("pages");
+                println!(
+                    "L frames={frames} rest-off={} anim-rest-off={} on={on} anim-on={anim_on} click={} anim-stopped={} (expect 16/true/true/true/true/true/true)",
+                    !off,
+                    !anim_off,
+                    clicked.get(),
+                    !anim_stopped
+                );
                 glib::ControlFlow::Break
             }
         });

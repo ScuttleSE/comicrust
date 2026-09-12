@@ -560,8 +560,16 @@ fn main() {
         });
         // E2. The sort survives a same-list refresh (the reported
         //     drop: Properties OK mid-scan reset the sort — the C#
-        //     ItemSorter survives FillBookList); a REAL list switch
-        //     still resets it (the recorded T14 per-list deviation).
+        //     ItemSorter survives FillBookList).
+        //
+        //     The old gate asserted that a REAL list switch RESET the
+        //     sort — the T14 per-list deviation. ADR-039 removed that
+        //     deviation: the sort is now part of the per-list view
+        //     settings. A switch to a list with no settings of its
+        //     own changes nothing (the C# `RegisterBookList` applies
+        //     nothing for a null config), so the sort now SURVIVES
+        //     the switch. The expectation below changed with the
+        //     behavior, not to make a failing gate pass.
         glib::timeout_add_local(std::time::Duration::from_millis(5800), {
             let shell = shell.clone();
             move || {
@@ -579,7 +587,8 @@ fn main() {
                     "the same-list refresh dropped the sort chain (the Properties-OK reset)"
                 );
                 // A real list switch (the second tree row — the Smart
-                // Lists folder): the recorded T14 deviation resets.
+                // Lists folder). That list has no view settings of
+                // its own, so the view (and the sort) carry over.
                 if let Some(other) = cr_ui::library::comic_lists_snapshot()
                     .get(1)
                     .map(|i| i.base().id)
@@ -593,7 +602,14 @@ fn main() {
             let shell = shell.clone();
             move || {
                 let (sort, _, _) = shell.item_view_sort_summary();
-                println!("E2 after-switch sort={sort:?} (expect None — the per-list reset)");
+                println!(
+                    "E2 after-switch sort={sort:?} (expect Some(\"Series\") — ADR-039: an inheriting list keeps the current view)"
+                );
+                assert_eq!(
+                    sort.as_deref(),
+                    Some("Series"),
+                    "a switch to a list with NO settings of its own must not change the view"
+                );
                 glib::ControlFlow::Break
             }
         });
@@ -665,7 +681,133 @@ fn main() {
                 glib::ControlFlow::Break
             }
         });
-        glib::timeout_add_local(std::time::Duration::from_millis(7600), {
+        // G. Per-list view settings (ADR-039), the full cycle:
+        //    a list with no settings of its own inherits the view it
+        //    is handed; the FIRST view change makes the settings its
+        //    own; the settings follow the list across switches; and
+        //    "Reset View Settings" drops them again.
+        //
+        //    EVERY step sits at least SELECT_DEBOUNCE_MS (200 ms,
+        //    `navigator.rs:45`) after a `state_select_list`. The
+        //    navigator selection is debounced, so a view change made
+        //    inside that window still belongs to the OUTGOING list.
+        let lists: Vec<CrGuid> = cr_ui::library::comic_lists_snapshot()
+            .iter()
+            .map(|i| i.base().id)
+            .collect();
+        let lib_id = lists.first().copied();
+        let other_id = lists.get(1).copied();
+        if let (Some(lib_id), Some(other_id)) = (lib_id, other_id) {
+            // G1. Land on the Library.
+            glib::timeout_add_local(std::time::Duration::from_millis(7800), {
+                let shell = shell.clone();
+                move || {
+                    shell.state_select_list(&lib_id);
+                    glib::ControlFlow::Break
+                }
+            });
+            // G1b. Detail + a Series sort: the first change makes the
+            //      settings the Library's own.
+            glib::timeout_add_local(std::time::Duration::from_millis(8200), {
+                let shell = shell.clone();
+                move || {
+                    shell.state_dispatch_param("win.view-mode", "detail");
+                    shell.state_dispatch_param("win.sort-column", "Series");
+                    let other_own_before = shell.state_has_own_view_config(&other_id);
+                    println!(
+                        "G1 other-own-before={other_own_before} mode={} (expect false/detail)",
+                        shell.state_grid_mode()
+                    );
+                    assert!(
+                        !other_own_before,
+                        "a never-touched list must not carry settings of its own"
+                    );
+                    shell.state_select_list(&other_id);
+                    glib::ControlFlow::Break
+                }
+            });
+            // G2. On the list with NO settings: the view carried over
+            //     untouched, and the Library stored what it had.
+            glib::timeout_add_local(std::time::Duration::from_millis(8700), {
+                let shell = shell.clone();
+                move || {
+                    let mode_after_switch = shell.state_grid_mode();
+                    let lib_own = shell.state_has_own_view_config(&lib_id);
+                    let other_own = shell.state_has_own_view_config(&other_id);
+                    println!(
+                        "G2 inherited-mode={mode_after_switch} lib-own-after-leave={lib_own} other-own={other_own} (expect detail/true/false)"
+                    );
+                    assert_eq!(
+                        mode_after_switch, "detail",
+                        "a switch to an inheriting list must not change the view"
+                    );
+                    assert!(
+                        lib_own,
+                        "the outgoing list did not store the settings the user changed"
+                    );
+                    assert!(
+                        !other_own,
+                        "merely visiting a list must not freeze the current view onto it"
+                    );
+                    // Now change it: this list owns its settings too.
+                    shell.state_dispatch_param("win.view-mode", "thumbnail");
+                    glib::ControlFlow::Break
+                }
+            });
+            glib::timeout_add_local(std::time::Duration::from_millis(9000), {
+                let shell = shell.clone();
+                move || {
+                    shell.state_select_list(&lib_id);
+                    glib::ControlFlow::Break
+                }
+            });
+            // G3. Back on the Library: its OWN settings apply again,
+            //     and the other list kept its Thumbnail choice.
+            glib::timeout_add_local(std::time::Duration::from_millis(9500), {
+                let shell = shell.clone();
+                move || {
+                    let mode = shell.state_grid_mode();
+                    let (sort, _, _) = shell.item_view_sort_summary();
+                    let other_own = shell.state_has_own_view_config(&other_id);
+                    println!(
+                        "G3 lib-mode={mode} lib-sort={sort:?} other-own={other_own} (expect detail/Some(\"Series\")/true)"
+                    );
+                    assert_eq!(
+                        mode, "detail",
+                        "the list's own view mode did not come back on re-entry"
+                    );
+                    assert_eq!(
+                        sort.as_deref(),
+                        Some("Series"),
+                        "the list's own sort did not come back on re-entry"
+                    );
+                    assert!(
+                        other_own,
+                        "the changed list did not store its own settings when it left"
+                    );
+                    glib::ControlFlow::Break
+                }
+            });
+            // G4. "Reset View Settings": the list inherits again.
+            glib::timeout_add_local(std::time::Duration::from_millis(9800), {
+                let shell = shell.clone();
+                move || {
+                    let cleared = shell.state_reset_list_view_config(&other_id);
+                    let still_own = shell.state_has_own_view_config(&other_id);
+                    println!("G4 cleared={cleared} still-own={still_own} (expect true/false)");
+                    assert!(cleared, "the reset did not clear the stored settings");
+                    assert!(
+                        !still_own,
+                        "the list still carries settings of its own after the reset"
+                    );
+                    glib::ControlFlow::Break
+                }
+            });
+        } else {
+            println!("G SKIPPED — the seed has fewer than two lists");
+        }
+
+        glib::timeout_add_local(std::time::Duration::from_millis(10400), {
             let app = app.clone();
             move || {
                 println!("PROBE COMPLETE");

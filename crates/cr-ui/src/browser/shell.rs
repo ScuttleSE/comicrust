@@ -106,6 +106,14 @@ struct ShellState {
     /// The current list's name (the status-bar selection panel; set
     /// on the navigator selection + refreshes).
     current_list_name: RefCell<String>,
+    /// The current list's view settings changed since it became
+    /// current (ADR-039). Set by every handler that alters the view;
+    /// a leave with the flag set writes the live config into the
+    /// outgoing list's `<Display><View>` (the C#
+    /// `ComicBrowserControl.UpdateViewConfig`). While it is CLEAR the
+    /// list keeps whatever it had, so a list with no settings of its
+    /// own stays inheriting.
+    view_config_dirty: Cell<bool>,
     /// The `win.` action group members by name (the enable-state
     /// sync reaches them here). A RefCell: the map fills while the
     /// state itself already lives in its Rc.
@@ -358,6 +366,45 @@ impl ShellState {
             self.item_view.reselect(&selected);
         }
         true
+    }
+
+    /// The view changed by a user action: the current list now owns
+    /// its settings (ADR-039). Every handler that alters the mode,
+    /// the item size, the columns, the sort or the grouping calls
+    /// this. The write itself happens when the list leaves.
+    pub(crate) fn mark_view_config_dirty(&self) {
+        self.view_config_dirty.set(true);
+    }
+
+    /// Writes the live view into the OUTGOING list's `<Display><View>`
+    /// (the C# `ComicBrowserControl.UpdateViewConfig`, `:3355-3390`).
+    ///
+    /// Gated on the dirty flag on purpose: an untouched list must
+    /// keep an ABSENT `<View>` so it goes on inheriting. Without the
+    /// gate, merely visiting a list would freeze the current view
+    /// onto it.
+    fn store_view_config(&self, list: Option<CrGuid>) {
+        if !self.view_config_dirty.get() {
+            return;
+        }
+        self.view_config_dirty.set(false);
+        let Some(id) = list else {
+            return;
+        };
+        let cfg = super::list_view_config::collect(&self.item_view);
+        library::set_list_view_config(&id, Some(cfg));
+    }
+
+    /// Applies the INCOMING list's own settings (the C#
+    /// `ComicBrowserControl.RegisterBookList`, `:1926-1954`).
+    ///
+    /// A list with no `<View>` changes nothing: the browser keeps the
+    /// view it shows, which is the C# behavior for a null config.
+    fn apply_view_config(&self, list: &CrGuid) {
+        if let Some(cfg) = library::list_view_config(list) {
+            super::list_view_config::apply(&self.item_view, &cfg);
+        }
+        self.view_config_dirty.set(false);
     }
 
     fn refresh_view_from_list(&self) {
@@ -687,6 +734,7 @@ impl BrowserShell {
             app: app.clone(),
             current_list: RefCell::new(None),
             current_list_name: RefCell::new(String::new()),
+            view_config_dirty: Cell::new(false),
             actions: RefCell::new(HashMap::new()),
             list_history: RefCell::new(Vec::new()),
             list_history_pos: Cell::new(0),
@@ -1166,17 +1214,19 @@ impl BrowserShell {
                 .navigator
                 .connect_selected(move |id, _name| {
                     if let Some(sh) = state.upgrade() {
-                        // A real list switch resets the sort (the
-                        // recorded T14 deviation — the C# keeps the
-                        // sort PER LIST; the port stores none). A
-                        // boot/refresh re-select of the SAME list
-                        // keeps the chain (the restored T14 sort
-                        // survives the boot fill).
-                        let switched = sh
-                            .current_list
-                            .borrow()
-                            .map(|prev| prev != *id)
-                            .unwrap_or(false);
+                        // A real list switch (and the first selection
+                        // after boot) carries the per-list view
+                        // settings across: the outgoing list keeps
+                        // what the user changed, the incoming list
+                        // applies its own (ADR-039). A re-select of
+                        // the SAME list (a refresh, a boot re-fill)
+                        // does neither — it must not overwrite an
+                        // unsaved change with itself.
+                        let prev = *sh.current_list.borrow();
+                        let changing = prev != Some(*id);
+                        if changing {
+                            sh.store_view_config(prev);
+                        }
                         *sh.current_list.borrow_mut() = Some(*id);
                         // The list history (`BrowsePrevious` chain): a
                         // history walk lands on the entry at the walk
@@ -1196,9 +1246,9 @@ impl BrowserShell {
                             // selection panel (`BookList.Name`).
                             *sh.current_list_name.borrow_mut() = name;
                             sh.item_view.set_books(books);
-                            if switched {
-                                sh.item_view.clear_sort();
-                            }
+                        }
+                        if changing {
+                            sh.apply_view_config(id);
                         }
                         sh.sync_enabled();
                     }
@@ -1218,6 +1268,22 @@ impl BrowserShell {
                     if let Some(sh) = state.upgrade() {
                         sh.navigator.refill(&library::comic_lists_snapshot());
                         sh.refresh_view_from_list();
+                    }
+                });
+        }
+
+        // The in-widget view changes (Ctrl+wheel item resize, a
+        // column-width drag, a header auto-size): the current list
+        // owns its view settings from here on (ADR-039).
+        {
+            let state = Rc::downgrade(state);
+            state
+                .upgrade()
+                .expect("state")
+                .item_view
+                .connect_view_config_changed(move || {
+                    if let Some(sh) = state.upgrade() {
+                        sh.mark_view_config_dirty();
                     }
                 });
         }
@@ -1459,6 +1525,12 @@ impl BrowserShell {
                     // are still open (shutdown closes the views).
                     let open_files = sh.reader.open_files();
                     sh.reader.shutdown();
+                    // The current list's own view settings land in
+                    // the database before the save (the C#
+                    // `UnregisterBookList` → `StoreWorkspace(null)`
+                    // at exit). A no-op when the list is untouched.
+                    let current = *sh.current_list.borrow();
+                    sh.store_view_config(current);
                     // `Program.Settings.QuickOpenThumbnailSize = quickOpenView.ThumbnailSize`.
                     let size = sh.quick_view.thumb_height() as i32;
                     {
@@ -1559,12 +1631,13 @@ impl BrowserShell {
                             sh.folders_view.set_item_size(value);
                         } else {
                             sh.item_view.set_item_size(value);
+                            sh.mark_view_config_dirty();
                         }
                     }
                 });
         }
         // The 1 s activity poll (`updateActivityTimer`): the lamps
-        // follow the scan/write/export activity.
+        // follow the scan/write/export/page activity.
         {
             let state = Rc::downgrade(state);
             status_bar::start_activity_timer(move || {
@@ -1574,6 +1647,7 @@ impl BrowserShell {
                         library::writes_pending() > 0,
                         library::export_in_flight(),
                         library::cv_job_active(),
+                        sh.pool.is_working(),
                     );
                     sh.status_bar
                         .set_cv_job_text(library::cv_job().map(|j| j.text()).as_deref());
@@ -1933,6 +2007,26 @@ impl BrowserShell {
     /// directly).
     pub fn state_report_scan_problems(&self) {
         self.state.report_scan_problems();
+    }
+
+    /// "Reset View Settings" (ADR-039): the list drops its own
+    /// `<Display><View>` and inherits again. The view on screen does
+    /// NOT change — there is nothing to fall back to, and the C#
+    /// applies nothing for a null config either.
+    pub fn state_reset_list_view_config(&self, id: &CrGuid) -> bool {
+        let cleared = library::set_list_view_config(id, None);
+        // The reset must not be undone by the pending-change store
+        // when this list leaves.
+        if *self.state.current_list.borrow() == Some(*id) {
+            self.state.view_config_dirty.set(false);
+        }
+        cleared
+    }
+
+    /// Whether the list carries its own view settings (the context
+    /// menu's row gate and the probe).
+    pub fn state_has_own_view_config(&self, id: &CrGuid) -> bool {
+        library::list_view_config(id).is_some()
     }
 
     /// The selected book's rating in the library (the probe).
@@ -3002,6 +3096,7 @@ impl ShellState {
                     library::writes_pending() > 0,
                     library::export_in_flight(),
                     library::cv_job_active(),
+                    sh.pool.is_working(),
                 );
             }
             finish(&report_window, outcome);
@@ -3765,6 +3860,7 @@ impl ShellState {
                         return;
                     };
                     sh.item_view.toggle_column_visible(id);
+                    sh.mark_view_config_dirty();
                     let visible = sh
                         .item_view
                         .detail_columns_snapshot()
@@ -4147,6 +4243,7 @@ any value with at least one character.)",
                     _ => ItemViewMode::Thumbnail,
                 };
                 state.item_view.configure(|c| c.mode = mode);
+                state.mark_view_config_dirty();
                 // The check state follows the VIEW (the T6 user
                 // report: the Views check never moved — the state
                 // was set here but the dropdown rows only re-render
@@ -4166,6 +4263,7 @@ any value with at least one character.)",
                     let current = sh.item_view.thumb_height();
                     let next = (current + delta).clamp(MIN_THUMB, MAX_THUMB);
                     sh.item_view.configure(|c| c.thumb_height = next);
+                    sh.mark_view_config_dirty();
                 }
             });
             group.add_action(&action);
@@ -4191,6 +4289,7 @@ any value with at least one character.)",
                 } else {
                     sh.item_view.set_sort_column(&name);
                 }
+                sh.mark_view_config_dirty();
                 action.set_state(&name.to_variant());
                 sh.sync_enabled();
             });
@@ -4205,6 +4304,7 @@ any value with at least one character.)",
             dir_action.connect_activate(move |_, _| {
                 if let Some(sh) = state.upgrade() {
                     sh.item_view.toggle_sort_direction();
+                    sh.mark_view_config_dirty();
                 }
             });
         }
@@ -4233,6 +4333,7 @@ any value with at least one character.)",
                         .map(|(k, _)| *k)
                 };
                 sh.item_view.set_grouper(grouper);
+                sh.mark_view_config_dirty();
                 action.set_state(&name.to_variant());
                 sh.sync_enabled();
             });

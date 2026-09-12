@@ -549,6 +549,16 @@ fn run_list_command(
                 }
             });
         }
+        ListCommand::ResetViewSettings => {
+            // ADR-039: the list drops its own `<Display><View>` and
+            // inherits again. The view on screen stays as it is.
+            let Some(id) = target else {
+                return;
+            };
+            if let Some(sh) = BROWSER.with(|cell| cell.borrow().as_ref().map(|s| s.clone())) {
+                sh.state_reset_list_view_config(&id);
+            }
+        }
     }
 }
 

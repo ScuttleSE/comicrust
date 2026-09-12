@@ -15,7 +15,34 @@ user-tested on 2026-09-12 and are archived. Phase 9 is DEFERRED to
 ## Current task
 
 Phase 16 T1 — add `cover_date` to `IssueRef` and to the issue queries,
-then derive the year and the month for the issue picker.
+then derive the year and the month for the issue picker. NOT STARTED.
+
+Side task done on 2026-09-12: three user requests, all landed and
+gated (ADR-039, ADR-040).
+
+1. The page and thumbnail activity lamp (ADR-040) — a parity gap. The
+   C# `tsPageActivity` was never ported. `ImagePool::is_working()`
+   drives it; `ReadPagesAnimation.gif` is bundled as
+   `assets/pages/frame-N.png` (16 frames); a click opens Tasks.
+   MEASURED by `statusbar_probe` gate L.
+2. Detail-view cells no longer spill into the next column. The header
+   draw and the tile draw both clipped; the detail cell draw did
+   neither (`item_view.rs:2449`). It now ellipsizes to the column
+   width and clips as a backstop, through one shared
+   `ellipsize_to_width` the tile path uses too. Four unit tests.
+3. Per-list view settings (ADR-039). This CLOSES the T14 per-list
+   sort deviation. The `<Item>/<Display>/<View>` subtree was already
+   serde-complete and dead; it is now applied on list entry and
+   stored on list leave, gated on a dirty flag. An absent `<View>`
+   means inherit: the browser keeps the view it shows, which is the
+   C# null-config behavior and the user's explicit choice over
+   inheriting from the Library. "Reset View Settings" on the
+   navigator context menu clears it. MEASURED by `browserbar_probe`
+   gates G1-G4.
+
+`browserbar_probe` gate E2 asserted that a list switch CLEARED the
+sort — the deviation ADR-039 removes. Its expectation changed with
+the behavior, not to make a failing gate pass.
 
 Side task done on 2026-09-12, commit `a9873ac`: the smart-list guide now
 holds a "books that have an author" recipe and a "Finding empty books"
@@ -55,9 +82,45 @@ round):
 - Probes (release, Xvfb): `scrape_probe` GATE V and A/B/C,
   `statusbar_probe` A-K2, `scanmarker` A-E, `metadatatag` A/B.
 
+The 2026-09-12 side task (ADR-039, ADR-040):
+
+- `cargo fmt --all` and `cargo clippy --workspace --all-targets -- -D
+  warnings` — green.
+- `cargo test --workspace` — 680 pass, 0 fail (671 + 9 new: four for
+  `ellipsize_to_width`, two for the `<View>` bridge, three existing
+  counts unchanged).
+- Probes (release, Xvfb): `statusbar_probe` A-L (L is the new page
+  lamp: 16 frames, hidden at rest, the timer runs only while
+  visible, the click reaches Tasks); `browserbar_probe` A-G4 (G1-G4
+  are the new per-list cycle); `detailresize_probe` A-D;
+  `workspace_probe`, `bootview_probe`, `bootreentry_probe`,
+  `listorder_probe` — all unchanged and green.
+- MEASURED constraint found while gating: the navigator selection is
+  debounced 200 ms (`navigator.rs:45`). A view change made inside that
+  window is attributed to the OUTGOING list. The first G-gate run
+  failed on exactly this; the probe timing was corrected, not the
+  expectation.
+
 ## Open user tests
 
-None. `docs/open-user-tests.md` explains how to add one.
+Three, all from the 2026-09-12 side task. A passing probe is not a
+passing user test.
+
+1. **The thumbnail lamp.** Run Generate Thumbnails on a large list.
+   A small animated icon must appear in the status bar while the work
+   runs and disappear when it ends. A click on it must open Tasks.
+2. **Detail-column overflow.** Switch to Details and narrow a column
+   that holds long text (Series, or Title). The text must end in an
+   ellipsis at the column edge and must NOT paint over the next
+   column.
+3. **Per-list view settings.** Set list A to Details with a small row
+   height, and list B to Thumbnails with a large thumbnail. Switch
+   between them: each must come back the way you left it. Then make a
+   NEW list and select it — it must show the view you came from, and
+   must not change until you change it. Right-click list B, choose
+   "Reset View Settings", leave it and come back: it must no longer
+   force its own view. Restart the app and confirm all of it
+   survived.
 
 ## Blockers
 
@@ -96,7 +159,6 @@ Tracked in `docs/backlog.md`; they do not block Phase 16.
 - `WebComicProvider` is not ported.
 - PDF and DjVu writers are missing.
 - The `LICENSE` file is missing (a Phase 11 packaging gap).
-- The T14 per-list sort deviation stands.
 - HEIF and AVIF decode is missing.
 - "Fill Missing Issues" has no volume picker for an unscraped series.
 - The Comic Vine cache jobs have no per-row abort in the Tasks window;
