@@ -12,7 +12,9 @@
 //!
 //! Stated consequence of the score sum: a CBR copy that wins on size
 //! and pages against a smaller CBZ can survive (each copy loses one
-//! rule — a tie at the group minimum marks nothing).
+//! rule — a tie at the group minimum marks nothing) — unless the
+//! file-date rule resolves it: when the copies' file stamps differ,
+//! the older copy loses the extra rule and ranks worst.
 
 use cr_core::model::comic_book::ComicBook;
 use cr_core::settings::Settings;
@@ -36,6 +38,12 @@ pub struct DuplicateRules {
     /// Fewer pages are worse than more pages. Unknown page count
     /// counts as the lowest.
     pub fewer_pages_worse: bool,
+    /// An older file is worse than a newer file (PORT ADDITION, no
+    /// C# counterpart). The tie-break for copies equal on every
+    /// other rule — a re-downloaded or re-scanned copy carries the
+    /// newer file stamp; the stale copy ranks worst. Unknown stamps
+    /// (the `DateTime.MinValue` default) tie and take no side.
+    pub older_file_worse: bool,
 }
 
 impl Default for DuplicateRules {
@@ -44,6 +52,7 @@ impl Default for DuplicateRules {
             cbr_worse_than_cbz: true,
             smaller_file_worse: true,
             fewer_pages_worse: true,
+            older_file_worse: true,
         }
     }
 }
@@ -55,6 +64,7 @@ impl DuplicateRules {
             cbr_worse_than_cbz: s.duplicates_cbr_worse_than_cbz,
             smaller_file_worse: s.duplicates_smaller_file_worse,
             fewer_pages_worse: s.duplicates_fewer_pages_worse,
+            older_file_worse: s.duplicates_older_file_worse,
         }
     }
 
@@ -65,6 +75,7 @@ impl DuplicateRules {
         self.cbr_worse_than_cbz as i32
             + self.smaller_file_worse as i32
             + self.fewer_pages_worse as i32
+            + self.older_file_worse as i32
     }
 }
 
@@ -106,6 +117,9 @@ fn penalty(book: &ComicBook, members: &[&ComicBook], rules: &DuplicateRules) -> 
     if rules.fewer_pages_worse && book.info.page_count < max_pages(members) {
         p += 1;
     }
+    if rules.older_file_worse && modified_secs(book) < modified_max(members) {
+        p += 1;
+    }
     p
 }
 
@@ -130,6 +144,17 @@ fn max_size(members: &[&ComicBook]) -> i64 {
 
 fn max_pages(members: &[&ComicBook]) -> i32 {
     members.iter().map(|b| b.info.page_count).max().unwrap_or(0)
+}
+
+/// The file stamp of one copy as a comparable count (naive UTC
+/// seconds; kind semantics take no part — the stamp is a file
+/// `mtime`, always local).
+fn modified_secs(book: &ComicBook) -> i64 {
+    book.file_modified_time.naive.and_utc().timestamp()
+}
+
+fn modified_max(members: &[&ComicBook]) -> i64 {
+    members.iter().map(|b| modified_secs(b)).max().unwrap_or(0)
 }
 
 #[cfg(test)]
@@ -171,6 +196,30 @@ mod tests {
             book("Alpha", "1", "/c/alpha.cbr", 1000, 10),
         ];
         assert_eq!(worst(&books, &DuplicateRules::default()), ["/c/alpha.cbr"]);
+    }
+
+    #[test]
+    fn an_older_file_loses_when_everything_else_ties() {
+        // The report case: two CBZ copies equal on size and pages,
+        // one file stamp newer (a re-download). The stale copy is
+        // the only loser — with every rule off it ties and marks
+        // nothing again.
+        let mut old = book("Tie", "1", "/c/tie-a.cbz", 100, 20);
+        let mut new = book("Tie", "1", "/c/tie-b.cbz", 100, 20);
+        old.file_modified_time =
+            cr_core::xml::scalar::CrDateTime::parse("2020-01-01T00:00:00").unwrap();
+        new.file_modified_time =
+            cr_core::xml::scalar::CrDateTime::parse("2024-01-01T00:00:00").unwrap();
+        assert_eq!(
+            worst(&[old.clone(), new.clone()], &DuplicateRules::default()),
+            ["/c/tie-a.cbz"]
+        );
+        let rules = DuplicateRules {
+            older_file_worse: false,
+            ..DuplicateRules::default()
+        };
+
+        assert!(worst(&[old, new], &rules).is_empty());
     }
 
     #[test]
@@ -224,6 +273,7 @@ mod tests {
             cbr_worse_than_cbz: false,
             smaller_file_worse: false,
             fewer_pages_worse: false,
+            older_file_worse: false,
         };
         assert!(worst(&books, &rules).is_empty());
     }
@@ -283,12 +333,14 @@ mod tests {
         s.duplicates_cbr_worse_than_cbz = false;
         s.duplicates_smaller_file_worse = false;
         s.duplicates_fewer_pages_worse = false;
+        s.duplicates_older_file_worse = false;
         assert_eq!(
             DuplicateRules::from_settings(&s),
             DuplicateRules {
                 cbr_worse_than_cbz: false,
                 smaller_file_worse: false,
                 fewer_pages_worse: false,
+                older_file_worse: false,
             }
         );
     }

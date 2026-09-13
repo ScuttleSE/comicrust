@@ -21,6 +21,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use cr_core::model::bitmap_adjustment::BitmapAdjustment;
 use cr_core::model::comic_book::ComicBook;
@@ -38,6 +39,16 @@ use crate::queue::{AddMode, ProcessingQueue, ThreadPriority};
 pub const DEFAULT_THUMB_COUNT: usize = 20;
 pub const DEFAULT_THUMB_SIZE: usize = 5_242_880;
 pub const DEFAULT_PAGE_COUNT: usize = 5;
+
+/// The bound on one thumbnail render (open + read + decode of the
+/// cover page). A cover that is not ready within 30 s is treated as
+/// unavailable — the view keeps its placeholder and the render
+/// thread is abandoned (no safe thread kill; the detached worker
+/// unwinds when its blocked read returns, as with the scanner's
+/// per-file deadline). Covers open in well under a second in
+/// practice; 30 s therefore only trips on a corrupt or pathological
+/// file.
+pub const THUMBNAIL_TIMEOUT_SECS: u64 = 30;
 
 /// `CacheManager.MemoryThumbnailCacheSize` — the ITEM capacity of
 /// the thumbnail memory cache (the C# CacheManager constructs
@@ -511,8 +522,10 @@ impl ImagePool {
     }
 
     /// The worker render chain for a thumbnail: render the page, build
-    /// the 512px JPEG q60 thumbnail, cache to disk and memory.
-    pub fn render_thumbnail(&self, key: &ThumbnailKey) -> Option<Vec<u8>> {
+    /// the 512px JPEG q60 thumbnail, cache to disk and memory. The
+    /// uncached render is bounded at `THUMBNAIL_TIMEOUT_SECS` (the
+    /// memory and disk hits stay inline — they cannot hang).
+    pub fn render_thumbnail(self: &Arc<Self>, key: &ThumbnailKey) -> Option<Vec<u8>> {
         let text = base_key_text(&key.key);
         let hash = fnv1a(&text);
         // Memory first (the C# cache-first `GetThumbnail` ordering —
@@ -528,7 +541,7 @@ impl ImagePool {
                 return Some(bytes);
             }
         }
-        let bytes = self.produce_thumbnail(key)?;
+        let bytes = bounded_produce(Arc::clone(self), key.clone())?;
         let original = (0u32, 0u32);
         let _ = original;
         if let Some(disk) = &self.thumb_disk {
@@ -542,7 +555,7 @@ impl ImagePool {
 
     /// The produce half of `render_thumbnail`: the custom-thumbnail
     /// resource loads its file; everything else renders the page.
-    fn produce_thumbnail(&self, key: &ThumbnailKey) -> Option<Vec<u8>> {
+    fn produce_thumbnail(self: &Arc<Self>, key: &ThumbnailKey) -> Option<Vec<u8>> {
         if let cr_image::keys::ThumbnailSource::Resource {
             resource_type,
             resource_location,
@@ -572,6 +585,25 @@ impl ImagePool {
         }
         Some(thumb.to_bytes())
     }
+}
+
+/// Runs one uncached thumbnail produce on its own thread and walks
+/// away from it at the deadline (the `run_bounded` shape of the
+/// scanner — no safe thread kill, the detached worker's result is
+/// dropped). Timed out or panicked: no thumbnail.
+fn bounded_produce(pool: Arc<ImagePool>, key: ThumbnailKey) -> Option<Vec<u8>> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .name("Thumbnail Render".into())
+        .spawn(move || {
+            let _ = tx.send(pool.produce_thumbnail(&key));
+        })
+        .ok()?;
+    // Deadline passed or the worker panicked (the Err arm): treat the
+    // cover as unavailable (the placeholder stays; a later view asks
+    // again).
+    rx.recv_timeout(Duration::from_secs(THUMBNAIL_TIMEOUT_SECS))
+        .unwrap_or_default()
 }
 
 impl ImagePool {

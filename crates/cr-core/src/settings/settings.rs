@@ -173,6 +173,11 @@ pub struct Settings {
     pub duplicates_cbr_worse_than_cbz: bool,
     pub duplicates_smaller_file_worse: bool,
     pub duplicates_fewer_pages_worse: bool,
+    /// PORT ADDITION (no C# counterpart): an older file loses against
+    /// a newer file — the tie-break for copies that are equal on
+    /// every other rule (a re-downloaded or re-scanned copy carries
+    /// the newer stamp; the stale copy ranks worst).
+    pub duplicates_older_file_worse: bool,
     /// The `MB` spellings are pinned (the C# member names carry the
     /// uppercase pair).
     #[serde(rename = "ThumbCacheSizeMB")]
@@ -317,6 +322,7 @@ impl Default for Settings {
             duplicates_cbr_worse_than_cbz: true,
             duplicates_smaller_file_worse: true,
             duplicates_fewer_pages_worse: true,
+            duplicates_older_file_worse: true,
             thumb_cache_size_mb: 500,
             page_cache_enabled: true,
             page_cache_size_mb: 500,
@@ -410,6 +416,7 @@ crate::settings_fields! {
     Bool "DuplicatesCbrWorseThanCbz" => duplicates_cbr_worse_than_cbz: bool, cat: "Browser", desc: "CBR copies are worse than CBZ copies", browsable: false, ini: true;
     Bool "DuplicatesSmallerFileWorse" => duplicates_smaller_file_worse: bool, cat: "Browser", desc: "Smaller files are worse than larger files", browsable: false, ini: true;
     Bool "DuplicatesFewerPagesWorse" => duplicates_fewer_pages_worse: bool, cat: "Browser", desc: "Fewer pages are worse than more pages", browsable: false, ini: true;
+    Bool "DuplicatesOlderFileWorse" => duplicates_older_file_worse: bool, cat: "Browser", desc: "Older files are worse than newer files", browsable: false, ini: true;
     Bool "PageCacheEnabled" => page_cache_enabled: bool, cat: "Caching", desc: "Turn page caching on or off", browsable: false, ini: true;
     Bool "InternetCacheEnabled" => internet_cache_enabled: bool, cat: "Caching", desc: "Turn Internet caching on or off", browsable: false, ini: true;
     Bool "MemoryThumbCacheOptimized" => memory_thumb_cache_optimized: bool, cat: "", desc: "Optimize Memory Thumbnail cache", browsable: false, ini: true;
@@ -466,6 +473,7 @@ mod tests {
         assert!(text.contains("DuplicatesCbrWorseThanCbz"));
         assert!(text.contains("DuplicatesSmallerFileWorse"));
         assert!(text.contains("DuplicatesFewerPagesWorse"));
+        assert!(text.contains("DuplicatesOlderFileWorse"));
     }
 
     #[test]
