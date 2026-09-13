@@ -14,39 +14,37 @@ user-tested on 2026-09-12 and are archived. Phase 9 is DEFERRED to
 
 ## Current task
 
-**Side task after v0.1.0: the duplicate cleanup — Select Worst
-Duplicates** (user request, 2026-09-13). A PORT ADDITION with no C#
-counterpart; the semantics are ADR-044 (selection-only mark, score-sum
-rules, Preferences page, fileless ranks worst).
+**Two user-reported fixes (2026-09-13): watch folders cannot be
+removed, and a permanent-delete option for book deletion.**
 
-1. **The engine ranking.** The duplicate grouping moved out of
-   `match_duplicates` into `matcher::eval::duplicate_groups` (one
-   shared grouping; the C# ternary-chain quirk stays in one place).
-   `cr-engine/src/duplicates.rs` adds `worst_duplicate_ids`: per
-   duplicate group, each enabled rule adds one penalty to a copy
-   strictly worse than the group best (CBR worse only when a CBZ is
-   in the group, physical format from the path extension; unknown
-   size counts smallest; unknown page count lowest; a fileless copy
-   loses every enabled rule). The command selects the copies whose
-   penalty exceeds the group minimum — an all-tie group marks
-   nothing, and the accepted score-sum consequence is that a CBR
-   winning on size and pages survives a smaller CBZ.
-2. **The command.** `win.select-worst-duplicates` (`ShellState::select_worst_duplicates`,
-   registered in `commands.rs` with no accelerator, in the book
-   context menu between "Fill Missing Issues…" and "Remove from
-   Library"). It ranks over `item_view.displayed_books()` (the
-   current filtered view, the `FillBookList` shape) and REPLACES the
-   selection through `reselect` — an empty result clears the
-   selection.
-3. **The rules.** Three `Settings.Duplicates*` port-addition fields
-   (default on) + a new Preferences Duplicates page (hand-built
-   checkboxes, the clone-and-commit-on-OK pattern); the keys are
-   documented in `docs/config-reference.md` (the `config_doc` gate
-   caught the missing entries on the first run).
+1. **Watch-folder removal.** The Preferences Libraries page never
+   had the C# Remove button (`btRemoveFolder_Click`,
+   PreferencesDialog.cs:421-428, enabled by the list selection at
+   `:468`). The page now stages the list the C# way (the C# edits
+   `lbPaths` in memory and `CopyWatchFoldersToDatabase` commits on
+   OK, `:1140`/`:966`): row selection, a Remove button gated by the
+   selection, the Watch toggles and Add staged too, Cancel reverts,
+   OK commits through the new `Library::set_watch_folders`, which
+   also rebuilds the live watcher. The old page wrote the live
+   database directly (Cancel leaked changes) and added folders
+   never reached the watcher until restart.
+2. **Permanent delete (ADR-045, a PORT ADDITION — the C# shell
+   delete is always the recycle bin).** Both delete dialogs gain
+   "Delete permanently (do not use the trash)" — unchecked by
+   default and never persisted (the user decision: no settings
+   memory). Browser flow: dependent on "Also delete the files".
+   Files view: standalone. Permanent mode unlinks with
+   `std::fs::remove_file`; trash mode keeps `gio trash` (ADR-006)
+   byte-unchanged. Delete failures now follow the C# contract: a
+   failed delete keeps the book (the C# `continue` before
+   `library.Remove`, ComicListLibraryBrowser.cs:160-166) and the
+   failed set raises the FailedDeleteBooks message — the Files view
+   already had it, the browser flow gains it.
 
-The prior navigator side task (drag-and-drop + Sort) is complete; its
-record is in git history and its user tests 4 and 5 below are still
-open.
+The duplicate-cleanup session (the fourth duplicate rule
+`DuplicatesOlderFileWorse` + the bounded thumbnail render) was
+committed separately as `35ccbae` with its gates; its record is in
+that commit message.
 
 Phase 16 T1 (add `cover_date` to `IssueRef` and the issue queries) is
 unchanged and NOT STARTED.
@@ -138,6 +136,27 @@ GPL-3.0-or-later, under which Apache-2.0 is compatible. No claim is
 made that the present combination is permissible.
 
 ## Verification record
+
+The watch-folder + permanent-delete task (2026-09-13): `cargo fmt
+--all` and `cargo clippy --workspace --all-targets -- -D warnings`
+— green. `CR_FORMAT_TESTS=1 cargo test --workspace --locked` — 707
+passed, 0 failed. `cargo build --release --locked -p cr-app` —
+green.
+
+A headless probe (`watchfolders_probe`) verified gates A-E — the
+staged Libraries page (rows read, selection gates Remove, Cancel
+keeps the session database and the disk file, OK commits into the
+session, ComicDb.xml, and the live watcher, which then maps w1
+events and no longer maps w2 events) and the browser permanent
+delete (the dependent checkbox wiring, the unlink, the book
+removal) — and was then DELETED at the user's direction after its
+harness fought the sandbox; the record stays here. Machine
+findings it surfaced: `gio trash` refuses tmpfs sources AND a
+trash dir on another filesystem, and the folder tree filters
+hidden dirs (the recorded deviation), so a drill into a hidden
+path lands on the nearest visible parent. The Files-view
+permanent delete and the failure-dialog path are NOT
+machine-verified; they fall to user tests 8-10 below.
 
 The keyboard navigation fix (2026-09-13): the Details view aborted on
 the first arrow key. Cause, read from the code: the Detail branch of
@@ -295,7 +314,8 @@ The 2026-09-12 side task (ADR-039, ADR-040):
 
 ## User tests
 
-**NEW, from the navigator side task (not yet run):**
+**NEW, not yet run (the navigator side task and the 2026-09-13
+fixes):**
 
 4. **Tree drag-and-drop.** Drag a reading list onto a folder: it must
    become a child of that folder. Drag a list onto another list inside
@@ -332,6 +352,27 @@ The 2026-09-12 side task (ADR-039, ADR-040):
    selected book stays visible; Up and PageUp must work the same way
    backwards. Change the view mode with a book selected: the book
    must stay visible.
+8. **Watch-folder removal (the 2026-09-13 fix).** Edit ▸ Preferences
+   ▸ Libraries: the list shows the watch folders and a Remove button
+   that is dead until a row is selected. Select a folder, Remove,
+   then Cancel: nothing must change (the folder stays, restart
+   keeps it). Redo it and press OK: the folder leaves the list,
+   stays gone after a restart, and files created in it afterwards
+   are not scanned in. Removing a folder must NOT remove the books
+   already scanned from it.
+9. **Permanent delete, browser flow (ADR-045).** Right-click a
+   book, "Remove from Library": both boxes open UNCHECKED every
+   time (no memory). "Delete permanently (do not use the trash)"
+   must be dead until "Also delete the files" is checked. With
+   only "Also delete" on, the file must land in the trash; with
+   permanent on too, the file must be GONE — not in the trash — and
+   the book must leave the library. Cancel must delete nothing.
+10. **Permanent delete, Files view + the failure path.** In the
+    Files view, "Move to Recycle Bin" with the permanent box on
+    must delete the file immediately (no trash). Then force a
+    failure (a file in a folder you cannot write to): the book must
+    STAY in the library and the "Some files could not be deleted
+    (maybe they are in use)!" message must appear — in both flows.
 
 **PASSED 2026-09-12 (user confirmation):**
 

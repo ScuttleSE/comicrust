@@ -218,6 +218,18 @@ impl Library {
         self.rebuild_watcher();
     }
 
+    /// Replaces the whole watch-folder list and rebuilds the live
+    /// watcher — the OK-commit of the C# Preferences dialog
+    /// (`PreferencesDialog.CopyWatchFoldersToDatabase`), which edits
+    /// `lbPaths` in memory and copies into
+    /// `Program.Database.WatchFolders` only when the dialog closes
+    /// with OK.
+    pub fn set_watch_folders(&mut self, folders: Vec<cr_core::database::list_items::WatchFolder>) {
+        self.database.watch_folders = folders;
+        self.dirty = true;
+        self.rebuild_watcher();
+    }
+
     fn rebuild_watcher(&mut self) {
         self.watcher = Watcher::new(&self.database.watch_folders).ok();
     }

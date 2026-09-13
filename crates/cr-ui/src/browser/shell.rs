@@ -5728,7 +5728,8 @@ fn show_context_menu(state: &std::rc::Weak<ShellState>, target: Option<CrGuid>, 
                 "remove" => {
                     // The C# remove flow asks: remove from the list
                     // only, or from the Library, and whether to move
-                    // the files to the trash.
+                    // the files to the trash. The permanent-delete
+                    // option (no trash) is the ADR-045 port addition.
                     let ids = sh.item_view.selection_ids();
                     if ids.is_empty() {
                         return;
@@ -5742,8 +5743,14 @@ fn show_context_menu(state: &std::rc::Weak<ShellState>, target: Option<CrGuid>, 
                         .message_type(gtk4::MessageType::Question)
                         .buttons(gtk4::ButtonsType::OkCancel)
                         .build();
-                    let also_files =
-                        gtk4::CheckButton::with_label("Also delete the files (moved to the trash)");
+                    let also_files = gtk4::CheckButton::with_label("Also delete the files");
+                    let permanent =
+                        gtk4::CheckButton::with_label("Delete permanently (do not use the trash)");
+                    permanent.set_sensitive(false);
+                    also_files
+                        .bind_property("active", &permanent, "sensitive")
+                        .sync_create()
+                        .build();
                     // The MessageDialog message_area is a Box; reach
                     // it through the child hierarchy.
                     let area = confirm
@@ -5752,11 +5759,13 @@ fn show_context_menu(state: &std::rc::Weak<ShellState>, target: Option<CrGuid>, 
                         .and_then(|vbox| vbox.first_child().and_downcast::<gtk4::Box>());
                     if let Some(area) = area {
                         area.append(&also_files);
+                        area.append(&permanent);
                     }
                     let refresh_state = state.clone();
                     let ids_for_ok = ids.clone();
                     confirm.connect_response(move |dlg, resp| {
                         let remove_files = also_files.is_active();
+                        let permanent_delete = permanent.is_active();
                         dlg.destroy();
                         if resp != gtk4::ResponseType::Ok {
                             return;
@@ -5764,7 +5773,9 @@ fn show_context_menu(state: &std::rc::Weak<ShellState>, target: Option<CrGuid>, 
                         let Some(sh) = refresh_state.upgrade() else {
                             return;
                         };
+                        let mut any_failed = false;
                         for id in &ids_for_ok {
+                            let mut delete_failed = false;
                             if remove_files {
                                 if let Some(path) = library::book_path(id) {
                                     // Fileless books (the reading-list
@@ -5777,17 +5788,51 @@ fn show_context_menu(state: &std::rc::Weak<ShellState>, target: Option<CrGuid>, 
                                     // files only).
                                     let p = Path::new(&path);
                                     if !path.is_empty() && p.is_file() {
-                                        // ADR-006: the recycle bin →
-                                        // GIO trash (the `gio` CLI; a
-                                        // libgio binding is Phase 7
-                                        // polish).
-                                        let _ = std::process::Command::new("gio")
-                                            .args(["trash", &path])
-                                            .status();
+                                        if permanent_delete {
+                                            // ADR-045: the immediate
+                                            // unlink — the C# has no
+                                            // counterpart (its shell
+                                            // delete is always the
+                                            // recycle bin).
+                                            let _ = std::fs::remove_file(p);
+                                        } else {
+                                            // ADR-006: the recycle bin
+                                            // → GIO trash (the `gio`
+                                            // CLI; a libgio binding is
+                                            // Phase 7 polish).
+                                            let _ = std::process::Command::new("gio")
+                                                .args(["trash", &path])
+                                                .status();
+                                        }
+                                        // The C# checks File.Exists
+                                        // after the delete and a
+                                        // failed delete KEEPS the book
+                                        // (the `continue` before
+                                        // library.Remove).
+                                        if p.exists() {
+                                            delete_failed = true;
+                                        }
                                     }
                                 }
                             }
-                            library::remove_book(id);
+                            if delete_failed {
+                                any_failed = true;
+                            } else {
+                                library::remove_book(id);
+                            }
+                        }
+                        // The C# `FailedDeleteBooks` message.
+                        if any_failed {
+                            let err = gtk4::MessageDialog::builder()
+                                .transient_for(&sh.window)
+                                .modal(true)
+                                .title("comicrust")
+                                .text("Some files could not be deleted (maybe they are in use)!")
+                                .message_type(gtk4::MessageType::Info)
+                                .buttons(gtk4::ButtonsType::Ok)
+                                .build();
+                            err.connect_response(|d, _| d.close());
+                            err.present();
                         }
                         sh.refresh_view_from_list();
                     });
@@ -5930,16 +5975,23 @@ fn show_folder_context_menu(
                         "Additionally remove the books from the Library (all information not stored in the files will be lost)",
                     );
                     also_library.set_active(library::settings().borrow().remove_files_from_database);
+                    // ADR-045 (the port addition): the C# folder flow
+                    // deletes through the shell (recycle bin only).
+                    let permanent = gtk4::CheckButton::with_label(
+                        "Delete permanently (do not use the trash)",
+                    );
                     let area = confirm
                         .child()
                         .and_downcast::<gtk4::Box>()
                         .and_then(|vbox| vbox.first_child().and_downcast::<gtk4::Box>());
                     if let Some(area) = area {
                         area.append(&also_library);
+                        area.append(&permanent);
                     }
                     let refresh_state = state.clone();
                     confirm.connect_response(move |dlg, resp| {
                         let remove_from_library = also_library.is_active();
+                        let permanent_delete = permanent.is_active();
                         dlg.destroy();
                         if resp != gtk4::ResponseType::Ok {
                             return;
@@ -5956,9 +6008,16 @@ fn show_folder_context_menu(
                             if path.is_empty() || !p.is_file() {
                                 continue;
                             }
-                            let _ = std::process::Command::new("gio")
-                                .args(["trash", path])
-                                .status();
+                            if permanent_delete {
+                                // ADR-045: the immediate unlink — the
+                                // C# has no counterpart (its shell
+                                // delete is always the recycle bin).
+                                let _ = std::fs::remove_file(p);
+                            } else {
+                                let _ = std::process::Command::new("gio")
+                                    .args(["trash", path])
+                                    .status();
+                            }
                             if p.exists() {
                                 deleted = false;
                             }

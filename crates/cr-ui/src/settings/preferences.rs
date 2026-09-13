@@ -76,8 +76,9 @@ pub fn show_preferences(
         "Behavior",
     );
 
-    // ----- Libraries (the watch folders) -----
-    stack.add_titled(&build_libraries_page(), Some("libraries"), "Libraries");
+    // ----- Libraries (the watch folders; staged, committed on OK) -----
+    let (libraries_page, watch_commit) = build_libraries_page();
+    stack.add_titled(&libraries_page, Some("libraries"), "Libraries");
 
     // ----- Advanced (the cache sizes + file update flow) -----
     stack.add_titled(&build_advanced_page(&working), Some("advanced"), "Advanced");
@@ -132,6 +133,12 @@ pub fn show_preferences(
             // (Cancel discards).
             let config = scraper.collect();
             library::store_scraper_config(&config);
+            // The Libraries staging commits into the live database
+            // and rebuilds the watcher (the C#
+            // `CopyWatchFoldersToDatabase` runs on OK too).
+            let lib = library::session();
+            lib.borrow_mut()
+                .set_watch_folders(watch_commit.borrow().clone());
             on_ok();
         }
         dlg.close();
@@ -244,9 +251,17 @@ fn build_reader_page(settings: &SettingsRef) -> GtkBox {
     page
 }
 
+/// The staged watch-folder list the Libraries page edits; the OK
+/// handler commits it through `Library::set_watch_folders`.
+type StagedWatchFolders = Rc<RefCell<Vec<cr_core::database::list_items::WatchFolder>>>;
+
 /// The Libraries page: the database watch folders (`lbPaths` in the
-/// C# — a folder per row with a Watch check).
-fn build_libraries_page() -> GtkBox {
+/// C# — a folder per row with a Watch check). The C# edits the list
+/// box in memory and copies into `Program.Database.WatchFolders` on
+/// OK (`CopyWatchFoldersToDatabase`); the port stages the same way and
+/// returns the staged list for the OK commit (`show_preferences`).
+/// Cancel drops the staging, so a toggle, an add, or a remove reverts.
+fn build_libraries_page() -> (GtkBox, StagedWatchFolders) {
     let page = GtkBox::new(Orientation::Vertical, 6);
     page.set_margin_top(8);
     page.set_margin_bottom(8);
@@ -254,47 +269,55 @@ fn build_libraries_page() -> GtkBox {
     page.set_margin_end(8);
 
     page.append(&section_label("Watch Folders"));
-    let list = gtk4::ListBox::new();
-    list.set_selection_mode(gtk4::SelectionMode::None);
-    let mut rows: Vec<(String, CheckButton)> = Vec::new();
-    {
+    let staged: StagedWatchFolders = Rc::new(RefCell::new({
         let lib = library::session();
         let l = lib.borrow();
-        for wf in &l.database().watch_folders {
-            let watch = gtk4::CheckButton::with_label(&wf.folder);
-            watch.set_active(wf.watch);
-            rows.push((wf.folder.clone(), watch));
-        }
+        l.database().watch_folders.clone()
+    }));
+    let list = gtk4::ListBox::new();
+    // The C# `lbPaths` carries a SelectedIndex that gates btRemove
+    // (`btRemoveFolder.Enabled = lbPaths.SelectedIndex != -1`).
+    list.set_selection_mode(gtk4::SelectionMode::Single);
+    refill_watch_rows(&list, &staged);
+
+    // The selected row names its folder through the row CheckButton
+    // label (folder strings are unique — the add rejects duplicates).
+    let selected_folder = |list: &gtk4::ListBox| -> Option<String> {
+        list.selected_row()
+            .and_then(|row| row.child())
+            .and_downcast::<CheckButton>()
+            .and_then(|cb| cb.label().map(|l| l.to_string()))
+    };
+
+    let remove = Button::with_label("Remove");
+    remove.set_halign(Align::Start);
+    remove.set_sensitive(false);
+    {
+        let remove = remove.clone();
+        list.connect_row_selected(move |_list, row| {
+            remove.set_sensitive(row.is_some());
+        });
     }
-    for (folder, watch) in &rows {
-        // The Watch flag persists (the C# `lbPaths` checkbox writes
-        // `watchFolder.Watch`).
-        {
-            let folder = folder.clone();
-            let lib = library::session();
-            let watch = watch.clone();
-            watch.connect_toggled(move |cb| {
-                let mut l = lib.borrow_mut();
-                if let Some(w) = l
-                    .database_mut()
-                    .watch_folders
-                    .iter_mut()
-                    .find(|w| w.folder == folder)
-                {
-                    w.watch = cb.is_active();
-                    l.mark_dirty();
-                }
-            });
-        }
-        list.append(watch);
+    {
+        let list = list.clone();
+        let staged = Rc::clone(&staged);
+        remove.connect_clicked(move |_| {
+            let Some(folder) = selected_folder(&list) else {
+                return;
+            };
+            staged.borrow_mut().retain(|w| w.folder != folder);
+            refill_watch_rows(&list, &staged);
+        });
     }
 
     let add = Button::with_label("Add Folder…");
     add.set_halign(Align::Start);
     {
         let list = list.clone();
+        let staged = Rc::clone(&staged);
         add.connect_clicked(move |_| {
             let list = list.clone();
+            let staged = Rc::clone(&staged);
             let chooser = gtk4::FileChooserNative::new(
                 Some("Add Watch Folder"),
                 None::<&gtk4::Window>,
@@ -307,40 +330,17 @@ fn build_libraries_page() -> GtkBox {
                     if let Some(file) = dlg.file() {
                         if let Some(path) = file.path() {
                             let folder = path.to_string_lossy().into_owned();
-                            let lib = library::session();
-                            let mut l = lib.borrow_mut();
-                            // The C# rejects duplicates (`lbPaths` add
-                            // checks the existing items).
-                            if !l
-                                .database()
-                                .watch_folders
-                                .iter()
-                                .any(|w| w.folder == folder)
-                            {
-                                l.database_mut().watch_folders.push(
-                                    cr_core::database::list_items::WatchFolder {
-                                        folder: folder.clone(),
-                                        watch: true,
-                                    },
-                                );
-                                l.mark_dirty();
-                                let watch = gtk4::CheckButton::with_label(&folder);
-                                watch.set_active(true);
-                                let folder2 = folder.clone();
-                                let lib2 = library::session();
-                                watch.connect_toggled(move |cb| {
-                                    let mut l2 = lib2.borrow_mut();
-                                    if let Some(w) = l2
-                                        .database_mut()
-                                        .watch_folders
-                                        .iter_mut()
-                                        .find(|w| w.folder == folder2)
-                                    {
-                                        w.watch = cb.is_active();
-                                        l2.mark_dirty();
-                                    }
+                            // The C# drag-drop rejects duplicates
+                            // (`lbPaths_DragDrop` checks the existing
+                            // items); the port rejects them on add.
+                            let mut staged_list = staged.borrow_mut();
+                            if !staged_list.iter().any(|w| w.folder == folder) {
+                                staged_list.push(cr_core::database::list_items::WatchFolder {
+                                    folder,
+                                    watch: true,
                                 });
-                                list.append(&watch);
+                                drop(staged_list);
+                                refill_watch_rows(&list, &staged);
                             }
                         }
                     }
@@ -349,9 +349,33 @@ fn build_libraries_page() -> GtkBox {
             chooser.show();
         });
     }
+    let buttons = GtkBox::new(Orientation::Horizontal, 6);
+    buttons.append(&add);
+    buttons.append(&remove);
     page.append(&list);
-    page.append(&add);
-    page
+    page.append(&buttons);
+    (page, staged)
+}
+
+/// Rebuilds the watch-folder rows from the staged list (one
+/// CheckButton per folder; the check writes `WatchFolder.Watch` in
+/// the staging — the C# `lbPaths` item check).
+fn refill_watch_rows(list: &gtk4::ListBox, staged: &StagedWatchFolders) {
+    while let Some(child) = list.first_child() {
+        list.remove(&child);
+    }
+    for wf in staged.borrow().iter() {
+        let watch = CheckButton::with_label(&wf.folder);
+        watch.set_active(wf.watch);
+        let folder = wf.folder.clone();
+        let staged = Rc::clone(staged);
+        watch.connect_toggled(move |cb| {
+            if let Some(w) = staged.borrow_mut().iter_mut().find(|w| w.folder == folder) {
+                w.watch = cb.is_active();
+            }
+        });
+        list.append(&watch);
+    }
 }
 
 /// The Advanced page: the cache sizes (the C# `numMemPageCount`
@@ -582,9 +606,11 @@ fn build_duplicates_page(settings: &SettingsRef) -> GtkBox {
     let cbr = CheckButton::with_label("CBR copies are worse than CBZ copies");
     let smaller = CheckButton::with_label("Smaller files are worse than larger files");
     let fewer = CheckButton::with_label("Fewer pages are worse than more pages");
+    let older = CheckButton::with_label("Older files are worse than newer files");
     cbr.set_active(settings.borrow().duplicates_cbr_worse_than_cbz);
     smaller.set_active(settings.borrow().duplicates_smaller_file_worse);
     fewer.set_active(settings.borrow().duplicates_fewer_pages_worse);
+    older.set_active(settings.borrow().duplicates_older_file_worse);
     {
         let settings = Rc::clone(settings);
         cbr.connect_toggled(move |c| {
@@ -603,9 +629,16 @@ fn build_duplicates_page(settings: &SettingsRef) -> GtkBox {
             settings.borrow_mut().duplicates_fewer_pages_worse = c.is_active();
         });
     }
+    {
+        let settings = Rc::clone(settings);
+        older.connect_toggled(move |c| {
+            settings.borrow_mut().duplicates_older_file_worse = c.is_active();
+        });
+    }
     page.append(&cbr);
     page.append(&smaller);
     page.append(&fewer);
+    page.append(&older);
 
     page.append(&section_label(
         "The Views ▸ Show Duplicates filter shows the duplicate \
