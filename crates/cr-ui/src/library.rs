@@ -1208,7 +1208,12 @@ pub fn save() -> Result<(), cr_core::database::DbError> {
 /// the C# background-saves its live collection while the scanner
 /// walks. Returns whether a save ran.
 pub fn save_if_dirty() -> Result<bool, cr_core::database::DbError> {
-    session().borrow_mut().save_if_dirty()
+    let t = std::time::Instant::now();
+    let saved = session().borrow_mut().save_if_dirty();
+    if saved.as_ref().is_ok_and(|ran| *ran) {
+        crate::trace::trace(format!("save_if_dirty: saved {:?}", t.elapsed()));
+    }
+    saved
 }
 
 fn scan_in_flight() -> bool {
@@ -2500,6 +2505,7 @@ pub fn find_smart_list(id: &CrGuid) -> Option<cr_core::database::list_items::Sma
 /// `ComicSmartListItem.SetList`: replaces the smart-list item's
 /// model fields (position + id stay; the extra values move over).
 pub fn update_smart_list(id: &CrGuid, item: cr_core::database::list_items::SmartListItem) -> bool {
+    let t = std::time::Instant::now();
     let lib = session();
     let mut l = lib.borrow_mut();
     fn apply(
@@ -2536,6 +2542,10 @@ pub fn update_smart_list(id: &CrGuid, item: cr_core::database::list_items::Smart
     if changed {
         l.mark_dirty();
     }
+    crate::trace::trace(format!(
+        "update_smart_list id={id} changed={changed} {:?}",
+        t.elapsed()
+    ));
     changed
 }
 

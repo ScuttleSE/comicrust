@@ -21,6 +21,98 @@ use super::spec::{self, ops};
 use super::text_number;
 use super::tree::{Matcher, ValueMatcher};
 
+/// The CR_TRACE evaluation accumulators: per-matcher elapsed, regex
+/// time, proposed-parse time, `except` time. Recorded only when
+/// `CR_TRACE` is set; `flush` prints one block per evaluation (the
+/// 2026-09-13 smart-list freeze measurement).
+pub(crate) mod trace_accum {
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+
+    #[derive(Default)]
+    pub struct Accum {
+        pub matchers: HashMap<String, (u64, f64)>,
+        pub regex_calls: u64,
+        pub regex_ms: f64,
+        pub prop_parses: u64,
+        pub prop_ms: f64,
+    }
+
+    thread_local! {
+        static ACCUM: RefCell<Option<Accum>> = const { RefCell::new(None) };
+    }
+
+    pub fn enabled() -> bool {
+        static ENABLED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+        *ENABLED.get_or_init(|| std::env::var_os("CR_TRACE").is_some())
+    }
+
+    pub fn with<R>(f: impl FnOnce(&mut Accum) -> R) -> Option<R> {
+        if !enabled() {
+            return None;
+        }
+        ACCUM.with(|slot| {
+            let mut slot = slot.borrow_mut();
+            let accum = slot.get_or_insert_with(Accum::default);
+            Some(f(accum))
+        })
+    }
+
+    /// Drops the accumulators (the start of one measured evaluation —
+    /// stale entries from other paths must not pollute the flush).
+    pub fn reset() {
+        if !enabled() {
+            return;
+        }
+        ACCUM.with(|slot| *slot.borrow_mut() = None);
+    }
+
+    /// Times `f` into the proposed-parse counter.
+    pub fn time_prop<R>(f: impl FnOnce() -> R) -> R {
+        if !enabled() {
+            return f();
+        }
+        let t = std::time::Instant::now();
+        let r = f();
+        let ms = t.elapsed().as_secs_f64() * 1000.0;
+        with(|a| {
+            a.prop_parses += 1;
+            a.prop_ms += ms;
+        });
+        r
+    }
+
+    /// Prints the block for one evaluation and clears the slot.
+    pub fn flush(label: &str, total: std::time::Instant, books_in: usize, books_out: usize) {
+        if !enabled() {
+            return;
+        }
+        let ms = total.elapsed().as_secs_f64() * 1000.0;
+        eprintln!("[trace] {label}: books_in={books_in} books_out={books_out} total={ms:.1}ms");
+        ACCUM.with(|slot| {
+            if let Some(a) = slot.borrow_mut().take() {
+                let mut rows: Vec<(String, (u64, f64))> = a.matchers.into_iter().collect();
+                rows.sort_by(|x, y| y.1 .1.total_cmp(&x.1 .1));
+                for (name, (calls, ms)) in rows {
+                    eprintln!("[trace] {label} time: {name} calls={calls} {ms:.1}ms");
+                }
+                if a.regex_calls > 0 {
+                    eprintln!(
+                        "[trace] {label} regex: calls={} {:.1}ms",
+                        a.regex_calls, a.regex_ms
+                    );
+                }
+                if a.prop_parses > 0 {
+                    eprintln!(
+                        "[trace] {label} prop parses={} {:.1}ms",
+                        a.prop_parses, a.prop_ms
+                    );
+                }
+            }
+        });
+    }
+}
+
 /// Evaluation context: the proposed-name parse per book and the series
 /// statistics of the full book set (`IComicBookStatsProvider`).
 pub struct MatchContext<'a> {
@@ -97,20 +189,21 @@ pub fn match_set<'a>(
             MatcherMode::And => {
                 let src: Vec<&ComicBook> = result.unwrap_or_else(|| items.to_vec());
                 let matched = match_one(matcher, &src, ctx);
-                result = Some(if *not {
-                    except(&src, &matched)
+                if *not {
+                    let removed = trace_accum_time_except(|| except(&src, &matched));
+                    result = Some(removed);
                 } else {
-                    matched
-                });
+                    result = Some(matched);
+                }
             }
             MatcherMode::Or => {
                 let candidate: Vec<&ComicBook> = match &result {
                     None => items.to_vec(),
-                    Some(r) => except(items, r),
+                    Some(r) => trace_accum_time_except(|| except(items, r)),
                 };
                 let mut matched = match_one(matcher, &candidate, ctx);
                 if *not {
-                    matched = except(&candidate, &matched);
+                    matched = trace_accum_time_except(|| except(&candidate, &matched));
                 }
                 result = Some(match result {
                     None => matched,
@@ -120,6 +213,23 @@ pub fn match_set<'a>(
         }
     }
     result.unwrap_or_default()
+}
+
+/// Times one `except` call into the trace accumulators (the O(n·m)
+/// linear scan is a known freeze candidate).
+fn trace_accum_time_except<'a>(f: impl FnOnce() -> Vec<&'a ComicBook>) -> Vec<&'a ComicBook> {
+    if !trace_accum::enabled() {
+        return f();
+    }
+    let t = std::time::Instant::now();
+    let r = f();
+    let ms = t.elapsed().as_secs_f64() * 1000.0;
+    trace_accum::with(|a| {
+        let e = a.matchers.entry("except()".to_string()).or_default();
+        e.0 += 1;
+        e.1 += ms;
+    });
+    r
 }
 
 /// `Enumerable.Except(first, second)`: keeps `first` order, removes
@@ -135,8 +245,41 @@ fn except<'a>(first: &[&'a ComicBook], second: &[&ComicBook]) -> Vec<&'a ComicBo
 }
 
 /// Evaluates one matcher against a set (per-item filter, recursive group
-/// pipeline, or the set-based duplicate detection).
+/// pipeline, or the set-based duplicate detection). The CR_TRACE build
+/// accumulates the elapsed per matcher label.
 fn match_one<'a>(
+    matcher: &Matcher,
+    items: &[&'a ComicBook],
+    ctx: &MatchContext<'a>,
+) -> Vec<&'a ComicBook> {
+    if !trace_accum::enabled() {
+        return match_one_inner(matcher, items, ctx);
+    }
+    let label = matcher_trace_label(matcher);
+    let t = std::time::Instant::now();
+    let r = match_one_inner(matcher, items, ctx);
+    let ms = t.elapsed().as_secs_f64() * 1000.0;
+    trace_accum::with(|a| {
+        let e = a.matchers.entry(label).or_default();
+        e.0 += 1;
+        e.1 += ms;
+    });
+    r
+}
+
+fn matcher_trace_label(matcher: &Matcher) -> String {
+    match matcher {
+        Matcher::Group(g) => format!(
+            "Group({:?}, {} matchers{}",
+            g.matcher_mode,
+            g.matchers.len(),
+            if g.not { ", not)" } else { ")" }
+        ),
+        Matcher::Value(v) => v.spec.class_name.to_string(),
+    }
+}
+
+fn match_one_inner<'a>(
     matcher: &Matcher,
     items: &[&'a ComicBook],
     ctx: &MatchContext<'a>,
@@ -448,10 +591,42 @@ fn split_match_values(value: &str) -> Vec<String> {
 }
 
 fn regex_match(value: &str, pattern: &str) -> bool {
-    match fancy_regex::Regex::new(pattern) {
-        Ok(rx) => rx.is_match(value).unwrap_or(false),
-        Err(_) => false, // C#: invalid regex → rxMatch null → false
+    let run = |rx: Option<&fancy_regex::Regex>| match rx {
+        Some(rx) => rx.is_match(value).unwrap_or(false),
+        None => false, // C#: invalid regex → rxMatch null → false
+    };
+    if !trace_accum::enabled() {
+        return with_cached_regex(pattern, run);
     }
+    let t = std::time::Instant::now();
+    let r = with_cached_regex(pattern, run);
+    let ms = t.elapsed().as_secs_f64() * 1000.0;
+    trace_accum::with(|a| {
+        a.regex_calls += 1;
+        a.regex_ms += ms;
+    });
+    r
+}
+
+/// The pattern → compiled-regex cache. The C# builds the regex per
+/// `MatchBook` call; MEASURED 2026-09-13 (the smart-list freeze):
+/// 17398 compiles of one `.` pattern cost 880 ms per list evaluation
+/// over 30867 books. The compiled regex is a pure function of the
+/// pattern, so the cache is behavior-identical. Invalid patterns are
+/// cached as None (the C# builds null per call and returns false —
+/// the cache only skips the rebuild).
+fn with_cached_regex<R>(pattern: &str, f: impl FnOnce(Option<&fancy_regex::Regex>) -> R) -> R {
+    static CACHE: std::sync::Mutex<Option<HashMap<String, Option<fancy_regex::Regex>>>> =
+        std::sync::Mutex::new(None);
+    let mut slot = CACHE.lock().unwrap_or_else(|p| p.into_inner());
+    let cache = slot.get_or_insert_with(HashMap::new);
+    if !cache.contains_key(pattern) {
+        if cache.len() >= 256 {
+            cache.clear();
+        }
+        cache.insert(pattern.to_string(), fancy_regex::Regex::new(pattern).ok());
+    }
+    f(cache.get(pattern).and_then(|o| o.as_ref()))
 }
 
 /// The string matcher's book-side column value. For string matchers the
@@ -939,4 +1114,26 @@ fn compress_series(text: &str) -> String {
     text.split(SEPARATORS)
         .filter(|t| !t.is_empty() && !ARTICLES.iter().any(|a| t.eq_ignore_ascii_case(a)))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn regex_match_semantics_unchanged_by_the_cache() {
+        // "." matches any non-empty text (the "is not empty" idiom).
+        assert!(regex_match("Writer", "."));
+        assert!(!regex_match("", "."));
+        // The cache must serve the SAME result for repeated calls on
+        // one pattern (the freeze fix) and fresh results per value.
+        assert!(regex_match("x", ".")); // cached now
+        assert!(!regex_match("", ".")); // cached, different value
+                                        // A partial match counts (the C# Regex.IsMatch semantics).
+        assert!(regex_match("The Batman", "Bat"));
+        // An invalid pattern is false, cached as false, and stays
+        // false for other values (no recompile retry).
+        assert!(!regex_match("any", "(["));
+        assert!(!regex_match("other", "(["));
+    }
 }

@@ -86,7 +86,7 @@ pub fn proposed_cached(book: &ComicBook) -> ComicNameInfo {
     if let Some(info) = cache.get(&book.file_path) {
         return info.clone();
     }
-    let info = proposed(book);
+    let info = super::eval::trace_accum::time_prop(|| proposed(book));
     if cache.len() >= 100_000 {
         cache.clear();
     }

@@ -1241,11 +1241,22 @@ impl BrowserShell {
                                 sh.list_history_pos.set(h.len() - 1);
                             }
                         }
+                        let t_eval = std::time::Instant::now();
                         if let Some((name, books)) = library::evaluate_books(id) {
                             // The list name feeds the status-bar
                             // selection panel (`BookList.Name`).
                             *sh.current_list_name.borrow_mut() = name;
+                            crate::trace::trace(format!(
+                                "nav select: evaluate {} books {:?}",
+                                books.len(),
+                                t_eval.elapsed()
+                            ));
+                            let t_set = std::time::Instant::now();
                             sh.item_view.set_books(books);
+                            crate::trace::trace(format!(
+                                "nav select: set_books {:?}",
+                                t_set.elapsed()
+                            ));
                         }
                         if changing {
                             sh.apply_view_config(id);

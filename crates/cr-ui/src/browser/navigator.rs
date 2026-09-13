@@ -106,6 +106,13 @@ pub struct Navigator {
     on_selected: RefCell<Option<SelectedFn>>,
     on_command: RefCell<Option<CommandFn>>,
     on_refresh: RefCell<Option<RefreshFn>>,
+    /// The one pending select-debounce source. A refill burst fires
+    /// `selection::connect_changed` once per touched row (MEASURED
+    /// 2026-09-13: one OK produced 25 schedules → 25 queued timers →
+    /// 25 full list re-evaluations, the 25-30 s freeze). Every new
+    /// request cancels the pending source, so a burst leaves ONE
+    /// timer (the classic debounce shape).
+    pending_select: std::cell::Cell<Option<glib::SourceId>>,
     /// The navigator's own search box (`quickSearchPanel`; hidden
     /// until `tsQuickSearch` toggles it).
     search_box: gtk4::Box,
@@ -225,6 +232,7 @@ impl Navigator {
             on_selected: RefCell::new(None),
             on_command: RefCell::new(None),
             on_refresh: RefCell::new(None),
+            pending_select: std::cell::Cell::new(None),
             search_box,
             search_entry,
             search_visible: std::cell::Cell::new(false),
@@ -514,24 +522,36 @@ impl Navigator {
 
     fn schedule_select(self: &Rc<Self>) {
         let nav = Rc::downgrade(self);
-        glib::timeout_add_local(
+        // Cancel-and-reschedule: a burst of selection-changed events
+        // (a refill touches every row) leaves ONE pending timer, not
+        // one per event. One pending fire → one `fire_selected` →
+        // one list evaluation.
+        if let Some(old) = self.pending_select.take() {
+            old.remove();
+        }
+        crate::trace::trace("nav: schedule_select");
+        let source = glib::timeout_add_local(
             std::time::Duration::from_millis(SELECT_DEBOUNCE_MS),
             move || {
                 let Some(nav) = nav.upgrade() else {
                     return glib::ControlFlow::Break;
                 };
+                nav.pending_select.take();
                 nav.fire_selected();
                 glib::ControlFlow::Break
             },
         );
+        self.pending_select.set(Some(source));
     }
 
     fn fire_selected(&self) {
+        crate::trace::trace("nav: fire_selected");
         let callbacks = self.on_selected.borrow();
         let Some(f) = callbacks.as_ref() else {
             return;
         };
         if let Some((id, name)) = self.current_selection() {
+            crate::trace::trace(format!("nav: fire_selected id={id} name={name:?}"));
             f(&id, &name);
         }
     }
@@ -553,6 +573,10 @@ impl Navigator {
     /// preserving expansion and selection by item id. The active
     /// quick-search text filters the items (`FillListTree(filter)`).
     pub fn refill(&self, items: &[ComicListItem]) {
+        crate::trace::trace(format!(
+            "nav: refill start rows={}",
+            count_list_items(items)
+        ));
         let previous = self.current_selection().map(|(id, _)| id);
         // The persisted folder state drives the expansion (`FillListTree`:
         // a folder expands while NOT `Collapsed`, the Library root always
@@ -570,6 +594,7 @@ impl Navigator {
             self.select_by_id(&id);
         }
         let _ = &previous;
+        crate::trace::trace("nav: refill end");
     }
 
     /// `ExpandCollapseAllNodes`: any row expanded → collapse all,
@@ -1028,6 +1053,17 @@ fn filter_items(items: &[ComicListItem], filter: &str) -> Vec<ComicListItem> {
         .filter(|item| item_matches(item, &needle))
         .cloned()
         .collect()
+}
+
+/// The total row count of the tree (the refill trace line).
+fn count_list_items(items: &[ComicListItem]) -> usize {
+    items
+        .iter()
+        .map(|item| match item {
+            ComicListItem::Folder(folder) => 1 + count_list_items(&folder.items),
+            _ => 1,
+        })
+        .sum()
 }
 
 /// The ids whose rows must expand after a fill (`FillListTree`'s

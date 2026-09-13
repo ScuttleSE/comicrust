@@ -30,6 +30,8 @@ pub fn evaluate_smart_list<'a>(
     library: &[&'a ComicBook],
     base_list: Option<&[&'a ComicBook]>,
 ) -> Vec<&'a ComicBook> {
+    let t_total = std::time::Instant::now();
+    crate::matcher::eval::trace_accum::reset();
     let mut items: Vec<&ComicBook> = match base_list {
         Some(base) => base.to_vec(),
         None => library.to_vec(),
@@ -98,6 +100,8 @@ pub fn evaluate_smart_list<'a>(
         let filtered: std::collections::HashSet<_> = list.filtered_ids.iter().copied().collect();
         result.retain(|b| !filtered.contains(&b.id));
     }
+    let books_in = items.len();
+    crate::matcher::eval::trace_accum::flush("smartlist", t_total, books_in, result.len());
     result
 }
 
