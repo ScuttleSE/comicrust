@@ -1341,6 +1341,20 @@ impl BrowserShell {
             });
         }
 
+        // Delete opens the Remove from Library flow (the C#
+        // `itemView_KeyDown` shortcut, ComicBrowserControl.cs:
+        // 1472-1478).
+        {
+            let state = Rc::downgrade(state);
+            state
+                .upgrade()
+                .expect("state")
+                .item_view
+                .connect_remove(move || {
+                    run_remove_books(&state);
+                });
+        }
+
         // The quick search (`UpdateQuickFilter`): the composed filter
         // (scope + the view filters + the text, or a MATCH/NOT
         // query). Debounced.
@@ -5578,6 +5592,123 @@ fn scan_folder_async(state: &std::rc::Weak<ShellState>, path: String, include_su
 /// the C# `UpdateSelectionFromMouse` rule in `emit_context`, so the
 /// selection IS the target set (an unselected target replaced the
 /// selection; a selected target kept the multi-selection).
+/// The Remove from Library flow — the C# remove flow asks: remove
+/// from the list only, or from the Library, and whether to move the
+/// files to the trash. The permanent-delete option (no trash) is the
+/// ADR-045 port addition. The context menu and the Delete key both
+/// land here.
+fn run_remove_books(state: &std::rc::Weak<ShellState>) {
+    let Some(sh) = state.upgrade() else {
+        return;
+    };
+    let ids = sh.item_view.selection_ids();
+    if ids.is_empty() {
+        return;
+    }
+    let count = ids.len();
+    let confirm = gtk4::MessageDialog::builder()
+        .transient_for(&sh.window)
+        .modal(true)
+        .title("Remove Books")
+        .text(format!("Remove {count} book(s) from the current list?"))
+        .message_type(gtk4::MessageType::Question)
+        .buttons(gtk4::ButtonsType::OkCancel)
+        .build();
+    let also_files = gtk4::CheckButton::with_label("Also delete the files");
+    let permanent = gtk4::CheckButton::with_label("Delete permanently (do not use the trash)");
+    permanent.set_sensitive(false);
+    also_files
+        .bind_property("active", &permanent, "sensitive")
+        .sync_create()
+        .build();
+    // The MessageDialog message_area is a Box; reach
+    // it through the child hierarchy.
+    let area = confirm
+        .child()
+        .and_downcast::<gtk4::Box>()
+        .and_then(|vbox| vbox.first_child().and_downcast::<gtk4::Box>());
+    if let Some(area) = area {
+        area.append(&also_files);
+        area.append(&permanent);
+    }
+    let refresh_state = state.clone();
+    let ids_for_ok = ids.clone();
+    confirm.connect_response(move |dlg, resp| {
+        let remove_files = also_files.is_active();
+        let permanent_delete = permanent.is_active();
+        dlg.destroy();
+        if resp != gtk4::ResponseType::Ok {
+            return;
+        }
+        let Some(sh) = refresh_state.upgrade() else {
+            return;
+        };
+        let mut any_failed = false;
+        for id in &ids_for_ok {
+            let mut delete_failed = false;
+            if remove_files {
+                if let Some(path) = library::book_path(id) {
+                    // Fileless books (the reading-list
+                    // placeholders) carry an EMPTY
+                    // file path — gio resolves that to
+                    // the process's current directory
+                    // and trashes the WHOLE FOLDER.
+                    // Only a real comic file goes to
+                    // the trash (the C# deletes linked
+                    // files only).
+                    let p = Path::new(&path);
+                    if !path.is_empty() && p.is_file() {
+                        if permanent_delete {
+                            // ADR-045: the immediate
+                            // unlink — the C# has no
+                            // counterpart (its shell
+                            // delete is always the
+                            // recycle bin).
+                            let _ = std::fs::remove_file(p);
+                        } else {
+                            // ADR-006: the recycle bin
+                            // → GIO trash (the `gio`
+                            // CLI; a libgio binding is
+                            // Phase 7 polish).
+                            let _ = std::process::Command::new("gio")
+                                .args(["trash", &path])
+                                .status();
+                        }
+                        // The C# checks File.Exists
+                        // after the delete and a
+                        // failed delete KEEPS the book
+                        // (the `continue` before
+                        // library.Remove).
+                        if p.exists() {
+                            delete_failed = true;
+                        }
+                    }
+                }
+            }
+            if delete_failed {
+                any_failed = true;
+            } else {
+                library::remove_book(id);
+            }
+        }
+        // The C# `FailedDeleteBooks` message.
+        if any_failed {
+            let err = gtk4::MessageDialog::builder()
+                .transient_for(&sh.window)
+                .modal(true)
+                .title("comicrust")
+                .text("Some files could not be deleted (maybe they are in use)!")
+                .message_type(gtk4::MessageType::Info)
+                .buttons(gtk4::ButtonsType::Ok)
+                .build();
+            err.connect_response(|d, _| d.close());
+            err.present();
+        }
+        sh.refresh_view_from_list();
+    });
+    confirm.present();
+}
+
 fn show_context_menu(state: &std::rc::Weak<ShellState>, target: Option<CrGuid>, x: f64, y: f64) {
     let popover = gtk4::Popover::new();
     // No pointing arrow (the C# ContextMenuStrip shape).
@@ -5765,117 +5896,7 @@ fn show_context_menu(state: &std::rc::Weak<ShellState>, target: Option<CrGuid>, 
                     sh.open_scrape();
                 }
                 "remove" => {
-                    // The C# remove flow asks: remove from the list
-                    // only, or from the Library, and whether to move
-                    // the files to the trash. The permanent-delete
-                    // option (no trash) is the ADR-045 port addition.
-                    let ids = sh.item_view.selection_ids();
-                    if ids.is_empty() {
-                        return;
-                    }
-                    let count = ids.len();
-                    let confirm = gtk4::MessageDialog::builder()
-                        .transient_for(&window)
-                        .modal(true)
-                        .title("Remove Books")
-                        .text(format!("Remove {count} book(s) from the current list?"))
-                        .message_type(gtk4::MessageType::Question)
-                        .buttons(gtk4::ButtonsType::OkCancel)
-                        .build();
-                    let also_files = gtk4::CheckButton::with_label("Also delete the files");
-                    let permanent =
-                        gtk4::CheckButton::with_label("Delete permanently (do not use the trash)");
-                    permanent.set_sensitive(false);
-                    also_files
-                        .bind_property("active", &permanent, "sensitive")
-                        .sync_create()
-                        .build();
-                    // The MessageDialog message_area is a Box; reach
-                    // it through the child hierarchy.
-                    let area = confirm
-                        .child()
-                        .and_downcast::<gtk4::Box>()
-                        .and_then(|vbox| vbox.first_child().and_downcast::<gtk4::Box>());
-                    if let Some(area) = area {
-                        area.append(&also_files);
-                        area.append(&permanent);
-                    }
-                    let refresh_state = state.clone();
-                    let ids_for_ok = ids.clone();
-                    confirm.connect_response(move |dlg, resp| {
-                        let remove_files = also_files.is_active();
-                        let permanent_delete = permanent.is_active();
-                        dlg.destroy();
-                        if resp != gtk4::ResponseType::Ok {
-                            return;
-                        }
-                        let Some(sh) = refresh_state.upgrade() else {
-                            return;
-                        };
-                        let mut any_failed = false;
-                        for id in &ids_for_ok {
-                            let mut delete_failed = false;
-                            if remove_files {
-                                if let Some(path) = library::book_path(id) {
-                                    // Fileless books (the reading-list
-                                    // placeholders) carry an EMPTY
-                                    // file path — gio resolves that to
-                                    // the process's current directory
-                                    // and trashes the WHOLE FOLDER.
-                                    // Only a real comic file goes to
-                                    // the trash (the C# deletes linked
-                                    // files only).
-                                    let p = Path::new(&path);
-                                    if !path.is_empty() && p.is_file() {
-                                        if permanent_delete {
-                                            // ADR-045: the immediate
-                                            // unlink — the C# has no
-                                            // counterpart (its shell
-                                            // delete is always the
-                                            // recycle bin).
-                                            let _ = std::fs::remove_file(p);
-                                        } else {
-                                            // ADR-006: the recycle bin
-                                            // → GIO trash (the `gio`
-                                            // CLI; a libgio binding is
-                                            // Phase 7 polish).
-                                            let _ = std::process::Command::new("gio")
-                                                .args(["trash", &path])
-                                                .status();
-                                        }
-                                        // The C# checks File.Exists
-                                        // after the delete and a
-                                        // failed delete KEEPS the book
-                                        // (the `continue` before
-                                        // library.Remove).
-                                        if p.exists() {
-                                            delete_failed = true;
-                                        }
-                                    }
-                                }
-                            }
-                            if delete_failed {
-                                any_failed = true;
-                            } else {
-                                library::remove_book(id);
-                            }
-                        }
-                        // The C# `FailedDeleteBooks` message.
-                        if any_failed {
-                            let err = gtk4::MessageDialog::builder()
-                                .transient_for(&sh.window)
-                                .modal(true)
-                                .title("comicrust")
-                                .text("Some files could not be deleted (maybe they are in use)!")
-                                .message_type(gtk4::MessageType::Info)
-                                .buttons(gtk4::ButtonsType::Ok)
-                                .build();
-                            err.connect_response(|d, _| d.close());
-                            err.present();
-                        }
-                        sh.refresh_view_from_list();
-                    });
-                    confirm.present();
+                    run_remove_books(&state);
                 }
                 "properties" => {
                     // The selection — the C# opens the dialog over the

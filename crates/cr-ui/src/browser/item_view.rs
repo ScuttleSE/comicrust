@@ -37,8 +37,8 @@ use cr_engine::matcher::series::{self, SeriesKey, SeriesStatistics};
 
 use super::columns::{self, Column};
 use super::layout::{
-    self, hit_group_arrow, hit_group_header, hit_test, page_step_display, relative_item,
-    visible_items, ItemLayout, ItemViewMode, LayoutConfig, Rect,
+    self, hit_group_arrow, hit_group_header, hit_test, loads_thumbnails, page_step_display,
+    relative_item, visible_items, ItemLayout, ItemViewMode, LayoutConfig, Rect,
 };
 use super::view_state::ViewState;
 
@@ -80,6 +80,10 @@ struct ResizeState {
 type ActivateFn = Rc<dyn Fn(&CrGuid)>;
 type SelectionFn = Rc<dyn Fn(usize)>;
 type HeaderContextFn = Rc<dyn Fn(f64, f64)>;
+/// The Delete key: the shell opens the Remove from Library flow
+/// (the C# `itemView_KeyDown` → `RemoveBooks`, ComicBrowserControl.
+/// cs:1472-1478).
+type RemoveFn = Rc<dyn Fn()>;
 /// Fired when a user gesture INSIDE the widget changed the view
 /// config (a Ctrl+wheel resize, a column-width drag, a header
 /// auto-size). The shell uses it to mark the current list's
@@ -153,6 +157,7 @@ pub struct ItemViewState {
     /// fields; the move applies the C# clamp math).
     resize: Option<ResizeState>,
     on_activate: Option<ActivateFn>,
+    on_remove: Option<RemoveFn>,
     on_selection_changed: Option<SelectionFn>,
     /// The in-widget view-config change hook (ADR-039).
     on_view_config_changed: Option<ViewConfigFn>,
@@ -246,6 +251,14 @@ impl ItemViewState {
     /// load; the rest stay placeholders until File ▸ Generate Cover
     /// Thumbnails backfills the cache.
     fn queue_visible_thumbs(&mut self, window: Rect) {
+        // Detail draws no cover column (see `loads_thumbnails`) —
+        // queueing here would decode covers nothing consumes. It also
+        // skips the per-frame `front_cover_thumbnail_key` churn the
+        // on-demand-OFF path pays for every not-yet-cached visible
+        // book (the `continue` below never marks them queued).
+        if !loads_thumbnails(self.config.mode) {
+            return;
+        }
         let on_demand = crate::library::settings()
             .borrow()
             .generate_thumbnails_on_demand;
@@ -366,6 +379,7 @@ impl ItemView {
             series_stats: None,
             resize: None,
             on_activate: None,
+            on_remove: None,
             on_selection_changed: None,
             on_view_config_changed: None,
             on_header_context: None,
@@ -605,6 +619,12 @@ impl ItemView {
 
     pub fn connect_activate<F: Fn(&CrGuid) + 'static>(&self, f: F) {
         self.state.borrow_mut().on_activate = Some(Rc::new(f));
+    }
+
+    /// The Delete key request (the C# `RemoveBooks` shortcut). The
+    /// shell registers the Remove from Library flow.
+    pub fn connect_remove<F: Fn() + 'static>(&self, f: F) {
+        self.state.borrow_mut().on_remove = Some(Rc::new(f));
     }
 
     pub fn connect_selection_changed<F: Fn(usize) + 'static>(&self, f: F) {
@@ -1580,6 +1600,9 @@ impl ItemView {
             // (`update_read_state`) — the callback MUST run with no
             // borrow held (the 2026-09-11 double-click-open crash).
             let mut activate: Option<CrGuid> = None;
+            // The Delete key: the remove hook runs after the borrow
+            // drops (the dialog path re-enters the shell state).
+            let mut remove_requested = false;
             // The display index the keyboard moved focus TO — the
             // `EnsureItemVisible` pass after the match (the C# OnKeyDown
             // tail; the display does not follow the selection without
@@ -1653,6 +1676,18 @@ impl ItemView {
                         }
                     }
                 }
+                gtk4::gdk::Key::a if ctrl => {
+                    // Select All (`ItemView.SelectAll`, ItemView.cs:
+                    // 1802; the C# binds it as the browser menu
+                    // accelerator Ctrl+A, ComicBrowserControl.
+                    // Designer.cs:667).
+                    s.view.select_all();
+                }
+                gtk4::gdk::Key::Delete => {
+                    // The C# `itemView_KeyDown` → `RemoveBooks`
+                    // (ComicBrowserControl.cs:1472-1478).
+                    remove_requested = true;
+                }
                 _ => {
                     // Type-ahead (`KeySearch`): printable characters
                     // accumulate; the first caption with the prefix
@@ -1716,6 +1751,14 @@ impl ItemView {
                 let f = state.borrow().on_activate.clone();
                 if let Some(f) = f {
                     f(&id);
+                }
+            }
+            // The remove flow fires with NO borrow held — it reads
+            // the selection and opens the dialog.
+            if remove_requested {
+                let f = state.borrow().on_remove.clone();
+                if let Some(f) = f {
+                    f();
                 }
             }
             state.borrow().notify_selection();

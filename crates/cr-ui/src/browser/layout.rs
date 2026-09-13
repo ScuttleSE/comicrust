@@ -67,6 +67,19 @@ pub enum ItemViewMode {
     Detail,
 }
 
+/// Whether the mode draws cover thumbnails. The C#
+/// `ThumbnailViewItem.GetThumbnail` (`ThumbnailViewItem.cs:128-140`)
+/// returns null in Detail mode unless the drawn column is Cover or
+/// Thumbnail; this port draws no cover column in Detail
+/// (`draw_detail_item` never reads `thumbs`), so Detail loads no
+/// thumbnails at all.
+pub fn loads_thumbnails(mode: ItemViewMode) -> bool {
+    match mode {
+        ItemViewMode::Thumbnail | ItemViewMode::Tile => true,
+        ItemViewMode::Detail => false,
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Rect {
     pub x: f64,
@@ -580,6 +593,16 @@ mod tests {
             view_width: width,
             ..Default::default()
         }
+    }
+
+    #[test]
+    fn detail_mode_loads_no_thumbnails() {
+        // The C# GetThumbnail returns null in Detail mode without a
+        // Cover/Thumbnail column (`ThumbnailViewItem.cs:128-140`);
+        // this port draws no cover column in Detail at all.
+        assert!(!loads_thumbnails(ItemViewMode::Detail));
+        assert!(loads_thumbnails(ItemViewMode::Thumbnail));
+        assert!(loads_thumbnails(ItemViewMode::Tile));
     }
 
     #[test]
