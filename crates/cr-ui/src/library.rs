@@ -780,6 +780,7 @@ pub fn open_book(path: &str) -> Option<ComicBook> {
         let book = create_book(path, &now);
         lib.database_mut().books.push(book.clone());
         lib.mark_dirty();
+        crate::gauges::invalidate();
         return Some(book);
     }
     None
@@ -796,6 +797,8 @@ pub fn record_page_change(path: &str, page: i32) {
         book.set_current_page(page);
         record_scan_touch(&book.id);
         lib.mark_dirty();
+        // LastPageRead moved — the New/Unread classification changes.
+        crate::gauges::invalidate();
     }
 }
 
@@ -1090,6 +1093,7 @@ fn start_scan_worker(q: QueuedScan) {
                             || !result.removed.is_empty();
                         if changed {
                             lib.mark_dirty();
+                            crate::gauges::invalidate();
                         }
                     }
                     SCAN_IN_FLIGHT.with(|cell| *cell.borrow_mut() = false);
@@ -1133,6 +1137,7 @@ fn start_scan_worker(q: QueuedScan) {
             {
                 let mut lib = library.borrow_mut();
                 lib.database_mut().books.extend(tick_batch.iter().cloned());
+                crate::gauges::invalidate();
             }
             // The session borrow is dropped — the hook may evaluate
             // the library.
@@ -1306,6 +1311,24 @@ pub fn evaluate_list(id: &CrGuid) -> Option<(String, Vec<CrGuid>, usize)> {
     Some((name, books.iter().map(|b| b.id).collect(), books.len()))
 }
 
+/// Writes the gauge counters into one session list item (the C#
+/// `CommitCache` counter write: BookCount / NewBookCount /
+/// UnreadBookCount, and NewBookCountDate = the pass snapshot) and
+/// marks the database dirty so they persist into ComicDb.xml.
+pub fn store_list_gauges(id: &CrGuid, gauges: cr_engine::gauges::Gauges, now: CrDateTime) -> bool {
+    let lib = session();
+    let mut l = lib.borrow_mut();
+    let Some(base) = find_base_mut(&mut l.database_mut().comic_lists, id) else {
+        return false;
+    };
+    base.book_count = gauges.total;
+    base.new_book_count = gauges.new;
+    base.unread_book_count = gauges.unread;
+    base.new_book_count_date = now;
+    l.mark_dirty();
+    true
+}
+
 /// Inserts a list item after the selection (the C#
 /// `GetCurrentNodeComicListCollection` + `IndexOf(current) + 1`): a
 /// selected folder takes the item as its first child, a selected
@@ -1334,6 +1357,8 @@ pub fn insert_list_item(
         None => lists.push(item),
     }
     l.mark_dirty();
+    // A folder's membership may have changed — recompute its gauges.
+    crate::gauges::invalidate();
 }
 
 /// `NewSmartList`: name + a hand-written `Match` query (the editor
@@ -1616,6 +1641,8 @@ pub fn remove_list(id: &CrGuid) {
         }
         container.retain(|i| i.base().id != *id);
         l.mark_dirty();
+        // The parent folder lost a child — its gauges change.
+        crate::gauges::invalidate();
     }
 }
 
@@ -1648,6 +1675,8 @@ pub fn move_list_item(id: &CrGuid, drop: &ListDrop) -> bool {
     let moved = apply_list_move(&mut l.database_mut().comic_lists, id, drop);
     if moved {
         l.mark_dirty();
+        // The containers on both ends changed membership.
+        crate::gauges::invalidate();
     }
     moved
 }
@@ -1892,6 +1921,8 @@ pub fn apply_edited(edited: &ComicBook) -> bool {
     record_scan_touch(&id);
     l.mark_dirty();
     drop(l);
+    // The commit may carry AddedTime / read progress — reclassify.
+    crate::gauges::invalidate();
     schedule_book_file_update(&id);
     true
 }
@@ -1909,6 +1940,7 @@ pub fn insert_new_book(book: &ComicBook) -> bool {
     }
     l.database_mut().books.push(book.clone());
     l.mark_dirty();
+    crate::gauges::invalidate();
     true
 }
 
@@ -2363,6 +2395,9 @@ pub fn export_post_process_with(
         }
     }
     if errors.is_empty() {
+        // Books left/entered the library (the source removals and the
+        // added/kept export output) — reclassify.
+        crate::gauges::invalidate();
         Ok(())
     } else {
         Err(errors.join("; "))
@@ -2379,6 +2414,7 @@ pub fn remove_book(id: &CrGuid) {
     if l.database().books.len() != before {
         record_scan_removal(id);
         l.mark_dirty();
+        crate::gauges::invalidate();
     }
 }
 
@@ -2541,6 +2577,8 @@ pub fn update_smart_list(id: &CrGuid, item: cr_core::database::list_items::Smart
     }
     if changed {
         l.mark_dirty();
+        // The matcher set changed — the list's membership changes.
+        crate::gauges::invalidate();
     }
     crate::trace::trace(format!(
         "update_smart_list id={id} changed={changed} {:?}",
@@ -2682,6 +2720,7 @@ pub fn add_books(books: Vec<cr_core::model::comic_book::ComicBook>) {
     let mut l = lib.borrow_mut();
     l.database_mut().books.extend(books);
     l.mark_dirty();
+    crate::gauges::invalidate();
 }
 
 /// `EditListDialog.Edit` result for one item: the fields the dialog
@@ -2737,6 +2776,8 @@ pub fn update_list_fields(id: &CrGuid, fields: &ListEditFields) -> bool {
     let changed = apply(&mut l.database_mut().comic_lists, id, fields);
     if changed {
         l.mark_dirty();
+        // A folder's combine mode may have changed — its set changes.
+        crate::gauges::invalidate();
     }
     changed
 }

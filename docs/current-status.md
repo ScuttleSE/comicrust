@@ -14,6 +14,71 @@ user-tested on 2026-09-12 and are archived. Phase 9 is DEFERRED to
 
 ## Current task
 
+**The Library-tree gauges (2026-09-13).**
+
+The user request: each list in the Library tree must show the two
+numbers the original CR draws after its name — how many books, how
+many new. The C# default is actually THREE badges
+(`LibraryTreeSkin.DrawNodeLabel`/`DrawMarkers`): Total (green),
+Unread (orange), New (red), left to right; a zero count hides its
+badge, so a list with no old unread books shows exactly the two
+numbers. User decision: port the three-badge C# default, and honor
+the stored ini values (`DisplayLibraryGauges`,
+`LibraryGaugesFormat`) without adding Preferences checkboxes yet.
+
+Ported behavior: the classification is `CreateBookCacheStatus`
+(`ComicListItem.cs:695`) — read (`ReadPercentage >= 95`) counts only
+toward Total; not-read within `IsRecentInDays` (14) is New, older is
+Unread; a fractional-day comparison, MinValue AddedTime = old. Every
+node kind gets badges (Library root, folders combined from their
+children per combine mode, smart lists, reading lists), counters are
+written into `ListItemBase` and persist to ComicDb.xml, and with the
+New badge flagged off its count merges into the Unread badge. The
+badge text is Pango markup in the new `COL_LABEL` store column (the
+plain name stays in `COL_NAME` for selection/lookups); colors are the
+C# theme's WinForms Green/Orange/Red at 0.75× font.
+
+Structure: `cr-engine/src/gauges.rs` (classification, counter math,
+folder set combining — 4 unit tests), `cr-ui/src/gauges.rs` (an epoch
+counter, a leaf-first work queue, a 100 ms debounce, then ONE node
+refreshed per 50 ms tick so the main thread never blocks longer than
+one list evaluation; results go into the session DB and the row label
+in place — no refill, the C# repaint-only path), and invalidation at
+the book/list mutation funnel points (`add_books`, `remove_book`,
+`insert_new_book`, `apply_edited`, `record_page_change`, the scan
+pump, export post-process, list edits, DnD).
+
+MEASURED defects found and fixed on the way:
+
+1. The first `invalidate()` ran while the mutation still held the
+   session `borrow_mut()`; its snapshot re-borrowed and PANICKED
+   (probe gate C). Fix: `invalidate()` only bumps the epoch and sets
+   a STALE flag — the queue rebuild defers to the timer, where no
+   borrow is held. Every call site is now safe by construction.
+2. The probe's own failures were harness bugs, not engine bugs: a
+   crashed earlier run left duplicate seeded lists in the persistent
+   XDG database (the by-name row lookup found the stale copy), gate B
+   set `last_page_read` without `page_count` (0 pages = 0% read), and
+   two badge-fragment matchers omitted the `foreground`/`size`
+   attributes. The probe now deletes a leftover database, and the
+   fragment strings match the real markup.
+
+Gates: `cargo fmt --all`, `cargo clippy --workspace --all-targets --
+-D warnings`, `CR_FORMAT_TESTS=1 cargo test --workspace --locked`
+(720 passed, 0 failed), `cargo build --release --locked -p cr-app` —
+all green. New `gauges_probe` (release, Xvfb, isolated XDG): A the
+startup pass fills all four node kinds, E the no-New flag merges into
+Unread, D the master switch hides badges, B a read commit moves a
+book out of New, C a delete drops the counters — all green.
+`listorder_probe`, `browserbar_probe`, `statusbar_probe`,
+`bootview_probe` re-ran unchanged and green.
+
+**Open user test:** on the real library, the badges match known
+counts; reading a book and deleting books update them shortly after;
+a restart keeps the last counts until the pass refreshes them.
+
+## Previous task
+
 **The smart-list OK freeze fix (2026-09-13, `520f624`).**
 
 The user report: creating a smart list and clicking OK froze the app
@@ -44,9 +109,7 @@ calls cheap), no repeat cycle, and the OK must feel instant.
 
 ## Previous task
 
-**The incoming-path duplicate rule (ADR-046, 2026-09-13).**
-
-The user keeps a main library plus an `Incoming` watch folder. When the
+**The incoming-path duplicate rule (ADR-046, 2026-09-13).**The user keeps a main library plus an `Incoming` watch folder. When the
 same book exists in both, the ADR-044 quality rules could mark the
 Library copy. The fifth rule fixes that: copies under the configured
 path (`DuplicatesIncomingPath`, Preferences Duplicates page, empty =
@@ -339,10 +402,17 @@ The 2026-09-12 side task (ADR-039, ADR-040):
 
 ## User tests
 
-**NEW, not yet run (the navigator side task and the 2026-09-13
-fixes):**
+**NEW, not yet run (the Library-tree gauges):**
 
-4. **Tree drag-and-drop.** Drag a reading list onto a folder: it must
+0. **Gauge badges.** The Library tree shows the green total, orange
+   unread, and red new badges after every list, folder, and the
+   Library root; a zero count shows no badge. On the real library the
+   numbers must match known counts. Read a book to 100%: its red
+   badge drops shortly after. Delete a book: the green totals drop.
+   Restart: the last counts are there immediately (persisted) and
+   stay correct.
+
+1. **Tree drag-and-drop.** Drag a reading list onto a folder: it must
    become a child of that folder. Drag a list onto another list inside
    a folder: it must land ABOVE that list, and the order you build by
    hand must stay. Drag a list to the empty space below the rows: it
@@ -351,11 +421,11 @@ fixes):**
    must not drag at all. Restart the app: every order must be as you
    left it. This test also covers the one thing no probe can gate — a
    plain click must still select a row.
-5. **Sort.** Right-click a folder: "Sort" must be there, between
+2. **Sort.** Right-click a folder: "Sort" must be there, between
    Rename and Delete. Click it: sub-folders come first, then the lists
    by name ("The Batman" sorts under B). Right-click a LIST: there must
    be no "Sort" row. Restart and confirm the sorted order survived.
-6. **Select Worst Duplicates (ADR-044).** Give one series two copies
+3. **Select Worst Duplicates (ADR-044).** Give one series two copies
    that differ (a CBR that is smaller with fewer pages than its CBZ
    twin). Views ▸ Show Duplicates must narrow the list to the
    duplicates. Right-click a book: "Select Worst Duplicates" must sit
@@ -370,14 +440,14 @@ fixes):**
    With every rule off the command must select nothing and clear the
    selection. The selection must survive a restart is NOT a
    requirement — the mark is a selection, not a stored flag.
-7. **Keyboard navigation (the 2026-09-13 fix).** In Details view: open
+4. **Keyboard navigation (the 2026-09-13 fix).** In Details view: open
    the Library list and press Down from the middle of the list — it
    must move one row, PageDown one page of rows, and the app must not
    abort. In Thumbnails: hold Down — the display must scroll so the
    selected book stays visible; Up and PageUp must work the same way
    backwards. Change the view mode with a book selected: the book
    must stay visible.
-8. **Watch-folder removal (the 2026-09-13 fix).** Edit ▸ Preferences
+5. **Watch-folder removal (the 2026-09-13 fix).** Edit ▸ Preferences
    ▸ Libraries: the list shows the watch folders and a Remove button
    that is dead until a row is selected. Select a folder, Remove,
    then Cancel: nothing must change (the folder stays, restart
@@ -385,14 +455,14 @@ fixes):**
    stays gone after a restart, and files created in it afterwards
    are not scanned in. Removing a folder must NOT remove the books
    already scanned from it.
-9. **Permanent delete, browser flow (ADR-045).** Right-click a
+6. **Permanent delete, browser flow (ADR-045).** Right-click a
    book, "Remove from Library": both boxes open UNCHECKED every
    time (no memory). "Delete permanently (do not use the trash)"
    must be dead until "Also delete the files" is checked. With
    only "Also delete" on, the file must land in the trash; with
    permanent on too, the file must be GONE — not in the trash — and
    the book must leave the library. Cancel must delete nothing.
-10. **Permanent delete, Files view + the failure path.** In the
+7. **Permanent delete, Files view + the failure path.** In the
     Files view, "Move to Recycle Bin" with the permanent box on
     must delete the file immediately (no trash). Then force a
     failure (a file in a folder you cannot write to): the book must

@@ -60,12 +60,17 @@ const SELECT_DEBOUNCE_MS: u64 = 200;
 /// row instead of into it (`SetDropEffects`: `point2.Y < 4`).
 const SEPARATOR_EDGE_PX: i32 = 4;
 
-/// The tree columns.
+/// The tree columns. `COL_NAME` is the plain name (selection,
+/// lookups, probes); `COL_LABEL` is the DISPLAY text — the name with
+/// the C# gauge badges appended as Pango markup
+/// (`LibraryTreeSkin.DrawNodeLabel`).
 const COL_NAME: u32 = 0;
 const COL_ICON: u32 = 1;
 const COL_ID: u32 = 2;
+const COL_LABEL: u32 = 3;
 const COL_NAME_I: i32 = COL_NAME as i32;
 const COL_ID_I: i32 = COL_ID as i32;
+const COL_LABEL_I: i32 = COL_LABEL as i32;
 
 /// The context-menu commands the host implements
 /// (`treeContextMenu`, the common subset).
@@ -129,6 +134,7 @@ impl Navigator {
         let store = TreeStore::new(&[
             String::static_type(),
             gdk::Texture::static_type(),
+            String::static_type(),
             String::static_type(),
         ]);
         let view = TreeView::with_model(&store);
@@ -697,6 +703,42 @@ impl Navigator {
         out
     }
 
+    /// (plain name, display label) per row in depth-first order (the
+    /// gauge probe's row seam).
+    pub fn row_labels(&self) -> Vec<(String, String)> {
+        let mut out = Vec::new();
+        if let Some(first) = self.store.iter_first() {
+            self.dump_labels(Some(&first), &mut out);
+        }
+        out
+    }
+
+    fn dump_labels(&self, iter: Option<&TreeIter>, out: &mut Vec<(String, String)>) {
+        let mut iter = match iter {
+            Some(i) => *i,
+            None => return,
+        };
+        loop {
+            let name = self
+                .store
+                .get_value(&iter, COL_NAME_I)
+                .get::<String>()
+                .unwrap_or_default();
+            let label = self
+                .store
+                .get_value(&iter, COL_LABEL_I)
+                .get::<String>()
+                .unwrap_or_default();
+            out.push((name, label));
+            if let Some(child) = self.store.iter_children(Some(&iter)) {
+                self.dump_labels(Some(&child), out);
+            }
+            if !self.store.iter_next(&mut iter) {
+                break;
+            }
+        }
+    }
+
     fn dump_expanded(&self, iter: Option<&TreeIter>, out: &mut Vec<(String, bool)>) {
         let mut iter = match iter {
             Some(i) => *i,
@@ -741,13 +783,15 @@ impl Navigator {
     }
 
     fn fill_items(&self, parent: Option<&TreeIter>, items: &[ComicListItem]) {
+        let (gauges_on, flags) = gauge_settings();
         for item in items {
             let iter = self.store.append(parent);
             let name = item.base().name.clone().unwrap_or_default();
             let id = item.base().id.to_d_string();
             let texture = icon::icon(Self::icon_for(item));
+            let label = row_markup(&name, item.base(), gauges_on, flags);
             let mut values: Vec<(u32, &dyn gtk4::glib::prelude::ToValue)> =
-                vec![(COL_NAME, &name), (COL_ID, &id)];
+                vec![(COL_NAME, &name), (COL_ID, &id), (COL_LABEL, &label)];
             if let Some(tex) = texture.as_ref() {
                 values.push((COL_ICON, tex));
             }
@@ -755,6 +799,17 @@ impl Navigator {
             if let ComicListItem::Folder(folder) = item {
                 self.fill_items(Some(&iter), &folder.items);
             }
+        }
+    }
+
+    /// Replaces one row's display label (the gauge pass applying new
+    /// counters in place — the C# repaint-only
+    /// `library_ComicListsChanged` path). A missing row is skipped.
+    pub fn update_row_label(&self, id: &CrGuid, label: &str) {
+        let text = id.to_d_string();
+        let first = self.store.iter_first();
+        if let Some(iter) = first.and_then(|f| self.find_iter(Some(&f), &text)) {
+            self.store.set_value(&iter, COL_LABEL, &label.to_value());
         }
     }
 
@@ -1000,7 +1055,9 @@ impl Navigator {
         let cell = gtk4::CellRendererText::new();
         let col = TreeViewColumn::new();
         col.pack_start(&cell, true);
-        col.add_attribute(&cell, "text", COL_NAME_I);
+        // The label carries the C# gauge badges as markup
+        // (`DrawNodeLabel`); the plain name stays in COL_NAME.
+        col.add_attribute(&cell, "markup", COL_LABEL_I);
         col
     }
 
@@ -1055,6 +1112,74 @@ fn filter_items(items: &[ComicListItem], filter: &str) -> Vec<ComicListItem> {
         .collect()
 }
 
+// ---------- The gauge badges (LibraryTreeSkin.DrawNodeLabel) ----------
+
+/// The badge background colors — `ThemeColors.LibraryTree.*`
+/// (ThemeColorTable.cs:89-94: WinForms Green / Orange / Red, white
+/// text). Order left to right: Total, Unread, New.
+const BADGE_TOTAL_BG: &str = "#008000";
+const BADGE_UNREAD_BG: &str = "#ffa500";
+const BADGE_NEW_BG: &str = "#ff0000";
+/// The 0.75× label font of the C# badges, as a Pango absolute size
+/// (1024ths of a point; 7.5 pt against a 10 pt row font).
+const BADGE_SIZE: &str = "7680";
+
+/// The gauge settings the rows render with (`DisplayLibraryGauges`
+/// master switch and the `LibraryGaugesFormat` badge flags).
+pub fn gauge_settings_for(
+    s: &cr_core::settings::Settings,
+) -> (bool, cr_core::settings::enums::LibraryGauges) {
+    (s.display_library_gauges, s.library_gauges_format)
+}
+
+fn gauge_settings() -> (bool, cr_core::settings::enums::LibraryGauges) {
+    gauge_settings_for(&crate::library::settings().borrow())
+}
+
+/// One row's display label: the markup-escaped name with the C# gauge
+/// badges appended. Flag set and badge layout follow `DrawMarkers`
+/// (LibraryTreeSkin.cs:67-96): Total, Unread, New; a zero count or a
+/// cleared flag hides its badge; with the New badge hidden its count
+/// merges into the Unread badge; all-zero shows the bare name.
+pub fn row_markup(
+    name: &str,
+    base: &cr_core::database::list_items::ListItemBase,
+    gauges_on: bool,
+    flags: cr_core::settings::enums::LibraryGauges,
+) -> String {
+    let mut out = glib::markup_escape_text(name).to_string();
+    if !gauges_on {
+        return out;
+    }
+    let flag_total = flags.0 & 0x4 != 0 && base.book_count != 0;
+    let flag_unread = flags.0 & 0x2 != 0 && base.unread_book_count != 0;
+    let flag_new = flags.0 & 0x1 != 0 && base.new_book_count != 0;
+    if !flag_total && !flag_unread && !flag_new {
+        return out;
+    }
+    let badge = |bg: &str, n: i32| {
+        format!(
+            " <span background=\"{bg}\" foreground=\"#ffffff\" size=\"{BADGE_SIZE}\"> {n} </span>"
+        )
+    };
+    if flag_total {
+        out.push_str(&badge(BADGE_TOTAL_BG, base.book_count));
+    }
+    if flag_unread {
+        // The New badge carries its own count when shown; merged here
+        // when not (`DrawMarkers` lines 81-85).
+        let mut n = base.unread_book_count;
+        if !flag_new {
+            n += base.new_book_count;
+        }
+        out.push_str(&badge(BADGE_UNREAD_BG, n));
+    }
+    if flag_new {
+        out.push_str(&badge(BADGE_NEW_BG, base.new_book_count));
+    }
+    out
+}
+
 /// The total row count of the tree (the refill trace line).
 fn count_list_items(items: &[ComicListItem]) -> usize {
     items
@@ -1105,6 +1230,65 @@ fn item_matches(item: &ComicListItem, needle: &str) -> bool {
 mod tests {
     use super::*;
     use cr_core::database::list_items::{FolderItem, ListItemBase, SmartListItem};
+
+    fn base(total: i32, new: i32, unread: i32) -> ListItemBase {
+        ListItemBase {
+            book_count: total,
+            new_book_count: new,
+            unread_book_count: unread,
+            ..Default::default()
+        }
+    }
+
+    const ALL: cr_core::settings::enums::LibraryGauges =
+        cr_core::settings::enums::LibraryGauges(0x1007);
+
+    #[test]
+    fn badges_render_in_c_sharp_order_and_colors() {
+        let m = row_markup("Batman", &base(12, 3, 4), true, ALL);
+        assert!(m.starts_with("Batman"));
+        assert!(
+            m.contains("background=\"#008000\" foreground=\"#ffffff\" size=\"7680\"> 12 </span>")
+        );
+        assert!(
+            m.contains("background=\"#ffa500\" foreground=\"#ffffff\" size=\"7680\"> 4 </span>")
+        );
+        assert!(
+            m.contains("background=\"#ff0000\" foreground=\"#ffffff\" size=\"7680\"> 3 </span>")
+        );
+        // Order: total, unread, new.
+        let t = m.find("#008000").unwrap();
+        let u = m.find("#ffa500").unwrap();
+        let n = m.find("#ff0000").unwrap();
+        assert!(t < u && u < n);
+    }
+
+    #[test]
+    fn zero_and_flagged_out_badges_hide_and_new_merges_into_unread() {
+        // A zero badge hides (the C# `DrawMarkers` flag conditions).
+        let m = row_markup("L", &base(5, 0, 2), true, ALL);
+        assert!(m.contains("#008000"));
+        assert!(m.contains("#ffa500"));
+        assert!(!m.contains("#ff0000"));
+        // New flag off → its count merges into the Unread badge.
+        let no_new = cr_core::settings::enums::LibraryGauges(0x1006);
+        let m = row_markup("L", &base(5, 3, 2), true, no_new);
+        assert!(m.contains("#008000"));
+        assert!(m.contains("#ffa500\" foreground=\"#ffffff\" size=\"7680\"> 5 </span>"));
+        assert!(!m.contains("#ff0000"));
+        // Unread flag off, New on → only total and new.
+        let no_unread = cr_core::settings::enums::LibraryGauges(0x1005);
+        let m = row_markup("L", &base(5, 3, 2), true, no_unread);
+        assert!(m.contains("#008000") && m.contains("#ff0000"));
+        assert!(!m.contains("#ffa500"));
+        // All counts zero → the bare name (the C# early return).
+        assert_eq!(row_markup("L", &base(0, 0, 0), true, ALL), "L");
+        // Master switch off → the bare name.
+        assert_eq!(row_markup("A & B", &base(5, 1, 1), false, ALL), "A &amp; B");
+        // The name is markup-escaped.
+        let m = row_markup("<x>", &base(1, 1, 0), true, ALL);
+        assert!(m.starts_with("&lt;x&gt;"));
+    }
 
     fn smart(name: &str) -> ComicListItem {
         ComicListItem::Smart(SmartListItem {

@@ -1695,12 +1695,40 @@ impl BrowserShell {
             }
         })));
 
+        // The gauge row applier: after the gauge pass writes a list's
+        // counters, the row label rebuilds in place. A Weak capture —
+        // the hook never owns the shell.
+        crate::gauges::set_row_hook(Some(Box::new({
+            let state = Rc::downgrade(state);
+            move |id: &CrGuid| {
+                let Some(sh) = state.upgrade() else {
+                    return;
+                };
+                let Some(item) = library::find_list_item_any(id) else {
+                    return;
+                };
+                let (gauges_on, flags) =
+                    super::navigator::gauge_settings_for(&library::settings().borrow());
+                let markup = super::navigator::row_markup(
+                    item.base().name.as_deref().unwrap_or_default(),
+                    item.base(),
+                    gauges_on,
+                    flags,
+                );
+                sh.navigator.update_row_label(id, &markup);
+            }
+        })));
+
         // The initial fill. The startup view: the BROWSER (the C#
         // `books.OpenCount == 0 && !ShowQuickOpen` shape,
         // MainForm.cs:3140) — the user decision 2026-09-07: the app
         // opens on the Library view, the QuickOpen covers show only
         // through the last-tab-close path (`UpdateQuickList`).
         state.navigator.refill(&library::comic_lists_snapshot());
+        // The gauge pass (the startup cache retrieval + recompute —
+        // the C# marks lists whose persisted NewBookCountDate is stale
+        // and rebuilds their counters on the background queue).
+        crate::gauges::invalidate();
         // The Files view boot (the C# ComicListFolderFilesBrowser
         // OnLoad): the tab drops under `DisableFoldersView`, the
         // saved include-sub state + the last folder restore.
@@ -6062,6 +6090,7 @@ fn show_folder_context_menu(
                                     library::record_scan_removal(id);
                                 }
                                 l.mark_dirty();
+                                crate::gauges::invalidate();
                             }
                         }
                         // The failed-delete message (the C#
