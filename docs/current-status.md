@@ -14,6 +14,36 @@ user-tested on 2026-09-12 and are archived. Phase 9 is DEFERRED to
 
 ## Current task
 
+**The smart-list OK freeze fix (2026-09-13, `520f624`).**
+
+The user report: creating a smart list and clicking OK froze the app
+25-30 s and the list content needed a separate check. MEASURED with
+new CR_TRACE instrumentation (timestamps on every trace line, the
+navigator select path, the per-matcher engine split) on the real
+30867-book library:
+
+1. One OK produced **25 queued select-debounce timers** (a `refill`
+   touches every row, each selection-changed event scheduled its own
+   200 ms timer), each firing a full list re-evaluation: 25 x ~1.1 s
+   = the freeze. Fix: cancel-and-reschedule the one pending source in
+   `Navigator::schedule_select`.
+2. Each evaluation spent **880 of its 900 ms recompiling the regex
+   pattern per book** (17398 compiles of one `.` pattern). Fix: the
+   compiled regex is cached per pattern in `eval.rs` (invalid
+   patterns cached as no-match — C# semantics unchanged; unit test
+   added).
+
+Expected after the fix: one evaluation of ~30 ms plus one ~100 ms
+`set_books` per OK. Gates: fmt, clippy,
+`CR_FORMAT_TESTS=1 cargo test --workspace --locked` (53 binaries, 0
+failed), release build — all green.
+
+**Open user test:** rerun the same OK flow with `CR_TRACE=1`; the log
+must show ONE `nav: fire_selected`, one `smartlist:` block (regex
+calls cheap), no repeat cycle, and the OK must feel instant.
+
+## Previous task
+
 **The incoming-path duplicate rule (ADR-046, 2026-09-13).**
 
 The user keeps a main library plus an `Incoming` watch folder. When the
