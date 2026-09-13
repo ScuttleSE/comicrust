@@ -165,6 +165,14 @@ pub struct Settings {
     /// only already-cached covers; the File ▸ Generate Cover
     /// Thumbnails command backfills the cache instead.
     pub generate_thumbnails_on_demand: bool,
+    /// PORT ADDITION (no C# counterpart): the duplicate-cleanup rules
+    /// (the Preferences duplicates page rows). They rank the copies
+    /// of a duplicate group for the Select Worst Duplicates command;
+    /// a copy gets one penalty per rule it loses against the group
+    /// best, and every enabled rule defaults to on.
+    pub duplicates_cbr_worse_than_cbz: bool,
+    pub duplicates_smaller_file_worse: bool,
+    pub duplicates_fewer_pages_worse: bool,
     /// The `MB` spellings are pinned (the C# member names carry the
     /// uppercase pair).
     #[serde(rename = "ThumbCacheSizeMB")]
@@ -306,6 +314,9 @@ impl Default for Settings {
             new_books_checked: true,
             thumb_cache_enabled: true,
             generate_thumbnails_on_demand: true,
+            duplicates_cbr_worse_than_cbz: true,
+            duplicates_smaller_file_worse: true,
+            duplicates_fewer_pages_worse: true,
             thumb_cache_size_mb: 500,
             page_cache_enabled: true,
             page_cache_size_mb: 500,
@@ -393,6 +404,12 @@ crate::settings_fields! {
     // PORT ADDITION (no C# counterpart): the on-demand cover
     // generation switch (the Preferences caching page row).
     Bool "GenerateThumbnailsOnDemand" => generate_thumbnails_on_demand: bool, cat: "Caching", desc: "Generate cover thumbnails on demand when books are displayed", browsable: false, ini: true;
+    // PORT ADDITION (no C# counterpart): the duplicate-cleanup rules
+    // (the Preferences duplicates page rows — hand-built, not the
+    // auto-filled options surface).
+    Bool "DuplicatesCbrWorseThanCbz" => duplicates_cbr_worse_than_cbz: bool, cat: "Browser", desc: "CBR copies are worse than CBZ copies", browsable: false, ini: true;
+    Bool "DuplicatesSmallerFileWorse" => duplicates_smaller_file_worse: bool, cat: "Browser", desc: "Smaller files are worse than larger files", browsable: false, ini: true;
+    Bool "DuplicatesFewerPagesWorse" => duplicates_fewer_pages_worse: bool, cat: "Browser", desc: "Fewer pages are worse than more pages", browsable: false, ini: true;
     Bool "PageCacheEnabled" => page_cache_enabled: bool, cat: "Caching", desc: "Turn page caching on or off", browsable: false, ini: true;
     Bool "InternetCacheEnabled" => internet_cache_enabled: bool, cat: "Caching", desc: "Turn Internet caching on or off", browsable: false, ini: true;
     Bool "MemoryThumbCacheOptimized" => memory_thumb_cache_optimized: bool, cat: "", desc: "Optimize Memory Thumbnail cache", browsable: false, ini: true;
@@ -432,6 +449,9 @@ mod tests {
             favorite_folders: vec!["/comics".into()],
             selected_browser: Some(String::new()), // empty string, not None
             plugins_states: None,                  // None omits the key
+            duplicates_cbr_worse_than_cbz: false,
+            duplicates_smaller_file_worse: false,
+            duplicates_fewer_pages_worse: false,
             ..Settings::default()
         };
         let value = settings_to_value(&s);
@@ -441,6 +461,11 @@ mod tests {
         assert!(text.contains("SelectedBrowser"));
         assert!(text.contains("LastLibraryItem"));
         assert!(text.contains("MagnifySize"));
+        // The duplicate-rule port additions round-trip under their
+        // C#-style member spellings.
+        assert!(text.contains("DuplicatesCbrWorseThanCbz"));
+        assert!(text.contains("DuplicatesSmallerFileWorse"));
+        assert!(text.contains("DuplicatesFewerPagesWorse"));
     }
 
     #[test]

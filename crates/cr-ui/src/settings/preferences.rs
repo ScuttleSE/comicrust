@@ -82,6 +82,14 @@ pub fn show_preferences(
     // ----- Advanced (the cache sizes + file update flow) -----
     stack.add_titled(&build_advanced_page(&working), Some("advanced"), "Advanced");
 
+    // ----- Duplicates (PORT ADDITION, no C# counterpart — the
+    // ADR-044 cleanup rules) -----
+    stack.add_titled(
+        &build_duplicates_page(&working),
+        Some("duplicates"),
+        "Duplicates",
+    );
+
     // ----- Comic Vine Scraper (the plugin Configuration; the C#
     // plugin carries its own config form) -----
     let scraper =
@@ -547,6 +555,62 @@ fn build_advanced_page(settings: &SettingsRef) -> GtkBox {
     page.append(&extra_check);
     page.append(&auto_check);
 
+    page
+}
+
+/// PORT ADDITION (no C# counterpart — ADR-044): the duplicate-cleanup
+/// rules. Each row writes one `Settings.Duplicates*` field into the
+/// working clone; the OK commit (the `show_preferences` response
+/// handler) persists it.
+fn build_duplicates_page(settings: &SettingsRef) -> GtkBox {
+    let page = GtkBox::new(Orientation::Vertical, 6);
+    page.set_margin_top(8);
+    page.set_margin_bottom(8);
+    page.set_margin_start(8);
+    page.set_margin_end(8);
+
+    page.append(&section_label(
+        "Rules for the Select Worst Duplicates command (book context menu).",
+    ));
+    page.append(&section_label(
+        "In every duplicate group a copy gets one penalty per rule it \
+         loses; the command selects the copies with more penalties \
+         than the group's best copy.",
+    ));
+
+    page.append(&section_label("Which copies count as worse"));
+    let cbr = CheckButton::with_label("CBR copies are worse than CBZ copies");
+    let smaller = CheckButton::with_label("Smaller files are worse than larger files");
+    let fewer = CheckButton::with_label("Fewer pages are worse than more pages");
+    cbr.set_active(settings.borrow().duplicates_cbr_worse_than_cbz);
+    smaller.set_active(settings.borrow().duplicates_smaller_file_worse);
+    fewer.set_active(settings.borrow().duplicates_fewer_pages_worse);
+    {
+        let settings = Rc::clone(settings);
+        cbr.connect_toggled(move |c| {
+            settings.borrow_mut().duplicates_cbr_worse_than_cbz = c.is_active();
+        });
+    }
+    {
+        let settings = Rc::clone(settings);
+        smaller.connect_toggled(move |c| {
+            settings.borrow_mut().duplicates_smaller_file_worse = c.is_active();
+        });
+    }
+    {
+        let settings = Rc::clone(settings);
+        fewer.connect_toggled(move |c| {
+            settings.borrow_mut().duplicates_fewer_pages_worse = c.is_active();
+        });
+    }
+    page.append(&cbr);
+    page.append(&smaller);
+    page.append(&fewer);
+
+    page.append(&section_label(
+        "The Views ▸ Show Duplicates filter shows the duplicate \
+         groups of the current list.",
+    ));
     page
 }
 

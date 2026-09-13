@@ -3816,6 +3816,22 @@ impl ShellState {
         self.update_status_panels();
     }
 
+    /// The Select Worst Duplicates command (PORT ADDITION, no C#
+    /// counterpart — ADR-044): ranks the duplicate groups of the
+    /// CURRENT view and selects the worst copies, so the Remove from
+    /// Library command deletes them. The rules come from the
+    /// Preferences duplicates page.
+    fn select_worst_duplicates(&self) {
+        let books = self.item_view.displayed_books();
+        let refs: Vec<&cr_core::model::comic_book::ComicBook> = books.iter().collect();
+        let rules =
+            cr_engine::duplicates::DuplicateRules::from_settings(&library::settings().borrow());
+        let ids = cr_engine::duplicates::worst_duplicate_ids(&refs, &rules);
+        // The command REPLACES the selection: an empty result (no
+        // duplicates, or every copy ties) shows as no selection.
+        self.item_view.reselect(&ids);
+    }
+
     /// The Detail header column chooser (`CreateHeaderMenu`): a
     /// model-driven `PopoverMenu` built fresh per open — ONE surface
     /// whose pages swap inside it (Wayland-safe; the popover's own
@@ -4426,6 +4442,12 @@ any value with at least one character.)",
         // check state, enabled iff groups are visible).
         self.add_simple(&group, "toggle-groups", |sh| {
             sh.item_view.toggle_all_groups();
+        });
+
+        // PORT ADDITION (no C# counterpart — ADR-044): the duplicate
+        // cleanup (no accelerator; the context menu hosts it).
+        self.add_simple(&group, "select-worst-duplicates", |sh| {
+            sh.select_worst_duplicates();
         });
 
         // The Quick Search scope radio (the cue text follows).
@@ -5785,6 +5807,11 @@ fn show_context_menu(state: &std::rc::Weak<ShellState>, target: Option<CrGuid>, 
                     }
                     sh.open_editor(books);
                 }
+                "select-worst-duplicates" => {
+                    // PORT ADDITION (ADR-044): rank the duplicate
+                    // groups of the current view, select the worst.
+                    sh.select_worst_duplicates();
+                }
                 _ => {}
             }
         });
@@ -5798,6 +5825,7 @@ fn show_context_menu(state: &std::rc::Weak<ShellState>, target: Option<CrGuid>, 
     add_item(&box_, "Export…", "export");
     add_item(&box_, "Scrape from Comic Vine…", "scrape");
     add_item(&box_, "Fill Missing Issues…", "fill-missing");
+    add_item(&box_, "Select Worst Duplicates", "select-worst-duplicates");
     add_item(&box_, "Remove from Library", "remove");
     add_item(&box_, "Properties…", "properties");
     popover.set_child(Some(&box_));

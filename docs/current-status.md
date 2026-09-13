@@ -14,48 +14,39 @@ user-tested on 2026-09-12 and are archived. Phase 9 is DEFERRED to
 
 ## Current task
 
-**Side task after v0.1.0: the navigator tree gained drag-and-drop and
-the Sort command** (two user findings, 2026-09-12). Both were missing
-ports, not regressions.
+**Side task after v0.1.0: the duplicate cleanup — Select Worst
+Duplicates** (user request, 2026-09-13). A PORT ADDITION with no C#
+counterpart; the semantics are ADR-044 (selection-only mark, score-sum
+rules, Preferences page, fileless ranks worst).
 
-1. **Drag and drop inside the list tree** (`tvQueries_ItemDrag` +
-   `tvQueries_DragDrop`). There was NO drag-and-drop code anywhere in
-   cr-ui before this. The ported rules: a drop ON a folder appends the
-   item to that folder; a drop on any other row — and on the top 4 px
-   of a folder row — puts the item BEFORE that row, which is the free
-   ordering inside a folder the user asked for; a drop on empty space
-   moves the item to the root end. The Library root never drags, and a
-   folder refuses a drop into its own subtree. The model move lives in
-   `library::move_list_item` (`ListDrop`), so it is unit-tested without
-   a widget; the C# `sourceIndex < dropIndex` decrement is unnecessary
-   because the port removes the item before it reads the destination
-   index.
-2. **The "Sort" command** (`SortList`, `miNodeSort`). It is NOT an
-   automatic sort in ComicRack either: it is a context-menu command
-   that the C# enables only on a folder row, and it sorts that folder's
-   items — folders first, then by name. The port shows the row in the
-   same place (Edit, Rename, Sort). `cr-io/extended_compare.rs` gained
-   the `ZeroesFirst` mode the C# passes with `IgnoreArticles |
-   IgnoreCase`; it orders by LEADING-ZERO COUNT before value, so "010"
-   sorts before "9".
+1. **The engine ranking.** The duplicate grouping moved out of
+   `match_duplicates` into `matcher::eval::duplicate_groups` (one
+   shared grouping; the C# ternary-chain quirk stays in one place).
+   `cr-engine/src/duplicates.rs` adds `worst_duplicate_ids`: per
+   duplicate group, each enabled rule adds one penalty to a copy
+   strictly worse than the group best (CBR worse only when a CBZ is
+   in the group, physical format from the path extension; unknown
+   size counts smallest; unknown page count lowest; a fileless copy
+   loses every enabled rule). The command selects the copies whose
+   penalty exceeds the group minimum — an all-tie group marks
+   nothing, and the accepted score-sum consequence is that a CBR
+   winning on size and pages survives a smaller CBZ.
+2. **The command.** `win.select-worst-duplicates` (`ShellState::select_worst_duplicates`,
+   registered in `commands.rs` with no accelerator, in the book
+   context menu between "Fill Missing Issues…" and "Remove from
+   Library"). It ranks over `item_view.displayed_books()` (the
+   current filtered view, the `FillBookList` shape) and REPLACES the
+   selection through `reselect` — an empty result clears the
+   selection.
+3. **The rules.** Three `Settings.Duplicates*` port-addition fields
+   (default on) + a new Preferences Duplicates page (hand-built
+   checkboxes, the clone-and-commit-on-OK pattern); the keys are
+   documented in `docs/config-reference.md` (the `config_doc` gate
+   caught the missing entries on the first run).
 
-Deviations from the C#, taken knowingly:
-
-- **No Ctrl-drag copy.** The C# clones a shareable item on Ctrl. Out of
-  scope by the user's choice; a Ctrl-drag moves.
-- **A drop in the top 4 px of the Library root inserts AFTER the root.**
-  The C# inserts before it and then paints the list above the Library
-  row.
-- **No drop highlight, no drag auto-scroll, no `.cbl` file drops and no
-  book drops from the browser.** The C# `treeSkin` drop paint and the
-  external drop branches are not ported.
-
-The drag SOURCE runs in the CAPTURE propagation phase. In the bubble
-phase the TreeView claims the pointer sequence for its own selection
-handling and a source behind it never reaches the drag threshold; a
-click that does not pass the threshold is still not claimed, so row
-selection keeps working. This is the one part a probe cannot gate — it
-needs the user test below.
+The prior navigator side task (drag-and-drop + Sort) is complete; its
+record is in git history and its user tests 4 and 5 below are still
+open.
 
 Phase 16 T1 (add `cover_date` to `IssueRef` and the issue queries) is
 unchanged and NOT STARTED.
@@ -148,39 +139,37 @@ made that the present combination is permissible.
 
 ## Verification record
 
-The navigator side task (2026-09-12): `cargo fmt --all` and `cargo
+The duplicate cleanup (2026-09-13): `cargo fmt --all` and `cargo
 clippy --workspace --all-targets -- -D warnings` — green.
-`CR_FORMAT_TESTS=1 cargo test --workspace --locked` — 692 passed, 0
-failed (680 + 12 new: 2 for the `ZeroesFirst` comparer mode, 10 for the
-tree move and sort). `cargo build --release --locked -p cr-app` —
-green.
+`CR_FORMAT_TESTS=1 cargo test --workspace --locked` — 702 passed, 0
+failed (692 + 10 new, all in `duplicates.rs`). `cargo build --release
+--locked -p cr-app` — green (run because the change touched no
+dependencies, as the Feature-unification lesson requires anyway).
 
-New probe `navtree_probe` (release, Xvfb :99, isolated XDG), gates A to
-F2 all green: A the drop geometry resolves to IntoFolder / BeforeItem /
-RootEnd from real row rectangles, B a drop on a folder appends, C a
-drop on a row inserts before it, D the subtree and Library-root drops
-are refused, E "Sort" shows on a folder only and fires
-`ListCommand::Sort`, F the folder sorts by name, F2 the order survives
-a save and a reload from ComicDb.xml. `listorder_probe`,
-`browserbar_probe` and `navpages_probe` re-run unchanged and green.
+New probe `duplicates_probe` (release, Xvfb :99, isolated XDG pair),
+gates A to F all green: A the boot grid holds all 9 seeded books and
+the Views toggle narrows it to the 8 duplicate members, B the command
+selects exactly the CBR of the clear group and the fileless entry, C
+with the format rule off the conflict group's smaller CBZ marks (the
+score-sum consequence, ADR-044), D with every rule off nothing
+selects, E the real context menu opens and its "Select Worst
+Duplicates" row fires the same command, F the Preferences Duplicates
+page opens, its three rows read the all-on settings, two rows flipped
+and OK commit into the session AND `comicrust.toml` on disk.
+`commands_probe` re-ran: RESOLVED 77/77. `browserbar_probe`,
+`listorder_probe`, `deleteperf_probe` re-ran unchanged and green.
 
-UNKNOWN, stated plainly: gate E clicks the real menu button and runs
-the same `sort_folder` body `app.rs` runs, because `run_list_command`
-is private. The `ListCommand::Sort` arm in `app.rs` is therefore
-compile-checked only, like the other arms that `navpages_probe` gates
-the same way.
-
-MEASURED while gating: the `gtk_css_node_insert_after` Gtk-CRITICAL
-that appears on every context-menu open is PRE-EXISTING. The untouched
-`navpages_probe` emits the same line once per popover open.
-
-MEASURED constraint: one drop per main-loop turn. A drop refills the
-tree, and `TreeView::cell_area` reports the new row geometry only after
-the view lays out again, so two drops in one turn aim the second at
-stale rectangles. The first `navtree_probe` run failed exactly this way
-and the probe TIMING was corrected, not the expectation.
+UNKNOWN, stated plainly: the selection-set order is not stable across
+dispatches (HashSet iteration), so the probe compares SORTED titles.
+The first gate C run failed on exactly that order; the probe
+comparison was corrected, not the expectation — the set content was
+correct on the failing run.
 
 ## Earlier verification record
+
+The navigator side task (2026-09-12) verified green at the time; its
+full record is in git history. Tests 4 and 5 in the User tests
+section remain open.
 
 `cargo build --release --locked -p cr-app` — the command the release
 workflows run — green. `cargo fmt --all --check` and `cargo clippy
@@ -303,6 +292,21 @@ The 2026-09-12 side task (ADR-039, ADR-040):
    Rename and Delete. Click it: sub-folders come first, then the lists
    by name ("The Batman" sorts under B). Right-click a LIST: there must
    be no "Sort" row. Restart and confirm the sorted order survived.
+6. **Select Worst Duplicates (ADR-044).** Give one series two copies
+   that differ (a CBR that is smaller with fewer pages than its CBZ
+   twin). Views ▸ Show Duplicates must narrow the list to the
+   duplicates. Right-click a book: "Select Worst Duplicates" must sit
+   between "Fill Missing Issues…" and "Remove from Library". Click it:
+   the worse copy must select, the better one must not. Run Remove
+   from Library on the selection and confirm. In Edit ▸ Preferences,
+   the new Duplicates page must list the three rules, all on. Uncheck
+   "CBR copies are worse than CBZ copies", OK, and run the command
+   again on a group where the CBR is LARGER: with the rule off, the
+   smaller CBZ must select instead (the score-sum behavior — a
+   conflicting pair that ties under the rules must select NOTHING).
+   With every rule off the command must select nothing and clear the
+   selection. The selection must survive a restart is NOT a
+   requirement — the mark is a selection, not a stored flag.
 
 **PASSED 2026-09-12 (user confirmation):**
 
@@ -408,6 +412,10 @@ Tracked in `docs/backlog.md`; they do not block Phase 16.
 - "Fill Missing Issues" has no volume picker for an unscraped series.
 - The Comic Vine cache jobs have no per-row abort in the Tasks window;
   the lamp menu carries the targeted cancel.
+- The per-list `ShowOnlyDuplicates` flag is written to ComicDb.xml by
+  cr-core but never read back by cr-ui, so the Views ▸ Show
+  Duplicates toggle does not restore per list. (surfaced by the
+  duplicate-cleanup task, 2026-09-13).
 
 ## Environment notes
 

@@ -94,6 +94,9 @@ pub const COMMANDS: &[CommandSpec] = &[
     // The browser toolbar's Views drop carries it (`miExpandAllGroups`,
     // enabled iff groups are visible); the C# binds no accelerator.
     cmd("toggle-groups", &[]),
+    // NO C# item — the duplicate cleanup (ADR-044, port addition):
+    // the book context menu hosts it, the C# binds no accelerator.
+    cmd("select-worst-duplicates", &[]),
     cmd("view-library", &["F6"]),
     cmd("view-pages", &["F8"]),
     cmd("sidebar", &["<Shift>F6"]),

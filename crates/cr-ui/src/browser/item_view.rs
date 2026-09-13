@@ -763,6 +763,18 @@ impl ItemView {
             .collect()
     }
 
+    /// The books currently DISPLAYED (the filtered view — the
+    /// duplicates command ranks within the visible set, the C#
+    /// `FillBookList` shape: the matcher runs over the list's books).
+    pub fn displayed_books(&self) -> Vec<ComicBook> {
+        let s = self.state.borrow();
+        s.view
+            .display_order()
+            .iter()
+            .map(|&i| s.view.books()[i].clone())
+            .collect()
+    }
+
     /// Selects one book and reveals it (`IComicBrowser.SelectComic`
     /// parity — the Show-in-Browser path). The redraw keeps the
     /// selection marker in sync; scrolling to the item stays with

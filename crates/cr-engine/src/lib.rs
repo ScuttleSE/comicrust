@@ -3,6 +3,7 @@
 
 pub mod backup;
 pub mod display_text;
+pub mod duplicates;
 pub mod group;
 pub mod image_pool;
 pub mod library;

@@ -156,7 +156,7 @@ fn match_one<'a>(
         }
         Matcher::Value(v) => {
             if v.spec.kind == spec::MatcherKind::Duplicate {
-                match_duplicates(items, v.op == 0, ctx)
+                match_duplicates(items, v.op == 0)
             } else {
                 items
                     .iter()
@@ -811,14 +811,32 @@ fn match_series(
 
 /// `ComicBookDuplicateMatcher.Match`: books that are metadata duplicates
 /// or file-path duplicates (op 0); op 1 passes everything through.
-fn match_duplicates<'a>(
-    items: &[&'a ComicBook],
-    on: bool,
-    ctx: &MatchContext<'a>,
-) -> Vec<&'a ComicBook> {
+fn match_duplicates<'a>(items: &[&'a ComicBook], on: bool) -> Vec<&'a ComicBook> {
     if !on {
         return items.to_vec();
     }
+    let groups = duplicate_groups(items);
+    let mut in_group = vec![false; items.len()];
+    for group in &groups {
+        for &i in group {
+            in_group[i] = true;
+        }
+    }
+    items
+        .iter()
+        .enumerate()
+        .filter(|(i, _)| in_group[*i])
+        .map(|(_, b)| *b)
+        .collect()
+}
+
+/// The duplicate grouping over `items`: the union of the metadata
+/// duplicates and the file-path duplicates (both keys of the C#
+/// `ComicBookDuplicateMatcher`). Returns the groups with MORE THAN
+/// ONE member as index lists into `items`, in first-appearance order.
+/// Shared by the duplicate matcher and the duplicate-cleanup ranking
+/// (`crate::duplicates`).
+pub(crate) fn duplicate_groups(items: &[&ComicBook]) -> Vec<Vec<usize>> {
     let n = items.len();
     let mut parent: Vec<usize> = (0..n).collect();
     fn find(parent: &mut Vec<usize>, i: usize) -> usize {
@@ -850,7 +868,7 @@ fn match_duplicates<'a>(
     let shadow: Vec<DupShadow> = items
         .iter()
         .map(|b| {
-            let prop = ctx.prop(b);
+            let prop = book_view::proposed_cached(b);
             DupShadow {
                 compressed_series: compress_series(book_view::shadow_series(b, &prop)),
                 format: book_view::shadow_format(b, &prop).to_string(),
@@ -899,16 +917,15 @@ fn match_duplicates<'a>(
         }
     }
     // Keep books whose group has more than one member.
-    let mut sizes: HashMap<usize, usize> = HashMap::new();
+    let mut groups: HashMap<usize, Vec<usize>> = HashMap::new();
     for i in 0..n {
-        *sizes.entry(find(&mut parent, i)).or_default() += 1;
+        groups.entry(find(&mut parent, i)).or_default().push(i);
     }
-    items
-        .iter()
-        .enumerate()
-        .filter(|(i, _)| sizes[&find(&mut parent, *i)] > 1)
-        .map(|(_, b)| *b)
-        .collect()
+    let mut out: Vec<Vec<usize>> = groups.into_values().filter(|g| g.len() > 1).collect();
+    // The HashMap order is not deterministic; first-appearance order
+    // is (the group key is the first member index — see `find`).
+    out.sort_by_key(|g| g[0]);
+    out
 }
 
 /// `GroupInfo.CompressedName`: drop separator-delimited articles,

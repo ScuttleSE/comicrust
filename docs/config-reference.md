@@ -238,6 +238,9 @@ app writes the "app-managed" keys itself.
 | `DisableDragDrop` | false | Disables opening files by drag and drop. |
 | `DisplayLibraryGauges` | true | Shows the library gauges. |
 | `DogEarThumbnails` | true | Selected thumbnails carry a dog-ear. |
+| `DuplicatesCbrWorseThanCbz` | true | Ranks CBR copies worse than CBZ copies in a duplicate group. Port addition. |
+| `DuplicatesFewerPagesWorse` | true | Ranks fewer pages worse than more pages in a duplicate group. Port addition. |
+| `DuplicatesSmallerFileWorse` | true | Ranks smaller files worse than larger files in a duplicate group. Port addition. |
 | `FadeInThumbnails` | true | Thumbnails fade in when loaded. |
 | `InformationCover3D` | true | 3D cover display in the book info dialog. |
 | `LocalQuickSearch` | true | Each list keeps its own quick search settings. |
