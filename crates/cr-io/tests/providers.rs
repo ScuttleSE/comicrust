@@ -436,3 +436,88 @@ fn tar_content_named_cbz_routes_to_the_tar_reader() {
 
     std::fs::remove_dir_all(&dir).ok();
 }
+
+/// Regression (measured 2026-09-13, user report): macOS-made archives
+/// carry `__MACOSX/._page.jpg` AppleDouble junk entries. The C#
+/// filter is `file.Contains("__MACOSX\\")` (ComicProvider.cs:117) —
+/// a Windows separator that matches the Windows 7z listing. The
+/// Linux listing emits forward slashes, so the junk passed the filter
+/// and sorted to the FRONT of the page list: the cover thumbnail and
+/// the reader's first pages then decoded AppleDouble bytes and
+/// failed, while the same file unpacked fine by hand.
+#[test]
+fn macosx_junk_entries_are_not_pages() {
+    let dir = temp_dir("macosx-junk");
+    let path = dir.join("comic.cbz");
+    build_zip(
+        &path,
+        &[
+            ("cover.jpg", png_pixel(255)),
+            ("__MACOSX/._cover.jpg", b"apple-double-junk".to_vec()),
+            ("pages/1.jpg", png_pixel(1)),
+            ("__MACOSX/._pages/._1.jpg", b"apple-double-junk".to_vec()),
+        ],
+    );
+
+    let (provider, report) = ComicProvider::open_with_report(&path).unwrap();
+    assert!(report.is_clean(), "{report:?}");
+    let names: Vec<&str> = provider.pages().iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(names, ["cover.jpg", "pages/1.jpg"]);
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// A RAR5 archive named `.cbr` (the modern default; measured on the
+/// user's sample) routes to the RAR5 accessor through the
+/// `FastFormatCheck` fallback, but the extension is not contradicted:
+/// the content is a rar comic. No mismatch mark — the C# fallback
+/// (`ImageProviderFactory.cs:18-27`) switches readers silently, and
+/// the amber FormatMismatch chip must not light up for every
+/// modern RAR5 cbr in the library.
+#[test]
+fn rar5_content_named_cbr_is_not_a_mismatch() {
+    let dir = temp_dir("rar5-as-cbr");
+    let path = dir.join("comic.cbr");
+
+    // The RAR5 signature is enough to decide the ROUTING; reading the
+    // entries needs the 7z subprocess, which is gated elsewhere.
+    let mut bytes = b"Rar!\x1a\x07\x01".to_vec();
+    bytes.extend_from_slice(&[0u8; 256]);
+    std::fs::write(&path, &bytes).unwrap();
+
+    let (provider, report) = ComicProvider::open_with_report(&path).unwrap();
+    assert_eq!(provider.format().id, cr_io::formats::ids::RAR5);
+    assert_eq!(
+        report.extension_format.map(|f| f.id),
+        Some(cr_io::formats::ids::CBR)
+    );
+    assert_eq!(
+        report.detected_format.map(|f| f.id),
+        Some(cr_io::formats::ids::RAR5)
+    );
+    assert!(!report.mismatch, "{report:?}");
+
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The de-noise above must not over-suppress: zip content under a
+/// `.cbr` name is a real cross-family contradiction and keeps the
+/// mark.
+#[test]
+fn zip_content_named_cbr_is_still_a_mismatch() {
+    let dir = temp_dir("zip-as-cbr");
+    let path = dir.join("comic.cbr");
+
+    let mut bytes = b"PK\x03\x04".to_vec();
+    bytes.extend_from_slice(&[0u8; 256]);
+    std::fs::write(&path, &bytes).unwrap();
+
+    let (_provider, report) = ComicProvider::open_with_report(&path).unwrap();
+    assert_eq!(
+        report.detected_format.map(|f| f.id),
+        Some(cr_io::formats::ids::CBZ)
+    );
+    assert!(report.mismatch, "{report:?}");
+
+    std::fs::remove_dir_all(&dir).ok();
+}

@@ -14,6 +14,68 @@ user-tested on 2026-09-12 and are archived. Phase 9 is DEFERRED to
 
 ## Current task
 
+**The macOS-junk pages and the RAR5 mismatch mark (2026-09-13).**
+
+The user report: certain cbr files show no thumbnail and do not open;
+the same files unpack fine by hand. MEASURED on the user sample
+(`2000 AD (1977) Volume 01 Issue 2435.cbr`, a RAR5 archive made on
+macOS, kept locally under `tests/testfiles/`, gitignored):
+
+1. The archive holds 33 real pages plus 33 `__MACOSX/._*.jpeg`
+   AppleDouble junk entries (189–245 bytes each).
+2. The provider filter `is_supported_image` ported the C#
+   `IsImageThumbnailFolder` check literally
+   (`ComicProvider.cs:115-119`): `name.contains("__MACOSX\\")` — a
+   WINDOWS path separator. The Windows 7z listing emits backslash
+   paths, so the C# filter catches the junk there; the Linux listing
+   emits forward slashes, so all 33 junk entries passed the port's
+   filter.
+3. The natural sort put the junk at the FRONT of the page list
+   (indices 0–32 of 66): page 0 was `__MACOSX/._..._Page_01.jpeg`.
+4. The cover thumbnail renders page 0 → AppleDouble bytes fail to
+   decode → no thumbnail (`cr-cli thumb` errored with
+   `decoding page image: unsupported image format`).
+5. The reader opens the comic but its first 33 pages fail to decode →
+   the "Page failed to load." error page — the user's "cannot open".
+   Page 33 (a real page) decoded to a clean 2481x3282 JPEG.
+
+Fixes, both in `cr-io/src/provider.rs`:
+
+1. The thumbnail-folder check now matches BOTH separators
+   (`__MACOSX\` and `__MACOSX/`, `.DS_Store\` and `.DS_Store/`). The
+   reader and the cover-thumbnail key resolve pages by provider
+   INDEX, so already-scanned books heal without a data repair; a
+   rescan refreshes the stored page lists as files change. macOS-made
+   CBZ files had the same defect through the same filter and are
+   covered too.
+2. The `OpenReport.mismatch` mark no longer fires for a RAR family
+   upgrade: a RAR5 archive named `.cbr` is still a rar comic — the
+   extension is not contradicted, the C# fallback
+   (`ImageProviderFactory.cs:18-27`) switches readers silently, so
+   the amber FormatMismatch chip stays off. Every RAR5 cbr in the
+   library carried that mark before; cross-family contradictions
+   (zip content named `.cbr`) still mark.
+
+Gates: `cargo fmt --all`, `cargo clippy --workspace --all-targets --
+-D warnings`, `CR_FORMAT_TESTS=1 cargo test --workspace --locked`
+(53 binaries, 0 failed), `cargo build --release --locked -p cr-app
+-p cr-cli` — all green. New tests: the filter separator cases in
+`provider.rs`, and `macosx_junk_entries_are_not_pages`,
+`rar5_content_named_cbr_is_not_a_mismatch`,
+`zip_content_named_cbr_is_still_a_mismatch` in
+`cr-io/tests/providers.rs`.
+
+Post-fix sample verification with the release `cr-cli`:
+`pages` reports 33 pages, page 0 is
+`2000_ad_prog_2435.PRG2435D_Page_01-UPSCALED.jpeg`, zero `__MACOSX`
+entries; `thumb` writes a real 387x511 JPEG.
+
+**Open user test:** the book shows a thumbnail in the browser and
+opens at page 1 in the reader; the other previously-broken cbr files
+behave the same; books already in the library heal without a rescan.
+
+## Previous task
+
 **The Library-tree gauges (2026-09-13).**
 
 The user request: each list in the Library tree must show the two

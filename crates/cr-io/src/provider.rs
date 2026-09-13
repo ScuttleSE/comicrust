@@ -65,9 +65,20 @@ const SUPPORTED_TYPES: &[&str] = &[
 
 /// Port of `ComicProvider.IsSupportedImage` + `IsImageThumbnailFolder`.
 fn is_supported_image(name: &str) -> bool {
-    // C# checks for ".DS_Store\" and "__MACOSX\" substrings —
-    // backslashes included, so plain ".DS_Store" files still pass.
-    if name.contains(".DS_Store\\") || name.contains("__MACOSX\\") {
+    // The C# checks for the ".DS_Store\" and "__MACOSX\" substrings
+    // (ComicProvider.cs:117) — a WINDOWS path separator, which matches
+    // because the Windows 7z listing emits backslash paths. The Linux
+    // listing emits forward slashes, so the same check must accept both
+    // separators or the macOS AppleDouble junk ("__MACOSX/._page.jpg")
+    // becomes a page: it sorts to the front of the list, the cover
+    // thumbnail renders AppleDouble bytes, and the reader's first
+    // pages fail to decode (measured on a user's macOS-made RAR5 cbr,
+    // 2026-09-13).
+    if name.contains(".DS_Store\\")
+        || name.contains(".DS_Store/")
+        || name.contains("__MACOSX\\")
+        || name.contains("__MACOSX/")
+    {
         return false;
     }
     let Some(ext) = formats::path_extension(Path::new(name)) else {
@@ -86,6 +97,13 @@ pub const FOLDER_FORMAT: FileFormat = FileFormat {
     supports_update: false,
     dynamic: false,
 };
+
+/// The RAR family ids. RAR4 (CBR) and RAR5 are format revisions of
+/// the same container; the 7z reader serves both (see
+/// `accessor_for`).
+fn is_rar_family(format: i32) -> bool {
+    format == formats::ids::CBR || format == formats::ids::RAR5
+}
 
 /// What [`ComicProvider::open_with_report`] found out about a source
 /// while opening it. The scanner turns this into the per-book scan
@@ -173,7 +191,17 @@ impl ComicProvider {
                             .and_then(|f| crate::accessors::accessor_for(f.id).map(|a| (f, a)))
                         {
                             Some((f, a)) => {
-                                report.mismatch = true;
+                                // The mark means the extension is
+                                // CONTRADICTED ("a rar archive named
+                                // .cbz"). A RAR5 archive named .cbr is
+                                // still a rar comic — the C# fallback
+                                // picks the RAR5 reader silently and
+                                // records nothing, so the port's mark
+                                // (the amber scan chip) stays off for
+                                // a format-revision upgrade within
+                                // the RAR family.
+                                report.mismatch =
+                                    !(is_rar_family(f.id) && is_rar_family(by_extension.id));
                                 (f, a)
                             }
                             // Known signature, no ported reader: keep
@@ -368,5 +396,13 @@ mod tests {
         assert!(!is_supported_image(".DS_Store"));
         assert!(!is_supported_image("a.DS_Store\\x.jpg"));
         assert!(!is_supported_image("__MACOSX\\page1.jpg"));
+        // The Linux 7z listing emits forward-slash paths, so the
+        // thumbnail-folder check must match both separators (the
+        // measured macOS-junk defect, 2026-09-13).
+        assert!(!is_supported_image("__MACOSX/._page1.jpg"));
+        assert!(!is_supported_image("sub/__MACOSX/._page1.jpg"));
+        assert!(!is_supported_image(".DS_Store/page1.jpg"));
+        assert!(!is_supported_image("a.DS_Store/x.jpg"));
+        assert!(is_supported_image("dir/page1.jpg"));
     }
 }
