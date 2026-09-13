@@ -260,9 +260,6 @@ pub fn compute(view: &ViewState, config: &LayoutConfig) -> ItemLayout {
     };
 
     layout.items = vec![None; view.len()];
-    if config.mode == ItemViewMode::Detail {
-        layout.rows.push(Vec::new());
-    }
 
     for (group_index, group) in view.groups().iter().enumerate() {
         // Group header: full-width strip before the group's items.
@@ -286,7 +283,16 @@ pub fn compute(view: &ViewState, config: &LayoutConfig) -> ItemLayout {
                 _ => (cell_w, cell_h),
             };
             if config.mode == ItemViewMode::Detail {
-                // One row per item, width = the column strip.
+                // One row per item, width = the column strip. The
+                // rows table mirrors `ItemRect.row` (one vec per row,
+                // the flow-path guard) — the C# derives the keyboard
+                // rows from each item's own Row (ItemView.cs
+                // GetColumnRowItems). The old single shared vec made
+                // `relative_item` index `rows[item.row]` out of bounds
+                // (the 2026-09-13 Details-view arrow-key abort).
+                if layout.rows.len() <= row {
+                    layout.rows.push(Vec::new());
+                }
                 let item = ItemRect {
                     display,
                     rect: Rect::new(dx, dy, w, h),
@@ -295,9 +301,7 @@ pub fn compute(view: &ViewState, config: &LayoutConfig) -> ItemLayout {
                     group_row,
                 };
                 layout.items[display] = Some(item);
-                if let Some(last) = layout.rows.last_mut() {
-                    last.push(display);
-                }
+                layout.rows[row].push(display);
                 group_row += 1;
                 row += 1;
                 y += cell_stride_h;
@@ -405,8 +409,10 @@ pub fn relative_item(layout: &ItemLayout, display: usize, dx: i32, dy: i32) -> O
     let item = layout.items.get(display).copied().flatten()?;
     if dx != 0 {
         // Column step within the row; at the row edges it moves
-        // between rows (the C# walks the flat display list).
-        let row = &layout.rows[item.row];
+        // between rows (the C# walks the flat display list). A safe
+        // lookup: a layout desync must degrade to "the key does
+        // nothing", never abort the GTK key handler.
+        let row = layout.rows.get(item.row)?;
         let pos = row.iter().position(|&d| d == display)?;
         if dx > 0 {
             row.get(pos + 1).copied().or_else(|| {
@@ -424,7 +430,7 @@ pub fn relative_item(layout: &ItemLayout, display: usize, dx: i32, dy: i32) -> O
             prev_row.and_then(|r| r.last().copied())
         }
     } else {
-        let row = &layout.rows[item.row];
+        let row = layout.rows.get(item.row)?;
         let pos = row.iter().position(|&d| d == display)?;
         let target_row = if dy > 0 {
             layout.rows.get(item.row + 1)?
@@ -459,6 +465,46 @@ pub fn page_step_display(
         None => layout.rows.first()?,
     };
     row.get(item.column).or_else(|| row.last()).copied()
+}
+
+/// `EnsureItemVisible` (ItemView.cs:1979): the minimal overshoot
+/// scroll that pulls the item's border-inflated rect fully inside the
+/// visible window. `None` when nothing needs to move. The horizontal
+/// pass is the caller's choice — the C# skips it in Detail mode
+/// (`ItemViewMode != Detail`).
+pub fn ensure_visible_offset(view: Rect, item: Rect, horizontal: bool) -> Option<(f64, f64)> {
+    let item = Rect::new(
+        item.x - ITEM_BORDER,
+        item.y - ITEM_BORDER,
+        item.w + 2.0 * ITEM_BORDER,
+        item.h + 2.0 * ITEM_BORDER,
+    );
+    let inside = item.x >= view.x
+        && item.y >= view.y
+        && item.x + item.w <= view.x + view.w
+        && item.y + item.h <= view.y + view.h;
+    if inside {
+        return None;
+    }
+    let mut dx = 0.0;
+    let mut dy = 0.0;
+    if item.y + item.h > view.y + view.h {
+        dy = item.y + item.h - (view.y + view.h);
+    } else if item.y < view.y {
+        dy = item.y - view.y;
+    }
+    if horizontal {
+        if item.x + item.w > view.x + view.w {
+            dx = item.x + item.w - (view.x + view.w);
+        } else if item.x < view.x {
+            dx = item.x - view.x;
+        }
+    }
+    if dx == 0.0 && dy == 0.0 {
+        None
+    } else {
+        Some((dx, dy))
+    }
 }
 
 /// The column x-ranges for Detail mode (first column at +8).
@@ -665,6 +711,131 @@ mod tests {
         assert_eq!(relative_item(&layout, 0, 0, -1), None);
         // Ragged last row (1 item): down clamps into it.
         assert_eq!(relative_item(&layout, 5, 0, 1), Some(6));
+    }
+
+    /// The 2026-09-13 Details-view crash: the Detail branch pushed
+    /// every item into ONE rows vec while each `ItemRect.row` counted
+    /// on, so `relative_item` indexed `rows[18]` on a len-1 table and
+    /// the app aborted inside the GTK key handler.
+    #[test]
+    fn detail_rows_align_with_item_rows() {
+        let view = ViewState::new((0..20).map(book).collect());
+        let config = LayoutConfig {
+            mode: ItemViewMode::Detail,
+            view_width: 600.0,
+            header_visible: false,
+            column_widths: vec![200.0, 40.0, 60.0],
+            ..Default::default()
+        };
+        let layout = compute(&view, &config);
+        assert_eq!(layout.rows.len(), 20, "one rows vec per Detail row");
+        for (i, r) in layout.rows.iter().enumerate() {
+            assert_eq!(r, &vec![i]);
+        }
+        // The reported crash: Down from the 19th item (display 18).
+        assert_eq!(relative_item(&layout, 18, 0, 1), Some(19));
+        // Edges: Down past the last row and Up from the first: none.
+        assert_eq!(relative_item(&layout, 19, 0, 1), None);
+        assert_eq!(relative_item(&layout, 0, 0, -1), None);
+        // One column: Left/Right walk the rows too.
+        assert_eq!(relative_item(&layout, 5, 0, -1), Some(4));
+        assert_eq!(relative_item(&layout, 5, 1, 0), Some(6));
+        assert_eq!(relative_item(&layout, 5, -1, 0), Some(4));
+    }
+
+    /// Grouped Detail: the rows stay aligned across the group headers,
+    /// and a collapsed group drops its items from the rows table
+    /// (renumbered with the display order).
+    #[test]
+    fn detail_rows_align_across_groups() {
+        let mut books: Vec<ComicBook> = Vec::new();
+        for i in 0..3u8 {
+            let mut b = book(i);
+            b.info.series = "Alpha".into();
+            books.push(b);
+        }
+        for i in 3..6u8 {
+            let mut b = book(i);
+            b.info.series = "Beta".into();
+            books.push(b);
+        }
+        let mut view = ViewState::new(books);
+        view.set_grouper(Some("Series"));
+        let config = LayoutConfig {
+            mode: ItemViewMode::Detail,
+            view_width: 600.0,
+            header_visible: false,
+            groups_visible: true,
+            group_header_height: 40.0,
+            column_widths: vec![300.0],
+            ..Default::default()
+        };
+        let layout = compute(&view, &config);
+        assert_eq!(layout.rows.len(), 6);
+        // Down across the Alpha → Beta group boundary.
+        assert_eq!(relative_item(&layout, 2, 0, 1), Some(3));
+        // Collapse the first group: 3 placed items, rows renumbered.
+        view.set_collapsed(0, true);
+        let layout = compute(&view, &config);
+        assert_eq!(layout.rows.len(), 3);
+        assert_eq!(layout.rows[0], vec![0]);
+        assert_eq!(relative_item(&layout, 0, 0, -1), None);
+        assert_eq!(relative_item(&layout, 0, 0, 1), Some(1));
+    }
+
+    /// PageDown/PageUp in Detail move whole rows (the broken shared
+    /// rows vec made PageDown land on the FIRST item instead).
+    #[test]
+    fn detail_page_step_moves_rows() {
+        let view = ViewState::new((0..40).map(book).collect());
+        let config = LayoutConfig {
+            mode: ItemViewMode::Detail,
+            view_width: 600.0,
+            header_visible: false,
+            row_height: 20.0,
+            column_widths: vec![300.0],
+            ..Default::default()
+        };
+        let layout = compute(&view, &config);
+        // A 300px page over 20px rows = 15 rows.
+        assert_eq!(page_step_display(&layout, 0, 300.0, true), Some(15));
+        assert_eq!(page_step_display(&layout, 39, 300.0, false), Some(24));
+        // The page past the end clamps to the last row.
+        assert_eq!(page_step_display(&layout, 30, 300.0, true), Some(39));
+    }
+
+    /// `EnsureItemVisible` (ItemView.cs:1979): the minimal overshoot
+    /// scroll, the 4 px border inflation, and no horizontal pass when
+    /// the caller suppresses it (Detail mode).
+    #[test]
+    fn ensure_visible_offsets_follow_the_c_sharp() {
+        let view = Rect::new(0.0, 0.0, 400.0, 300.0);
+        // Fully visible: nothing to move.
+        assert_eq!(
+            ensure_visible_offset(view, Rect::new(10.0, 100.0, 50.0, 50.0), true),
+            None
+        );
+        // Below the bottom: scroll down by the overshoot (bottom
+        // 295+58 = 353 against 300).
+        assert_eq!(
+            ensure_visible_offset(view, Rect::new(10.0, 299.0, 50.0, 50.0), true),
+            Some((0.0, 53.0))
+        );
+        // Above the top: scroll up (negative).
+        assert_eq!(
+            ensure_visible_offset(view, Rect::new(10.0, -10.0, 50.0, 50.0), true),
+            Some((0.0, -14.0))
+        );
+        // Right of the window: horizontal when allowed (444 vs 400),
+        // suppressed otherwise.
+        assert_eq!(
+            ensure_visible_offset(view, Rect::new(390.0, 10.0, 50.0, 50.0), true),
+            Some((44.0, 0.0))
+        );
+        assert_eq!(
+            ensure_visible_offset(view, Rect::new(390.0, 10.0, 50.0, 50.0), false),
+            None
+        );
     }
 
     #[test]

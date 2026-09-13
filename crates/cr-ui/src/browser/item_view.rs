@@ -633,17 +633,29 @@ impl ItemView {
     }
 
     /// Mutates the layout config (view mode, sizes) and reflows
-    /// (`ItemViewConfig` changes from the shell menus).
+    /// (`ItemViewConfig` changes from the shell menus). A mode change
+    /// reveals the focused item (the C# `ItemViewMode` setter,
+    /// ItemView.cs:812).
     pub fn configure(&self, f: impl FnOnce(&mut LayoutConfig)) {
         let width = self.state.borrow().config.view_width;
-        {
+        let reveal = {
             let mut s = self.state.borrow_mut();
+            let before = s.config.mode;
             f(&mut s.config);
+            let mode_changed = before != s.config.mode;
             s.relayout(width);
             // The tile segments carry per-cell font sizes — rebuild.
             s.tile_render.clear();
-        }
+            if mode_changed {
+                s.view.focus().and_then(|id| s.view.display_index_of(&id))
+            } else {
+                None
+            }
+        };
         self.update_size_request();
+        if let Some(d) = reveal {
+            ensure_item_visible(&self.state, &self.canvas, d);
+        }
         self.canvas.queue_draw();
     }
 
@@ -1568,6 +1580,11 @@ impl ItemView {
             // (`update_read_state`) — the callback MUST run with no
             // borrow held (the 2026-09-11 double-click-open crash).
             let mut activate: Option<CrGuid> = None;
+            // The display index the keyboard moved focus TO — the
+            // `EnsureItemVisible` pass after the match (the C# OnKeyDown
+            // tail; the display does not follow the selection without
+            // it — the 2026-09-13 thumbnail-view report).
+            let mut scroll_target: Option<usize> = None;
             let step = |s: &ItemViewState, f: Option<CrGuid>, dx: i32, dy: i32| -> Option<CrGuid> {
                 let d = f.and_then(|f| s.view.display_index_of(&f))?;
                 let d = if s.layout.items.iter().flatten().count() > d {
@@ -1580,25 +1597,31 @@ impl ItemView {
             match key {
                 gtk4::gdk::Key::Down => {
                     let target = step(&s, focus, 0, 1);
+                    scroll_target = target.as_ref().and_then(|t| s.view.display_index_of(t));
                     s.view.move_focus(target, shift, ctrl);
                 }
                 gtk4::gdk::Key::Up => {
                     let target = step(&s, focus, 0, -1);
+                    scroll_target = target.as_ref().and_then(|t| s.view.display_index_of(t));
                     s.view.move_focus(target, shift, ctrl);
                 }
                 gtk4::gdk::Key::Right => {
                     let target = step(&s, focus, 1, 0);
+                    scroll_target = target.as_ref().and_then(|t| s.view.display_index_of(t));
                     s.view.move_focus(target, shift, ctrl);
                 }
                 gtk4::gdk::Key::Left => {
                     let target = step(&s, focus, -1, 0);
+                    scroll_target = target.as_ref().and_then(|t| s.view.display_index_of(t));
                     s.view.move_focus(target, shift, ctrl);
                 }
                 gtk4::gdk::Key::Home => {
+                    scroll_target = (!s.view.is_empty()).then_some(0);
                     let target = (!s.view.is_empty()).then(|| s.view.book_id(0));
                     s.view.move_focus(target, shift, ctrl);
                 }
                 gtk4::gdk::Key::End => {
+                    scroll_target = (!s.view.is_empty()).then(|| s.view.len() - 1);
                     let target = (!s.view.is_empty()).then(|| s.view.book_id(s.view.len() - 1));
                     s.view.move_focus(target, shift, ctrl);
                 }
@@ -1611,11 +1634,11 @@ impl ItemView {
                         } else {
                             s.view.len().checked_sub(1)
                         });
-                    let target = d
-                        .and_then(|d| {
-                            page_step_display(&s.layout, d, s.config.view_height, forward)
-                        })
-                        .map(|t| s.view.book_id(t));
+                    let moved = d.and_then(|d| {
+                        page_step_display(&s.layout, d, s.config.view_height, forward)
+                    });
+                    scroll_target = moved;
+                    let target = moved.map(|t| s.view.book_id(t));
                     s.view.move_focus(target, shift, ctrl);
                 }
                 gtk4::gdk::Key::Return | gtk4::gdk::Key::KP_Enter => {
@@ -1682,6 +1705,11 @@ impl ItemView {
             }
             s.type_ahead.clear();
             drop(s);
+            // `EnsureItemVisible` (the C# OnKeyDown tail): every
+            // handled movement key leaves the focused item in view.
+            if let Some(d) = scroll_target {
+                ensure_item_visible(&state, &canvas, d);
+            }
             // The activate fires with NO borrow held (the open path
             // re-enters `update_read_state` through the reader hook).
             if let Some(id) = activate {
@@ -1722,6 +1750,50 @@ fn canvas_vadjustment(canvas: &DrawingArea) -> gtk4::Adjustment {
         .and_then(|w| w.downcast::<ScrolledWindow>().ok())
         .map(|s| s.vadjustment())
         .expect("ItemView canvas must live in a ScrolledWindow")
+}
+
+/// `EnsureItemVisible` (ItemView.cs:1979): the minimal overshoot
+/// scroll for one placed item — vertical always, horizontal only
+/// outside Detail mode (the C# mode gate). A no-op when the item is
+/// already fully visible. Called after the keyboard movement keys.
+fn ensure_item_visible(state: &Rc<RefCell<ItemViewState>>, canvas: &DrawingArea, display: usize) {
+    let Some(scroller) = canvas
+        .ancestor(gtk4::ScrolledWindow::static_type())
+        .and_then(|w| w.downcast::<ScrolledWindow>().ok())
+    else {
+        return;
+    };
+    let hadj = scroller.hadjustment();
+    let vadj = scroller.vadjustment();
+    let Some((dx, dy)) = ({
+        let s = state.borrow();
+        s.layout
+            .items
+            .get(display)
+            .copied()
+            .flatten()
+            .and_then(|item| {
+                let view = Rect::new(
+                    hadj.value(),
+                    vadj.value(),
+                    hadj.page_size(),
+                    vadj.page_size(),
+                );
+                layout::ensure_visible_offset(
+                    view,
+                    item.rect,
+                    s.config.mode != ItemViewMode::Detail,
+                )
+            })
+    }) else {
+        return;
+    };
+    if dx != 0.0 {
+        hadj.set_value(hadj.value() + dx);
+    }
+    if dy != 0.0 {
+        vadj.set_value(vadj.value() + dy);
+    }
 }
 
 fn scroll_window(scroller: &ScrolledWindow) -> (f64, f64, f64, f64) {

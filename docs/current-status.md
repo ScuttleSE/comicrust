@@ -139,6 +139,24 @@ made that the present combination is permissible.
 
 ## Verification record
 
+The keyboard navigation fix (2026-09-13): the Details view aborted on
+the first arrow key. Cause, read from the code: the Detail branch of
+`layout::compute` pushed every item into ONE rows vec while each
+item's `row` counted on, so `relative_item` indexed `rows[18]` on a
+len-1 table inside the GTK key handler — a panic there cannot unwind
+and aborts the process. The fix aligns the Detail rows with the flow
+path's one-vec-per-row guard and hardens `relative_item` with safe
+lookups. A second defect came with the user report: no view mode
+scrolled to follow the keyboard focus. The fix ports `EnsureItemVisible`
+(ItemView.cs:1979) as the pure `ensure_visible_offset` plus a widget
+helper — the minimal overshoot scroll after every movement key
+(vertical always, horizontal never in Detail), and after a view-mode
+change (ItemView.cs:812). `cargo fmt --all` and `cargo clippy
+--workspace --all-targets -- -D warnings` — green.
+`CR_FORMAT_TESTS=1 cargo test --workspace --locked` — 706 passed, 0
+failed (702 + 4 new in `layout.rs`). `cargo build --release --locked
+-p cr-app` — green.
+
 The duplicate cleanup (2026-09-13): `cargo fmt --all` and `cargo
 clippy --workspace --all-targets -- -D warnings` — green.
 `CR_FORMAT_TESTS=1 cargo test --workspace --locked` — 702 passed, 0
@@ -307,6 +325,13 @@ The 2026-09-12 side task (ADR-039, ADR-040):
    With every rule off the command must select nothing and clear the
    selection. The selection must survive a restart is NOT a
    requirement — the mark is a selection, not a stored flag.
+7. **Keyboard navigation (the 2026-09-13 fix).** In Details view: open
+   the Library list and press Down from the middle of the list — it
+   must move one row, PageDown one page of rows, and the app must not
+   abort. In Thumbnails: hold Down — the display must scroll so the
+   selected book stays visible; Up and PageUp must work the same way
+   backwards. Change the view mode with a book selected: the book
+   must stay visible.
 
 **PASSED 2026-09-12 (user confirmation):**
 
