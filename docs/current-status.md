@@ -14,6 +14,25 @@ user-tested on 2026-09-12 and are archived. Phase 9 is DEFERRED to
 
 ## Current task
 
+**v0.2.0 is TAGGED (2026-09-13).** The annotated tag `v0.2.0` points at
+`0cee8b0` and is on both remotes. Publishing is manual and is the
+user's step, in the Gitea Actions UI, in this order:
+
+1. **Tagged release** — enter `v0.2.0`. It re-runs fmt, clippy and the
+   tests at the tag, then builds and publishes the portable tarball.
+2. **Packaging** — enter `v0.2.0`. It must run SECOND: it attaches the
+   vendored source tarball, the Arch package and the `.deb` to the
+   release that step 1 created.
+
+After the release is out, bump nothing by hand: ADR-043 derives the
+rolling version from the newest stable tag, so the next push to main
+publishes `0.2.1`.
+
+The user tests below stay open until they run on the release build; a
+defect becomes a v0.2.1 fix.
+
+## Previous task
+
 **The macOS-junk pages and the RAR5 mismatch mark (2026-09-13).**
 
 The user report: certain cbr files show no thumbnail and do not open;
