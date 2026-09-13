@@ -14,6 +14,54 @@ user-tested on 2026-09-12 and are archived. Phase 9 is DEFERRED to
 
 ## Current task
 
+**Three browser fixes (2026-09-13, `4566336`).**
+
+The user report: Details view loaded cover thumbnails while
+scrolling the list, Ctrl+A did not select all titles, and Delete did
+not open the Remove from Library dialog.
+
+1. **Detail thumbnails.** `queue_visible_thumbs` (`item_view.rs`)
+   queued cover decodes for every visible row in all three modes,
+   and `draw_detail_item` consumes none of them — pure waste. With
+   Generate Thumbnails On Demand OFF it was worse: the not-cached
+   branch never marks a book queued, so every visible book paid one
+   `front_cover_thumbnail_key` (a `stat()`) per draw frame. The new
+   pure predicate `loads_thumbnails` (`layout.rs`, documented
+   against `ThumbnailViewItem.cs:128-140`) gates the queue: Detail
+   loads nothing, Thumbnail and Tile load. The C# loads in Detail
+   only for a Cover/Thumbnail column; this port draws no cover
+   column in Detail, and the user decision is to gate only (no
+   Cover-column rendering).
+2. **Ctrl+A.** A key-controller arm now calls the previously
+   uncalled `ViewState::select_all` (the C# menu accelerator
+   `miSelectAll` → `ItemView.SelectAll`, ItemView.cs:1802;
+   Designer.cs:667). Key-only; no menu entry.
+3. **Delete.** New `ItemView::connect_remove` hook, fired deferred
+   with no state borrow held (the `on_activate` discipline). The
+   context-menu "remove" arm — the ADR-045 two-checkbox dialog —
+   moved unchanged into `run_remove_books` (`shell.rs`), and the
+   menu and the key both call it. User decision: Delete always
+   shows the dialog (the C# Ctrl+Delete skip-confirm is not
+   ported).
+
+Gates: `cargo fmt --all`, `cargo clippy --workspace --all-targets
+-- -D warnings`, `CR_FORMAT_TESTS=1 cargo test --workspace
+--locked` (724 passed, 0 failed; the new
+`detail_mode_loads_no_thumbnails` included), `cargo build --release
+--locked -p cr-app` — all green.
+
+**Open user tests:**
+
+- Details: scroll the whole library — no thumbnail decode activity
+  and no new files in the thumbnail cache; switch to Thumbnails —
+  covers appear.
+- Ctrl+A in a list selects every title; the status-bar count
+  follows.
+- Delete with a selection opens the Remove Books dialog; Cancel
+  removes nothing; OK runs the trash/permanent flow as before.
+
+## Previous task
+
 **v0.2.0 is TAGGED (2026-09-13).** The annotated tag `v0.2.0` points at
 `0cee8b0` and is on both remotes. Publishing is manual and is the
 user's step, in the Gitea Actions UI, in this order:
