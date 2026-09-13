@@ -19,7 +19,7 @@ use std::rc::Rc;
 
 use gtk4::prelude::*;
 use gtk4::{
-    Align, Box as GtkBox, Button, CheckButton, ComboBoxText, Dialog, Label, Orientation,
+    Align, Box as GtkBox, Button, CheckButton, ComboBoxText, Dialog, Entry, Label, Orientation,
     ScrolledWindow, SpinButton, Stack, StackSidebar,
 };
 
@@ -639,6 +639,26 @@ fn build_duplicates_page(settings: &SettingsRef) -> GtkBox {
     page.append(&smaller);
     page.append(&fewer);
     page.append(&older);
+
+    // The incoming-path rule (ADR-046): the path whose copies are
+    // worse. One text entry; an empty field turns the rule off.
+    page.append(&section_label("The incoming folder rule"));
+    page.append(&section_label(
+        "Copies under this path are worse than copies outside it. \
+         This rule outweighs the four rules above. \
+         An empty field turns the rule off.",
+    ));
+    let path_entry = Entry::new();
+    path_entry.set_placeholder_text(Some("/data/incoming"));
+    path_entry.set_text(&settings.borrow().duplicates_incoming_path);
+    path_entry.set_halign(Align::Fill);
+    {
+        let settings = Rc::clone(settings);
+        path_entry.connect_changed(move |e| {
+            settings.borrow_mut().duplicates_incoming_path = e.text().to_string();
+        });
+    }
+    page.append(&path_entry);
 
     page.append(&section_label(
         "The Views ▸ Show Duplicates filter shows the duplicate \

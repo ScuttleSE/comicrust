@@ -240,6 +240,7 @@ app writes the "app-managed" keys itself.
 | `DogEarThumbnails` | true | Selected thumbnails carry a dog-ear. |
 | `DuplicatesCbrWorseThanCbz` | true | Ranks CBR copies worse than CBZ copies in a duplicate group. Port addition. |
 | `DuplicatesFewerPagesWorse` | true | Ranks fewer pages worse than more pages in a duplicate group. Port addition. |
+| `DuplicatesIncomingPath` | (empty) | The incoming-path rule (ADR-046): copies under this path are worse than copies outside it, at a weight that outweighs the other duplicate rules. Empty turns the rule off. Port addition. |
 | `DuplicatesOlderFileWorse` | true | Ranks an older file worse than a newer file in a duplicate group (the tie-break for copies equal on every other rule). Port addition. |
 | `DuplicatesSmallerFileWorse` | true | Ranks smaller files worse than larger files in a duplicate group. Port addition. |
 | `FadeInThumbnails` | true | Thumbnails fade in when loaded. |

@@ -14,37 +14,32 @@ user-tested on 2026-09-12 and are archived. Phase 9 is DEFERRED to
 
 ## Current task
 
-**Two user-reported fixes (2026-09-13): watch folders cannot be
-removed, and a permanent-delete option for book deletion.**
+**The incoming-path duplicate rule (ADR-046, 2026-09-13).**
 
-1. **Watch-folder removal.** The Preferences Libraries page never
-   had the C# Remove button (`btRemoveFolder_Click`,
-   PreferencesDialog.cs:421-428, enabled by the list selection at
-   `:468`). The page now stages the list the C# way (the C# edits
-   `lbPaths` in memory and `CopyWatchFoldersToDatabase` commits on
-   OK, `:1140`/`:966`): row selection, a Remove button gated by the
-   selection, the Watch toggles and Add staged too, Cancel reverts,
-   OK commits through the new `Library::set_watch_folders`, which
-   also rebuilds the live watcher. The old page wrote the live
-   database directly (Cancel leaked changes) and added folders
-   never reached the watcher until restart.
-2. **Permanent delete (ADR-045, a PORT ADDITION — the C# shell
-   delete is always the recycle bin).** Both delete dialogs gain
-   "Delete permanently (do not use the trash)" — unchecked by
-   default and never persisted (the user decision: no settings
-   memory). Browser flow: dependent on "Also delete the files".
-   Files view: standalone. Permanent mode unlinks with
-   `std::fs::remove_file`; trash mode keeps `gio trash` (ADR-006)
-   byte-unchanged. Delete failures now follow the C# contract: a
-   failed delete keeps the book (the C# `continue` before
-   `library.Remove`, ComicListLibraryBrowser.cs:160-166) and the
-   failed set raises the FailedDeleteBooks message — the Files view
-   already had it, the browser flow gains it.
+The user keeps a main library plus an `Incoming` watch folder. When the
+same book exists in both, the ADR-044 quality rules could mark the
+Library copy. The fifth rule fixes that: copies under the configured
+path (`DuplicatesIncomingPath`, Preferences Duplicates page, empty =
+off) take one heavy penalty in a group that also holds a copy outside
+the path — heavy enough to outweigh all quality rules, so the Library
+copy wins over cbr/larger/more-pages. A fileless record ("empty
+Comic") still ranks worst wherever it sits (it loses the path rule at
+full weight). Implemented across `cr-core` settings, `cr-engine`
+duplicates, the Preferences page, and the duplicates probe part F.
 
-The duplicate-cleanup session (the fourth duplicate rule
-`DuplicatesOlderFileWorse` + the bounded thumbnail render) was
-committed separately as `35ccbae` with its gates; its record is in
-that commit message.
+Gates: fmt, clippy, and `cargo test --workspace` all green.
+
+**Open user test:** with the path set to the Incoming folder, run
+Select Worst Duplicates over the real mixed duplicates: the Library
+copy must survive and the Incoming copy (or a fileless record) must be
+the selection.
+
+## Previous task
+
+**Two user-reported fixes (2026-09-13) — committed as `ea21320`:**
+watch-folder removal (the staged Preferences Libraries page with the
+C# Remove flow) and the permanent-delete option (ADR-045). Their user
+test state is unchanged by this session.
 
 Phase 16 T1 (add `cover_date` to `IssueRef` and the issue queries) is
 unchanged and NOT STARTED.

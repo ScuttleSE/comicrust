@@ -11,7 +11,9 @@
 //!   D. With every rule off, the command selects nothing.
 //!   E. The book context menu row fires the same command.
 //!   F. The Preferences Duplicates page opens, its three rows read
-//!      the settings, and OK commits them (session + file).
+//!      the settings, and OK commits them (session + file); the
+//!      incoming-path entry reads the empty setting and commits the
+//!      typed path the same way.
 //!
 //! Run: Xvfb + `cargo run -p cr-ui --example duplicates_probe` with
 //! an isolated XDG pair (the probe seeds books into the DB it opens).
@@ -110,13 +112,16 @@ fn selection_titles(shell: &cr_ui::browser::shell::BrowserShell) -> Vec<String> 
     titles
 }
 
-/// Flips one duplicate rule in the session settings.
-fn set_rule(cbr: bool, smaller: bool, fewer: bool) {
+/// Flips the duplicate rules in the session settings — all FOUR
+/// quality rules (the ADR-044 set; the incoming path is a separate
+/// setting the probes do not arm).
+fn set_rule(cbr: bool, smaller: bool, fewer: bool, older: bool) {
     let s = cr_ui::library::settings();
     let mut s = s.borrow_mut();
     s.duplicates_cbr_worse_than_cbz = cbr;
     s.duplicates_smaller_file_worse = smaller;
     s.duplicates_fewer_pages_worse = fewer;
+    s.duplicates_older_file_worse = older;
     drop(s);
     cr_ui::library::save_settings();
 }
@@ -148,7 +153,7 @@ fn main() {
     lib.database_mut().books = books;
     lib.save().unwrap();
     cr_ui::library::initialize().expect("session init");
-    set_rule(true, true, true);
+    set_rule(true, true, true, true);
 
     let app = gtk4::Application::builder()
         .application_id("org.comicrust.duplicates-probe")
@@ -207,7 +212,7 @@ fn main() {
         glib::timeout_add_local(std::time::Duration::from_millis(1500), {
             let shell = shell.clone();
             move || {
-                set_rule(false, true, true);
+                set_rule(false, true, true, true);
                 shell.state_dispatch("win.select-worst-duplicates");
                 let sel = selection_titles(&shell);
                 let expect: Vec<String> = [
@@ -230,14 +235,14 @@ fn main() {
         glib::timeout_add_local(std::time::Duration::from_millis(1900), {
             let shell = shell.clone();
             move || {
-                set_rule(false, false, false);
+                set_rule(false, false, false, false);
                 shell.state_dispatch("win.select-worst-duplicates");
                 let sel = selection_titles(&shell);
                 println!("D selection={sel:?} (expect [])");
                 if !sel.is_empty() {
                     fail("D an all-tie group marked copies");
                 }
-                set_rule(true, true, true);
+                set_rule(true, true, true, true);
                 glib::ControlFlow::Break
             }
         });
@@ -329,8 +334,37 @@ fn main() {
                 if !(cbr.is_active() && smaller.is_active() && fewer.is_active()) {
                     fail("F the rows do not read the (all-on) settings");
                 }
+                // The incoming-path entry (ADR-046): it reads the
+                // empty setting, and the typed path commits with the
+                // checkboxes.
+                let find_entry = || -> gtk4::Entry {
+                    let mut found = None;
+                    let mut walk = vec![dialog.child().unwrap()];
+                    while let Some(w) = walk.pop() {
+                        if let Ok(e) = w.clone().downcast::<gtk4::Entry>() {
+                            if e.placeholder_text()
+                                .map(|p| p == "/data/incoming")
+                                .unwrap_or(false)
+                            {
+                                found = Some(e);
+                                break;
+                            }
+                        }
+                        let mut child = w.first_child();
+                        while let Some(ch) = child {
+                            walk.push(ch.clone());
+                            child = ch.next_sibling();
+                        }
+                    }
+                    found.unwrap_or_else(|| panic!("F the incoming-path entry is missing"))
+                };
+                let path_entry = find_entry();
+                if !path_entry.text().is_empty() {
+                    fail("F the incoming-path entry does not read the empty setting");
+                }
                 cbr.set_active(false);
                 smaller.set_active(false);
+                path_entry.set_text("/data/incoming");
                 dialog
                     .clone()
                     .downcast::<Dialog>()
@@ -340,14 +374,25 @@ fn main() {
                 if s.duplicates_cbr_worse_than_cbz || s.duplicates_smaller_file_worse {
                     fail("F the OK commit did not land in the session settings");
                 }
+                if s.duplicates_incoming_path != "/data/incoming" {
+                    fail("F the incoming path did not land in the session settings");
+                }
                 // The commit is on disk too (the whole-file rewrite).
                 let cfg = cr_core::paths::config_file(&cr_core::paths::Paths::new_default());
                 let text = std::fs::read_to_string(&cfg).unwrap_or_default();
                 if !text.contains("DuplicatesCbrWorseThanCbz = false") {
                     fail("F the config file did not record the commit");
                 }
+                if !text.contains("DuplicatesIncomingPath = \"/data/incoming\"") {
+                    fail("F the config file did not record the incoming path");
+                }
                 println!("F rows read + commit OK (session + file)");
-                set_rule(true, true, true);
+                set_rule(true, true, true, true);
+                {
+                    let s = cr_ui::library::settings();
+                    s.borrow_mut().duplicates_incoming_path = String::new();
+                }
+                cr_ui::library::save_settings();
                 println!("PROBE COMPLETE");
                 app.quit();
                 glib::ControlFlow::Break

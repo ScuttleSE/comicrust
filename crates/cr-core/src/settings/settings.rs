@@ -178,6 +178,11 @@ pub struct Settings {
     /// every other rule (a re-downloaded or re-scanned copy carries
     /// the newer stamp; the stale copy ranks worst).
     pub duplicates_older_file_worse: bool,
+    /// PORT ADDITION (no C# counterpart): the incoming-path rule
+    /// (ADR-046). Copies under this path are worse than copies
+    /// outside it, at a weight that outweighs the four quality rules
+    /// above. Empty means the rule is off.
+    pub duplicates_incoming_path: String,
     /// The `MB` spellings are pinned (the C# member names carry the
     /// uppercase pair).
     #[serde(rename = "ThumbCacheSizeMB")]
@@ -323,6 +328,7 @@ impl Default for Settings {
             duplicates_smaller_file_worse: true,
             duplicates_fewer_pages_worse: true,
             duplicates_older_file_worse: true,
+            duplicates_incoming_path: String::new(),
             thumb_cache_size_mb: 500,
             page_cache_enabled: true,
             page_cache_size_mb: 500,
@@ -417,6 +423,9 @@ crate::settings_fields! {
     Bool "DuplicatesSmallerFileWorse" => duplicates_smaller_file_worse: bool, cat: "Browser", desc: "Smaller files are worse than larger files", browsable: false, ini: true;
     Bool "DuplicatesFewerPagesWorse" => duplicates_fewer_pages_worse: bool, cat: "Browser", desc: "Fewer pages are worse than more pages", browsable: false, ini: true;
     Bool "DuplicatesOlderFileWorse" => duplicates_older_file_worse: bool, cat: "Browser", desc: "Older files are worse than newer files", browsable: false, ini: true;
+    // PORT ADDITION (no C# counterpart): the incoming-path rule
+    // (ADR-046). The path whose copies are worse in a duplicate group.
+    Str "DuplicatesIncomingPath" => duplicates_incoming_path: String, cat: "Browser", desc: "Copies under this path are worse than copies outside it", browsable: false, ini: true;
     Bool "PageCacheEnabled" => page_cache_enabled: bool, cat: "Caching", desc: "Turn page caching on or off", browsable: false, ini: true;
     Bool "InternetCacheEnabled" => internet_cache_enabled: bool, cat: "Caching", desc: "Turn Internet caching on or off", browsable: false, ini: true;
     Bool "MemoryThumbCacheOptimized" => memory_thumb_cache_optimized: bool, cat: "", desc: "Optimize Memory Thumbnail cache", browsable: false, ini: true;
@@ -459,6 +468,7 @@ mod tests {
             duplicates_cbr_worse_than_cbz: false,
             duplicates_smaller_file_worse: false,
             duplicates_fewer_pages_worse: false,
+            duplicates_incoming_path: "/data/incoming".into(),
             ..Settings::default()
         };
         let value = settings_to_value(&s);
@@ -474,6 +484,8 @@ mod tests {
         assert!(text.contains("DuplicatesSmallerFileWorse"));
         assert!(text.contains("DuplicatesFewerPagesWorse"));
         assert!(text.contains("DuplicatesOlderFileWorse"));
+        assert!(text.contains("DuplicatesIncomingPath"));
+        assert!(text.contains("\"/data/incoming\""));
     }
 
     #[test]
