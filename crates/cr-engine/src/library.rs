@@ -10,6 +10,7 @@
 //! and `ComicRack.Engine/QueueManager.cs` (`StartScan`).
 
 use std::path::{Path, PathBuf};
+use std::sync::mpsc::{self, Receiver};
 
 use cr_core::database::comic_database::{
     open_with_fallback, save, ComicDatabase, DbError, OpenStatus,
@@ -18,7 +19,7 @@ use cr_core::xml::scalar::CrDateTime;
 
 use crate::queue_manager::QueueManager;
 use crate::scanner::{scan_database, ScanItem, ScanResult};
-use crate::watch::Watcher;
+use crate::watch::{Watcher, DEFAULT_DEBOUNCE};
 
 pub struct Library {
     database: ComicDatabase,
@@ -34,6 +35,17 @@ pub struct Library {
     queues: QueueManager,
     /// Live watch over `database.watch_folders` (`Watch = true`).
     watcher: Option<Watcher>,
+    /// The in-flight async watcher build (`Watcher::with_debounce`
+    /// walks every subdirectory of every watch root — MEASURED 19 s
+    /// on a CIFS mount at startup — so the build runs on a worker
+    /// thread and the main-thread pump installs through
+    /// [`Library::take_watch_folder_rescans`]).
+    watcher_rx: Option<Receiver<(u64, std::io::Result<Watcher>)>>,
+    /// Last-wins guard: each rebuild bumps the generation; a finished
+    /// build installs only when its generation still matches (a
+    /// Preferences OK that rebuilds while one build runs drops the
+    /// stale result).
+    watcher_gen: u64,
 }
 
 impl Library {
@@ -53,9 +65,10 @@ impl Library {
             dirty: false,
             queues: QueueManager::new(),
             watcher: None,
+            watcher_rx: None,
+            watcher_gen: 0,
         };
         lib.rebuild_watcher();
-        crate::trace::trace("library: watcher built");
         Ok((lib, status))
     }
 
@@ -190,6 +203,9 @@ impl Library {
     /// they belong to (in stored order; each stored root appears at
     /// most once).
     pub fn take_watch_folder_rescans(&mut self) -> Vec<String> {
+        // The pump slot: a finished async build installs here, so the
+        // existing 1-s timer drives it (no separate timer).
+        self.install_pending_watcher();
         let events = self.take_watch_events();
         if events.is_empty() {
             return Vec::new();
@@ -236,7 +252,77 @@ impl Library {
     }
 
     fn rebuild_watcher(&mut self) {
-        self.watcher = Watcher::new(&self.database.watch_folders).ok();
+        // The build walks every subdirectory of every watch root
+        // (MEASURED 19 s over CIFS, 0.9 s even warm) — it runs on a
+        // worker thread on a CLONE of the folder list; the main
+        // thread installs the result through the pump. The previous
+        // watcher stays live until the new one lands (last-wins by
+        // generation), so a rebuild loses no events.
+        self.watcher_gen += 1;
+        let gen = self.watcher_gen;
+        let folders = self.database.watch_folders.clone();
+        let folder_count = folders.len();
+        let (tx, rx) = mpsc::channel();
+        let spawned = std::thread::Builder::new()
+            .name("watcher-build".into())
+            .spawn(move || {
+                let result = Watcher::with_debounce(&folders, DEFAULT_DEBOUNCE);
+                let _ = tx.send((gen, result));
+            });
+        match spawned {
+            Ok(_handle) => {
+                crate::trace::trace(format!(
+                    "library: watcher build started gen={gen} folders={folder_count}"
+                ));
+                self.watcher_rx = Some(rx);
+            }
+            // A failed spawn (effectively OOM) keeps the old watcher;
+            // the C# `FileSystemWatcher` failure is silent too.
+            Err(err) => eprintln!("watcher build thread failed: {err}"),
+        }
+    }
+
+    /// Installs a finished async watcher build (the main-thread pump;
+    /// called by [`Library::take_watch_folder_rescans`]). Returns
+    /// whether a build landed. A failed build clears the watcher (the
+    /// old synchronous `.ok()` semantics).
+    pub fn install_pending_watcher(&mut self) -> bool {
+        let Some(rx) = self.watcher_rx.take() else {
+            return false;
+        };
+        match rx.try_recv() {
+            Ok((gen, result)) => {
+                if gen != self.watcher_gen {
+                    return false;
+                }
+                match result {
+                    Ok(watcher) => {
+                        crate::trace::trace(format!("library: watcher installed gen={gen}"));
+                        self.watcher = Some(watcher);
+                    }
+                    Err(err) => {
+                        crate::trace::trace(format!(
+                            "library: watcher build failed gen={gen}: {err}"
+                        ));
+                        self.watcher = None;
+                    }
+                }
+                true
+            }
+            // Still building — keep the receiver for the next tick.
+            Err(mpsc::TryRecvError::Empty) => {
+                self.watcher_rx = Some(rx);
+                false
+            }
+            // The worker died without sending (a panic): drop the
+            // old watcher rather than serve events from a stale
+            // generation silently.
+            Err(mpsc::TryRecvError::Disconnected) => {
+                crate::trace::trace("library: watcher build thread died");
+                self.watcher = None;
+                true
+            }
+        }
     }
 
     /// The collapsed Windows-path roots over the three families (the
@@ -282,5 +368,66 @@ impl Library {
             self.dirty = true;
         }
         result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::{Duration, Instant};
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "comicrust-library-{name}-{}",
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// The async watcher mechanism: `rebuild_watcher` no longer
+    /// blocks; the pump installs the finished build, and the live
+    /// watcher still delivers events (the watchfolders probe gate E
+    /// shape, headless).
+    #[test]
+    fn watcher_build_is_async_and_installs_through_the_pump() {
+        let dir = temp_dir("async");
+        let lib_file = dir.join("ComicDb.xml");
+        let (mut lib, _) = Library::open(&lib_file).expect("fresh library");
+
+        let watch_root = temp_dir("watch-root");
+        lib.add_watch_folder(watch_root.to_str().unwrap(), true);
+        // Async: no build is installed synchronously on the call
+        // return (the pump slot owns the receiver now).
+        assert!(lib.watcher.is_none(), "rebuild must not block");
+
+        let deadline = Instant::now() + Duration::from_secs(10);
+        while Instant::now() < deadline {
+            if lib.install_pending_watcher() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(lib.watcher.is_some(), "the pump never installed the build");
+
+        // Events still flow through the installed watcher.
+        let changed = watch_root.join("new.cbz");
+        std::fs::write(&changed, b"z").unwrap();
+        let deadline = Instant::now() + Duration::from_secs(10);
+        let mut saw_event = false;
+        while Instant::now() < deadline {
+            if !lib.take_watch_events().is_empty() {
+                saw_event = true;
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(20));
+        }
+        assert!(saw_event, "the installed watcher delivered no events");
+
+        // A rebuild with nothing in flight reports no install.
+        assert!(!lib.install_pending_watcher());
     }
 }

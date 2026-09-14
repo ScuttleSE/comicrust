@@ -15,67 +15,82 @@ user-tested on 2026-09-12 and are archived.
 
 ## Current task
 
-**The Library Organizer (Phase 17, 2026-09-13).**
+**The startup-time fix (2026-09-14, ADR-047).**
 
-The user request: port the `Stonepaw/comicrack-library-organizer`
-addon (v2.1, IronPython, Apache-2.0) as the second native module
-under ADR-031, like the Comic Vine scraper. User decisions: full-parity
-config dialog; XML profile import AND export; both mid-run dialogs
-(duplicate + multi-value); a new phase-17 doc (Phase 16 stays
-planned).
+The user report: 35 s to start with a 54,116-book library. The new
+CR_TRACE stage lines (commit `2f39fa9` — one shared epoch in
+`cr-core::trace`, stage lines in the library open, the shell build)
+measured the split on the real library:
 
-What landed:
+| Stage | Measured |
+|---|---|
+| ComicDb.xml parse (103 MB, 54,116 books) | 0.66 s |
+| `Watcher::with_debounce` (recursive inotify over the two watch roots) | **18.96 s** |
+| Shell build | 0.42 s |
+| Boot list fill | ~3 s, post-window |
 
-1. **`crates/cr-organize`** (engine-only: cr-core + cr-io + cr-image
-   + cr-engine, no GTK): `profile.rs` (the Profile schema, defaults
-   byte-equal to the addon, the TOML plugin store, and the addon XML
-   import/export with the legacy roots and the 1.6→2.0 renames),
-   `template.rs` (the `{prefix<name[args]>postfix}` token engine with
-   conditionals `?`, inversions `!`, padding, months, EmptyData,
-   illegal characters, counter, read%, first-letter, custom values,
-   multi-value selections, and the path builders), `fields.rs` (the
-   template/rule field catalogs with the shadow semantics through
-   `cr_engine::matcher::book_view`), `rules.rs` (the exclude-rule
-   tree, Any/All, Only/Do-not, nested groups), `series.rs` (the
-   earliest/last book of a series with the addon's comparison
-   quirks), `mover.rs` (the plan→process run, duplicate resolution,
-   the empty-folder prune, the fileless cover export, the undo
-   collection), `engine.rs` (the `OrganizeUi` request/response seam
-   and the `Apply` mutations).
-2. **cr-ui**: the run window (log, progress, cancel, worker +
-   50 ms pump — the scrape-dialog pattern), the Duplicate dialog
-   (Cancel/Rename/Replace + "do this for all conflicts"), the
-   Multi-Value Selection form, the ProfileSelector, the full-parity
-   config dialog with the token picker and the live preview, and the
-   undo run. Config in `[plugins.library-organizer]` (ADR-033); the
-   undo log is plugin-local state
-   (`~/.config/comicrust/plugins/library-organizer/undo.dat`).
-3. **Wiring**: `win.organize-books` / `organize-quick` /
-   `organize-configure` / `organize-undo`; two book context-menu
-   rows; two File-menu rows ("Configure Library Organizer...",
-   "Library Organizer - Revert Last Move" — the ADR-024 gate keeps
-   the bare "Undo" wording out of the skeleton). One cr-engine
-   touchpoint: `ImagePool::read_custom_thumbnail` (the fileless
-   export reads the custom thumb on the worker thread).
+The 19 s: both watch roots are `Watch: true` on a CIFS Synology mount
+behind two autofs layers; the synchronous registration walks every
+subdirectory over the network (886 + 11 dirs) on the main thread
+before any window exists. The C# builds the same `FileSystemWatcher`
+(WatchFolder.cs:71-84) but on its background database-load thread
+(Program.cs:805-809, the `LoadDatabaseInForeground=false` default),
+which is why the C# never pays this on the startup path. Backgrounding
+the whole DB open (the C# shape) is NOT justified by the numbers —
+the parse is 0.66 s.
 
-Measured findings on the way: the addon's LAST non-copy profile wins
-the book claim (earlier claims are marked skipped); rules on dead
-field names crashed the addon run and now contribute nothing; the
-unified config's `set_plugin` silently failed on integer-keyed maps
-(months became string keys — probe gate B caught it); the duplicate
-rename-path regex strips only single-digit suffixes (kept verbatim).
-The full list is in `docs/phases/phase-17.md`.
+Fix (ADR-047): `Library::rebuild_watcher` spawns a `watcher-build`
+worker on a clone of the folder list; the 1-s watch poll installs the
+finished watcher (`install_pending_watcher`, called first inside
+`take_watch_folder_rescans`); a generation counter makes the last
+rebuild win. All `rebuild_watcher` call sites (Preferences OK, path
+migration) get the same async shape. The previous watcher stays live
+during a rebuild; the pre-install blind window (events missed) is the
+C#'s own behavior during its background load. New engine test
+`watcher_build_is_async_and_installs_through_the_pump`;
+`watch_events_rescan_the_stored_watch_folders` now waits for the
+install before touching the folder.
+
+Measured on the way (NOT fixed, a separate finding): the boot list
+fill is delayed ~2.6 s post-window by ONE gauges-queue node — a
+DirectoryMatcher smart list whose evaluation parses 53,618 directory
+properties on the main thread (`smartlist prop parses=53618
+2580.7ms` in the boot trace). One gauges tick can exceed its 50 ms
+budget by two orders of magnitude. A follow-up task must decide
+between offloading list evaluation or caching the parse; no fix has
+been designed.
 
 Gates: `cargo fmt --all`; `cargo clippy --workspace --all-targets --
 -D warnings`; `CR_FORMAT_TESTS=1 cargo test --workspace --locked`
-(774 passed, 0 failed; 50 new); `cargo build --release --locked
--p cr-app` — all green. New `organize_probe` (release, Xvfb,
-isolated XDG): gates A-F all green (config dialog + store round
-trip, the move run + undo log, the duplicate rename, the multi-value
-series selection, the undo restore). `commands_probe` RESOLVED 77/77
-unchanged.
+(56 binaries, 0 failed; the new watcher test included);
+`cargo build --release --locked -p cr-app` — all green.
+`bootview_probe` re-ran green (`BOOTVIEW PROBE DONE`).
 
-**Open user tests:** the three organizer tests below (8-10).
+**Open user test (startup):** after the NAS has been idle 5+ minutes
+(cold autofs), start the app with `CR_TRACE=1`: the window appears
+in ~1-2 s, the trace shows `watcher build started` before the shell
+and `watcher installed` about 19 s later (never blocking the UI),
+and a file dropped into Incoming still lands in the library.
+
+## Previous task
+
+**The Library Organizer (Phase 17, 2026-09-13).** Port of
+`Stonepaw/comicrack-library-organizer` (v2.1, Apache-2.0) as a native
+module under ADR-031. New crate `cr-organize` (profiles byte-equal to
+the addon, the token template engine, rules, series checks, the move
+run with duplicate/multi-value dialogs, undo) and the cr-ui run/config
+dialogs; wiring: `win.organize-books` / `organize-quick` /
+`organize-configure` / `organize-undo`, two book context rows, two
+File-menu rows. Config in `[plugins.library-organizer]`; the undo log
+is `~/.config/comicrust/plugins/library-organizer/undo.dat`.
+Measured on the way: the addon's LAST non-copy profile wins the book
+claim; rules on dead field names contributed nothing (the addon
+crashed); the unified config's `set_plugin` silently failed on
+integer-keyed maps (probe gate B caught it). Full record:
+`docs/phases/phase-17.md`. Gates all green; `organize_probe` gates
+A-F green; `commands_probe` RESOLVED 77/77.
+
+**Open user tests: the three organizer tests below (8-10).**
 
 ## Previous task
 

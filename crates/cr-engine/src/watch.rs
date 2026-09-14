@@ -32,11 +32,10 @@ pub struct Watcher {
 
 impl Watcher {
     /// Watches every `folder` with `watch == true`, recursively (the
-    /// C# watch folder semantics always include subfolders).
-    pub fn new(folders: &[DbWatchFolder]) -> std::io::Result<Watcher> {
-        Self::with_debounce(folders, DEFAULT_DEBOUNCE)
-    }
-
+    /// C# watch folder semantics always include subfolders). The
+    /// registration walks every subdirectory of every root
+    /// synchronously — the caller runs it off the main thread (the
+    /// `Library` worker build; MEASURED 19 s over CIFS).
     pub fn with_debounce(
         folders: &[DbWatchFolder],
         debounce: Duration,

@@ -258,6 +258,18 @@ fn watch_events_rescan_the_stored_watch_folders() {
     lib.add_watch_folder(&folder.to_string_lossy(), true);
     assert_eq!(lib.database().watch_folders.len(), 1);
 
+    // The build is async: events before the pump installs the
+    // watcher are missed (the same blind window the C# has during
+    // its background load), so the pump must land first.
+    let install_deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    while !lib.install_pending_watcher() {
+        assert!(
+            std::time::Instant::now() < install_deadline,
+            "the pump never installed the watcher"
+        );
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+
     // Touch a file inside the watched folder; the debounced events
     // must map back to the watch root, and the rescan adds the book.
     std::fs::write(folder.join("new.cbz"), b"fakezip").unwrap();
