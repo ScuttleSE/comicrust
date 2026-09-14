@@ -14,6 +14,7 @@ cr-io = { path = "crates/cr-io" }
 cr-image = { path = "crates/cr-image" }
 cr-engine = { path = "crates/cr-engine" }
 cr-scrape = { path = "crates/cr-scrape" }
+cr-organize = { path = "crates/cr-organize" }
 cr-ui = { path = "crates/cr-ui" }
 cr-cli = { path = "crates/cr-cli" }
 serde = { version = "1", features = ["derive"] }

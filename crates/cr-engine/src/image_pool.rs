@@ -521,6 +521,14 @@ impl ImagePool {
         }
     }
 
+    /// Reads a custom thumbnail file's bytes (the Library
+    /// Organizer's fileless-book cover export reads it on the worker
+    /// thread; the pool never hands out its folder).
+    pub fn read_custom_thumbnail(&self, key: &str) -> Option<Vec<u8>> {
+        let dir = self.custom_thumb_dir.as_ref()?;
+        std::fs::read(dir.join(key)).ok()
+    }
+
     /// The worker render chain for a thumbnail: render the page, build
     /// the 512px JPEG q60 thumbnail, cache to disk and memory. The
     /// uncached render is bounded at `THUMBNAIL_TIMEOUT_SECS` (the

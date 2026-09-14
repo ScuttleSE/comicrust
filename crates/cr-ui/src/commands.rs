@@ -60,6 +60,13 @@ pub const COMMANDS: &[CommandSpec] = &[
     cmd("cv-import-mcl", &[]),
     cmd("cv-update", &[]),
     cmd("cv-warm", &[]),
+    // The Library Organizer (Phase 17): the addon's Books/Library/
+    // ConfigScript/Undo hooks as native commands. The context-menu
+    // entries (organize / organize-quick) share the win.* ids.
+    cmd("organize-books", &[]),
+    cmd("organize-quick", &[]),
+    cmd("organize-configure", &[]),
+    cmd("organize-undo", &[]),
     cmd("new-book-entry", &["<Control><Shift>n"]),
     // The NewComics.py port (ADR-027) — the script item carried no
     // accelerator.

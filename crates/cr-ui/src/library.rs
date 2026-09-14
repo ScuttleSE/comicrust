@@ -503,6 +503,45 @@ pub fn store_scraper_config(config: &cr_scrape::config::Configuration) {
     save_settings();
 }
 
+/// The Library Organizer's section name in the unified config
+/// (Phase 17, ADR-033).
+pub const ORGANIZER_PLUGIN: &str = "library-organizer";
+
+/// The Library Organizer's stored profiles (the built-in Default
+/// profile when the section is absent — the addon's `load_profiles`
+/// fallback).
+pub fn organize_settings() -> cr_organize::profile::PluginSettings {
+    cr_core::settings::unified::get_plugin(ORGANIZER_PLUGIN)
+        .unwrap_or_else(cr_organize::profile::PluginSettings::builtin)
+}
+
+/// Commits the Library Organizer profiles into
+/// `[plugins.library-organizer]` and saves the unified config.
+pub fn store_organize_settings(settings: &cr_organize::profile::PluginSettings) {
+    cr_core::settings::unified::set_plugin(ORGANIZER_PLUGIN, settings);
+    save_settings();
+}
+
+/// The organizer's undo log (the addon's `undo.dat`, plugin-local
+/// state, not config: ADR-033 keeps the plugin directory for state).
+pub fn organizer_undo_path() -> std::path::PathBuf {
+    let root = std::env::var_os("XDG_CONFIG_HOME")
+        .map(std::path::PathBuf::from)
+        .filter(|v| !v.as_os_str().is_empty())
+        .or_else(|| {
+            std::env::var_os("HOME").map(|h| {
+                let mut p = std::path::PathBuf::from(h);
+                p.push(".config");
+                p
+            })
+        })
+        .unwrap_or_else(|| std::path::PathBuf::from("."));
+    root.join("comicrust")
+        .join("plugins")
+        .join(ORGANIZER_PLUGIN)
+        .join("undo.dat")
+}
+
 /// The Comic Vine disk cache (ADR-037), opened once per process.
 ///
 /// The cache is a file, and the sweep, the warm task, and the scrape

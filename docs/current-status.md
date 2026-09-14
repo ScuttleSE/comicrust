@@ -5,14 +5,79 @@ Do not append a history. History lives in `docs/archive/` and in git.
 
 ## Active phase
 
-**Phase 16 — Comic Vine scraper quality of life.**
-File: `docs/phases/phase-16.md`. Status: PLANNED. No task started.
+**Phase 17 — Native modules II: the Library Organizer.**
+File: `docs/phases/phase-17.md`. Status: COMPLETE (2026-09-13);
+the user test is open. Phase 16 (scraper QoL) stays PLANNED.
 
-Phases 0-8 and 10-15 are COMPLETE. Phases 13, 14, and 15 were
-user-tested on 2026-09-12 and are archived. Phase 9 is DEFERRED to
-`docs/backlog.md`.
+Phases 0-8 and 10-16 are COMPLETE except Phase 9 (DEFERRED to
+`docs/backlog.md`) and 16 (PLANNED). Phases 13, 14, and 15 were
+user-tested on 2026-09-12 and are archived.
 
 ## Current task
+
+**The Library Organizer (Phase 17, 2026-09-13).**
+
+The user request: port the `Stonepaw/comicrack-library-organizer`
+addon (v2.1, IronPython, Apache-2.0) as the second native module
+under ADR-031, like the Comic Vine scraper. User decisions: full-parity
+config dialog; XML profile import AND export; both mid-run dialogs
+(duplicate + multi-value); a new phase-17 doc (Phase 16 stays
+planned).
+
+What landed:
+
+1. **`crates/cr-organize`** (engine-only: cr-core + cr-io + cr-image
+   + cr-engine, no GTK): `profile.rs` (the Profile schema, defaults
+   byte-equal to the addon, the TOML plugin store, and the addon XML
+   import/export with the legacy roots and the 1.6→2.0 renames),
+   `template.rs` (the `{prefix<name[args]>postfix}` token engine with
+   conditionals `?`, inversions `!`, padding, months, EmptyData,
+   illegal characters, counter, read%, first-letter, custom values,
+   multi-value selections, and the path builders), `fields.rs` (the
+   template/rule field catalogs with the shadow semantics through
+   `cr_engine::matcher::book_view`), `rules.rs` (the exclude-rule
+   tree, Any/All, Only/Do-not, nested groups), `series.rs` (the
+   earliest/last book of a series with the addon's comparison
+   quirks), `mover.rs` (the plan→process run, duplicate resolution,
+   the empty-folder prune, the fileless cover export, the undo
+   collection), `engine.rs` (the `OrganizeUi` request/response seam
+   and the `Apply` mutations).
+2. **cr-ui**: the run window (log, progress, cancel, worker +
+   50 ms pump — the scrape-dialog pattern), the Duplicate dialog
+   (Cancel/Rename/Replace + "do this for all conflicts"), the
+   Multi-Value Selection form, the ProfileSelector, the full-parity
+   config dialog with the token picker and the live preview, and the
+   undo run. Config in `[plugins.library-organizer]` (ADR-033); the
+   undo log is plugin-local state
+   (`~/.config/comicrust/plugins/library-organizer/undo.dat`).
+3. **Wiring**: `win.organize-books` / `organize-quick` /
+   `organize-configure` / `organize-undo`; two book context-menu
+   rows; two File-menu rows ("Configure Library Organizer...",
+   "Library Organizer - Revert Last Move" — the ADR-024 gate keeps
+   the bare "Undo" wording out of the skeleton). One cr-engine
+   touchpoint: `ImagePool::read_custom_thumbnail` (the fileless
+   export reads the custom thumb on the worker thread).
+
+Measured findings on the way: the addon's LAST non-copy profile wins
+the book claim (earlier claims are marked skipped); rules on dead
+field names crashed the addon run and now contribute nothing; the
+unified config's `set_plugin` silently failed on integer-keyed maps
+(months became string keys — probe gate B caught it); the duplicate
+rename-path regex strips only single-digit suffixes (kept verbatim).
+The full list is in `docs/phases/phase-17.md`.
+
+Gates: `cargo fmt --all`; `cargo clippy --workspace --all-targets --
+-D warnings`; `CR_FORMAT_TESTS=1 cargo test --workspace --locked`
+(774 passed, 0 failed; 50 new); `cargo build --release --locked
+-p cr-app` — all green. New `organize_probe` (release, Xvfb,
+isolated XDG): gates A-F all green (config dialog + store round
+trip, the move run + undo log, the duplicate rename, the multi-value
+series selection, the undo restore). `commands_probe` RESOLVED 77/77
+unchanged.
+
+**Open user tests:** the three organizer tests below (8-10).
+
+## Previous task
 
 **Three browser fixes (2026-09-13, `4566336`).**
 
@@ -597,6 +662,29 @@ The 2026-09-12 side task (ADR-039, ADR-040):
     failure (a file in a folder you cannot write to): the book must
     STAY in the library and the "Some files could not be deleted
     (maybe they are in use)!" message must appear — in both flows.
+8. **Library Organizer — a simulated run.** Right-click a book,
+    "Library Organizer…": the config dialog opens with the Default
+    profile and the addon's templates. Set the mode to Simulate,
+    point the Base folder at a scratch folder, OK: the run window
+    opens, lists what WOULD happen, and no file moves. Cancel and
+    close leave the library untouched.
+9. **Library Organizer — a real move.** With the profile on Move and
+    a real Base folder, run over a few books: the files land at the
+    template layout (e.g. `<publisher>/<series> (<year>)`), the
+    browser re-points at the new paths, and
+    `~/.config/comicrust/plugins/library-organizer/undo.dat` exists.
+    Move a book onto an existing destination: the duplicate dialog
+    offers Cancel/Rename/Replace; Rename must land `... (1)` and
+    keep the original; Replace must send the old file to the trash
+    and carry its read percentage onto the moved book.
+10. **Library Organizer — revert + import.** File ▸ "Library
+    Organizer - Revert Last Move": the books return to their
+    original paths and the log file is deleted (a second revert
+    says "Nothing to Undo"). Then import your old
+    `losettingsx.dat` through the config dialog's "Import…": the
+    profiles appear (Windows paths need hand-editing), export one
+    back out, and open the exported file in Windows ComicRack to
+    confirm the round trip.
 
 **PASSED 2026-09-12 (user confirmation):**
 

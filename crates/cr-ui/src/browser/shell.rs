@@ -3457,6 +3457,217 @@ impl ShellState {
         });
     }
 
+    /// The Library Organizer main entry (`LibraryOrganizer` hook):
+    /// the config dialog, then the run over the selection.
+    fn open_organize(self: &Rc<ShellState>) {
+        if self.item_view.selection_ids().is_empty() {
+            return;
+        }
+        let settings = library::organize_settings();
+        let state = Rc::downgrade(self);
+        crate::dialogs::organize_config::show_organize_config(
+            &self.window,
+            &settings,
+            None,
+            move |result| {
+                if let Some(settings) = result {
+                    library::store_organize_settings(&settings);
+                    if let Some(sh) = state.upgrade() {
+                        sh.launch_organize(&settings);
+                    }
+                }
+            },
+        );
+    }
+
+    /// The Library Organizer Quick entry (`LibraryOrganizerQuick`):
+    /// straight to the profile selector and the run; the addon
+    /// warns when the only profile has no base folder.
+    fn open_organize_quick(self: &Rc<ShellState>) {
+        let settings = library::organize_settings();
+        if settings.profiles.len() == 1 && settings.profiles[0].base_folder.is_empty() {
+            crate::browser::shell::show_report_dialog(
+                &self.window,
+                "BaseFolder empty",
+                "Library Organizer will not work as expected when the BaseFolder is empty. Run the normal Library Organizer or the Configure dialog first.",
+            );
+            return;
+        }
+        self.launch_organize(&settings);
+    }
+
+    /// The configure-only entry (`ConfigureLibraryOrganizer` hook).
+    fn show_organize_config(self: &Rc<ShellState>) {
+        let settings = library::organize_settings();
+        let state = Rc::downgrade(self);
+        crate::dialogs::organize_config::show_organize_config(
+            &self.window,
+            &settings,
+            None,
+            move |result| {
+                if let Some(settings) = result {
+                    library::store_organize_settings(&settings);
+                    if let Some(sh) = state.upgrade() {
+                        sh.sync_enabled();
+                    }
+                }
+            },
+        );
+    }
+
+    /// Resolves the profiles to run (the ProfileSelector when several
+    /// exist) and launches the run window over the selection.
+    fn launch_organize(self: &Rc<ShellState>, settings: &cr_organize::profile::PluginSettings) {
+        let ids = self.item_view.selection_ids();
+        if ids.is_empty() {
+            return;
+        }
+        // The FULL snapshot (the series lookups scan the library) and
+        // the selected indexes into it.
+        let (books, selected) = Self::organize_snapshot(&ids);
+        if selected.is_empty() {
+            return;
+        }
+        let names: Vec<String> = settings.profiles.iter().map(|p| p.name.clone()).collect();
+        if settings.profiles.len() > 1 {
+            let state = Rc::downgrade(self);
+            let settings = settings.clone();
+            let last_used = settings.last_used.clone();
+            type Pending = std::rc::Rc<std::cell::RefCell<Option<(Vec<ComicBook>, Vec<usize>)>>>;
+            let pending: Pending =
+                std::rc::Rc::new(std::cell::RefCell::new(Some((books, selected))));
+            crate::dialogs::organize::show_profile_selector(
+                &self.window,
+                &names,
+                &last_used,
+                move |result| {
+                    let Some(chosen) = result else {
+                        return;
+                    };
+                    let Some((books, selected)) = pending.borrow_mut().take() else {
+                        return;
+                    };
+                    let profiles: Vec<cr_organize::profile::Profile> = chosen
+                        .iter()
+                        .filter_map(|name| {
+                            settings.profiles.iter().find(|p| &p.name == name).cloned()
+                        })
+                        .collect();
+                    // The chosen names become the last-used set.
+                    let mut store = settings.clone();
+                    store.last_used = chosen;
+                    library::store_organize_settings(&store);
+                    if let Some(sh) = state.upgrade() {
+                        if !profiles.is_empty() {
+                            sh.run_organize(books, selected, profiles);
+                        }
+                    }
+                },
+            );
+        } else {
+            let profiles = settings.profiles.clone();
+            if profiles.is_empty() {
+                return;
+            }
+            self.run_organize(books, selected, profiles);
+        }
+    }
+
+    /// Runs the organizer over `selected` indexes of `books`.
+    fn run_organize(
+        self: &Rc<ShellState>,
+        books: Vec<ComicBook>,
+        selected: Vec<usize>,
+        profiles: Vec<cr_organize::profile::Profile>,
+    ) {
+        let undo_path = library::organizer_undo_path();
+        let pool = Arc::clone(&self.pool);
+        let window = self.window.clone();
+        let refresh_state = Rc::downgrade(self);
+        crate::dialogs::organize::show_run_dialog(
+            &window,
+            books,
+            selected,
+            profiles,
+            Some(undo_path),
+            Some(pool),
+            move |_report| {
+                if let Some(sh) = refresh_state.upgrade() {
+                    sh.refresh_view_from_list();
+                }
+            },
+        );
+    }
+
+    /// The undo command (`LibraryOrganizerUndo` hook): the last run's
+    /// undo log; a successful undo deletes the log.
+    fn run_organize_undo(self: &Rc<ShellState>) {
+        let undo_path = library::organizer_undo_path();
+        if !undo_path.exists() {
+            crate::browser::shell::show_report_dialog(
+                &self.window,
+                "Library Organizer - Undo",
+                "Nothing to Undo",
+            );
+            return;
+        }
+        let collection = crate::dialogs::organize::load_undo_collection(&undo_path);
+        if collection.is_empty() {
+            crate::browser::shell::show_report_dialog(
+                &self.window,
+                "Library Organizer - Undo",
+                "Error loading Undo file",
+            );
+            return;
+        }
+        let settings = library::organize_settings();
+        let profiles: std::collections::HashMap<String, cr_organize::profile::Profile> = settings
+            .profiles
+            .iter()
+            .map(|p| (p.name.clone(), p.clone()))
+            .collect();
+        // The undo snapshot: the books whose current paths the log
+        // names (the addon's `get_library_books`).
+        let books: Vec<ComicBook> = {
+            let lib = library::session();
+            let l = lib.borrow();
+            l.database().books.clone()
+        };
+        let pool = Arc::clone(&self.pool);
+        let window = self.window.clone();
+        let refresh_state = Rc::downgrade(self);
+        let path_for_done = undo_path.clone();
+        crate::dialogs::organize::show_undo_dialog(
+            &window,
+            books,
+            collection,
+            profiles,
+            Some(pool),
+            move |_report| {
+                let _ = std::fs::remove_file(&path_for_done);
+                if let Some(sh) = refresh_state.upgrade() {
+                    sh.refresh_view_from_list();
+                }
+            },
+        );
+    }
+
+    /// The organize snapshot: the full book storage plus the indexes
+    /// of the selection inside it (the engine's series lookups scan
+    /// the whole library, like the addon's `GetLibraryBooks`).
+    fn organize_snapshot(ids: &[CrGuid]) -> (Vec<ComicBook>, Vec<usize>) {
+        let lib = library::session();
+        let l = lib.borrow();
+        let books: Vec<ComicBook> = l.database().books.clone();
+        let selected: Vec<usize> = books
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| ids.contains(&b.id))
+            .map(|(i, _)| i)
+            .collect();
+        (books, selected)
+    }
+
     /// The scrape wizard over the selection (`cvs_scrape`): no API
     /// key opens Preferences on the Comic Vine Scraper page (the key
     /// entry lives there; the C# aborts the scrape when the key is
@@ -4713,6 +4924,18 @@ any value with at least one character.)",
         // the scrape wizard over the selection.
         self.add_simple(&group, "scrape-config", ShellState::show_scrape_config);
         self.add_simple(&group, "scrape-books", ShellState::open_scrape);
+        // The Library Organizer (Phase 17): the main entry (config +
+        // run), Quick (no config), the configure-only dialog, and the
+        // undo command (the addon's Books/Library/ConfigScript/Undo
+        // hooks).
+        self.add_simple(&group, "organize-books", ShellState::open_organize);
+        self.add_simple(&group, "organize-quick", ShellState::open_organize_quick);
+        self.add_simple(
+            &group,
+            "organize-configure",
+            ShellState::show_organize_config,
+        );
+        self.add_simple(&group, "organize-undo", ShellState::run_organize_undo);
         // The Comic Vine disk cache (ADR-037, Phase 15): the MCL
         // seed import and the warm task. The C# plugin had no cache,
         // so it had no such commands.
@@ -5895,6 +6118,14 @@ fn show_context_menu(state: &std::rc::Weak<ShellState>, target: Option<CrGuid>, 
                     // The Comic Vine Scraper wizard over the selection.
                     sh.open_scrape();
                 }
+                "organize" => {
+                    // The Library Organizer: config then run.
+                    sh.open_organize();
+                }
+                "organize-quick" => {
+                    // The Library Organizer Quick: no config step.
+                    sh.open_organize_quick();
+                }
                 "remove" => {
                     run_remove_books(&state);
                 }
@@ -5929,6 +6160,8 @@ fn show_context_menu(state: &std::rc::Weak<ShellState>, target: Option<CrGuid>, 
     add_item(&box_, "Rescan Book File(s)", "rescan");
     add_item(&box_, "Export…", "export");
     add_item(&box_, "Scrape from Comic Vine…", "scrape");
+    add_item(&box_, "Library Organizer…", "organize");
+    add_item(&box_, "Library Organizer (Quick)", "organize-quick");
     add_item(&box_, "Fill Missing Issues…", "fill-missing");
     add_item(&box_, "Select Worst Duplicates", "select-worst-duplicates");
     add_item(&box_, "Remove from Library", "remove");
@@ -6623,7 +6856,7 @@ fn local_clock(unix_seconds: i64) -> String {
 /// window and modal: an `application`-parented dialog gets no parent
 /// hint, so the window manager is free to put it BEHIND the main
 /// window, which is what it did.
-fn show_report_dialog(parent: &impl IsA<gtk4::Window>, heading: &str, message: &str) {
+pub(crate) fn show_report_dialog(parent: &impl IsA<gtk4::Window>, heading: &str, message: &str) {
     message_dialog(parent, heading, message, gtk4::MessageType::Info);
 }
 

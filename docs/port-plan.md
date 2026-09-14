@@ -73,12 +73,15 @@ targeted rounds, each opened from a user request or from the backlog.
 | 13 | One unified config file (ADR-033) | COMPLETE, user-tested 2026-09-12 |
 | 14 | Right-click rescans (ADR-036) | COMPLETE, user-tested 2026-09-12 |
 | 15 | Comic Vine cache, rate budget, missing-issue fill (ADR-037, ADR-038) | COMPLETE, user-tested 2026-09-12 |
-| 16 | Comic Vine scraper quality of life | ACTIVE |
+| 16 | Comic Vine scraper quality of life | PLANNED |
+| 17 | Native modules II: the Library Organizer (`cr-organize`, ADR-031) | COMPLETE, probe-gated; the user test is open |
 
-Phases 12 and 15-16 follow ADR-031: one crate per former plugin, behind
-a thin UI seam. Phase 16 ports the usability work of the
+Phases 12, 15-16, and 17 follow ADR-031: one crate per former plugin,
+behind a thin UI seam. Phase 16 ports the usability work of the
 `Fableton/comic-vine-scraper-ce` fork; the port's scraper came from the
-upstream v1.0.102 release.
+upstream v1.0.102 release. Phase 17 ports Stonepaw's Library Organizer
+v2.1 (the token templates, the exclude rules, the mover, and the undo
+log; the record is `docs/phases/phase-17.md`).
 
 ## 4. Sequencing rationale
 

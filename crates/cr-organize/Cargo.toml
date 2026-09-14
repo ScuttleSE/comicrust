@@ -1,0 +1,21 @@
+[package]
+name = "cr-organize"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+cr-core = { path = "../cr-core" }
+cr-io = { path = "../cr-io" }
+cr-image = { path = "../cr-image" }
+cr-engine = { path = "../cr-engine" }
+chrono = { workspace = true }
+quick-xml = { workspace = true }
+regex = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+thiserror = { workspace = true }
+
+[lints]
+workspace = true
+
+[dev-dependencies]
+toml = { workspace = true }

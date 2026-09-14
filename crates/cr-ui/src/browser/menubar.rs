@@ -101,6 +101,23 @@ pub const FILE: &[MenuNode] = &[
     Item("Update Comic Vine Cache", "win.cv-update", "", ""),
     Item("Warm Comic Vine Cache", "win.cv-warm", "", ""),
     Sep,
+    // The Library Organizer (Phase 17): the addon's @Hook Library and
+    // Undo commands land beside the other plugin-era commands. The
+    // item says "Revert" — the ADR-024 gate keeps the bare "Undo"
+    // wording (the Edit-menu Undo/Redo omission) out of the skeleton.
+    Item(
+        "Configure Library Organizer...",
+        "win.organize-configure",
+        "",
+        "",
+    ),
+    Item(
+        "Library Organizer - Revert Last Move",
+        "win.organize-undo",
+        "",
+        "",
+    ),
+    Sep,
     Item(
         "_New fileless Book Entry...",
         "win.new-book-entry",

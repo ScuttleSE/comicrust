@@ -15,6 +15,15 @@ omissions stay in that phase's kickoff tracker.
   scripting surface. Example: the NewComics.py flow landed natively
   as the "New fileless Book Series…" dialog (Phase 6).
 
+## From Phase 17 (open items)
+
+- **Library Organizer startup auto-run** — the addon's
+  `@Hook Startup` command (`LibraryOrganizerStartup`, shipped
+  disabled): run Library Organizer Quick over the whole library at
+  boot behind a preference toggle. Deferred because the addon ships
+  it off; a boot-time file mover needs its own user test before it
+  can be trusted. The phase record is `docs/phases/phase-17.md`.
+
 ## From Phase 1 (open items)
 
 - **WebComicProvider (`.cbw`)** — the one open reader. The C# spec is

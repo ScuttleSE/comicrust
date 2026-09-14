@@ -403,6 +403,22 @@ dependencies = [
 ]
 
 [[package]]
+name = "cr-organize"
+version = "0.1.0"
+dependencies = [
+ "chrono",
+ "cr-core",
+ "cr-engine",
+ "cr-image",
+ "cr-io",
+ "quick-xml",
+ "regex",
+ "serde",
+ "thiserror",
+ "toml 0.9.12+spec-1.1.0",
+]
+
+[[package]]
 name = "cr-scrape"
 version = "0.1.0"
 dependencies = [
@@ -430,6 +446,7 @@ dependencies = [
  "cr-engine",
  "cr-image",
  "cr-io",
+ "cr-organize",
  "cr-scrape",
  "gtk4",
  "libc",

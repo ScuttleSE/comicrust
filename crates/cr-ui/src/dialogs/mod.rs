@@ -10,6 +10,8 @@ pub mod list_editor;
 pub mod missing_issues;
 pub mod name_prompt;
 pub mod new_book_series;
+pub mod organize;
+pub mod organize_config;
 pub mod path_migration;
 pub mod quick_rating;
 pub mod scrape;
