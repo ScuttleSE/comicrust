@@ -5874,9 +5874,18 @@ fn run_remove_books(state: &std::rc::Weak<ShellState>) {
             return;
         };
         let mut any_failed = false;
-        for id in &ids_for_ok {
+        // CR_TRACE stage totals for a slow delete: the file-deletion
+        // half (one gio-trash subprocess per book) against the
+        // library-removal half, per-100 progress in between.
+        let total = ids_for_ok.len();
+        let t_all = std::time::Instant::now();
+        let mut t_files = std::time::Duration::ZERO;
+        let mut t_removes = std::time::Duration::ZERO;
+        let (mut n_trash, mut n_unlink, mut n_failed) = (0usize, 0usize, 0usize);
+        for (done, id) in ids_for_ok.iter().enumerate() {
             let mut delete_failed = false;
             if remove_files {
+                let t0 = std::time::Instant::now();
                 if let Some(path) = library::book_path(id) {
                     // Fileless books (the reading-list
                     // placeholders) carry an EMPTY
@@ -5895,6 +5904,7 @@ fn run_remove_books(state: &std::rc::Weak<ShellState>) {
                             // delete is always the
                             // recycle bin).
                             let _ = std::fs::remove_file(p);
+                            n_unlink += 1;
                         } else {
                             // ADR-006: the recycle bin
                             // → GIO trash (the `gio`
@@ -5903,6 +5913,7 @@ fn run_remove_books(state: &std::rc::Weak<ShellState>) {
                             let _ = std::process::Command::new("gio")
                                 .args(["trash", &path])
                                 .status();
+                            n_trash += 1;
                         }
                         // The C# checks File.Exists
                         // after the delete and a
@@ -5914,13 +5925,29 @@ fn run_remove_books(state: &std::rc::Weak<ShellState>) {
                         }
                     }
                 }
+                t_files += t0.elapsed();
             }
             if delete_failed {
+                n_failed += 1;
                 any_failed = true;
             } else {
+                let t1 = std::time::Instant::now();
                 library::remove_book(id);
+                t_removes += t1.elapsed();
+            }
+            if (done + 1) % 100 == 0 {
+                crate::trace::trace(format!(
+                    "remove-books: {}/{} processed (trash {n_trash} unlink {n_unlink} failed {n_failed}) files {t_files:?} removes {t_removes:?}",
+                    done + 1,
+                    total
+                ));
             }
         }
+        crate::trace::trace(format!(
+            "remove-books: {} books in {:?} — files (trash {n_trash} unlink {n_unlink} failed {n_failed}) {t_files:?}, removes {t_removes:?}",
+            total,
+            t_all.elapsed()
+        ));
         // The C# `FailedDeleteBooks` message.
         if any_failed {
             let err = gtk4::MessageDialog::builder()

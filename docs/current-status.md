@@ -15,6 +15,59 @@ user-tested on 2026-09-12 and are archived.
 
 ## Current task
 
+**The bulk-delete freeze instrumentation (2026-09-14).**
+
+The user report: selecting ~900 books and deleting them takes a long
+time before the UI responds. Context from the user: "Also delete the
+files" was checked, the files live on the Synology CIFS mount, the
+active list is a smart list, the freeze is under 30 s.
+
+The shape (CODE-READ, `shell.rs:5866-5964`): the whole delete runs
+inside the confirm dialog's response closure on the GTK main thread —
+per book one `book_path` linear scan, one `is_file()`/`exists()` stat
+pair, one synchronous `gio trash` subprocess spawn+wait, one per-book
+`remove_book` (a fresh `borrow_mut` + an O(N) retain), then ONE final
+`refresh_view_from_list` (smart-list re-evaluation + full refill; a
+DirectoryMatcher smart-list evaluate measured ~2.6 s alone in the boot
+trace). The C# is also synchronous on its UI thread
+(`ComicListLibraryBrowser.cs:149-171`) but makes one native shell call
+per file and removes from the database in ONE batch
+(`Books.RemoveRange`).
+
+Instrumentation (this change, trace-only): CR_TRACE stage totals in
+the OK handler — the file-deletion half against the library-removal
+half (trash/unlink/failed counts), a per-100 progress line, a final
+`remove-books:` line; the refresh keeps its existing `refresh:`
+lines. Verified firing on `deleteperf_probe` (release, real-world
+fixtures): `remove-books: 1 books in 150µs — files 0ns, removes
+150µs`.
+
+Probe finding, NOT a defect: the probe's context-menu click at
+(300,300) lands on an UNSELECTED row, and the ported C# right-click
+rule (ItemView.cs:3855-3900, `item_view.rs:887-903`) replaces the
+selection with it — so the probe removes 1 book, not its seeded 250;
+the seeded counts reconcile exactly (db 3132→3131, grid 2877→2876).
+The app is correct (a right-click on a SELECTED row keeps the
+multi-selection; the real ~900-book delete proves it). The probe
+cannot drive a batch delete through the context-menu route.
+
+UNKNOWN, named: which stage eats the user-visible time at ~900 books —
+the file deletes over CIFS, the removal loop, or the refresh — and how
+much. Decision it feeds: which stage to restructure (worker thread +
+progress + cancel; a batched removal; a refresh change). Instrument:
+the new trace lines. Run: the user's real ~900-book delete.
+
+**Open user test (delete freeze):** reproduce the ~900-book delete
+once with `CR_TRACE=1` on the release build and send the trace — the
+`remove-books:` lines and the `refresh:` lines are the data.
+
+Gates: `cargo fmt --all`; `cargo clippy --workspace --all-targets --
+-D warnings`; `CR_FORMAT_TESTS=1 cargo test --workspace --locked` (56
+binaries, 0 failed); `cargo build --release --locked -p cr-app` — all
+green. `deleteperf_probe` re-ran PROBE COMPLETE.
+
+## Previous task
+
 **The duplicate tie-break (ADR-048, 2026-09-14).**
 
 The user report: Views ▸ Show Duplicates lists the duplicates but
