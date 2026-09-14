@@ -43,6 +43,10 @@ impl Library {
     /// `FileSystemWatcher`).
     pub fn open(file: &Path) -> Result<(Library, OpenStatus), DbError> {
         let (database, status) = open_with_fallback(file)?;
+        crate::trace::trace(format!(
+            "library: db open done books={} ({status:?})",
+            database.books.len()
+        ));
         let mut lib = Library {
             database,
             file: file.to_path_buf(),
@@ -51,6 +55,7 @@ impl Library {
             watcher: None,
         };
         lib.rebuild_watcher();
+        crate::trace::trace("library: watcher built");
         Ok((lib, status))
     }
 

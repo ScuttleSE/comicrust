@@ -84,12 +84,14 @@ pub fn run(args: Vec<String>) {
     if !app.is_remote() {
         // The library session (`Program.DatabaseManager.Open` at
         // startup) — the primary only.
+        crate::trace::trace("startup: opening library");
         match library::initialize() {
             Ok(message) => set_open_message(message),
             Err(err) => set_open_message(Some(format!(
                 "There was an error opening the Database:\n{err}"
             ))),
         }
+        crate::trace::trace("startup: library open done");
 
         // The theme from the extended settings (`ThemeManager.Initialize(
         // ExtendedSettings.Theme)` parity — the C# `Theme` getter resolves

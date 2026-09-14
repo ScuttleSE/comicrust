@@ -20,3 +20,7 @@ pub mod sort;
 pub mod text;
 pub mod tokenizer;
 pub mod watch;
+
+/// The env-gated trace — re-exported from cr-core (one shared epoch
+/// with the UI lines).
+pub use cr_core::trace;

@@ -10,4 +10,5 @@ pub mod paths;
 pub mod registry;
 pub mod scan_status;
 pub mod settings;
+pub mod trace;
 pub mod xml;

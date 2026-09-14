@@ -549,6 +549,7 @@ impl BrowserShell {
     /// Builds the main window (`MainForm`): the browser view + the
     /// docked reader + the header commands.
     pub fn create(app: &Application) -> (ApplicationWindow, BrowserShell) {
+        crate::trace::trace("shell: create start");
         let window = ApplicationWindow::builder()
             .application(app)
             .title("comicrust")
@@ -568,7 +569,9 @@ impl BrowserShell {
         // sink that writes decoded page sizes back into the books.
         let pool = Arc::new(ImagePool::with_config(&library::image_pool_config()));
         library::install_cache_events(&pool);
+        crate::trace::trace("shell: image pool ready");
         let (reader, reader_widgets) = ReaderShell::new(app, Arc::clone(&pool));
+        crate::trace::trace("shell: reader built");
         let navigator = Navigator::new();
         let super::item_view::ItemViewWidgets {
             scroller: item_scroller,
@@ -592,6 +595,7 @@ impl BrowserShell {
             widget: pages_widget,
             panel: pages,
         } = super::pages_view::PagesPanel::create(Arc::clone(&pool), &window);
+        crate::trace::trace("shell: views built");
 
         // The header commands (the handlers wire in `wire`, where
         // the shared state exists). The T6 reorg: Open/Add
@@ -711,6 +715,7 @@ impl BrowserShell {
         content.append(&stack);
         content.append(&status_widget);
         window.set_child(Some(&content));
+        crate::trace::trace("shell: widgets built");
 
         let state = Rc::new(ShellState {
             window: window.clone(),
@@ -760,12 +765,14 @@ impl BrowserShell {
             state: Rc::clone(&state),
         };
         shell.wire(&search);
+        crate::trace::trace("shell: wired");
         // The persisted workspace restores (the C# `MainForm.Load`
         // applies `Settings.CurrentWorkspace` before the first
         // show). A missing element keeps the defaults.
         if let Some(ws) = cr_ui_settings().borrow().current_workspace.clone() {
             shell.state.apply_workspace(&ws);
         }
+        crate::trace::trace("shell: workspace applied");
         (window, shell)
     }
 
