@@ -15,6 +15,54 @@ user-tested on 2026-09-12 and are archived.
 
 ## Current task
 
+**The duplicate tie-break (ADR-048, 2026-09-14).**
+
+The user report: Views ▸ Show Duplicates lists the duplicates but
+Select Worst Duplicates selected NOTHING (example: the
+`Hyena Man 001 (2025) ... (LeDuch-Felino).cbz` / `(webp)` pair).
+
+Measurement — new read-only `cr-cli duplicates` subcommand (loads the
+real ComicDb.xml through the app's loader, ranks with the real rules,
+prints per-group member inputs and penalties; never saves): 989
+groups, 2,022 members under the configured incoming path, **0
+selected**, 1,973 members at exactly penalty 1. Every formed group
+tied internally. The dominant real pattern is the re-encode pair —
+one copy smaller AND stamped seconds later, the other larger AND
+older — one symmetric rule loss each, so the ADR-044 score sum marked
+nothing on real download-batch data. The ranking inputs are healthy
+(sizes, page counts, stamps all load and rank); the UI path was never
+implicated. Second finding, NOT changed: pairs split by one-sided
+shadow metadata (a year filled from one filename only — e.g.
+`Hawkeye: Freefall #002 (2020).cbz` vs `Hawkeye: Freefall #002.cbz`)
+never group, so they appear in neither the duplicates view nor the
+ranking — strict C# parity, recorded in the ADR-048 context as a
+separate open decision.
+
+Fix (ADR-048, user decisions: deterministic tie-break, applied
+whatever the switches say): an exact tie at the group minimum breaks
+to the smaller file, then fewer pages, then the older stamp; copies
+identical on all three mark nothing. One shared `selected_indices`
+serves the command and the diagnostic report. After the fix the same
+measured run selects 982 of 2,022; the Hyena pair marks the smaller
+webp copy. New engine tests: `a_conflicting_tie_breaks_to_the_smaller_file`,
+`all_rules_off_breaks_ties_by_size`, `identical_copies_still_mark_nothing`,
+`the_tie_break_prefers_smaller_then_pages_then_stamp`.
+`duplicates_probe` gates B/D/E expectations updated (C's content was
+already the tie-break result and is unchanged).
+
+Gates: `cargo fmt --all`; `cargo clippy --workspace --all-targets --
+-D warnings`; `CR_FORMAT_TESTS=1 cargo test --workspace --locked`;
+`cargo build --release --locked -p cr-app`; `duplicates_probe` A–F
+green — all run after this section was written (see the verification
+record).
+
+**Open user test (duplicates, the ADR-048 build):** test 3 below, on
+the real library: differing pairs select one copy each (the smaller /
+fewer-page / older one), identical pairs select nothing, Remove from
+Library then clears the marked copies.
+
+## Previous task
+
 **The startup-time fix (2026-09-14, ADR-047).**
 
 The user report: 35 s to start with a 54,116-book library. The new
@@ -434,6 +482,15 @@ made that the present combination is permissible.
 
 ## Verification record
 
+The duplicate tie-break (2026-09-14): `cargo fmt --all` and `cargo
+clippy --workspace --all-targets -- -D warnings` — green.
+`CR_FORMAT_TESTS=1 cargo test --workspace --locked` — 56 binaries, 0
+failed. `cargo build --release --locked -p cr-app` — green.
+`duplicates_probe` A–F green (gates B/D/E carry the ADR-048
+expectations). `commands_probe` rebuilt and re-run: RESOLVED 81/81 (4
+skipped). `cr-cli duplicates` over the real database (read-only):
+989 groups, 2,022 members, 982 selected post-fix (0 pre-fix).
+
 The watch-folder + permanent-delete task (2026-09-13): `cargo fmt
 --all` and `cargo clippy --workspace --all-targets -- -D warnings`
 — green. `CR_FORMAT_TESTS=1 cargo test --workspace --locked` — 707
@@ -634,21 +691,21 @@ The 2026-09-12 side task (ADR-039, ADR-040):
    Rename and Delete. Click it: sub-folders come first, then the lists
    by name ("The Batman" sorts under B). Right-click a LIST: there must
    be no "Sort" row. Restart and confirm the sorted order survived.
-3. **Select Worst Duplicates (ADR-044).** Give one series two copies
-   that differ (a CBR that is smaller with fewer pages than its CBZ
-   twin). Views ▸ Show Duplicates must narrow the list to the
-   duplicates. Right-click a book: "Select Worst Duplicates" must sit
-   between "Fill Missing Issues…" and "Remove from Library". Click it:
-   the worse copy must select, the better one must not. Run Remove
-   from Library on the selection and confirm. In Edit ▸ Preferences,
-   the new Duplicates page must list the three rules, all on. Uncheck
-   "CBR copies are worse than CBZ copies", OK, and run the command
-   again on a group where the CBR is LARGER: with the rule off, the
-   smaller CBZ must select instead (the score-sum behavior — a
-   conflicting pair that ties under the rules must select NOTHING).
-   With every rule off the command must select nothing and clear the
-   selection. The selection must survive a restart is NOT a
-   requirement — the mark is a selection, not a stored flag.
+3. **Select Worst Duplicates (ADR-044, ADR-048).** Give one series
+   two copies that differ (a CBR that is smaller with fewer pages
+   than its CBZ twin). Views ▸ Show Duplicates must narrow the list
+   to the duplicates. Right-click a book: "Select Worst Duplicates"
+   must sit between "Fill Missing Issues…" and "Remove from Library".
+   Click it: the worse copy must select, the better one must not. Run
+   Remove from Library on the selection and confirm. In Edit ▸
+   Preferences, the new Duplicates page must list the rules, all on.
+   Uncheck "CBR copies are worse than CBZ copies", OK, and run the
+   command again on a group where the CBR is LARGER: with the rule
+   off, the smaller CBZ must select instead (the score-sum behavior).
+   With every rule off a differing pair still selects the smaller
+   copy (the ADR-048 tie-break); two copies identical on size, pages,
+   and stamp select nothing. The selection must survive a restart is
+   NOT a requirement — the mark is a selection, not a stored flag.
 4. **Keyboard navigation (the 2026-09-13 fix).** In Details view: open
    the Library list and press Down from the middle of the list — it
    must move one row, PageDown one page of rows, and the app must not

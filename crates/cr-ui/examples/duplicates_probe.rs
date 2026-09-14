@@ -5,10 +5,14 @@
 //!   A. Views ▸ Show Duplicates narrows the grid to the duplicate
 //!      members (8 of 9).
 //!   B. `win.select-worst-duplicates` selects the expected worst
-//!      copies (the CBR of the clear group, the fileless entry).
+//!      copies (the CBR of the clear group, the conflict group's
+//!      smaller CBZ through the ADR-048 tie-break, the fileless
+//!      entry).
 //!   C. With the format rule off, the conflict group's smaller CBZ
-//!      marks (the ADR-044 score-sum behavior).
-//!   D. With every rule off, the command selects nothing.
+//!      marks by penalty (the ADR-044 score sum).
+//!   D. With every rule off, the tie-break still resolves every
+//!      differing group and the identical pair marks nothing
+//!      (ADR-048).
 //!   E. The book context menu row fires the same command.
 //!   F. The Preferences Duplicates page opens, its three rows read
 //!      the settings, and OK commits them (session + file); the
@@ -195,10 +199,14 @@ fn main() {
                     fail("B the select-worst-duplicates action did not resolve");
                 }
                 let sel = selection_titles(&shell);
-                let expect: Vec<String> = ["Alpha Probe #g1-worst", "Fileless Probe #g4-fileless"]
-                    .iter()
-                    .map(|s| s.to_string())
-                    .collect();
+                let expect: Vec<String> = [
+                    "Alpha Probe #g1-worst",
+                    "Conflict Probe #g2-cbz",
+                    "Fileless Probe #g4-fileless",
+                ]
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
                 println!("B selection={sel:?} (expect {expect:?})");
                 if sel != expect {
                     fail("B the worst copies did not select");
@@ -231,16 +239,26 @@ fn main() {
             }
         });
 
-        // D. Every rule off: nothing marks; the selection clears.
+        // D. Every rule off: all penalties tie at zero and the
+        //     ADR-048 tie-break resolves the three differing groups;
+        //     the identical g3 pair still marks nothing.
         glib::timeout_add_local(std::time::Duration::from_millis(1900), {
             let shell = shell.clone();
             move || {
                 set_rule(false, false, false, false);
                 shell.state_dispatch("win.select-worst-duplicates");
                 let sel = selection_titles(&shell);
-                println!("D selection={sel:?} (expect [])");
-                if !sel.is_empty() {
-                    fail("D an all-tie group marked copies");
+                let expect: Vec<String> = [
+                    "Alpha Probe #g1-worst",
+                    "Conflict Probe #g2-cbz",
+                    "Fileless Probe #g4-fileless",
+                ]
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
+                println!("D selection={sel:?} (expect {expect:?})");
+                if sel != expect {
+                    fail("D the all-off tie-break resolved wrong (the identical pair must stay unmarked)");
                 }
                 set_rule(true, true, true, true);
                 glib::ControlFlow::Break
@@ -265,10 +283,14 @@ fn main() {
                     fail("E the Select Worst Duplicates row is missing");
                 }
                 let sel = selection_titles(&shell);
-                let expect: Vec<String> = ["Alpha Probe #g1-worst", "Fileless Probe #g4-fileless"]
-                    .iter()
-                    .map(|s| s.to_string())
-                    .collect();
+                let expect: Vec<String> = [
+                    "Alpha Probe #g1-worst",
+                    "Conflict Probe #g2-cbz",
+                    "Fileless Probe #g4-fileless",
+                ]
+                .iter()
+                .map(|s| s.to_string())
+                .collect();
                 println!("E row-click selection={sel:?} (expect {expect:?})");
                 if sel != expect {
                     fail("E the context-menu row fired the wrong command");

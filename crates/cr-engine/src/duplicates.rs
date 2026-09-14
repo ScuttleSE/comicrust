@@ -10,11 +10,17 @@
 //! minimum survives — when every copy loses at least one rule, only
 //! the copies with MORE losses than the best of them are marked.
 //!
-//! Stated consequence of the score sum: a CBR copy that wins on size
-//! and pages against a smaller CBZ can survive (each copy loses one
-//! rule — a tie at the group minimum marks nothing) — unless the
-//! file-date rule resolves it: when the copies' file stamps differ,
-//! the older copy loses the extra rule and ranks worst.
+//! ADR-048 (a measured design change): real libraries fill with
+//! symmetric-loss pairs — a re-encode copy that is newer AND smaller
+//! against an original that is older AND larger — where every copy
+//! loses exactly one rule and the old rule marked nothing, so the
+//! command selected nothing at all over 989 groups of a measured
+//! library. An exact tie now breaks deterministically: the smaller
+//! file ranks worst, then the fewer pages, then the older stamp;
+//! copies identical on all three mark nothing (no basis to prefer
+//! one). This holds whatever the rule switches say — with every rule
+//! off, a differing pair still resolves to the smaller copy (the
+//! recorded all-rules-off expectation moved with ADR-048).
 //!
 //! The fifth rule is the incoming-path rule (ADR-046, also a PORT
 //! ADDITION): a copy under the configured path gets one HEAVY
@@ -114,7 +120,7 @@ impl DuplicateRules {
 /// The ids of the worst copies per duplicate group over `books`, in
 /// the first-appearance order of their groups. Groups of one copy are
 /// not duplicates and never rank; a group whose copies tie at the
-/// lowest penalty marks nothing.
+/// lowest penalty breaks the tie deterministically (ADR-048).
 pub fn worst_duplicate_ids(books: &[&ComicBook], rules: &DuplicateRules) -> Vec<CrGuid> {
     let mut out = Vec::new();
     for group in duplicate_groups(books) {
@@ -123,12 +129,96 @@ pub fn worst_duplicate_ids(books: &[&ComicBook], rules: &DuplicateRules) -> Vec<
             .iter()
             .map(|b| penalty(b, &members, rules))
             .collect();
-        let best = penalties.iter().copied().min().unwrap_or(0);
-        for (i, p) in penalties.iter().enumerate() {
-            if *p > best {
-                out.push(members[i].id);
-            }
+        for i in selected_indices(&members, &penalties) {
+            out.push(members[i].id);
         }
+    }
+    out
+}
+
+/// The selected (worst) member indexes of one group: every copy whose
+/// penalty EXCEEDS the group minimum, and — when every copy ties at
+/// the minimum — the ADR-048 deterministic tie-break. The tie-break
+/// ranks the tied copies worst-first by the same scale the rules use:
+/// the smaller file, then the fewer pages, then the older file stamp;
+/// copies identical on all three mark nothing (there is no basis to
+/// prefer one).
+fn selected_indices(members: &[&ComicBook], penalties: &[i32]) -> Vec<usize> {
+    let best = penalties.iter().copied().min().unwrap_or(0);
+    let losers: Vec<usize> = (0..members.len())
+        .filter(|&i| penalties[i] > best)
+        .collect();
+    if !losers.is_empty() || members.len() < 2 {
+        return losers;
+    }
+    let mut tied: Vec<usize> = (0..members.len()).collect();
+    for key in [
+        |b: &ComicBook| b.file_size,
+        |b: &ComicBook| b.info.page_count as i64,
+        |b: &ComicBook| modified_secs(b),
+    ] {
+        let worst_value = tied
+            .iter()
+            .map(|&i| key(members[i]))
+            .min()
+            .unwrap_or_default();
+        tied.retain(|&i| key(members[i]) == worst_value);
+        if tied.len() == 1 {
+            return tied;
+        }
+    }
+    Vec::new()
+}
+
+/// One member of one duplicate group in the diagnostic report: the
+/// loaded ranking inputs, the rule penalty, and whether the command
+/// selects the copy.
+pub struct MemberReport {
+    pub id: CrGuid,
+    pub file_path: String,
+    pub file_size: i64,
+    pub page_count: i32,
+    /// The file stamp the older-file rule compares (naive UTC
+    /// seconds; the `DateTime.MinValue` default is 0 or negative).
+    pub modified_secs: i64,
+    pub penalty: i32,
+    pub worst: bool,
+}
+
+/// One duplicate group (more than one member), in first-appearance
+/// order.
+pub struct GroupReport {
+    pub members: Vec<MemberReport>,
+}
+
+/// The full diagnostic report over `books`: every duplicate group
+/// with each member's ranking inputs and penalties, and the copies
+/// the command would select. Same grouping and rules as
+/// [`worst_duplicate_ids`]; read-only. The `cr-cli duplicates`
+/// subcommand prints it (read-only diagnostic, ADR-044/046).
+pub fn duplicate_report(books: &[&ComicBook], rules: &DuplicateRules) -> Vec<GroupReport> {
+    let mut out = Vec::new();
+    for group in duplicate_groups(books) {
+        let members: Vec<&ComicBook> = group.iter().map(|&i| books[i]).collect();
+        let penalties: Vec<i32> = members
+            .iter()
+            .map(|b| penalty(b, &members, rules))
+            .collect();
+        let selected = selected_indices(&members, &penalties);
+        let members = members
+            .iter()
+            .enumerate()
+            .map(|(i, b)| MemberReport {
+                id: b.id,
+                file_path: b.file_path.clone(),
+                file_size: b.file_size,
+                page_count: b.info.page_count,
+                modified_secs: modified_secs(b),
+                penalty: penalties[i],
+                worst: selected.contains(&i),
+            })
+            .collect();
+        out.push(GroupReport { members });
     }
     out
 }
@@ -274,8 +364,7 @@ mod tests {
     fn an_older_file_loses_when_everything_else_ties() {
         // The report case: two CBZ copies equal on size and pages,
         // one file stamp newer (a re-download). The stale copy is
-        // the only loser — with every rule off it ties and marks
-        // nothing again.
+        // the only loser.
         let mut old = book("Tie", "1", "/c/tie-a.cbz", 100, 20);
         let mut new = book("Tie", "1", "/c/tie-b.cbz", 100, 20);
         old.file_modified_time =
@@ -286,24 +375,30 @@ mod tests {
             worst(&[old.clone(), new.clone()], &DuplicateRules::default()),
             ["/c/tie-a.cbz"]
         );
+        // With the stamp rule off the pair ties under the rules and
+        // the ADR-048 tie-break resolves it by the stamp scale: the
+        // older copy still ranks worst.
         let rules = DuplicateRules {
             older_file_worse: false,
             ..DuplicateRules::default()
         };
 
-        assert!(worst(&[old, new], &rules).is_empty());
+        assert_eq!(worst(&[old, new], &rules), ["/c/tie-a.cbz"]);
     }
 
     #[test]
-    fn a_conflicting_tie_marks_nothing() {
+    fn a_conflicting_tie_breaks_to_the_smaller_file() {
         // The CBR is larger; the CBZ is not better by format alone —
-        // both lose one rule, the tie at the group minimum marks
-        // nothing (the ADR-044 example).
+        // both lose one rule and the tie at the group minimum breaks
+        // by size (ADR-048): the smaller CBZ ranks worst.
         let books = vec![
             book("Conflict", "1", "/c/conflict.cbz", 500, 30),
             book("Conflict", "1", "/c/conflict.cbr", 900, 30),
         ];
-        assert!(worst(&books, &DuplicateRules::default()).is_empty());
+        assert_eq!(
+            worst(&books, &DuplicateRules::default()),
+            ["/c/conflict.cbz"]
+        );
     }
 
     #[test]
@@ -336,7 +431,10 @@ mod tests {
     }
 
     #[test]
-    fn all_rules_off_marks_nothing() {
+    fn all_rules_off_breaks_ties_by_size() {
+        // With every rule off all penalties tie at zero and the
+        // ADR-048 tie-break resolves the pair by size: the smaller
+        // copy ranks worst.
         let books = vec![
             book("Alpha", "1", "/c/alpha.cbz", 2000, 20),
             book("Alpha", "1", "/c/alpha.cbr", 1000, 10),
@@ -348,7 +446,56 @@ mod tests {
             older_file_worse: false,
             incoming_path: String::new(),
         };
-        assert!(worst(&books, &rules).is_empty());
+        assert_eq!(worst(&books, &rules), ["/c/alpha.cbr"]);
+    }
+
+    #[test]
+    fn identical_copies_still_mark_nothing() {
+        // The tie-break scale falls through size, pages, and stamp —
+        // copies identical on all three have no basis to prefer one
+        // and mark nothing (the same-file-twice case included).
+        let a = book("Same", "1", "/c/same-a.cbz", 1000, 20);
+        let b = book("Same", "1", "/c/same-b.cbz", 1000, 20);
+        let rules = DuplicateRules {
+            older_file_worse: false,
+            ..DuplicateRules::default()
+        };
+        assert!(worst(&[a, b], &rules).is_empty());
+    }
+
+    #[test]
+    fn the_tie_break_prefers_smaller_then_pages_then_stamp() {
+        // With every rule off all penalties tie at zero and the
+        // tie-break scale decides, one key at a time: the smallest
+        // file; when sizes tie, the fewest pages; when pages tie, the
+        // older stamp.
+        let all_off = DuplicateRules {
+            cbr_worse_than_cbz: false,
+            smaller_file_worse: false,
+            fewer_pages_worse: false,
+            older_file_worse: false,
+            incoming_path: String::new(),
+        };
+        let sizes = vec![
+            book("Scale", "1", "/c/scale-a.cbz", 2000, 20),
+            book("Scale", "1", "/c/scale-b.cbz", 3000, 20),
+            book("Scale", "1", "/c/scale-c.cbz", 4000, 20),
+        ];
+        assert_eq!(worst(&sizes, &all_off), ["/c/scale-a.cbz"]);
+
+        let pages = vec![
+            book("Pages", "1", "/c/pages-a.cbz", 1000, 30),
+            book("Pages", "1", "/c/pages-b.cbz", 1000, 20),
+        ];
+        assert_eq!(worst(&pages, &all_off), ["/c/pages-b.cbz"]);
+
+        let mut old = book("Stamp", "1", "/c/stamp-a.cbz", 1000, 20);
+        let mut new = book("Stamp", "1", "/c/stamp-b.cbz", 1000, 20);
+        old.file_modified_time =
+            cr_core::xml::scalar::CrDateTime::parse("2019-01-01T00:00:00").unwrap();
+        new.file_modified_time =
+            cr_core::xml::scalar::CrDateTime::parse("2024-01-01T00:00:00").unwrap();
+        assert_eq!(worst(&[old, new], &all_off), ["/c/stamp-a.cbz"]);
     }
 
     #[test]
@@ -467,14 +614,18 @@ mod tests {
 
     #[test]
     fn a_former_tie_resolves_to_the_incoming_copy() {
-        // The ADR-044 conflict pair (each copy loses one rule) ties
-        // and marks nothing without the path; with it the Incoming
-        // copy loses the extra weight and marks.
+        // The ADR-044 conflict pair (each copy loses one rule) now
+        // breaks by size without the path (ADR-048): the smaller
+        // Library CBZ marks. With the path the Incoming copy loses
+        // the extra weight and marks instead.
         let books = vec![
             book("Conflict", "1", "/data/library/conflict.cbz", 500, 30),
             book("Conflict", "1", "/data/incoming/conflict.cbr", 900, 30),
         ];
-        assert!(worst(&books, &DuplicateRules::default()).is_empty());
+        assert_eq!(
+            worst(&books, &DuplicateRules::default()),
+            ["/data/library/conflict.cbz"]
+        );
         assert_eq!(
             worst(&books, &incoming_rules("/data/incoming")),
             ["/data/incoming/conflict.cbr"]

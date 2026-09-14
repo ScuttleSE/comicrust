@@ -70,6 +70,26 @@ enum Command {
     /// Prints list name, evaluated book count, and (when present) the
     /// count of the C#-cached id list for comparison.
     Lists { file: String },
+    /// Rank the duplicate groups of a ComicDb.xml exactly as the
+    /// Select Worst Duplicates command does, and print each member's
+    /// ranking inputs and rule penalties. READ-ONLY: the database and
+    /// the config are opened for reading only, nothing is saved.
+    Duplicates {
+        /// The ComicDb.xml to read.
+        file: String,
+        /// Restrict the world to books whose path contains this text
+        /// (case-insensitive) BEFORE grouping. Without it every book
+        /// in the database takes part (the grouping compares all
+        /// pairs — slow on a full library).
+        #[arg(long)]
+        path: Option<String>,
+        /// The comicrust.toml the duplicate rules come from
+        /// (default: this port's config location). Parsed read-only;
+        /// a missing file means the default rules (all on, no
+        /// incoming path).
+        #[arg(long)]
+        config: Option<String>,
+    },
     /// Migrate a ComicRack CE profile: verify its ComicDb.xml, copy it
     /// into this port's database location, and map the ini keys the
     /// port consumes. The comic FILES stay where they are; Windows
@@ -120,6 +140,9 @@ fn run(command: Command) -> Result<ExitCode> {
         Command::Rewrite { file } => cmd_rewrite(&file),
         Command::Metron { file } => cmd_metron(&file),
         Command::Lists { file } => cmd_lists(&file),
+        Command::Duplicates { file, path, config } => {
+            cmd_duplicates(&file, path.as_deref(), config.as_deref())
+        }
         Command::Migrate {
             source,
             out,
@@ -169,6 +192,83 @@ fn cmd_lists(file: &str) -> Result<ExitCode> {
             cached,
             delta
         );
+    }
+    Ok(ExitCode::SUCCESS)
+}
+
+/// The duplicate rules for the `duplicates` command: the five
+/// `Duplicates*` keys of the `[settings]` table of a comicrust.toml,
+/// read WITHOUT the unified loader (the loader can rewrite the file;
+/// the diagnostic must not). A missing or corrupt file means the
+/// defaults.
+fn rules_from_config(config: Option<&str>) -> cr_engine::duplicates::DuplicateRules {
+    use cr_core::settings::Settings;
+    let path = match config {
+        Some(p) => std::path::PathBuf::from(p),
+        None => cr_core::paths::config_file(&cr_core::paths::Paths::new_default()),
+    };
+    let settings: Settings = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|text| {
+            let table: toml::Table = toml::from_str(&text).ok()?;
+            table.get("settings")?.clone().try_into().ok()
+        })
+        .unwrap_or_default();
+    cr_engine::duplicates::DuplicateRules::from_settings(&settings)
+}
+
+fn cmd_duplicates(file: &str, path_filter: Option<&str>, config: Option<&str>) -> Result<ExitCode> {
+    let db = load(Path::new(file)).with_context(|| format!("loading {file} (read-only)"))?;
+    let rules = rules_from_config(config);
+    println!(
+        "rules: cbr={} smaller={} pages={} older={} incoming={:?}",
+        rules.cbr_worse_than_cbz,
+        rules.smaller_file_worse,
+        rules.fewer_pages_worse,
+        rules.older_file_worse,
+        rules.incoming_path
+    );
+
+    let filter = path_filter.map(|p| p.to_ascii_lowercase());
+    let books: Vec<&ComicBook> = db
+        .books
+        .iter()
+        .filter(|b| {
+            filter
+                .as_ref()
+                .is_none_or(|f| b.file_path.to_ascii_lowercase().contains(f))
+        })
+        .collect();
+    println!(
+        "books: {} considered (of {}) {}",
+        books.len(),
+        db.books.len(),
+        match &filter {
+            Some(f) => format!("(path contains {f:?})"),
+            None => String::new(),
+        }
+    );
+
+    let report = cr_engine::duplicates::duplicate_report(&books, &rules);
+    let members: usize = report.iter().map(|g| g.members.len()).sum();
+    let selected: usize = report
+        .iter()
+        .map(|g| g.members.iter().filter(|m| m.worst).count())
+        .sum();
+    println!(
+        "groups: {}  members: {}  the command would select: {}",
+        report.len(),
+        members,
+        selected
+    );
+    for (gi, group) in report.iter().enumerate() {
+        println!("--- group {gi} ({} copies) ---", group.members.len());
+        for m in &group.members {
+            println!(
+                "  penalty={:>2} worst={:<3} size={:>10} pages={:>4} mtime={:<11} {}",
+                m.penalty, m.worst, m.file_size, m.page_count, m.modified_secs, m.file_path
+            );
+        }
     }
     Ok(ExitCode::SUCCESS)
 }
