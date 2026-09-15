@@ -15,6 +15,54 @@ user-tested on 2026-09-12 and are archived.
 
 ## Current task
 
+**The Show-Duplicates rebuild fix (2026-09-15).**
+
+The user's second trace (the delete ran async now; the remaining
+freeze was the refresh): `set_books: apply_filter 5.92s apply_sort
+5.93s` over 51,545 books. The instrument split the old 11.57 s line
+and named the mechanism: every `ViewState::rebuild` re-applies the
+carried quick filter, and the Show Duplicates toggle sets
+`ComicBookDuplicateMatcher`, whose `duplicate_groups` compared every
+PAIR of books — O(N²), 1.33 billion pair checks for 51,545 books,
+paid twice per `set_books` (once per rebuild: `set_filter`'s and
+`set_sort_chain`'s). The delete itself was already fixed (374580b):
+the 22.91 s main-thread unlink stage now runs on the "Remove Books"
+worker.
+
+Fix: `duplicate_groups` (`cr-engine/src/matcher/eval.rs`) buckets per
+book instead of pairing. The C# ternary chain (year → month → day →
+b&w, first present field wins) partitions exactly per book — a
+present field on one side can never tie a missing one (the compare
+hits -1) — so the pair predicate is "same key": a hash bucket per
+metadata key plus one per file path, union-find across the buckets
+preserves the path+meta chaining. Group output is byte-identical
+(first-appearance order preserved).
+
+MEASURED: 51,545 synthetic books, 12,000 groups — 41.8 ms (release,
+this machine) against the 5.9 s pair loop on the user's machine; both
+rebuilds together drop from 11.87 s to ~84 ms.
+
+Tests: 4 new equivalence tests in `eval.rs` (`the_ternary_chain_
+partitions_per_book`, `a_missing_year_never_ties_with_a_present_
+year`, `path_and_meta_ties_chain_into_one_group`,
+`series_and_path_keys_ignore_case`) — the first two failing runs were
+test bugs (the helper gave every book the SAME file path, which the
+path bucket correctly unions), not engine defects; the old pair loop
+produces the same one-group result on those inputs. All 27 existing
+`duplicates` ranking tests pass unchanged. `duplicates_probe` gates
+A-F green (the ADR-048 selections unchanged);
+`deleteperf_probe` PROBE COMPLETE. Gates: fmt, clippy,
+`CR_FORMAT_TESTS=1 cargo test --workspace --locked` (56 binaries, 0
+failed), release build — all green.
+
+**Open user test (the full delete flow):** delete ~900 books with
+"Also delete the files" from the Show Duplicates view: the UI stays
+responsive throughout (the worker runs the unlinks, the delete lamp
+shows, the Tasks row counts up), and the final list refresh is now
+fast instead of freezing ~12 s.
+
+## Previous task
+
 **The bulk-delete freeze fix (2026-09-15).**
 
 The user report: selecting ~900 books and deleting them takes a long

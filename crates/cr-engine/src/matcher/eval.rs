@@ -1011,6 +1011,11 @@ fn match_duplicates<'a>(items: &[&'a ComicBook], on: bool) -> Vec<&'a ComicBook>
 /// ONE member as index lists into `items`, in first-appearance order.
 /// Shared by the duplicate matcher and the duplicate-cleanup ranking
 /// (`crate::duplicates`).
+///
+/// The C# compares every PAIR (O(N²)); the predicate is exactly
+/// "same key", so this port buckets per book and unions the buckets —
+/// MEASURED 5.9 s for 51,545 books in the pair loop (the Show
+/// Duplicates rebuild), milliseconds bucketed.
 pub(crate) fn duplicate_groups(items: &[&ComicBook]) -> Vec<Vec<usize>> {
     let n = items.len();
     let mut parent: Vec<usize> = (0..n).collect();
@@ -1030,9 +1035,10 @@ pub(crate) fn duplicate_groups(items: &[&ComicBook]) -> Vec<Vec<usize>> {
             parent[ra] = rb;
         }
     }
-    // The duplicate comparer's values precomputed per book (the pair
-    // loop below is O(N²) — a per-pair ComicNameInfo parse was the
-    // Phase 8 storm; the values are identical, the parses are not).
+    // The duplicate comparer's values precomputed per book (the
+    // proposed parse is cached process-wide — a per-pair parse was
+    // the Phase 8 storm; the values are identical, the parses are
+    // not).
     struct DupShadow {
         compressed_series: String,
         format: String,
@@ -1053,42 +1059,55 @@ pub(crate) fn duplicate_groups(items: &[&ComicBook]) -> Vec<Vec<usize>> {
             }
         })
         .collect();
-    // Metadata duplicates (with the C# ternary-chain quirk preserved,
-    // see the comment below) and path duplicates.
-    for i in 0..n {
-        for j in (i + 1)..n {
-            let (a, b) = (&shadow[i], &shadow[j]);
-            let meta = {
-                // NOTE: the C# source chains the year/month/day checks
-                // in one ternary expression, which compiles to
-                // `yearCond ? yearEq : (monthCond ? monthEq :
-                // (dayCond ? dayEq : bwEq))` — when a year is present
-                // on either side, only the year is compared.
-                let year_cond = a.year >= 0 || b.year >= 0;
-                let month_cond = items[i].info.month >= 0 || items[j].info.month >= 0;
-                let day_cond = items[i].info.day >= 0 || items[j].info.day >= 0;
-                a.compressed_series
-                    .eq_ignore_ascii_case(&b.compressed_series)
-                    && a.format == b.format
-                    && a.volume == b.volume
-                    && a.number == b.number
-                    && items[i].info.language_iso == items[j].info.language_iso
-                    && if year_cond {
-                        a.year == b.year
-                    } else if month_cond {
-                        items[i].info.month == items[j].info.month
-                    } else if day_cond {
-                        items[i].info.day == items[j].info.day
-                    } else {
-                        items[i].info.black_and_white == items[j].info.black_and_white
-                    }
-            };
-            let path = book_view::is_linked(items[i])
-                && book_view::is_linked(items[j])
-                && items[i].file_path.eq_ignore_ascii_case(&items[j].file_path);
-            if meta || path {
-                union(&mut parent, i, j);
-            }
+
+    // The metadata key. The C# ternary chain (year → month → day →
+    // b&w) decides per PAIR, but it partitions per book: the first
+    // PRESENT field of (year, month, day) wins, and a present field
+    // on one side can never tie a missing one on the other (the
+    // compare is `x == -1`). Two books tie exactly when every key
+    // component matches.
+    type MetaKey = (String, String, i32, String, String, u8, i64);
+    let mut meta_buckets: HashMap<MetaKey, Vec<usize>> = HashMap::new();
+    let mut path_buckets: HashMap<String, Vec<usize>> = HashMap::new();
+    for (i, b) in items.iter().enumerate() {
+        let s = &shadow[i];
+        // The ternary tier: 0 year, 1 month, 2 day, 3 b&w — the raw
+        // info month/day (the C# reads them off the book, not the
+        // shadow).
+        let (tier, tier_value) = if s.year >= 0 {
+            (0u8, s.year as i64)
+        } else if b.info.month >= 0 {
+            (1, b.info.month as i64)
+        } else if b.info.day >= 0 {
+            (2, b.info.day as i64)
+        } else {
+            (3, b.info.black_and_white as i64)
+        };
+        let key: MetaKey = (
+            s.compressed_series.to_ascii_lowercase(),
+            s.format.clone(),
+            s.volume,
+            s.number.clone(),
+            b.info.language_iso.clone(),
+            tier,
+            tier_value,
+        );
+        meta_buckets.entry(key).or_default().push(i);
+        if book_view::is_linked(b) {
+            path_buckets
+                .entry(b.file_path.to_lowercase())
+                .or_default()
+                .push(i);
+        }
+    }
+    for bucket in meta_buckets.values() {
+        for pair in bucket.windows(2) {
+            union(&mut parent, pair[0], pair[1]);
+        }
+    }
+    for bucket in path_buckets.values() {
+        for pair in bucket.windows(2) {
+            union(&mut parent, pair[0], pair[1]);
         }
     }
     // Keep books whose group has more than one member.
@@ -1120,6 +1139,22 @@ fn compress_series(text: &str) -> String {
 mod tests {
     use super::*;
 
+    /// A metadata-complete book (no proposed parse in play) with a
+    /// DISTINCT file path, so only the key under test can group it.
+    fn dup_book(series: &str, number: &str) -> ComicBook {
+        use std::sync::atomic::{AtomicU32, Ordering};
+        static N: AtomicU32 = AtomicU32::new(0);
+        let uniq = N.fetch_add(1, Ordering::Relaxed);
+        let mut b = ComicBook {
+            file_path: format!("/c/{series}-{number}-{uniq}.cbz"),
+            ..ComicBook::default()
+        };
+        b.info.series = series.into();
+        b.info.number = number.into();
+        b.enable_proposed = false;
+        b
+    }
+
     #[test]
     fn regex_match_semantics_unchanged_by_the_cache() {
         // "." matches any non-empty text (the "is not empty" idiom).
@@ -1135,5 +1170,68 @@ mod tests {
         // false for other values (no recompile retry).
         assert!(!regex_match("any", "(["));
         assert!(!regex_match("other", "(["));
+    }
+
+    #[test]
+    fn the_ternary_chain_partitions_per_book() {
+        // Same series/number everywhere; only the year/month/day/b&w
+        // tier differs. Books sharing a tier value tie; books on
+        // different tiers never do (the C# ternary chain decides per
+        // pair on the FIRST present field).
+        let mut a = dup_book("Alpha", "1");
+        a.info.month = 3;
+        let mut b = dup_book("Alpha", "1");
+        b.info.month = 3;
+        let mut c = dup_book("Alpha", "1");
+        c.info.day = 5;
+        let mut d = dup_book("Alpha", "1");
+        d.info.day = 5;
+        let mut e = dup_book("Alpha", "1");
+        e.info.black_and_white = cr_core::model::enums::YesNo::Yes;
+        let mut f = dup_book("Alpha", "1");
+        f.info.black_and_white = cr_core::model::enums::YesNo::Yes;
+        let g = dup_book("Alpha", "1");
+        let groups = duplicate_groups(&[&a, &b, &c, &d, &e, &f, &g]);
+        assert_eq!(groups, vec![vec![0, 1], vec![2, 3], vec![4, 5]]);
+    }
+
+    #[test]
+    fn a_missing_year_never_ties_with_a_present_year() {
+        let mut a = dup_book("Alpha", "1");
+        a.info.year = 2020;
+        let b = dup_book("Alpha", "1");
+        let mut c = dup_book("Alpha", "1");
+        c.info.year = 2020;
+        let groups = duplicate_groups(&[&a, &b, &c]);
+        // a and c tie on the year; b (nothing set) falls to the b&w
+        // tier and stays out.
+        assert_eq!(groups, vec![vec![0, 2]]);
+    }
+
+    #[test]
+    fn path_and_meta_ties_chain_into_one_group() {
+        // A-B share the file path (different series — a PATH tie
+        // only), B-C share the metadata (different paths — a META
+        // tie only). The union chains them into ONE group.
+        let a = dup_book("Alpha", "1");
+        let mut b = dup_book("Beta", "1");
+        b.file_path = a.file_path.clone();
+        let c = dup_book("Beta", "1");
+        let groups = duplicate_groups(&[&a, &b, &c]);
+        assert_eq!(groups, vec![vec![0, 1, 2]]);
+    }
+
+    #[test]
+    fn series_and_path_keys_ignore_case() {
+        // The compressed series compares case-insensitive (the C#
+        // ExtendedStringComparer), the path too.
+        let a = dup_book("The Batman", "1");
+        let b = dup_book("batman", "1");
+        let mut c = dup_book("Gamma", "1");
+        c.file_path = "/C/Other.CBZ".into();
+        let mut d = dup_book("Gamma", "1");
+        d.file_path = "/c/other.cbz".into();
+        let groups = duplicate_groups(&[&a, &b, &c, &d]);
+        assert_eq!(groups, vec![vec![0, 1], vec![2, 3]]);
     }
 }
