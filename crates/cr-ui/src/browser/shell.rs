@@ -1643,6 +1643,9 @@ impl BrowserShell {
         state
             .status_bar
             .connect_cancel_cv_job(library::abort_cv_job);
+        state
+            .status_bar
+            .connect_cancel_remove(library::abort_remove_books);
         // "Skip current file": abandon the file in flight, keep the
         // scan running (the manual escape hatch; the scanner's own
         // per-file deadline is the unattended path).
@@ -1680,6 +1683,7 @@ impl BrowserShell {
                         library::export_in_flight(),
                         library::cv_job_active(),
                         sh.pool.is_working(),
+                        library::remove_books_in_flight(),
                     );
                     sh.status_bar
                         .set_cv_job_text(library::cv_job().map(|j| j.text()).as_deref());
@@ -3157,6 +3161,7 @@ impl ShellState {
                     library::export_in_flight(),
                     library::cv_job_active(),
                     sh.pool.is_working(),
+                    library::remove_books_in_flight(),
                 );
             }
             finish(&report_window, outcome);
@@ -5873,95 +5878,46 @@ fn run_remove_books(state: &std::rc::Weak<ShellState>) {
         let Some(sh) = refresh_state.upgrade() else {
             return;
         };
-        let mut any_failed = false;
-        // CR_TRACE stage totals for a slow delete: the file-deletion
-        // half (one gio-trash subprocess per book) against the
-        // library-removal half, per-100 progress in between.
-        let total = ids_for_ok.len();
-        let t_all = std::time::Instant::now();
-        let mut t_files = std::time::Duration::ZERO;
-        let mut t_removes = std::time::Duration::ZERO;
-        let (mut n_trash, mut n_unlink, mut n_failed) = (0usize, 0usize, 0usize);
-        for (done, id) in ids_for_ok.iter().enumerate() {
-            let mut delete_failed = false;
-            if remove_files {
-                let t0 = std::time::Instant::now();
-                if let Some(path) = library::book_path(id) {
-                    // Fileless books (the reading-list
-                    // placeholders) carry an EMPTY
-                    // file path — gio resolves that to
-                    // the process's current directory
-                    // and trashes the WHOLE FOLDER.
-                    // Only a real comic file goes to
-                    // the trash (the C# deletes linked
-                    // files only).
-                    let p = Path::new(&path);
-                    if !path.is_empty() && p.is_file() {
-                        if permanent_delete {
-                            // ADR-045: the immediate
-                            // unlink — the C# has no
-                            // counterpart (its shell
-                            // delete is always the
-                            // recycle bin).
-                            let _ = std::fs::remove_file(p);
-                            n_unlink += 1;
-                        } else {
-                            // ADR-006: the recycle bin
-                            // → GIO trash (the `gio`
-                            // CLI; a libgio binding is
-                            // Phase 7 polish).
-                            let _ = std::process::Command::new("gio")
-                                .args(["trash", &path])
-                                .status();
-                            n_trash += 1;
-                        }
-                        // The C# checks File.Exists
-                        // after the delete and a
-                        // failed delete KEEPS the book
-                        // (the `continue` before
-                        // library.Remove).
-                        if p.exists() {
-                            delete_failed = true;
-                        }
+        // The delete rides the "Remove Books" worker (the ADR-019
+        // shape): the per-file unlink/gio-trash ran INLINE here and
+        // froze the UI — MEASURED 22.9 s for 792 unlinks over CIFS.
+        // The pump lands the book removals in batches; the completion
+        // callback refreshes ONCE and reports the failed deletes.
+        if library::remove_books_in_flight() {
+            crate::trace::trace("remove-books: a bulk delete is already running — ignored");
+            return;
+        }
+        let sh_w = std::rc::Rc::downgrade(&sh);
+        library::remove_books_async(
+            ids_for_ok.clone(),
+            remove_files,
+            permanent_delete,
+            true,
+            move |outcome| {
+                crate::trace::trace(format!(
+                    "remove-books: job landed — removed {} failed {} canceled {}",
+                    outcome.removed, outcome.failed, outcome.canceled
+                ));
+                if let Some(sh) = sh_w.upgrade() {
+                    // The C# `FailedDeleteBooks` message.
+                    if outcome.failed > 0 {
+                        let err = gtk4::MessageDialog::builder()
+                            .transient_for(&sh.window)
+                            .modal(true)
+                            .title("comicrust")
+                            .text("Some files could not be deleted (maybe they are in use)!")
+                            .message_type(gtk4::MessageType::Info)
+                            .buttons(gtk4::ButtonsType::Ok)
+                            .build();
+                        err.connect_response(|d, _| d.close());
+                        err.present();
+                    }
+                    if outcome.removed > 0 {
+                        sh.refresh_view_from_list();
                     }
                 }
-                t_files += t0.elapsed();
-            }
-            if delete_failed {
-                n_failed += 1;
-                any_failed = true;
-            } else {
-                let t1 = std::time::Instant::now();
-                library::remove_book(id);
-                t_removes += t1.elapsed();
-            }
-            if (done + 1) % 100 == 0 {
-                crate::trace::trace(format!(
-                    "remove-books: {}/{} processed (trash {n_trash} unlink {n_unlink} failed {n_failed}) files {t_files:?} removes {t_removes:?}",
-                    done + 1,
-                    total
-                ));
-            }
-        }
-        crate::trace::trace(format!(
-            "remove-books: {} books in {:?} — files (trash {n_trash} unlink {n_unlink} failed {n_failed}) {t_files:?}, removes {t_removes:?}",
-            total,
-            t_all.elapsed()
-        ));
-        // The C# `FailedDeleteBooks` message.
-        if any_failed {
-            let err = gtk4::MessageDialog::builder()
-                .transient_for(&sh.window)
-                .modal(true)
-                .title("comicrust")
-                .text("Some files could not be deleted (maybe they are in use)!")
-                .message_type(gtk4::MessageType::Info)
-                .buttons(gtk4::ButtonsType::Ok)
-                .build();
-            err.connect_response(|d, _| d.close());
-            err.present();
-        }
-        sh.refresh_view_from_list();
+            },
+        );
     });
     confirm.present();
 }
@@ -6328,83 +6284,83 @@ fn show_folder_context_menu(
                         };
                         library::settings().borrow_mut().remove_files_from_database =
                             remove_from_library;
-                        let mut deleted = true;
-                        for (_, path) in &paths {
-                            // The is-file guard (the Phase 7 audit).
-                            let p = Path::new(path);
-                            if path.is_empty() || !p.is_file() {
-                                continue;
-                            }
-                            if permanent_delete {
-                                // ADR-045: the immediate unlink — the
-                                // C# has no counterpart (its shell
-                                // delete is always the recycle bin).
-                                let _ = std::fs::remove_file(p);
-                            } else {
-                                let _ = std::process::Command::new("gio")
-                                    .args(["trash", path])
-                                    .status();
-                            }
-                            if p.exists() {
-                                deleted = false;
-                            }
+                        // The file deletion rides the "Remove Books"
+                        // worker (the same MEASURED main-thread freeze
+                        // as the browser flow); the removal, the
+                        // failure dialog and the rescan stay here and
+                        // run from the completion callback.
+                        if library::remove_books_in_flight() {
+                            crate::trace::trace("remove-books: a bulk delete is already running — ignored");
+                            return;
                         }
-                        if remove_from_library {
-                            // `Program.Database.Books.RemoveRange(books)`
-                            // — the library books at the same paths.
-                            let lib = library::session();
-                            let removed: Vec<CrGuid> = {
-                                let l = lib.borrow();
-                                l.database()
-                                    .books
-                                    .iter()
-                                    .filter(|b| {
-                                        paths.iter().any(|(_, p)| *p == b.file_path)
-                                    })
-                                    .map(|b| b.id)
-                                    .collect()
+                        let file_paths: Vec<String> =
+                            paths.iter().map(|(_, p)| p.clone()).collect();
+                        let sh_w = std::rc::Rc::downgrade(&sh);
+                        let remove_from_library_cb = remove_from_library;
+                        let paths_cb = paths.clone();
+                        let refresh_cb = refresh_state.clone();
+                        library::delete_files_async(file_paths, permanent_delete, move |outcome| {
+                            let Some(sh) = sh_w.upgrade() else {
+                                return;
                             };
-                            let mut l = lib.borrow_mut();
-                            let before = l.database().books.len();
-                            l.database_mut().books.retain(|b| {
-                                !paths
-                                    .iter()
-                                    .any(|(_, p)| *p == b.file_path)
-                            });
-                            if l.database().books.len() != before {
-                                // A mid-scan removal must survive the
-                                // scan's landing merge.
-                                for id in &removed {
-                                    library::record_scan_removal(id);
+                            let deleted = outcome.failed == 0;
+                            if remove_from_library_cb {
+                                // `Program.Database.Books.RemoveRange(books)`
+                                // — the library books at the same paths.
+                                let lib = library::session();
+                                let removed: Vec<CrGuid> = {
+                                    let l = lib.borrow();
+                                    l.database()
+                                        .books
+                                        .iter()
+                                        .filter(|b| {
+                                            paths_cb.iter().any(|(_, p)| *p == b.file_path)
+                                        })
+                                        .map(|b| b.id)
+                                        .collect()
+                                };
+                                let mut l = lib.borrow_mut();
+                                let before = l.database().books.len();
+                                l.database_mut().books.retain(|b| {
+                                    !paths_cb
+                                        .iter()
+                                        .any(|(_, p)| *p == b.file_path)
+                                });
+                                if l.database().books.len() != before {
+                                    // A mid-scan removal must survive the
+                                    // scan's landing merge.
+                                    for id in &removed {
+                                        library::record_scan_removal(id);
+                                    }
+                                    l.mark_dirty();
+                                    crate::gauges::invalidate();
                                 }
-                                l.mark_dirty();
-                                crate::gauges::invalidate();
                             }
-                        }
-                        // The failed-delete message (the C#
-                        // `FailedDeleteBooks`).
-                        if !deleted {
-                            let err = gtk4::MessageDialog::builder()
-                                .transient_for(&sh.window)
-                                .modal(true)
-                                .title("comicrust")
-                                .text("Some books could not be deleted (maybe they are in use)!")
-                                .message_type(gtk4::MessageType::Info)
-                                .buttons(gtk4::ButtonsType::Ok)
-                                .build();
-                            err.connect_response(|d, _| d.close());
-                            err.present();
-                        }
-                        // The provider refreshes on the Path change
-                        // (the C# `BookListChanged`) — rescan on the
-                        // worker (the same async path).
-                        if let Some(folder) = sh.folders_tree.current_folder() {
-                            let include_sub =
-                                library::settings().borrow().explorer_include_sub_folders;
-                            let weak = refresh_state.clone();
-                            scan_folder_async(&weak, folder, include_sub);
-                        }
-                        sh.sync_enabled();
+                            // The failed-delete message (the C#
+                            // `FailedDeleteBooks`).
+                            if !deleted {
+                                let err = gtk4::MessageDialog::builder()
+                                    .transient_for(&sh.window)
+                                    .modal(true)
+                                    .title("comicrust")
+                                    .text("Some books could not be deleted (maybe they are in use)!")
+                                    .message_type(gtk4::MessageType::Info)
+                                    .buttons(gtk4::ButtonsType::Ok)
+                                    .build();
+                                err.connect_response(|d, _| d.close());
+                                err.present();
+                            }
+                            // The provider refreshes on the Path change
+                            // (the C# `BookListChanged`) — rescan on the
+                            // worker (the same async path).
+                            if let Some(folder) = sh.folders_tree.current_folder() {
+                                let include_sub =
+                                    library::settings().borrow().explorer_include_sub_folders;
+                                let weak = refresh_cb.clone();
+                                scan_folder_async(&weak, folder, include_sub);
+                            }
+                            sh.sync_enabled();
+                        });
                     });
                     confirm.present();
                 }

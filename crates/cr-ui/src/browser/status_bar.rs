@@ -201,6 +201,11 @@ struct Inner {
     lamp_cv: gtk4::Button,
     cv_menu: Popover,
     cv_cancel: gtk4::Button,
+    /// The bulk book-deletion lamp (NO C# item — the port's async
+    /// "Remove Books" job, the Rule 9 fix).
+    lamp_remove: gtk4::Button,
+    remove_menu: Popover,
+    remove_cancel: gtk4::Button,
     book: Label,
     page_button: gtk4::Button,
     page_label: Label,
@@ -215,6 +220,7 @@ struct Inner {
     on_cancel_scan: RefCell<Option<LampFn>>,
     on_skip_scan_file: RefCell<Option<LampFn>>,
     on_cancel_cv_job: RefCell<Option<LampFn>>,
+    on_cancel_remove: RefCell<Option<LampFn>>,
     on_page_click: RefCell<Option<LampFn>>,
     on_slider_change: RefCell<Option<SliderFn>>,
 }
@@ -325,12 +331,14 @@ impl StatusBar {
             "comicvinescraper.png",
             "A Comic Vine cache job is running...",
         );
+        let lamp_remove = lamp_button("EditDelete.png", "Deleting books...");
         for lamp in [
             &lamp_export,
             &lamp_write,
             &pages.button,
             &lamp_scan,
             &lamp_cv,
+            &lamp_remove,
         ] {
             lamp.add_css_class("status-panel");
             widget.append(lamp);
@@ -377,6 +385,24 @@ impl StatusBar {
         cv_box.append(&cv_cancel);
         cv_menu.set_child(Some(&cv_box));
         cv_menu.set_parent(&lamp_cv);
+
+        // The bulk-deletion lamp's menu: cancel the running job (the
+        // same targeted-cancel shape as the Comic Vine lamp).
+        let remove_menu = Popover::new();
+        remove_menu.set_position(gtk4::PositionType::Top);
+        remove_menu.set_autohide(true);
+        let remove_box = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
+        remove_box.set_margin_top(4);
+        remove_box.set_margin_bottom(4);
+        remove_box.set_margin_start(2);
+        remove_box.set_margin_end(2);
+        let remove_cancel = crate::widgets::menu_item_button("Cancel Book Deletion");
+        remove_cancel.set_tooltip_text(Some(
+            "Stop the job. Books whose files are already deleted leave the library; the rest stay",
+        ));
+        remove_box.append(&remove_cancel);
+        remove_menu.set_child(Some(&remove_box));
+        remove_menu.set_parent(&lamp_remove);
 
         // 3. The data-source light (the local XML database is always
         //    connected — the C# `DataSourceConnected.png` state).
@@ -441,6 +467,9 @@ impl StatusBar {
                 lamp_cv,
                 cv_menu,
                 cv_cancel,
+                lamp_remove,
+                remove_menu,
+                remove_cancel,
                 book,
                 page_button,
                 page_label,
@@ -452,6 +481,7 @@ impl StatusBar {
                 on_cancel_scan: RefCell::new(None),
                 on_skip_scan_file: RefCell::new(None),
                 on_cancel_cv_job: RefCell::new(None),
+                on_cancel_remove: RefCell::new(None),
                 on_page_click: RefCell::new(None),
                 on_slider_change: RefCell::new(None),
             }),
@@ -520,6 +550,23 @@ impl StatusBar {
                 }
             });
         }
+        {
+            let inner = Rc::clone(&self.inner);
+            self.inner.lamp_remove.connect_clicked(move |_| {
+                if !inner.remove_menu.is_visible() {
+                    inner.remove_menu.popup();
+                }
+            });
+        }
+        {
+            let inner = Rc::clone(&self.inner);
+            self.inner.remove_cancel.connect_clicked(move |_| {
+                inner.remove_menu.popdown();
+                if let Some(f) = inner.on_cancel_remove.borrow().as_ref() {
+                    f();
+                }
+            });
+        }
         let inner = Rc::clone(&self.inner);
         self.inner.page_button.connect_clicked(move |_| {
             if let Some(f) = inner.on_page_click.borrow().as_ref() {
@@ -584,10 +631,19 @@ impl StatusBar {
     /// `UpdateActivityTimerTick`'s lamp visibility. The scan and page
     /// lamps also start/stop their frame animation with the
     /// visibility.
-    pub fn update_lamps(&self, scan: bool, write: bool, export: bool, cv_job: bool, pages: bool) {
+    pub fn update_lamps(
+        &self,
+        scan: bool,
+        write: bool,
+        export: bool,
+        cv_job: bool,
+        pages: bool,
+        remove_job: bool,
+    ) {
         self.inner.lamp_write.set_visible(write);
         self.inner.lamp_export.set_visible(export);
         self.inner.lamp_cv.set_visible(cv_job);
+        self.inner.lamp_remove.set_visible(remove_job);
         self.inner.scan.set_active(scan);
         self.inner.pages.set_active(pages);
     }
@@ -620,6 +676,12 @@ impl StatusBar {
     /// (`library::abort_cv_job` through the shell hook).
     pub fn connect_cancel_cv_job<F: Fn() + 'static>(&self, f: F) {
         *self.inner.on_cancel_cv_job.borrow_mut() = Some(Box::new(f));
+    }
+
+    /// The bulk-deletion lamp's cancel row
+    /// (`library::abort_remove_books` through the shell hook).
+    pub fn connect_cancel_remove<F: Fn() + 'static>(&self, f: F) {
+        *self.inner.on_cancel_remove.borrow_mut() = Some(Box::new(f));
     }
 
     pub fn connect_page_click<F: Fn() + 'static>(&self, f: F) {
@@ -662,6 +724,7 @@ impl StatusBar {
             "write" => self.inner.lamp_write.is_visible(),
             "export" => self.inner.lamp_export.is_visible(),
             "cv" => self.inner.lamp_cv.is_visible(),
+            "remove" => self.inner.lamp_remove.is_visible(),
             "pages" => self.inner.pages.button.is_visible(),
             _ => false,
         }

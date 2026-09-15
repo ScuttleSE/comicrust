@@ -331,6 +331,7 @@ impl ViewState {
         // (sort_key, caption), ordered by the `GroupInfo.Compare`
         // rule — bucket index first, caption tiebreak through the
         // ExtendedStringComparer (IgnoreArticles | IgnoreCase).
+        let t_rebuild = std::time::Instant::now();
         let (grouper, sort) = (self.grouper, self.sort.clone());
         let grouper_fn: Option<Grouper> =
             grouper.and_then(|key| groupers().iter().find(|(k, _)| *k == key).map(|(_, g)| *g));
@@ -378,6 +379,7 @@ impl ViewState {
         let props = book_view::PropTable::build(&self.books);
         // The quick-search filter (the C# `quickFilter` in
         // `FillBookList`).
+        let t_filter = std::time::Instant::now();
         let allowed: Option<Vec<CrGuid>> = self.filter.as_ref().map(|m| {
             let items: Vec<&ComicBook> = self.books.iter().collect();
             let ctx = MatchContext::new(&items);
@@ -387,6 +389,8 @@ impl ViewState {
                 .map(|b| b.id)
                 .collect()
         });
+        let t_filter = t_filter.elapsed();
+        let t_bucket = std::time::Instant::now();
         for (index, book) in self.books.iter().enumerate() {
             if let Some(allowed) = &allowed {
                 if !allowed.contains(&book.id) {
@@ -406,6 +410,8 @@ impl ViewState {
             let bucket = bucket_of(&caption, sort_key, &mut buckets, &mut bucket_index);
             buckets[bucket].items.push(index);
         }
+        let t_bucket = t_bucket.elapsed();
+        let t_bsort = std::time::Instant::now();
         buckets.sort_by(|a, b| {
             a.sort_key.cmp(&b.sort_key).then_with(|| {
                 if a.caption == UNSPECIFIED || b.caption == UNSPECIFIED {
@@ -424,6 +430,9 @@ impl ViewState {
                 }
             })
         });
+
+        let t_bsort = t_bsort.elapsed();
+        let t_isort = std::time::Instant::now();
 
         // Sort inside each bucket (the chained comparer), then
         // append to the display order. Collapsed groups keep their
@@ -470,6 +479,12 @@ impl ViewState {
                 self.display_order.extend(items);
             }
         }
+        crate::trace::trace(format!(
+            "rebuild: books {} filter {t_filter:?} bucket {t_bucket:?} bucket-sort {t_bsort:?} item-sort {:?} (total {:?})",
+            self.books.len(),
+            t_isort.elapsed(),
+            t_rebuild.elapsed()
+        ));
     }
 
     // ---------- Selection model (`ItemViewStates`) ----------

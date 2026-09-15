@@ -68,6 +68,9 @@ pub const ABORT_EXPORT: &str = "Abort Export";
 pub const ABORT_SCAN: &str = "Abort Scanning";
 /// The Comic Vine cache row (NO C# item — ADR-037, ADR-038).
 pub const ABORT_CV_CACHE: &str = "Abort Comic Vine Cache Job";
+/// The bulk book-deletion row (NO C# item — the port's async
+/// "Remove Books" job).
+pub const ABORT_REMOVE: &str = "Abort Book Deletion";
 
 /// The snapshot sources (`QueueManager.GetQueues` inputs).
 pub struct TaskSnapshot<'a> {
@@ -80,6 +83,8 @@ pub struct TaskSnapshot<'a> {
     pub scan_location: Option<String>,
     /// The Comic Vine cache job line while one runs (None = idle).
     pub cv_job: Option<String>,
+    /// The bulk book-deletion job line while one runs (None = idle).
+    pub remove_job: Option<String>,
 }
 
 /// The claimed-item rule: the first queued item of an ACTIVE queue is
@@ -261,6 +266,14 @@ pub fn pending_tasks(snapshot: &TaskSnapshot) -> Vec<PendingTasks> {
             Some(ABORT_CV_CACHE),
         );
     }
+    if let Some(job) = &snapshot.remove_job {
+        push(
+            "Deleting Books",
+            vec![job.clone()],
+            true,
+            Some(ABORT_REMOVE),
+        );
+    }
     out
 }
 
@@ -368,6 +381,7 @@ pub fn show_tasks_dialog(parent: &impl IsA<gtk4::Window>, pool: Arc<ImagePool>) 
                     .then(crate::library::scan_location)
                     .filter(|l| !l.is_empty()),
                 cv_job: crate::library::cv_job().map(|j| j.text()),
+                remove_job: crate::library::remove_job_line(),
             };
             let tasks = pending_tasks(&snapshot);
             drop(lib_ref);
@@ -442,6 +456,7 @@ pub fn show_tasks_dialog(parent: &impl IsA<gtk4::Window>, pool: Arc<ImagePool>) 
             crate::library::clear_pending_writes();
             crate::library::abort_scan();
             crate::library::abort_cv_job();
+            crate::library::abort_remove_books();
             refresh();
         });
     }
@@ -533,6 +548,7 @@ mod tests {
             write_files: vec!["/books/b.cbz".into()],
             scan_location: Some("/watch/root".into()),
             cv_job: Some("Updating the Comic Vine cache \u{2014} page 3 of 53".into()),
+            remove_job: None,
         };
         let blocks = pending_tasks(&snapshot);
         let groups: Vec<&str> = blocks.iter().map(|b| b.group).collect();
@@ -611,6 +627,7 @@ mod tests {
             write_files: Vec::new(),
             scan_location: None,
             cv_job: None,
+            remove_job: None,
         };
         let blocks = pending_tasks(&snapshot);
         let create = blocks
@@ -636,6 +653,29 @@ mod tests {
         assert_eq!(create.tasks.len(), 10);
         assert_eq!(create.more, 0);
         assert_eq!(create.pending_count(), 10);
+    }
+
+    #[test]
+    fn remove_job_row_is_abortable() {
+        let pool = Arc::new(ImagePool::new(None));
+        let queues = QueueManager::new();
+        let snapshot = TaskSnapshot {
+            pool: &pool,
+            queues: &queues,
+            write_files: Vec::new(),
+            scan_location: None,
+            cv_job: None,
+            remove_job: Some("Deleting books — 12 of 900".into()),
+        };
+        let blocks = pending_tasks(&snapshot);
+        let block = blocks
+            .iter()
+            .find(|b| b.group == "Deleting Books")
+            .expect("the Deleting Books block");
+        assert_eq!(block.tasks[0].text, "Deleting books — 12 of 900");
+        assert_eq!(block.tasks[0].state, RUNNING);
+        assert_eq!(block.abort, Some(ABORT_REMOVE));
+        assert_eq!(block.pending_count(), 1);
     }
 
     #[test]

@@ -15,6 +15,71 @@ user-tested on 2026-09-12 and are archived.
 
 ## Current task
 
+**The bulk-delete freeze fix (2026-09-15).**
+
+The user report: selecting ~900 books and deleting them takes a long
+time before the UI responds. Context: "Also delete the files" checked,
+files on the Synology CIFS mount, the active list a smart list.
+
+MEASURED with the 2026-09-14 instrumentation on the real library
+(792 books, permanent delete): the whole delete ran inside the confirm
+dialog's response closure on the GTK main thread —
+
+| Stage | Measured |
+|---|---|
+| 792 × `unlink()` over CIFS (the file stage) | **22.91 s** (~29 ms/file) |
+| `set_books` refresh (`set_filter`+`set_sort_chain`, 51,533 books) | **11.57 s** |
+| 792 × per-book `remove_book` | 0.20 s |
+| smart-list evaluate + reselect | ~0.15 s |
+
+Fix (this change): the file deletion moved to a named "Remove Books"
+worker; the pump (the ADR-019 shape, 100 ms) lands book removals in
+25-book batches — one `borrow_mut`/`retain`/`mark_dirty` per batch,
+`record_scan_removal` per landed id — and the completion callback
+refreshes the view ONCE and shows the C# `FailedDeleteBooks` message.
+Both flows ride it: the browser flow (`run_remove_books`) and the
+Files-view "Move to Recycle Bin" flow (`delete_files_async`, whose
+path-based `RemoveRange` + rescan stay in its own callback). Cancel +
+progress: `library::abort_remove_books` + `remove_books_progress`,
+surfaced as the Tasks dialog "Deleting Books" row (`Abort Book
+Deletion`) and a new status-bar delete lamp (`EditDelete.png`) with a
+"Cancel Book Deletion" menu row; the 1 s activity poll drives the
+lamp. One job at a time; a second request while one runs is refused
+with a trace line. Failed deletes keep the book (the C#
+`File.Exists` gate); on cancel, books whose files are already deleted
+still leave the library. The C# is also synchronous on its UI thread
+(`ComicListLibraryBrowser.cs:149-171`), so this is a deliberate
+deviation in mechanism, not behavior.
+
+Verified: `deleteperf_probe` (release, real-world fixtures) — the
+response stage now returns in 1 ms, the pump lands at the next 100 ms
+tick, the settled counts drop by the selection. Gates: fmt, clippy,
+`CR_FORMAT_TESTS=1 cargo test --workspace --locked` (56 binaries, 0
+failed), release build — all green.
+
+UNKNOWN (named, instrument in place): what the 11.57 s inside
+`set_books` is. The old trace covered TWO rebuilds under one line;
+the split trace now prints `set_books: apply_filter … apply_sort …`
+and per-rebuild `rebuild: books N filter… bucket… bucket-sort…
+item-sort…`. Decision it feeds: whether the refresh rebuild needs its
+own fix (an incremental view removal) or whether one stage inside
+`rebuild` is the defect.
+
+**Open user tests (delete):**
+
+1. Select ~900 books, Remove from Library with "Also delete the
+   files": the UI stays responsive while the deletion runs (the new
+   delete lamp shows, the Tasks row counts up), and the list refreshes
+   once when it finishes.
+2. Click the lamp's "Cancel Book Deletion" (or the Tasks abort) part
+   way through: the job stops, books already deleted from disk leave
+   the library, the rest stay.
+3. Re-run once with `CR_TRACE=1` and send the trace — the
+   `remove-books:` lines and the `set_books: apply_filter/apply_sort`
+   + `rebuild:` lines are the data for the 11.57 s question.
+
+## Previous task
+
 **The bulk-delete freeze instrumentation (2026-09-14).**
 
 The user report: selecting ~900 books and deleting them takes a long
@@ -50,21 +115,6 @@ the seeded counts reconcile exactly (db 3132→3131, grid 2877→2876).
 The app is correct (a right-click on a SELECTED row keeps the
 multi-selection; the real ~900-book delete proves it). The probe
 cannot drive a batch delete through the context-menu route.
-
-UNKNOWN, named: which stage eats the user-visible time at ~900 books —
-the file deletes over CIFS, the removal loop, or the refresh — and how
-much. Decision it feeds: which stage to restructure (worker thread +
-progress + cancel; a batched removal; a refresh change). Instrument:
-the new trace lines. Run: the user's real ~900-book delete.
-
-**Open user test (delete freeze):** reproduce the ~900-book delete
-once with `CR_TRACE=1` on the release build and send the trace — the
-`remove-books:` lines and the `refresh:` lines are the data.
-
-Gates: `cargo fmt --all`; `cargo clippy --workspace --all-targets --
--D warnings`; `CR_FORMAT_TESTS=1 cargo test --workspace --locked` (56
-binaries, 0 failed); `cargo build --release --locked -p cr-app` — all
-green. `deleteperf_probe` re-ran PROBE COMPLETE.
 
 ## Previous task
 

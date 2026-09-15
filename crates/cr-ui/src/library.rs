@@ -1204,6 +1204,283 @@ pub fn windows_path_roots() -> Vec<cr_engine::path_migration::PathRoot> {
     session().borrow().windows_path_roots()
 }
 
+// ---------- The bulk remove-books job ----------
+//
+// The file deletion of a large Remove Books / Move to Recycle Bin ran
+// INLINE on the GTK main thread — MEASURED 22.9 s for 792 unlinks over
+// the CIFS mount, with the UI frozen the whole time (Rule 9). The job
+// moves the per-file work to a named worker and lands the book
+// removals in batches through a main-thread pump (the ADR-019 shape
+// the scan uses). Cancel: the Tasks row and the status-bar lamp.
+
+/// The outcome of one bulk remove job.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct RemoveBooksOutcome {
+    pub removed: usize,
+    pub failed: usize,
+    pub canceled: bool,
+}
+
+/// Worker → pump messages: landing batches of (id, file-deletion-ok)
+/// and the end mark (canceled).
+enum RemoveWorkerMsg {
+    Batch(Vec<(CrGuid, bool)>),
+    Done(bool),
+}
+
+/// Books per batch send (the pump lands each batch in ONE retain —
+/// a per-book borrow_mut/retain was the O(N) per-book removal).
+const REMOVE_BATCH_SIZE: usize = 25;
+
+thread_local! {
+    /// One bulk remove job at a time. The WORKER never writes this —
+    /// the main-thread pump owns it.
+    static REMOVE_IN_FLIGHT: RefCell<bool> = const { RefCell::new(false) };
+    /// The job's abort flag: `abort_remove_books` sets it, the worker
+    /// checks it between books.
+    static REMOVE_STOP: RefCell<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>> =
+        const { RefCell::new(None) };
+    /// (processed, total) for the Tasks row and the lamp.
+    static REMOVE_PROGRESS: RefCell<(usize, usize)> = const { RefCell::new((0, 0)) };
+}
+
+/// Whether a bulk remove/delete job runs now (the lamp + the Tasks row).
+pub fn remove_books_in_flight() -> bool {
+    REMOVE_IN_FLIGHT.with(|cell| *cell.borrow())
+}
+
+/// (processed, total) of the running job, or None when idle.
+pub fn remove_books_progress() -> Option<(usize, usize)> {
+    if !remove_books_in_flight() {
+        return None;
+    }
+    let (done, total) = REMOVE_PROGRESS.with(|cell| *cell.borrow());
+    Some((done, total))
+}
+
+/// The Tasks row's live line while a job runs.
+pub fn remove_job_line() -> Option<String> {
+    let (done, total) = remove_books_progress()?;
+    Some(format!("Deleting books — {done} of {total}"))
+}
+
+/// Aborts the running job (the Tasks abort, the lamp cancel): the
+/// worker stops BEFORE the next file; books whose files it already
+/// deleted still leave the library (a kept book would point at a
+/// deleted file).
+pub fn abort_remove_books() {
+    if let Some(stop) = REMOVE_STOP.with(|cell| cell.borrow().clone()) {
+        stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// Starts the bulk job: delete the books' files (when asked) on the
+/// worker and drop the books from the database as their deletions
+/// succeed. `land_ids` = false runs the SAME file deletion without
+/// database removals (the Files-view flow removes by path itself in
+/// its own completion callback — the `RemoveRange` shape).
+///
+/// One job at a time: a request while one runs is refused (the
+/// outcome arrives with `canceled = true`).
+pub fn remove_books_async(
+    ids: Vec<CrGuid>,
+    delete_files: bool,
+    permanent: bool,
+    land_ids: bool,
+    done: impl FnOnce(RemoveBooksOutcome) + 'static,
+) {
+    if remove_books_in_flight() {
+        crate::trace::trace("remove-books: job already running — request refused");
+        done(RemoveBooksOutcome {
+            canceled: true,
+            ..Default::default()
+        });
+        return;
+    }
+    // One pass for the paths (a per-id linear find was ~900 × 73k
+    // compares — small next to the unlinks, but free to fix here).
+    let paths: HashMap<CrGuid, String> = {
+        let lib = session();
+        let l = lib.borrow();
+        l.database()
+            .books
+            .iter()
+            .map(|b| (b.id, b.file_path.clone()))
+            .collect()
+    };
+    let items: Vec<(CrGuid, String)> = ids
+        .into_iter()
+        .map(|id| {
+            let path = paths.get(&id).cloned().unwrap_or_default();
+            (id, path)
+        })
+        .collect();
+    let total = items.len();
+    let (tx, rx) = std::sync::mpsc::channel::<RemoveWorkerMsg>();
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    REMOVE_IN_FLIGHT.with(|cell| *cell.borrow_mut() = true);
+    REMOVE_STOP.with(|cell| *cell.borrow_mut() = Some(std::sync::Arc::clone(&stop)));
+    REMOVE_PROGRESS.with(|cell| *cell.borrow_mut() = (0, total));
+    crate::trace::trace(format!(
+        "remove-books: job started {total} books (delete_files={delete_files} permanent={permanent} land_ids={land_ids})"
+    ));
+    std::thread::Builder::new()
+        .name("Remove Books".into())
+        .spawn(move || {
+            let t_files = std::time::Instant::now();
+            let mut t_file_time = std::time::Duration::ZERO;
+            let (mut n_trash, mut n_unlink) = (0usize, 0usize);
+            let mut canceled = false;
+            let mut batch: Vec<(CrGuid, bool)> = Vec::new();
+            for (id, path) in items {
+                if stop.load(std::sync::atomic::Ordering::Relaxed) {
+                    canceled = true;
+                    break;
+                }
+                let mut ok = true;
+                if delete_files && !path.is_empty() {
+                    let p = Path::new(&path);
+                    // The is-file guard: a fileless book (empty
+                    // path) and a missing file skip the deletion
+                    // and keep the book landing (the C# deletes
+                    // linked files only; the empty-path trash
+                    // would hit the working directory).
+                    if p.is_file() {
+                        let t0 = std::time::Instant::now();
+                        if permanent {
+                            // ADR-045: the immediate unlink — the
+                            // C# has no counterpart (its shell
+                            // delete is always the recycle bin).
+                            let _ = std::fs::remove_file(p);
+                            n_unlink += 1;
+                        } else {
+                            // ADR-006: the recycle bin → GIO trash
+                            // (the `gio` CLI per file).
+                            let _ = std::process::Command::new("gio")
+                                .args(["trash", &path])
+                                .status();
+                            n_trash += 1;
+                        }
+                        t_file_time += t0.elapsed();
+                        // The C# checks File.Exists after the delete
+                        // and a failed delete KEEPS the book (the
+                        // `continue` before library.Remove).
+                        ok = !p.exists();
+                    }
+                }
+                batch.push((id, ok));
+                if batch.len() >= REMOVE_BATCH_SIZE {
+                    let _ = tx.send(RemoveWorkerMsg::Batch(std::mem::take(&mut batch)));
+                }
+            }
+            if !batch.is_empty() {
+                let _ = tx.send(RemoveWorkerMsg::Batch(batch));
+            }
+            crate::trace::trace(format!(
+                "remove-books: files stage done in {:?} — trash {n_trash} unlink {n_unlink} file-time {t_file_time:?}",
+                t_files.elapsed()
+            ));
+            let _ = tx.send(RemoveWorkerMsg::Done(canceled));
+        })
+        .expect("spawn Remove Books");
+
+    let mut done = Some(done);
+    let mut removed_total: usize = 0;
+    let mut failed_total: usize = 0;
+    let land = land_ids;
+    glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
+        let mut tick_removed: HashSet<CrGuid> = HashSet::new();
+        let mut end: Option<bool> = None;
+        loop {
+            match rx.try_recv() {
+                Ok(RemoveWorkerMsg::Batch(batch)) => {
+                    REMOVE_PROGRESS.with(|cell| {
+                        let (d, t) = *cell.borrow();
+                        *cell.borrow_mut() = (d + batch.len(), t);
+                    });
+                    for (id, ok) in batch {
+                        if ok {
+                            if land {
+                                tick_removed.insert(id);
+                            }
+                        } else {
+                            failed_total += 1;
+                        }
+                    }
+                }
+                Ok(RemoveWorkerMsg::Done(canceled)) => {
+                    end = Some(canceled);
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    // The worker died (a panic): end the job so the
+                    // lamp clears and the UI is not stuck in-flight.
+                    end = Some(false);
+                    break;
+                }
+            }
+        }
+        if !tick_removed.is_empty() {
+            {
+                let lib = session();
+                let mut l = lib.borrow_mut();
+                // A mid-scan removal must survive the scan's landing
+                // merge (recorded on the MAIN thread — here).
+                for id in &tick_removed {
+                    record_scan_removal(id);
+                }
+                let before = l.database().books.len();
+                l.database_mut()
+                    .books
+                    .retain(|b| !tick_removed.contains(&b.id));
+                if l.database().books.len() != before {
+                    l.mark_dirty();
+                    crate::gauges::invalidate();
+                }
+            }
+            removed_total += tick_removed.len();
+            crate::trace::trace(format!(
+                "remove-books: {removed_total} removed, {failed_total} failed, {} processed",
+                REMOVE_PROGRESS.with(|cell| cell.borrow().0)
+            ));
+        }
+        let Some(canceled) = end else {
+            return ControlFlow::Continue;
+        };
+        REMOVE_IN_FLIGHT.with(|cell| *cell.borrow_mut() = false);
+        REMOVE_STOP.with(|cell| *cell.borrow_mut() = None);
+        REMOVE_PROGRESS.with(|cell| *cell.borrow_mut() = (0, 0));
+        if let Some(d) = done.take() {
+            d(RemoveBooksOutcome {
+                removed: removed_total,
+                failed: failed_total,
+                canceled,
+            });
+        }
+        ControlFlow::Break
+    });
+}
+
+/// The Files-view file deletion (the "Move to Recycle Bin" flow): the
+/// SAME worker shape, no database landings — the flow's own completion
+/// callback does its path-based `RemoveRange` and the folder rescan.
+pub fn delete_files_async(
+    paths: Vec<String>,
+    permanent: bool,
+    done: impl FnOnce(RemoveBooksOutcome) + 'static,
+) {
+    let ids = vec![CrGuid::default(); paths.len()];
+    remove_books_async(
+        ids,
+        true,
+        permanent,
+        false,
+        move |outcome: RemoveBooksOutcome| {
+            done(outcome);
+        },
+    );
+}
+
 /// Any Windows-style path left in the database? (The `win.migrate-paths`
 /// enable state.)
 pub fn has_windows_paths() -> bool {

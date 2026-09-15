@@ -545,8 +545,13 @@ impl ItemView {
             crate::trace::trace(format!("set_books: ViewState::new {:?}", t1.elapsed()));
             let t2 = std::time::Instant::now();
             s.view.set_filter(filter);
+            let t_filter = t2.elapsed();
+            let t2b = std::time::Instant::now();
             s.view.set_sort_chain(sort);
-            crate::trace::trace(format!("set_books: set_filter {:?}", t2.elapsed()));
+            let t_sort = t2b.elapsed();
+            crate::trace::trace(format!(
+                "set_books: apply_filter {t_filter:?} apply_sort {t_sort:?}"
+            ));
             if grouper.is_some() {
                 s.view.set_grouper(grouper);
             }
