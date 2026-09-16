@@ -438,6 +438,17 @@ The cache file is
 It is disposable: delete it and the app rebuilds it, at the cost of API
 budget. Import an MCL file to seed it with no request.
 
+## `[plugins.incoming]`
+
+Incoming-folder settings. An incoming folder also has the monitored role.
+Path matching compares complete components without case sensitivity. Both
+`/` and `\` are separators.
+
+| Key | Default | Meaning |
+|---|---|---|
+| `incoming_folders` | [] | Folder paths that have the incoming and monitored roles. |
+| `last_organizer_profile` | "" | Name of the organizer profile selected for the last incoming-folder operation. |
+
 ## `[data]`
 
 User editable data tables. The app seeds them on first boot.

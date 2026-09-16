@@ -270,7 +270,7 @@ fn under_incoming_path(book: &ComicBook, rules: &DuplicateRules) -> bool {
 /// Is `path` inside the `root` directory? Component-wise prefix
 /// compare, case-insensitive; empty components (a trailing
 /// separator, a doubled one) are dropped.
-fn under_path(path: &str, root: &str) -> bool {
+pub(crate) fn under_path(path: &str, root: &str) -> bool {
     let comps = |s: &str| -> Vec<String> {
         s.split(['/', '\\'])
             .filter(|c| !c.is_empty())

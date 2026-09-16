@@ -11,6 +11,7 @@ zip.workspace = true
 chrono.workspace = true
 fancy-regex = "0.14"
 notify = "6"
+serde.workspace = true
 
 [lints]
 workspace = true
@@ -24,3 +25,4 @@ workspace = true
 # `cargo build -p cr-app` -- what the release workflow runs -- failed.
 zip.workspace = true
 tar.workspace = true
+toml.workspace = true

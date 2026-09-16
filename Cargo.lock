@@ -371,7 +371,9 @@ dependencies = [
  "cr-io",
  "fancy-regex",
  "notify",
+ "serde",
  "tar",
+ "toml 0.9.12+spec-1.1.0",
  "zip",
 ]
 

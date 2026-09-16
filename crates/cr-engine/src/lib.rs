@@ -7,6 +7,7 @@ pub mod duplicates;
 pub mod gauges;
 pub mod group;
 pub mod image_pool;
+pub mod incoming;
 pub mod library;
 pub mod lists;
 pub mod matcher;

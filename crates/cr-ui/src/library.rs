@@ -503,6 +503,21 @@ pub fn store_scraper_config(config: &cr_scrape::config::Configuration) {
     save_settings();
 }
 
+/// The incoming-folder section name in the unified config.
+pub const INCOMING_PLUGIN: &str = "incoming";
+
+/// The stored incoming-folder configuration.
+pub fn incoming_config() -> cr_engine::incoming::IncomingConfig {
+    cr_core::settings::unified::get_plugin(INCOMING_PLUGIN).unwrap_or_default()
+}
+
+/// Commits the incoming-folder configuration into `[plugins.incoming]`
+/// and saves the unified config.
+pub fn store_incoming_config(config: &cr_engine::incoming::IncomingConfig) {
+    cr_core::settings::unified::set_plugin(INCOMING_PLUGIN, config);
+    save_settings();
+}
+
 /// The Library Organizer's section name in the unified config
 /// (Phase 17, ADR-033).
 pub const ORGANIZER_PLUGIN: &str = "library-organizer";
