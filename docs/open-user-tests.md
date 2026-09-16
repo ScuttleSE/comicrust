@@ -1,52 +1,122 @@
 # Open user tests
 
-Every test here waits for a person. A build that passes is not proof
-that the user interface behaves.
-
-**There is no open user test right now.** Every test through Phase 15
-passed on 2026-09-12.
-
-`docs/current-status.md` names which tests are open. This file holds
-their steps.
-
-## How to add one
-
-Add a numbered section per test, and add its title to the list in
-`docs/current-status.md`. Delete both when the test passes.
-
-Give each step three things: what to do, what to expect, and what to
-report.
-
-```markdown
-## N. Title (the phase or the commit)
-
-1. Do this.
-   *Expect:* this happens.
-   *Report:* this number.
-```
-
-## Before any test
-
-Build once and use that binary for the whole test.
+Every test here needs a person. A successful build does not prove UI
+behavior. Build once and use that binary for all tests:
 
 ```sh
-cd /home/scuttle/Downloads/repo/comicrust
 cargo build -p cr-app --release
 ./target/release/comicrust
 ```
 
-"Restart" means: close the window, wait for the process to end, then
-start the binary again.
+Back up `~/.local/share/comicrust/ComicDb/ComicDb.xml` before a test that
+changes the library.
 
-| What | Where |
-|---|---|
-| Configuration | `~/.config/comicrust/comicrust.toml` |
-| Library database | `~/.local/share/comicrust/ComicDb/ComicDb.xml` |
-| Comic Vine cache | `~/.local/share/comicrust/plugins/comic-vine-scraper/cvcache.sqlite` |
-| Scrape history | `~/.config/comicrust/plugins/comic-vine-scraper/prior_series.json` |
+## 1. Library-tree gauge badges
 
-Back up `ComicDb.xml` before a test that scans or writes the library.
+Open lists, folders, and the Library root. Confirm that green Total, orange
+Unread, and red New badges match known counts. A zero count must be hidden.
+Read a book to 100%, then delete one book. Confirm that the badges update.
+Restart and confirm that the last counts appear before the refresh completes.
 
-```sh
-cp ~/.local/share/comicrust/ComicDb/ComicDb.xml ~/ComicDb.xml.backup
-```
+## 2. Library-tree drag and drop
+
+Move a reading list into a folder. Move a list above another list. Move a
+list to the empty area below the tree. Confirm each resulting position.
+Confirm that the Library row cannot move. Confirm that a folder cannot move
+into its own descendant. Restart and confirm that the order persists.
+
+## 3. Library-tree folder sort
+
+Right-click a folder. Confirm that Sort is between Rename and Delete. Select
+Sort. Confirm that folders come first and lists follow in name order. Confirm
+that a list has no Sort command. Restart and confirm that the order persists.
+
+## 4. Select Worst Duplicates and Incoming path
+
+Create duplicate pairs with different formats, sizes, page counts, and
+timestamps. Confirm that Show Duplicates limits the list. Run Select Worst
+Duplicates with all rules enabled, with the CBR rule disabled, and with all
+rules disabled. Confirm the ADR-048 tie-break. Identical copies must remain
+unselected. Set `DuplicatesIncomingPath`. Confirm that the copy under that
+path is selected when a copy outside it exists. Remove the selection.
+
+## 5. Keyboard navigation and visibility
+
+In Details view, test Down and PageDown from the middle of the Library. In
+Thumbnails view, hold Down, Up, PageDown, and PageUp. Confirm that the
+selected book stays visible. Change the view mode and confirm that the
+selected book stays visible.
+
+## 6. Watch-folder removal
+
+In Preferences, select a watch folder and remove it. Select Cancel and
+confirm that nothing changes after restart. Remove it again and select OK.
+Confirm that it stays absent, existing books remain, and new files in that
+folder are not scanned.
+
+## 7. Permanent delete in the browser
+
+Open Remove from Library. Confirm that both check boxes start clear each
+time. Confirm that permanent delete is disabled until file deletion is
+selected. Test trash deletion and permanent deletion. Confirm the file and
+library results. Select Cancel and confirm that nothing changes.
+
+## 8. Files-view deletion and failure handling
+
+In Files view, use Move to Recycle Bin with permanent deletion enabled.
+Confirm that the file does not enter the trash. Force deletion to fail with
+a file in a directory without write permission. Confirm that the book stays
+in the library and that the failure message appears. Repeat the failure in
+the browser flow.
+
+## 9. Library Organizer simulation
+
+Open Library Organizer for a book. Confirm the Default profile and templates.
+Select Simulate and a scratch base folder. Run it. Confirm that the report
+shows the planned operations and that no file moves.
+
+## 10. Library Organizer move and conflicts
+
+Move a few books with Library Organizer. Confirm the template paths, updated
+library paths, and `~/.config/comicrust/plugins/library-organizer/undo.dat`.
+Test an existing destination. Confirm Cancel, Rename, and Replace. Rename
+must create ` (1)`. Replace must trash the old file and preserve its read
+percentage on the moved book.
+
+## 11. Library Organizer undo and profile exchange
+
+Select Library Organizer - Revert Last Move. Confirm that books return and
+the undo file disappears. A second undo must report Nothing to Undo. Import
+an existing `losettingsx.dat`, correct Windows paths, and export a profile.
+Open the export in Windows ComicRack and confirm the round trip.
+
+## 12. Details thumbnails, Ctrl+A, and Delete
+
+Scroll Details view and confirm that it creates no thumbnail-cache files.
+Switch to Thumbnails and confirm that covers appear. Press Ctrl+A and confirm
+that all books select. Press Delete and confirm that Remove Books opens.
+Cancel, then confirm that no book was removed.
+
+## 13. macOS archive-junk recovery
+
+Open a previously broken CBR or CBZ that contains `__MACOSX` entries. Confirm
+that its thumbnail appears and page 1 is a real page. Confirm that a book
+already in the library recovers without a rescan.
+
+## 14. Smart-list dialog responsiveness
+
+Run the smart-list creation flow that previously paused for 25 to 30 seconds.
+Use `CR_TRACE=1`. Confirm that OK responds quickly. Confirm one
+`nav: fire_selected` line and one `smartlist:` block with no repeated cycle.
+
+## 15. Detail-column text overflow
+
+Narrow a Details column that contains long text. Confirm that the text ends
+in an ellipsis and does not paint over the next column.
+
+## 16. Per-list view settings
+
+Give two lists different view modes and sizes. Switch between them and
+confirm that each setting returns. Create a list and confirm that it inherits
+the current view. Reset one list's view settings. Restart and confirm that
+the saved and reset states persist.

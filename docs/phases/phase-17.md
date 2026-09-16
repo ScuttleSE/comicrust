@@ -2,8 +2,8 @@
 
 ## Status
 
-COMPLETE (engine + UI + wiring + probe, 2026-09-13). The user test is
-open. Phase 16 (scraper QoL) stays PLANNED.
+IMPLEMENTED, USER TEST PENDING. Engine, UI, wiring, and probe completed on
+2026-09-13. Phase 16 stays PLANNED.
 
 ## Goal
 
@@ -162,4 +162,6 @@ existing `losettingsx.dat`.
 
 ## Completion record
 
-Not complete.
+The implementation completed on 2026-09-13. The Library Organizer simulation,
+move, conflict, undo, and profile-exchange tests in
+`docs/open-user-tests.md` must pass before this phase closes.

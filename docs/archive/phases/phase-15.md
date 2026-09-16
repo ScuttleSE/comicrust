@@ -124,7 +124,7 @@ The book menu gains **Fill Missing Issues…**.
 
 ## User test
 
-The steps are test 1 in `docs/open-user-tests.md`.
+The Phase 15 user tests passed on 2026-09-12.
 
 ## Open issues
 
