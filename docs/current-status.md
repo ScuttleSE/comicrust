@@ -15,7 +15,9 @@ Phase 9, the SQLite database backend, is DEFERRED to `docs/backlog.md`.
 
 ## Current task
 
-There is no active implementation task.
+The Library Organizer configuration-dialog lifetime defect is fixed. The
+folder chooser opens from Browse, and a selected profile reloads its stored
+Base folder. The release organizer probe now covers both behaviors.
 
 The user confirmed these four tests as passed on 2026-09-16:
 
@@ -74,15 +76,15 @@ licenses` is not a CI gate.
 
 ## Latest verification
 
-The full-library scroll fix is commit `5d2f9bb`.
+The Library Organizer configuration fix passed local verification on
+2026-09-16.
 
 - `cargo fmt --all`: passed.
 - `cargo clippy --workspace --all-targets -- -D warnings`: passed.
-- `CR_FORMAT_TESTS=1 cargo test --workspace --locked`: passed.
-- Release app and probe builds: passed.
-- A release probe under `MemoryMax=2G` reached the final logical viewport
-  with 95,302 Detail rows and exited normally.
-- The user test passed on 2026-09-16.
+- `cargo test --workspace`: passed.
+- The release `organize_probe` passed gates A-F. Gate A confirms that Browse
+  opens the Base folder chooser. Gate B confirms that a new profile's Base
+  folder survives storage, dialog reload, and profile selection.
 
 ## Environment notes
 

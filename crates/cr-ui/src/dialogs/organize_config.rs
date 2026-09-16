@@ -52,7 +52,6 @@ pub fn show_organize_config(
         *d.borrow_mut() = Some(dialog.upcast_ref::<gtk4::Window>().clone());
     });
 
-    DIALOG_PARENT.with(|d| *d.borrow_mut() = None);
     let state: Rc<RcState> = Rc::new(RcState {
         settings: RefCell::new(settings.clone()),
         selected: std::cell::Cell::new(0usize),
@@ -101,7 +100,7 @@ pub fn show_organize_config(
     let rules = build_rules_page(&mut handles, &state);
     let options = build_options_page(&mut handles, &state);
     let widgets: Rc<Handles> = Rc::new(handles);
-    WIDGETS.with(|slot| *slot.borrow_mut() = Some(std::rc::Rc::downgrade(&widgets)));
+    WIDGETS.with(|slot| *slot.borrow_mut() = Some(widgets.clone()));
     pages.append_page(&overview, Some(&tab_label("Overview")));
     pages.append_page(&files, Some(&tab_label("Files")));
     pages.append_page(&folders, Some(&tab_label("Folders")));
@@ -277,6 +276,8 @@ pub fn show_organize_config(
             } else {
                 None
             };
+            WIDGETS.with(|slot| *slot.borrow_mut() = None);
+            DIALOG_PARENT.with(|parent| *parent.borrow_mut() = None);
             dlg.close();
             on_done(result);
         });
@@ -316,8 +317,13 @@ fn unique_profile_name(store: &PluginSettings, want: &str) -> String {
 }
 
 fn sync_profiles(state: &RcState, drop: &DropDown, select: Option<usize>) {
-    let s = state.settings.borrow();
-    let names: Vec<String> = s.profiles.iter().map(|p| p.name.clone()).collect();
+    let names: Vec<String> = state
+        .settings
+        .borrow()
+        .profiles
+        .iter()
+        .map(|p| p.name.clone())
+        .collect();
     let list = StringList::new(&names.iter().map(String::as_str).collect::<Vec<_>>());
     drop.set_model(Some(&list));
     if let Some(idx) = select {
@@ -362,11 +368,11 @@ struct Handles {
 }
 
 thread_local! {
-    static WIDGETS: RefCell<Option<std::rc::Weak<Handles>>> = const { RefCell::new(None) };
+    static WIDGETS: RefCell<Option<Rc<Handles>>> = const { RefCell::new(None) };
 }
 
-fn widgets() -> Option<std::rc::Rc<Handles>> {
-    WIDGETS.with(|w| w.borrow().as_ref().and_then(std::rc::Weak::upgrade))
+fn widgets() -> Option<Rc<Handles>> {
+    WIDGETS.with(|w| w.borrow().clone())
 }
 
 // ---------------------------------------------------------------------------

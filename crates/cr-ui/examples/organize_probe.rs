@@ -1,9 +1,9 @@
 //! Headless probe: the Library Organizer (Phase 17).
 //! Gates:
-//!   A. the config dialog opens with the built-in Default profile
-//!      (the addon's templates) and OK commits the edited template,
-//!   B. the plugin settings store round-trips
-//!      (`[plugins.library-organizer]`),
+//!   A. the config dialog opens with the built-in Default profile,
+//!      Browse opens a folder chooser, and OK commits edits,
+//!   B. the plugin settings store round-trips and a new profile's Base
+//!      folder reloads when that profile is selected,
 //!   C. a MOVE run over a seeded three-book library: files land at
 //!      the template layout, the undo log is written, and the report
 //!      counts 3 successes,
@@ -61,6 +61,13 @@ fn find_entries(window: &gtk4::Window) -> Vec<gtk4::Entry> {
     widgets_of(window)
         .into_iter()
         .filter_map(|w| w.downcast::<gtk4::Entry>().ok())
+        .collect()
+}
+
+fn find_dropdowns(window: &gtk4::Window) -> Vec<gtk4::DropDown> {
+    widgets_of(window)
+        .into_iter()
+        .filter_map(|w| w.downcast::<gtk4::DropDown>().ok())
         .collect()
 }
 
@@ -136,8 +143,7 @@ fn main() {
     // Gates A + B: the config dialog and the plugin settings store.
     // ------------------------------------------------------------------
     let committed: Rc<RefCell<Vec<PluginSettings>>> = Rc::new(RefCell::new(Vec::new()));
-    let mut settings = PluginSettings::builtin();
-    settings.profiles[0].base_folder = work.join("dst").to_string_lossy().into_owned();
+    let settings = PluginSettings::builtin();
     {
         let committed = Rc::clone(&committed);
         cr_ui::dialogs::organize_config::show_organize_config(&host, &settings, None, move |r| {
@@ -156,9 +162,35 @@ fn main() {
         .find(|e| e.text().contains("<number2>"))
         .unwrap_or_else(|| panic!("FAIL A: the file template entry is missing"))
         .clone();
+    let base_entry = entries
+        .iter()
+        .find(|e| e.text().is_empty())
+        .unwrap_or_else(|| panic!("FAIL A: the Base folder entry is missing"))
+        .clone();
     println!("GATE A OK: the config dialog opens with the built-in profile");
 
-    // Edit the file template and OK: the edit must reach the store.
+    find_button(&config_window, "Browse…").emit_clicked();
+    while gtk4::glib::MainContext::default().pending() {
+        gtk4::glib::MainContext::default().iteration(false);
+    }
+    let browse_failed = match find_toplevel("Choose the base folder") {
+        Some(folder_chooser) => {
+            folder_chooser
+                .downcast::<gtk4::Dialog>()
+                .expect("folder chooser dialog")
+                .response(gtk4::ResponseType::Cancel);
+            false
+        }
+        None => {
+            eprintln!("FAIL A: Browse did not open the Base folder chooser");
+            true
+        }
+    };
+
+    // Create a profile and edit fields: every edit must reach the store.
+    find_button(&config_window, "New").emit_clicked();
+    let base = work.join("configured-base").to_string_lossy().into_owned();
+    base_entry.set_text(&base);
     file_entry.set_text("{<series>}{ #<number2>} edited");
     config_window
         .clone()
@@ -170,14 +202,18 @@ fn main() {
     }
     {
         let store = committed.borrow()[0].clone();
-        if store.profiles[0].file_template != "{<series>}{ #<number2>} edited" {
+        if store.profiles[1].file_template != "{<series>}{ #<number2>} edited" {
+            eprintln!("FAIL B: the selected profile did not receive the template edit");
+            std::process::exit(1);
+        }
+        if store.profiles.len() != 2 || store.profiles[1].base_folder != base {
             eprintln!(
-                "FAIL B: the committed template lost the edit: {:?}",
-                store.profiles[0].file_template
+                "FAIL B: the new profile lost the Base folder: {:?}",
+                store.profiles.get(1).map(|p| &p.base_folder)
             );
             std::process::exit(1);
         }
-        if store.profiles[0].folder_template.is_empty() {
+        if store.profiles[1].folder_template.is_empty() {
             eprintln!("FAIL B: the committed profile lost the folder template");
             std::process::exit(1);
         }
@@ -185,14 +221,45 @@ fn main() {
     let store = committed.borrow()[0].clone();
     cr_ui::library::store_organize_settings(&store);
     let back = cr_ui::library::organize_settings();
-    if back.profiles[0].file_template != store.profiles[0].file_template {
-        eprintln!(
-            "FAIL B: the settings round trip lost the template: {:?} vs {:?}",
-            back.profiles[0].file_template, store.profiles[0].file_template
-        );
+    if back != store {
+        eprintln!("FAIL B: the settings round trip changed the organizer profiles");
         std::process::exit(1);
     }
-    println!("GATE B OK: OK commits the edit into the plugin settings");
+    let reloaded: Rc<RefCell<Vec<PluginSettings>>> = Rc::new(RefCell::new(Vec::new()));
+    {
+        let reloaded = Rc::clone(&reloaded);
+        cr_ui::dialogs::organize_config::show_organize_config(&host, &back, None, move |r| {
+            if let Some(s) = r {
+                reloaded.borrow_mut().push(s);
+            }
+        });
+    }
+    let Some(reloaded_window) = find_toplevel("Configure Library Organizer") else {
+        eprintln!("FAIL B: the config dialog did not reopen");
+        std::process::exit(1);
+    };
+    let profile_drop = find_dropdowns(&reloaded_window)
+        .into_iter()
+        .next()
+        .expect("FAIL B: the profile selector is missing");
+    profile_drop.set_selected(1);
+    while gtk4::glib::MainContext::default().pending() {
+        gtk4::glib::MainContext::default().iteration(false);
+    }
+    let reload_failed = !find_entries(&reloaded_window)
+        .iter()
+        .any(|entry| entry.text() == base);
+    if reload_failed {
+        eprintln!("FAIL B: the selected profile did not reload its Base folder");
+    }
+    reloaded_window
+        .downcast::<gtk4::Dialog>()
+        .expect("reloaded config dialog")
+        .response(gtk4::ResponseType::Cancel);
+    if browse_failed || reload_failed {
+        std::process::exit(1);
+    }
+    println!("GATE B OK: settings and selected-profile fields round-trip");
 
     // ------------------------------------------------------------------
     // Gate C: the MOVE run over three seeded books.
