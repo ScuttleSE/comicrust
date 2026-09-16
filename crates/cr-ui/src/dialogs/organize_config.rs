@@ -95,7 +95,7 @@ pub fn show_organize_config(
 
     let mut handles = Handles::default();
     let overview = build_overview_page(&mut handles, &state);
-    let files = build_template_page(&mut handles, &state, true);
+    let files = scroll_of(build_template_box(&mut handles, &state, true));
     let folders = build_folders_page(&mut handles, &state);
     let rules = build_rules_page(&mut handles, &state);
     let options = build_options_page(&mut handles, &state);
@@ -523,7 +523,7 @@ fn build_overview_page(w: &mut Handles, state: &Rc<RcState>) -> ScrolledWindow {
     scroll_of(box_)
 }
 
-fn build_template_page(w: &mut Handles, state: &Rc<RcState>, file: bool) -> ScrolledWindow {
+fn build_template_box(w: &mut Handles, state: &Rc<RcState>, file: bool) -> gtk4::Box {
     let box_ = gtk4::Box::new(Orientation::Vertical, 6);
     box_.set_margin_top(8);
     box_.set_margin_bottom(8);
@@ -560,6 +560,11 @@ fn build_template_page(w: &mut Handles, state: &Rc<RcState>, file: bool) -> Scro
     let insert = gtk4::Button::with_label("Insert token");
     picker_box.append(&picker);
     picker_box.append(&insert);
+    let folder_separator = (!file).then(|| {
+        let button = gtk4::Button::with_label("Folder separator");
+        picker_box.append(&button);
+        button
+    });
     inner.append(&picker_box);
     group.set_child(Some(&inner));
     box_.append(&group);
@@ -610,6 +615,22 @@ fn build_template_page(w: &mut Handles, state: &Rc<RcState>, file: bool) -> Scro
             entry.set_position((pos + token.chars().count()) as i32);
         });
     }
+    if let Some(button) = folder_separator {
+        let entry = entry.clone();
+        button.connect_clicked(move |_| {
+            let mut text = entry.text().to_string();
+            let pos = (entry.position().max(0)) as usize;
+            let pos = pos.min(text.chars().count());
+            let char_idx = text
+                .char_indices()
+                .nth(pos)
+                .map(|(i, _)| i)
+                .unwrap_or(text.len());
+            text.insert(char_idx, '\\');
+            entry.set_text(&text);
+            entry.set_position((pos + 1) as i32);
+        });
+    }
 
     if file {
         w.file_template = Some(entry);
@@ -618,7 +639,7 @@ fn build_template_page(w: &mut Handles, state: &Rc<RcState>, file: bool) -> Scro
         w.folder_template = Some(entry);
         w.folder_preview = Some(preview);
     }
-    scroll_of(box_)
+    box_
 }
 
 fn tab_label(text: &str) -> gtk4::Label {
@@ -677,11 +698,7 @@ impl cr_organize::template::MultiValueAsker for NoAsk {
 }
 
 fn build_folders_page(w: &mut Handles, state: &Rc<RcState>) -> ScrolledWindow {
-    let box_ = gtk4::Box::new(Orientation::Vertical, 6);
-    box_.set_margin_top(8);
-    box_.set_margin_bottom(8);
-    box_.set_margin_start(8);
-    box_.set_margin_end(8);
+    let box_ = build_template_box(w, state, false);
 
     let empty_line = gtk4::Box::new(Orientation::Horizontal, 6);
     empty_line.append(&{

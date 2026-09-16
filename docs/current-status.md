@@ -15,9 +15,10 @@ Phase 9, the SQLite database backend, is DEFERRED to `docs/backlog.md`.
 
 ## Current task
 
-The Library Organizer configuration-dialog lifetime defect is fixed. The
-folder chooser opens from Browse, and a selected profile reloads its stored
-Base folder. The release organizer probe now covers both behaviors.
+The Library Organizer configuration dialog now shows both template editors.
+The Folders page shows and edits the stored folder template, provides the
+token picker and folder-separator control, and keeps its existing folder
+options. The release organizer probe covers folder-template persistence.
 
 The user confirmed these four tests as passed on 2026-09-16:
 
@@ -76,15 +77,15 @@ licenses` is not a CI gate.
 
 ## Latest verification
 
-The Library Organizer configuration fix passed local verification on
+The Library Organizer folder-template editor passed local verification on
 2026-09-16.
 
 - `cargo fmt --all`: passed.
 - `cargo clippy --workspace --all-targets -- -D warnings`: passed.
 - `cargo test --workspace`: passed.
-- The release `organize_probe` passed gates A-F. Gate A confirms that Browse
-  opens the Base folder chooser. Gate B confirms that a new profile's Base
-  folder survives storage, dialog reload, and profile selection.
+- The release `organize_probe` passed gates A-F. Gate A confirms that both
+  template editors are visible. Gate B confirms that a changed folder
+  template survives storage, dialog reload, and profile selection.
 
 ## Environment notes
 

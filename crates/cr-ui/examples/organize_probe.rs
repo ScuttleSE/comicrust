@@ -1,9 +1,10 @@
 //! Headless probe: the Library Organizer (Phase 17).
 //! Gates:
 //!   A. the config dialog opens with the built-in Default profile,
-//!      Browse opens a folder chooser, and OK commits edits,
+//!      both template editors are visible, Browse opens a folder
+//!      chooser, and OK commits edits,
 //!   B. the plugin settings store round-trips and a new profile's Base
-//!      folder reloads when that profile is selected,
+//!      folder and folder template reload when that profile is selected,
 //!   C. a MOVE run over a seeded three-book library: files land at
 //!      the template layout, the undo log is written, and the report
 //!      counts 3 successes,
@@ -162,6 +163,11 @@ fn main() {
         .find(|e| e.text().contains("<number2>"))
         .unwrap_or_else(|| panic!("FAIL A: the file template entry is missing"))
         .clone();
+    let folder_entry = entries
+        .iter()
+        .find(|e| e.text().contains("<publisher>"))
+        .unwrap_or_else(|| panic!("FAIL A: the folder template entry is missing"))
+        .clone();
     let base_entry = entries
         .iter()
         .find(|e| e.text().is_empty())
@@ -190,8 +196,10 @@ fn main() {
     // Create a profile and edit fields: every edit must reach the store.
     find_button(&config_window, "New").emit_clicked();
     let base = work.join("configured-base").to_string_lossy().into_owned();
+    let folder_template = "{<publisher>}\\{<series>} edited";
     base_entry.set_text(&base);
     file_entry.set_text("{<series>}{ #<number2>} edited");
+    folder_entry.set_text(folder_template);
     config_window
         .clone()
         .downcast::<gtk4::Dialog>()
@@ -213,8 +221,11 @@ fn main() {
             );
             std::process::exit(1);
         }
-        if store.profiles[1].folder_template.is_empty() {
-            eprintln!("FAIL B: the committed profile lost the folder template");
+        if store.profiles[1].folder_template != folder_template {
+            eprintln!(
+                "FAIL B: the committed profile lost the folder template: {:?}",
+                store.profiles[1].folder_template
+            );
             std::process::exit(1);
         }
     }
@@ -246,17 +257,22 @@ fn main() {
     while gtk4::glib::MainContext::default().pending() {
         gtk4::glib::MainContext::default().iteration(false);
     }
-    let reload_failed = !find_entries(&reloaded_window)
-        .iter()
-        .any(|entry| entry.text() == base);
+    let reloaded_entries = find_entries(&reloaded_window);
+    let reload_failed = !reloaded_entries.iter().any(|entry| entry.text() == base);
     if reload_failed {
         eprintln!("FAIL B: the selected profile did not reload its Base folder");
+    }
+    let folder_reload_failed = !reloaded_entries
+        .iter()
+        .any(|entry| entry.text() == folder_template);
+    if folder_reload_failed {
+        eprintln!("FAIL B: the selected profile did not reload its folder template");
     }
     reloaded_window
         .downcast::<gtk4::Dialog>()
         .expect("reloaded config dialog")
         .response(gtk4::ResponseType::Cancel);
-    if browse_failed || reload_failed {
+    if browse_failed || reload_failed || folder_reload_failed {
         std::process::exit(1);
     }
     println!("GATE B OK: settings and selected-profile fields round-trip");
