@@ -15,6 +15,38 @@ user-tested on 2026-09-12 and are archived.
 
 ## Current task
 
+**The full-library scroll fix (2026-09-16).**
+
+The user report: the Library badge showed 95,302 books, but Details
+view stopped near book 43,477 in either sort direction. MEASURED on
+the user's trace: the final viewport was y=998,232 with a 1,768 px
+page, whose bottom is exactly the ItemView's 1,000,000 px physical
+canvas cap. The list evaluation, sort, and layout held all 95,302
+books; only rows past the canvas were unreachable.
+
+An uncapped 2,001,363 px GTK canvas was rejected by measurement: it
+grew the main-process heap until a 2 GiB cgroup killed it (14,228
+consecutive 132 KiB `brk()` expansions, 1.834 GiB total). The fix
+keeps the physical GTK canvas capped and maps its scrollbar range to
+the complete logical layout. Drawing, tooltips, mouse selection,
+context hits, selection bands, type-ahead scrolling, and keyboard
+visibility use logical y coordinates. Three pure tests cover both
+endpoints, identity below the cap, and round trips.
+
+MEASURED release probe under `MemoryMax=2G`: 95,302 Detail rows,
+physical canvas 1,000,000 px, first viewport 42 rows, final logical
+viewport y=2,000,463 with 43 rows, normal exit. Gates: fmt, clippy,
+workspace tests, release app/probe build, and the cgroup probe are
+green.
+
+**Open user test:** open the 95,302-book Library in Details view and
+scroll to the end in both sort directions. All books are reachable;
+the ascending view continues past G and the descending view continues
+past J. Click and right-click rows near the end to confirm that the
+visible row receives the action.
+
+## Previous task
+
 **The File-menu open fix (2026-09-16).**
 
 The user report: the File menu opens slightly slower than Edit,

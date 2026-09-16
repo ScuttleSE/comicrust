@@ -45,6 +45,10 @@ use super::view_state::ViewState;
 /// The type-ahead buffer reset (`KeySearch`).
 const TYPE_AHEAD_RESET_MS: u64 = 2500;
 
+/// Maximum physical GTK canvas dimension. The browser keeps the full
+/// logical layout separately and maps the scrollbar range to it.
+const MAX_CANVAS_SIZE: f64 = 1_000_000.0;
+
 /// The Detail cell + header font (`base.View.Font` =
 /// `SystemFonts.IconTitleFont`, 9 pt ≈ 13 px on the Linux font
 /// stack; the C# `CoverViewItem.OnDraw` text uses the view font).
@@ -405,7 +409,7 @@ impl ItemView {
                 let Some(state) = state.upgrade() else {
                     return;
                 };
-                let (sx, sy, view_w, view_h) = scroll_window(&scroller);
+                let (sx, physical_y, view_w, view_h) = scroll_window(&scroller);
                 // The culling window is the VIEWPORT (the adjustment
                 // page size). The draw size is the canvas's FULL
                 // virtual allocation (set_content_height) — taking
@@ -415,11 +419,21 @@ impl ItemView {
                 // ~35). The fallback covers a draw before the first
                 // allocation (page size still 0).
                 let window = if view_w > 1.0 && view_h > 1.0 {
-                    Rect::new(sx, sy, view_w, view_h)
+                    let logical_height = state.borrow().layout.virtual_size.1;
+                    let logical_y = logical_scroll_value(
+                        physical_y,
+                        view_h,
+                        scroller.vadjustment().upper(),
+                        logical_height,
+                    );
+                    Rect::new(sx, logical_y, view_w, view_h)
                 } else {
-                    Rect::new(sx, sy, width as f64, height as f64)
+                    Rect::new(sx, physical_y, width as f64, height as f64)
                 };
+                ctx.save().ok();
+                ctx.translate(0.0, physical_y - window.y);
                 let queued = draw_frame(ctx, &state, window);
+                ctx.restore().ok();
                 if queued {
                     start_thumb_pump(&state);
                 }
@@ -432,6 +446,7 @@ impl ItemView {
         // 2026-09-11; the both-chips case fixed 2026-09-12).
         {
             let state = Rc::downgrade(&state);
+            let tooltip_canvas = canvas.clone();
             canvas.set_has_tooltip(true);
             canvas.connect_query_tooltip(move |_, x, y, _keyboard, tooltip| {
                 let Some(state) = state.upgrade() else {
@@ -441,7 +456,8 @@ impl ItemView {
                 // `if let` holds it through the whole statement.
                 let text = {
                     let s = state.borrow();
-                    hit_test(&s.layout, x as f64, y as f64)
+                    let logical_y = canvas_y_to_logical(&s, &tooltip_canvas, y as f64);
+                    hit_test(&s.layout, x as f64, logical_y)
                         .and_then(|d| super::item::chip_tooltip(s.view.book(d)))
                 };
                 match text {
@@ -870,11 +886,15 @@ impl ItemView {
     /// popover lands under the cursor).
     pub fn emit_context(state: &Rc<RefCell<ItemViewState>>, canvas: &DrawingArea, x: f64, y: f64) {
         crate::trace::trace(format!("context: press at ({x}, {y})"));
+        let logical_y = {
+            let s = state.borrow();
+            canvas_y_to_logical(&s, canvas, y)
+        };
         // The header hit test needs the config — read it BEFORE
         // the branch (the if-condition temporaries lesson).
         let header_hit = {
             let s = state.borrow();
-            layout::header_visible(&s.config) && y <= s.config.header_height
+            layout::header_visible(&s.config) && logical_y <= s.config.header_height
         };
         if header_hit {
             let hook = state.borrow().on_header_context.clone();
@@ -887,7 +907,7 @@ impl ItemView {
             }
         }
         let s = state.borrow();
-        let hit = hit_test(&s.layout, x, y).map(|d| s.view.book_id(d));
+        let hit = hit_test(&s.layout, x, logical_y).map(|d| s.view.book_id(d));
         drop(s);
         // The C# right-click selection rule (`UpdateSelectionFromMouse`,
         // ItemView.cs:3855-3900): a hit on an UNSELECTED item replaces
@@ -960,13 +980,17 @@ impl ItemView {
         y: f64,
         mods: gtk4::gdk::ModifierType,
     ) {
+        let logical_y = {
+            let s = state.borrow();
+            canvas_y_to_logical(&s, canvas, y)
+        };
         if n != 1 {
             // The group-header double-click first (`OnMouseDoubleClick
             // GroupHeader`): the ARROW expands/collapses ALL groups —
             // the direction is the clicked header's post-first-click
             // state (the single click of the sequence already toggled
             // it); the LABEL toggles that group again.
-            if Self::handle_group_header_press(state, canvas, n, x, y) {
+            if Self::handle_group_header_press(state, canvas, n, x, logical_y) {
                 return;
             }
             // Double-click: a header separator auto-sizes the
@@ -974,7 +998,7 @@ impl ItemView {
             // otherwise it activates the focused book.
             let header_hit = {
                 let s = state.borrow();
-                layout::column_separator_hit(&s.config, &s.detail_columns, x, y)
+                layout::column_separator_hit(&s.config, &s.detail_columns, x, logical_y)
             };
             if let Some(id) = header_hit {
                 autosize_column_state(state, id);
@@ -997,7 +1021,9 @@ impl ItemView {
             let mut s = state.borrow_mut();
             // The header separator zone wins first (the C#
             // `OnMouseDown` checks it before the item hit).
-            if let Some(id) = layout::column_separator_hit(&s.config, &s.detail_columns, x, y) {
+            if let Some(id) =
+                layout::column_separator_hit(&s.config, &s.detail_columns, x, logical_y)
+            {
                 s.begin_resize(id, x);
                 drop(s);
                 canvas.queue_draw();
@@ -1005,12 +1031,12 @@ impl ItemView {
             }
         }
         let s = state.borrow_mut();
-        let hit = hit_test(&s.layout, x, y);
+        let hit = hit_test(&s.layout, x, logical_y);
         drop(s);
         // The group-header click (`OnMouseClickGroupHeader`): the
         // ARROW toggles the group's collapse; the LABEL selects
         // ALL the group's items (no collapse).
-        if Self::handle_group_header_press(state, canvas, n, x, y) {
+        if Self::handle_group_header_press(state, canvas, n, x, logical_y) {
             return;
         }
         let mut s = state.borrow_mut();
@@ -1034,8 +1060,8 @@ impl ItemView {
                 if !mods.contains(gtk4::gdk::ModifierType::CONTROL_MASK)
                     && !mods.contains(gtk4::gdk::ModifierType::SHIFT_MASK)
                 {
-                    s.band_start = (x, y);
-                    s.band = Some(Rect::new(x, y, 0.0, 0.0));
+                    s.band_start = (x, logical_y);
+                    s.band = Some(Rect::new(x, logical_y, 0.0, 0.0));
                     s.band_snapshot = s.view.selection_snapshot();
                     s.view.clear_selection();
                 }
@@ -1117,7 +1143,16 @@ impl ItemView {
         self.canvas
             .ancestor(gtk4::ScrolledWindow::static_type())
             .and_then(|w| w.downcast::<ScrolledWindow>().ok())
-            .map(|s| s.vadjustment().value())
+            .map(|scroller| {
+                let s = self.state.borrow();
+                let adj = scroller.vadjustment();
+                logical_scroll_value(
+                    adj.value(),
+                    adj.page_size(),
+                    adj.upper(),
+                    s.layout.virtual_size.1,
+                )
+            })
             .unwrap_or(-1.0)
     }
 
@@ -1128,7 +1163,14 @@ impl ItemView {
             .ancestor(gtk4::ScrolledWindow::static_type())
             .and_then(|w| w.downcast::<ScrolledWindow>().ok())
         {
-            scroller.vadjustment().set_value(y);
+            let s = self.state.borrow();
+            let adj = scroller.vadjustment();
+            adj.set_value(physical_scroll_value(
+                y,
+                adj.page_size(),
+                adj.upper(),
+                s.layout.virtual_size.1,
+            ));
         }
     }
 
@@ -1568,8 +1610,14 @@ impl ItemView {
                 return;
             }
             if s.band.is_some() {
+                let logical_y = canvas_y_to_logical(&s, &s.canvas, y);
                 let (sx, sy) = s.band_start;
-                let rect = Rect::new(sx.min(x), sy.min(y), (x - sx).abs(), (y - sy).abs());
+                let rect = Rect::new(
+                    sx.min(x),
+                    sy.min(logical_y),
+                    (x - sx).abs(),
+                    (logical_y - sy).abs(),
+                );
                 s.band = Some(rect);
                 s.canvas.queue_draw();
             }
@@ -1710,16 +1758,17 @@ impl ItemView {
                                 // its rect (nearest window edge).
                                 let rect = s.layout.items.get(i).copied().flatten().map(|r| r.rect);
                                 if let Some(rect) = rect {
-                                    let adj = canvas_vadjustment(&canvas);
-                                    let view_h = adj.page_size();
+                                    let view_h = canvas_vadjustment(&canvas).page_size();
+                                    let current = canvas_logical_scroll(&s, &canvas);
                                     let y = rect.y - 8.0;
-                                    adj.set_value(if y < adj.value() {
+                                    let target = if y < current {
                                         y
-                                    } else if rect.y + rect.h > adj.value() + view_h {
+                                    } else if rect.y + rect.h > current + view_h {
                                         rect.y + rect.h - view_h + 8.0
                                     } else {
-                                        adj.value()
-                                    });
+                                        current
+                                    };
+                                    set_canvas_logical_scroll(&s, &canvas, target);
                                 }
                             }
                             let state2 = Rc::downgrade(&state);
@@ -1782,14 +1831,73 @@ fn update_size_request(state: &Rc<RefCell<ItemViewState>>, canvas: &DrawingArea)
         thread_local! {
             static LAST_H: std::cell::Cell<i32> = const { std::cell::Cell::new(-1) };
         }
-        let h_i = h.min(1_000_000.0) as i32;
+        let h_i = h.min(MAX_CANVAS_SIZE) as i32;
         if LAST_H.with(|c| c.replace(h_i)) != h_i {
             crate::trace::trace(format!("size request height -> {h_i}"));
         }
     }
-    // GTK upper bounds a widget's size; the layout culls anyway.
-    canvas.set_content_height(h.min(1_000_000.0) as i32);
-    canvas.set_content_width(w.min(1_000_000.0) as i32);
+    canvas.set_content_height(h.min(MAX_CANVAS_SIZE) as i32);
+    canvas.set_content_width(w.min(MAX_CANVAS_SIZE) as i32);
+}
+
+/// Maps the bounded GTK scrollbar to the complete logical layout.
+fn logical_scroll_value(
+    physical_value: f64,
+    page_size: f64,
+    physical_content: f64,
+    logical_content: f64,
+) -> f64 {
+    let physical_range = (physical_content - page_size).max(0.0);
+    let logical_range = (logical_content - page_size).max(0.0);
+    if physical_range <= 0.0 || logical_range <= 0.0 {
+        return 0.0;
+    }
+    (physical_value.clamp(0.0, physical_range) / physical_range) * logical_range
+}
+
+fn physical_scroll_value(
+    logical_value: f64,
+    page_size: f64,
+    physical_content: f64,
+    logical_content: f64,
+) -> f64 {
+    let physical_range = (physical_content - page_size).max(0.0);
+    let logical_range = (logical_content - page_size).max(0.0);
+    if physical_range <= 0.0 || logical_range <= 0.0 {
+        return 0.0;
+    }
+    (logical_value.clamp(0.0, logical_range) / logical_range) * physical_range
+}
+
+fn canvas_logical_scroll(state: &ItemViewState, canvas: &DrawingArea) -> f64 {
+    let adj = canvas_vadjustment(canvas);
+    logical_scroll_value(
+        adj.value(),
+        adj.page_size(),
+        adj.upper(),
+        state.layout.virtual_size.1,
+    )
+}
+
+fn set_canvas_logical_scroll(state: &ItemViewState, canvas: &DrawingArea, logical_y: f64) {
+    let adj = canvas_vadjustment(canvas);
+    adj.set_value(physical_scroll_value(
+        logical_y,
+        adj.page_size(),
+        adj.upper(),
+        state.layout.virtual_size.1,
+    ));
+}
+
+fn canvas_y_to_logical(state: &ItemViewState, canvas: &DrawingArea, y: f64) -> f64 {
+    let adj = canvas_vadjustment(canvas);
+    let logical_top = logical_scroll_value(
+        adj.value(),
+        adj.page_size(),
+        adj.upper(),
+        state.layout.virtual_size.1,
+    );
+    logical_top + (y - adj.value())
 }
 
 fn canvas_vadjustment(canvas: &DrawingArea) -> gtk4::Adjustment {
@@ -1823,7 +1931,12 @@ fn ensure_item_visible(state: &Rc<RefCell<ItemViewState>>, canvas: &DrawingArea,
             .and_then(|item| {
                 let view = Rect::new(
                     hadj.value(),
-                    vadj.value(),
+                    logical_scroll_value(
+                        vadj.value(),
+                        vadj.page_size(),
+                        vadj.upper(),
+                        s.layout.virtual_size.1,
+                    ),
                     hadj.page_size(),
                     vadj.page_size(),
                 );
@@ -1840,7 +1953,19 @@ fn ensure_item_visible(state: &Rc<RefCell<ItemViewState>>, canvas: &DrawingArea,
         hadj.set_value(hadj.value() + dx);
     }
     if dy != 0.0 {
-        vadj.set_value(vadj.value() + dy);
+        let s = state.borrow();
+        let logical = logical_scroll_value(
+            vadj.value(),
+            vadj.page_size(),
+            vadj.upper(),
+            s.layout.virtual_size.1,
+        );
+        vadj.set_value(physical_scroll_value(
+            logical + dy,
+            vadj.page_size(),
+            vadj.upper(),
+            s.layout.virtual_size.1,
+        ));
     }
 }
 
@@ -2806,6 +2931,44 @@ fn format_year(year: i32) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn bounded_scroll_maps_both_ends_of_the_logical_layout() {
+        let page = 900.0;
+        let physical = 1_000_000.0;
+        let logical = 2_001_363.0;
+        assert_eq!(logical_scroll_value(0.0, page, physical, logical), 0.0);
+        assert_eq!(
+            logical_scroll_value(physical - page, page, physical, logical),
+            logical - page
+        );
+        assert_eq!(
+            physical_scroll_value(logical - page, page, physical, logical),
+            physical - page
+        );
+    }
+
+    #[test]
+    fn scroll_mapping_is_identity_below_the_canvas_cap() {
+        let page = 900.0;
+        let content = 100_000.0;
+        for value in [0.0, 1234.0, content - page] {
+            assert_eq!(logical_scroll_value(value, page, content, content), value);
+            assert_eq!(physical_scroll_value(value, page, content, content), value);
+        }
+    }
+
+    #[test]
+    fn scroll_mapping_round_trips_inside_a_large_layout() {
+        let page = 1768.0;
+        let physical = 1_000_000.0;
+        let logical = 2_191_967.0;
+        for value in [0.0, 250_000.0, 1_000_000.0, logical - page] {
+            let mapped = physical_scroll_value(value, page, physical, logical);
+            let round_trip = logical_scroll_value(mapped, page, physical, logical);
+            assert!((round_trip - value).abs() < 0.000_001);
+        }
+    }
 
     /// A display-free cairo context: the text metrics come from the
     /// font backend, not from a window.

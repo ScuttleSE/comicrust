@@ -4,13 +4,24 @@
 //! count, and frame cost. Evidence for the T10 scroll slice.
 //! Run: Xvfb + `CR_TRACE=1 cargo run -p cr-ui --release --example
 //! scrollperf_probe` (release — the draw cost is the subject).
+//!
+//! `SCROLLPROBE_BIG_DETAIL=1` runs the measurement pass for the
+//! 2026-09-16 scroll-ceiling report: 95,302 Detail rows, scrolled to
+//! the end, printing the GTK scroll ceiling.
 use cr_core::model::comic_book::ComicBook;
 use cr_core::xml::scalar::{CrDateTime, CrGuid};
+use cr_ui::browser::item_view::ItemView;
+use cr_ui::browser::layout::ItemViewMode;
 use gtk4::glib;
 use gtk4::prelude::*;
 use std::sync::Arc;
 
 const BOOKS: usize = 2875;
+
+/// The reported library scale (the 2026-09-16 scroll-ceiling report:
+/// 95,302 books, Details, scroll stopped at 43,477 rows under the
+/// 1,000,000 px canvas cap).
+const BIG_BOOKS: usize = 95_302;
 
 fn book(i: usize, covers: &[String]) -> ComicBook {
     let mut b = ComicBook {
@@ -58,30 +69,15 @@ fn main() {
     let work = std::path::Path::new("/tmp/opencode/scrollperf");
     let _ = std::fs::remove_dir_all(work);
     std::fs::create_dir_all(work).unwrap();
-    let mut covers: Vec<String> = Vec::new();
-    for (n, src) in [
-        "cr-ui/assets/icons/Library.png",
-        "cr-ui/assets/icons/ComicPage.png",
-        "cr-ui/assets/icons/Bookmarks.png",
-        "cr-ui/assets/icons/ThemeDark.png",
-    ]
-    .iter()
-    .enumerate()
-    {
-        let dst = work.join(format!("cov{n}.png"));
-        if std::path::Path::new(src).exists() {
-            std::fs::copy(src, &dst).unwrap();
-        } else {
-            std::fs::write(&dst, png_fallback()).unwrap();
-        }
-        covers.push(dst.to_string_lossy().into_owned());
+    let covers = build_covers(work);
+    let big = std::env::var("SCROLLPROBE_BIG_DETAIL").is_ok();
+    if big {
+        run_big_detail(covers);
+        return;
     }
 
     let pool = Arc::new(cr_engine::image_pool::ImagePool::new(None));
-    let widgets = cr_ui::browser::item_view::ItemView::create(pool);
-    widgets
-        .view
-        .set_books((0..BOOKS).map(|i| book(i, &covers)).collect());
+    let widgets = ItemView::create(pool);
 
     let app = gtk4::Application::builder()
         .application_id("org.comicrust.scrollperf-probe")
@@ -96,6 +92,10 @@ fn main() {
         win.set_default_size(1400, 900);
         win.set_child(Some(&widgets.scroller));
         win.present();
+
+        widgets
+            .view
+            .set_books((0..BOOKS).map(|i| book(i, &covers)).collect());
 
         let iv = widgets.view.clone();
         let app_quit = app.clone();
@@ -123,9 +123,8 @@ fn main() {
     app.run();
 }
 
-/// A 32×48 PNG (a tiny valid cover) if the bundled icons are absent.
+/// A 1×1 red PNG, valid bytes, for when the bundled icons are absent.
 fn png_fallback() -> Vec<u8> {
-    // 1×1 red PNG, valid bytes.
     const P: &[u8] = &[
         0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D, 0x49, 0x48, 0x44,
         0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01, 0x08, 0x02, 0x00, 0x00, 0x00, 0x90,
@@ -134,4 +133,78 @@ fn png_fallback() -> Vec<u8> {
         0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42, 0x60, 0x82,
     ];
     P.to_vec()
+}
+
+fn build_covers(work: &std::path::Path) -> Vec<String> {
+    let mut covers: Vec<String> = Vec::new();
+    for (n, src) in [
+        "cr-ui/assets/icons/Library.png",
+        "cr-ui/assets/icons/ComicPage.png",
+        "cr-ui/assets/icons/Bookmarks.png",
+        "cr-ui/assets/icons/ThemeDark.png",
+    ]
+    .iter()
+    .enumerate()
+    {
+        let dst = work.join(format!("cov{n}.png"));
+        if std::path::Path::new(src).exists() {
+            std::fs::copy(src, &dst).unwrap();
+        } else {
+            std::fs::write(&dst, png_fallback()).unwrap();
+        }
+        covers.push(dst.to_string_lossy().into_owned());
+    }
+    covers
+}
+
+/// The measurement pass: 95,302 Detail rows, scrolled to the end,
+/// printing the GTK scroll ceiling and the final row reach.
+fn run_big_detail(covers: Vec<String>) {
+    let pool = Arc::new(cr_engine::image_pool::ImagePool::new(None));
+    let widgets = ItemView::create(pool);
+    widgets.view.configure(|c| c.mode = ItemViewMode::Detail);
+    widgets
+        .view
+        .set_books((0..BIG_BOOKS).map(|i| book(i, &covers)).collect());
+
+    let app = gtk4::Application::builder()
+        .application_id("org.comicrust.scrollperf-probe")
+        .flags(gtk4::gio::ApplicationFlags::NON_UNIQUE)
+        .build();
+
+    app.connect_activate(move |app| {
+        let win = gtk4::ApplicationWindow::builder()
+            .application(app)
+            .title("bigdetail")
+            .build();
+        win.set_default_size(1400, 900);
+        win.set_child(Some(&widgets.scroller));
+        win.present();
+
+        let iv = widgets.view.clone();
+        let app_quit = app.clone();
+        let step = std::rc::Rc::new(std::cell::Cell::new(0u32));
+        glib::timeout_add_local(std::time::Duration::from_millis(400), move || {
+            let n = step.get();
+            step.set(n + 1);
+            match n {
+                0 => println!("bigdetail: books={}", iv.book_count()),
+                1 => {
+                    // A request far past any cap: GTK clamps the
+                    // value to its upper bound, which is the
+                    // measured scroll ceiling.
+                    iv.set_scroll_value(100_000_000.0);
+                }
+                2 => {
+                    println!("bigdetail: final scroll value = {}", iv.scroll_value());
+                    println!("bigdetail done");
+                    app_quit.quit();
+                    return glib::ControlFlow::Break;
+                }
+                _ => {}
+            }
+            glib::ControlFlow::Continue
+        });
+    });
+    app.run();
 }
