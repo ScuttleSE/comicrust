@@ -82,6 +82,10 @@ fn main() {
             let menubar = shell.menubar().clone_handle();
             move || {
                 menubar.open_top(0);
+                // The fill now runs at the SUBMENU's open (the C#
+                // DropDownOpening wiring); refresh_dyn_slot is the
+                // exact call the child popover map runs.
+                menubar.refresh_dyn_slot("open-books");
                 let rows = menubar.dyn_rows_snapshot("open-books");
                 println!("OPEN-BOOKS rows={} {:?}", rows.len(), rows);
                 let checked = rows.iter().filter(|(_, c, _)| *c).count();
@@ -156,6 +160,7 @@ fn main() {
                     let shell = shell.clone();
                     move || {
                         menubar.open_top(1);
+                        menubar.refresh_dyn_slot("bookmarks");
                         let rows = menubar.dyn_rows_snapshot("bookmarks");
                         println!("BOOKMARKS rows={rows:?}");
                         let page_state = shell.state_current_page_bookmark();
@@ -175,6 +180,7 @@ fn main() {
             let shell = shell.clone();
             move || {
                 menubar.open_top(1);
+                menubar.refresh_dyn_slot("page-type");
                 let rows = menubar.dyn_rows_snapshot("page-type");
                 let checked: Vec<String> = rows
                     .iter()
@@ -189,9 +195,10 @@ fn main() {
                     let menubar = menubar.clone_handle();
                     let shell = shell.clone();
                     move || {
-                        // Reopen (the fill rebuilds at open — the
-                        // C# DropDownOpening shape).
+                        // Reopen (the fill rebuilds at the submenu's
+                        // own open — the C# DropDownOpening shape).
                         menubar.open_top(1);
+                        menubar.refresh_dyn_slot("page-type");
                         let checked: Vec<String> = menubar
                             .dyn_rows_snapshot("page-type")
                             .iter()

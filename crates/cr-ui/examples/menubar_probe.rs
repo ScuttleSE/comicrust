@@ -8,6 +8,59 @@
 use gtk4::gio;
 use gtk4::glib;
 use gtk4::prelude::*;
+use std::collections::VecDeque;
+
+/// Opens one top menu per step, waits for the popover to map, and
+/// prints the sync (dynamic fill + popup) and map halves of the open
+/// cost. Runs the remaining steps 30 ms apart; each open starts from
+/// an all-closed bar (the user clicks one menu at a time). When the
+/// steps run out the probe completes.
+fn open_steps(
+    menubar: cr_ui::browser::menubar::MenubarWidget,
+    steps: VecDeque<(&'static str, usize, &'static str)>,
+    app: gtk4::Application,
+) {
+    let mut steps = Some(steps);
+    let Some((name, index, pass)) = steps.as_mut().unwrap().pop_front() else {
+        println!("PROBE COMPLETE");
+        app.quit();
+        return;
+    };
+    for p in menubar.top_popovers() {
+        p.popdown();
+    }
+    // The open waits 100 ms: the user's click-away closes the old
+    // menu well before the click on the next one. A shorter gap did
+    // not help — the first File open closed itself 2-3 ms after
+    // mapping even from a separate idle, so the trigger window is
+    // longer than one iteration.
+    let open_menubar = menubar.clone_handle();
+    glib::timeout_add_local_once(std::time::Duration::from_millis(100), move || {
+        let t0 = std::time::Instant::now();
+        open_menubar.open_top(index);
+        let sync = t0.elapsed();
+        let poll = open_menubar.clone_handle();
+        let deadline = t0 + std::time::Duration::from_secs(2);
+        glib::timeout_add_local(std::time::Duration::from_millis(2), move || {
+            let mapped = poll.top_popovers()[index].is_mapped();
+            if !mapped && std::time::Instant::now() < deadline {
+                return glib::ControlFlow::Continue;
+            }
+            println!(
+                "OPEN top={index} {name} {pass} sync {:.2}ms map {:.2}ms mapped={mapped}",
+                sync.as_secs_f64() * 1000.0,
+                t0.elapsed().as_secs_f64() * 1000.0,
+            );
+            let next = poll.clone_handle();
+            let steps = steps.take().expect("the remaining open steps");
+            let app = app.clone();
+            glib::timeout_add_local_once(std::time::Duration::from_millis(30), move || {
+                open_steps(next, steps, app);
+            });
+            glib::ControlFlow::Break
+        });
+    });
+}
 
 fn main() {
     gtk4::init().expect("gtk init");
@@ -125,8 +178,13 @@ fn main() {
             move || {
                 println!("SWITCH to Help");
                 menubar.open_top(5);
-                // The dynamic fills rebuilt: re-run the no-`&` gate
-                // over the filled rows (Page Type/Bookmarks slots).
+                // The nested fills rebuild at the SUBMENU's open (the
+                // C# DropDownOpening wiring) — refresh_dyn_slot is the
+                // exact call the child popover map runs. Re-run the
+                // no-`&` gate over the filled rows.
+                menubar.refresh_dyn_slot("page-type");
+                menubar.refresh_dyn_slot("page-rotation");
+                menubar.refresh_dyn_slot("bookmarks");
                 let amps: Vec<String> = menubar
                     .all_row_labels()
                     .into_iter()
@@ -137,12 +195,29 @@ fn main() {
             }
         });
 
-        glib::timeout_add_local(std::time::Duration::from_millis(2400), {
+        // 5. The open-cost gates: the top menus open twice each,
+        //    from an all-closed bar, 30 ms apart; the probe prints
+        //    the sync (dynamic fill + popup) and map halves. File
+        //    carries the two dynamic slots; Edit/Browse/Display
+        //    carry none.
+        glib::timeout_add_local_once(std::time::Duration::from_millis(2400), {
+            let menubar = shell.menubar().clone_handle();
             let app = app.clone();
             move || {
-                println!("PROBE COMPLETE");
-                app.quit();
-                glib::ControlFlow::Break
+                open_steps(
+                    menubar.clone(),
+                    [
+                        ("File", 0, "p1"),
+                        ("Edit", 1, "p1"),
+                        ("Browse", 2, "p1"),
+                        ("Display", 4, "p1"),
+                        ("File", 0, "p2"),
+                        ("Edit", 1, "p2"),
+                    ]
+                    .into_iter()
+                    .collect(),
+                    app,
+                );
             }
         });
     });

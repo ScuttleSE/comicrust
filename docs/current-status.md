@@ -15,6 +15,45 @@ user-tested on 2026-09-12 and are archived.
 
 ## Current task
 
+**The File-menu open fix (2026-09-16).**
+
+The user report: the File menu opens slightly slower than Edit,
+Browse, or Display. New `menu:` CR_TRACE lines measured it on the
+user's machine: the Recent Books fill ran at the File-menu open —
+`menu: slot=recent-books fill 549.152ms … rows=20` — one
+`Path::exists()` per stored recent book, up to 20 paths, on the GTK
+thread before `popup()`. Every other top-menu refresh measured
+0-1.4 ms and mapped in 0-4 ms; the File menu's size and GTK layout
+are not the cause. The C# wires `RecentFilesMenuOpening` on
+`miOpenRecent.DropDownOpening` (Designer.cs:632), not on
+`fileMenu_DropDownOpening` (MainForm.cs:3570-3573), so the fill point
+was a port deviation.
+
+Fix: nested submenu dynamic slots now carry `top: None`
+(`menubar.rs`); `refresh_top` rebuilds only top-level slots, and
+nested ones fill at their own submenu open through the existing
+child-popover map hook (`refresh_slot`). File ▸ Open Books and
+Recent Books update when their submenus open; the top menus open
+immediately. The Recent Books fill itself still runs synchronously
+on the GTK thread at that submenu open (the accepted shape).
+Toolbar dropdowns (PREV/NEXT/DUPLICATE) keep top-level fills —
+unchanged. The probe gates that pinned the old fill point
+(`dynmenus_probe` gates 1/3/4, the `menubar_probe` AMP-FILLED gate)
+now drive `refresh_dyn_slot`, the exact call the child-popover map
+runs.
+
+Gates: `cargo fmt --all`; `cargo clippy --workspace --all-targets --
+-D warnings`; `CR_FORMAT_TESTS=1 cargo test --workspace --locked`
+(56 binaries, 0 failed) — all green.
+
+**Open user test:** with `CR_TRACE=1`, open File, then Recent Books:
+the trace shows `refresh top=0 slots=0` (no 549 ms fill line at the
+File open) and File maps in a few ms; the `recent-books fill` line
+fires only when the Recent Books submenu opens, and Open Books
+refills likewise at its own submenu open.
+
+## Previous task
+
 **The Show-Duplicates rebuild fix (2026-09-15).**
 
 The user's second trace (the delete ran async now; the remaining

@@ -650,12 +650,19 @@ pub enum DynNode {
 /// the book/tabs context).
 pub type DynFillFn = Rc<dyn Fn(&str) -> Vec<DynNode>>;
 
-/// One dynamic slot's rows (rebuilt on every menu open; the rows
-/// share the click path with the static ones).
+/// One dynamic slot's rows (rebuilt when its owning menu opens; the
+/// rows share the click path with the static ones).
 struct DynSlot {
     id: &'static str,
-    /// The owning top menu (refresh on its open).
-    top: usize,
+    /// `Some(top)` for a TOP-LEVEL slot of that top menu (refresh on
+    /// its open); `None` for a slot inside a nested submenu — that
+    /// one refreshes at the submenu's own open (the child popover
+    /// map), never at the top menu's open: the C# wires
+    /// `DropDownOpening` on the submenu itself (`miOpenRecent`,
+    /// Designer.cs:632), not on the parent menu
+    /// (`fileMenu_DropDownOpening` only toggles a visibility flag,
+    /// MainForm.cs:3570).
+    top: Option<usize>,
     container: gtk4::Box,
     rows: RefCell<Vec<ItemRow>>,
 }
@@ -668,17 +675,28 @@ struct MenubarDyn {
 }
 
 impl MenubarDyn {
-    /// Rebuilds every slot of one top menu (`DropDownOpening`
-    /// parity — the fill runs BEFORE the popover maps, so the
-    /// checked/disabled state is fresh).
+    /// Rebuilds the TOP-LEVEL slots of one top menu. Nested submenu
+    /// slots are NOT touched here — they fill at their submenu's own
+    /// open (the child popover map hook), so a heavy fill never runs
+    /// on a parent-menu open (the 2026-09-16 measured cause: the
+    /// Recent Books `Path::exists()` pass cost 549 ms on every File
+    /// open).
     fn refresh_top(&self, top: usize) {
         let fill = self.fill.borrow().clone();
         let Some(fill) = fill else {
             return;
         };
+        let t = crate::trace::enabled().then(std::time::Instant::now);
         let slots = self.slots.borrow();
-        for slot in slots.iter().filter(|s| s.top == top) {
+        let n = slots.iter().filter(|s| s.top == Some(top)).count();
+        for slot in slots.iter().filter(|s| s.top == Some(top)) {
             self.rebuild_slot(slot, &fill);
+        }
+        if let Some(t) = t {
+            crate::trace::trace(format!(
+                "menu: refresh top={top} slots={n} {:?}",
+                t.elapsed()
+            ));
         }
     }
 
@@ -698,12 +716,17 @@ impl MenubarDyn {
     }
 
     fn rebuild_slot(&self, slot: &DynSlot, fill: &DynFillFn) {
+        let t_fill = crate::trace::enabled().then(std::time::Instant::now);
+        let nodes = fill(slot.id);
+        let rows_n = nodes.len();
+        let fill_ms = t_fill.map(|t| t.elapsed());
+        let t_build = crate::trace::enabled().then(std::time::Instant::now);
         while let Some(child) = slot.container.first_child() {
             slot.container.remove(&child);
         }
         let mut rows = slot.rows.borrow_mut();
         rows.clear();
-        for node in fill(slot.id) {
+        for node in nodes {
             match node {
                 DynNode::Sep => {
                     let sep = gtk4::Separator::new(gtk4::Orientation::Horizontal);
@@ -723,6 +746,12 @@ impl MenubarDyn {
                     });
                 }
             }
+        }
+        if let (Some(fill_ms), Some(build_ms)) = (fill_ms, t_build.map(|t| t.elapsed())) {
+            crate::trace::trace(format!(
+                "menu: slot={} fill {fill_ms:?} build {build_ms:?} rows={rows_n}",
+                slot.id
+            ));
         }
     }
 }
@@ -1236,7 +1265,7 @@ pub fn build_dropdown(defs: &[MenuNode], window: &gtk4::ApplicationWindow) -> Dr
         &mut child_popovers,
         &mut subs,
         &dyn_ctx,
-        0,
+        Some(0),
     );
     let popover = gtk4::Popover::new();
     popover.set_child(Some(&content));
@@ -1336,7 +1365,7 @@ fn build_menu_content(
     child_popovers: &mut Vec<gtk4::Popover>,
     subs: &mut Vec<(String, gtk4::MenuButton)>,
     dyn_ctx: &Rc<MenubarDyn>,
-    top: usize,
+    top: Option<usize>,
 ) -> (gtk4::Box, Option<gtk4::Widget>, Vec<&'static str>) {
     let content = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
     let mut nav: Vec<gtk4::Widget> = Vec::new();
@@ -1422,7 +1451,7 @@ fn build_menu_content(
                 child_popover.set_position(gtk4::PositionType::Right);
                 child_popover.set_has_arrow(false);
                 let (child_content, _child_first, child_dyn) =
-                    build_menu_content(children, window, rows, child_popovers, subs, dyn_ctx, top);
+                    build_menu_content(children, window, rows, child_popovers, subs, dyn_ctx, None);
                 child_popover.set_child(Some(&child_content));
                 sub.set_popover(Some(&child_popover));
                 // The dynamic slots the CHILD content registered:
@@ -1432,6 +1461,7 @@ fn build_menu_content(
                 for id in child_dyn {
                     let dyn_ctx = Rc::clone(dyn_ctx);
                     child_popover.connect_map(move |_| {
+                        crate::trace::trace(format!("menu: submap slot={id}"));
                         dyn_ctx.refresh_slot(id);
                     });
                 }
@@ -1443,8 +1473,11 @@ fn build_menu_content(
                 subs.push((label.replace(['&', '_'], ""), sub));
             }
             MenuNode::Dyn(id) => {
-                // The fill container: the provider rebuilds it at
-                // every menu open (`DropDownOpening`).
+                // The fill container: the provider rebuilds it when
+                // the owning menu opens — at the TOP menu's open for
+                // a top-level slot, at the submenu's own open (the
+                // child popover map hook) for a nested one
+                // (`DropDownOpening`).
                 let container = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
                 content.append(&container);
                 dyn_ctx.slots.borrow_mut().push(DynSlot {
@@ -1478,7 +1511,7 @@ fn popover_with(
         &mut child_popovers,
         subs,
         dyn_ctx,
-        top,
+        Some(top),
     );
     let popover = gtk4::Popover::new();
     popover.set_child(Some(&content));
@@ -1542,6 +1575,9 @@ fn set_active_item(tops: &[TopMenu], active: &ActiveSlot, index: usize) {
     };
     align_below_widget(top.button.upcast_ref(), &top.popover);
     active.set(Some(index));
+    // The map gap to the matching `menu: mapped top=` line is the
+    // GTK popup→map cost (the open-latency measurement).
+    crate::trace::trace(format!("menu: open top={index}"));
     top.popover.popup();
 }
 
@@ -1571,6 +1607,11 @@ pub fn create_menubar(window: &gtk4::ApplicationWindow) -> MenubarWidget {
         // Explicit parenting (the MenuButton toggle semantics are
         // what made parallel presents possible).
         popover.set_parent(&button);
+        // The map stamp for the open-latency measurement (pairs with
+        // the `menu: open top=` line from `set_active_item`).
+        popover.connect_map(move |_| {
+            crate::trace::trace(format!("menu: mapped top={top}"));
+        });
         rows.extend(menu_rows);
         // Any close clears the slot (guarded — a late close of the
         // OLD popover must not clear a NEW one's slot).
