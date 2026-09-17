@@ -7587,6 +7587,10 @@ fn show_context_menu(state: &std::rc::Weak<ShellState>, target: Option<CrGuid>, 
     };
     if incoming_view {
         add_item(&box_, "Compare", "incoming-compare");
+        let current = *shell.current_list.borrow();
+        if current.is_some_and(show_select_worst_for_incoming_view) {
+            add_item(&box_, "Select Worst Duplicates", "select-worst-duplicates");
+        }
         let has_move_profile = library::organize_settings()
             .profiles
             .iter()
@@ -7631,6 +7635,11 @@ fn show_context_menu(state: &std::rc::Weak<ShellState>, target: Option<CrGuid>, 
             .unwrap_or(-1.0)
     ));
     popover.popup();
+}
+
+fn show_select_worst_for_incoming_view(id: CrGuid) -> bool {
+    id == super::navigator::IncomingView::Duplicates.id()
+        || id == super::navigator::IncomingView::IncomingDuplicates.id()
 }
 
 /// The Files view's context menu (`ItemContextMenuStrip` → the
@@ -8457,5 +8466,21 @@ mod tests {
             false,
         );
         assert!(eval(m.as_ref().unwrap(), &books).is_empty());
+    }
+
+    #[test]
+    fn select_worst_is_available_for_incoming_only_duplicate_sets() {
+        use crate::browser::navigator::IncomingView;
+
+        assert!(show_select_worst_for_incoming_view(
+            IncomingView::Duplicates.id()
+        ));
+        assert!(show_select_worst_for_incoming_view(
+            IncomingView::IncomingDuplicates.id()
+        ));
+        assert!(!show_select_worst_for_incoming_view(
+            IncomingView::LibraryDuplicates.id()
+        ));
+        assert!(!show_select_worst_for_incoming_view(IncomingView::All.id()));
     }
 }

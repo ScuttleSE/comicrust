@@ -138,11 +138,15 @@ Confirm that Compare shows two books side by side with both covers and details.
 Use the book controls to move through the selected books. Use the match controls
 to move through all Incoming and Library matches. Confirm that a missing cover
 shows a placeholder and that the window stays responsive while covers load.
-For a Library match, use Select Worst Duplicates and confirm that it selects an
-action without running it. Replace the Library copy. Confirm the Library ID and
-descriptive metadata stay unchanged, the file-derived fields refresh, and the
-old file enters trash. Confirm that a destination collision changes nothing.
-Delete an Incoming copy from Compare and confirm that the dialog continues.
+For a Library match, use Select Worst Duplicates and confirm that it highlights
+one Keep This Copy button without running it. Keep the Incoming copy. Confirm
+the Library ID and descriptive metadata stay unchanged, the file-derived fields
+refresh, and the old file enters trash. Keep the Library copy in another pair
+and confirm that the Incoming file enters trash. Confirm that the dialog
+continues and a destination collision changes nothing. Start a background scan,
+select Keep This Copy, and confirm that Compare stops the scan, shows status,
+rechecks the pair, and then runs the action. In Incoming Duplicates, confirm that
+the context menu has Select Worst Duplicates and that it changes selection only.
 Run Preview Adoption and confirm that no file or catalog changes. Run Adopt with
 a Move profile. Confirm the destination, preserved metadata, and removal from
 Incoming. Test Cancel, Rename, and Replace for a destination conflict. Run

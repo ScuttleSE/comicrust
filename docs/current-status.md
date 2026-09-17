@@ -9,7 +9,7 @@ Do not append history. Git and `docs/archive/` hold history.
 
 The implementation and automated gates are complete. The user tests are open.
 See `docs/phases/phase-18.md`, `docs/open-user-tests.md`, and ADR-049 through
-ADR-053.
+ADR-054.
 
 Phase 16, Comic Vine scraper quality of life, is PLANNED. No task started.
 Phase 9, the SQLite database backend, is DEFERRED to `docs/backlog.md`.
@@ -32,9 +32,14 @@ The user confirmed these four tests as passed on 2026-09-16:
 
 Incoming has source-specific duplicate views and persistent custom smart lists.
 Compare shows covers and details side by side. It can resolve Library and
-Incoming duplicates after confirmation. A durable transaction supports
-cross-filesystem Library replacement. ADR-050 through ADR-053 record these
-changes. User tests on real data remain open.
+Incoming duplicates. A durable transaction supports cross-filesystem Library
+replacement. ADR-050 through ADR-053 record these changes. User tests on real
+data remain open.
+
+Compare now has one Keep This Copy button below each pane. It stops an active
+scan before it rechecks and runs the selected action. Incoming Duplicates also
+has the selection-only Select Worst Duplicates context command. ADR-054 records
+these changes. User tests on real data remain open.
 
 ## Open user tests
 
@@ -88,21 +93,21 @@ licenses` is not a CI gate.
 
 ## Latest verification
 
-The Compare resolution actions and Incoming smart lists passed local
-verification on 2026-09-17.
+The simplified Compare workflow passed local verification on 2026-09-17.
 
 - `cargo fmt --all`: passed.
 - `cargo clippy --workspace --all-targets -- -D warnings`: passed.
 - `cargo test --workspace`: passed.
-- The `cr-ui` suite passed 178 tests. Four Compare tests cover comparison order,
-  self-exclusion, ranking recommendations, and ties.
+- The `cr-ui` suite passed 182 tests. Compare tests cover Keep-button action
+  mapping, pair revalidation, comparison order, self-exclusion, ranking
+  recommendations, and ties. A selection test confirms displayed-book order.
 - The `cr-engine` suite passed 149 tests. Incoming-list tests cover separate
   persistence, stable IDs, bases, invalid graphs, duplicate matching, and series
   statistics.
-- The release `incoming_probe` passed Gates A-I, A2, E2, and E3. A2 confirms
-  Compare recommendation and isolated replacement. E2 confirms navigation,
-  source labels, and two asynchronously loaded covers. E3 confirms Incoming
-  smart-list persistence, Incoming-only evaluation, and `ComicDb.xml` isolation.
+- Three isolated release `incoming_probe` runs passed Gates A-I, A2, E2, E2A,
+  E3, and E4. E2A confirms Keep controls and recommendation highlighting. E4
+  confirms Select Worst Duplicates in Incoming Duplicates. The other gates
+  confirm replacement, navigation, covers, smart lists, and catalog isolation.
 - The transaction integration suite passed 30 tests. It covers replacement at
   every durable stage, collisions, copy and trash failures, invalid files,
   discard, conversion, adoption, undo, stale epochs, and close behavior.

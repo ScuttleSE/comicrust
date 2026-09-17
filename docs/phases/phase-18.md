@@ -4,7 +4,7 @@
 
 IMPLEMENTED, USER TEST PENDING. The user approved the behavior on 2026-09-16.
 Implementation and automated gates completed on 2026-09-17. ADR-049 through
-ADR-053 record the decisions.
+ADR-054 record the decisions.
 
 ## Goal
 

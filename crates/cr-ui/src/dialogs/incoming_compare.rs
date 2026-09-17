@@ -54,6 +54,52 @@ pub struct CrGuidPair {
     pub matched: cr_core::xml::scalar::CrGuid,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeepSide {
+    Left,
+    Right,
+}
+
+pub fn keep_action(source: MatchSource, side: KeepSide) -> CompareAction {
+    match (source, side) {
+        (MatchSource::Library, KeepSide::Left) => CompareAction::ReplaceLibraryCopy,
+        (MatchSource::Library, KeepSide::Right) | (MatchSource::Incoming, KeepSide::Right) => {
+            CompareAction::DeleteSelectedIncomingCopy
+        }
+        (MatchSource::Incoming, KeepSide::Left) => CompareAction::DeleteMatchingIncomingCopy,
+    }
+}
+
+pub fn revalidate_pair(
+    selected: &ComicBook,
+    duplicate: &DuplicateMatch,
+    incoming_books: &[ComicBook],
+    library_books: &[ComicBook],
+) -> Result<(), String> {
+    let live_selected = incoming_books
+        .iter()
+        .find(|book| book.id == selected.id)
+        .ok_or_else(|| "The selected Incoming copy is no longer available.".to_string())?;
+    let source_books = match duplicate.source {
+        MatchSource::Incoming => incoming_books,
+        MatchSource::Library => library_books,
+    };
+    let live_duplicate = source_books
+        .iter()
+        .find(|book| book.id == duplicate.book.id)
+        .ok_or_else(|| "The matching copy is no longer available.".to_string())?;
+    if live_selected.file_path != selected.file_path
+        || live_duplicate.file_path != duplicate.book.file_path
+    {
+        return Err("A file path changed. Review the current copies before you continue.".into());
+    }
+    let pair = [live_selected, live_duplicate];
+    if cr_engine::matcher::eval::grouped_duplicate_indexes(&pair).is_empty() {
+        return Err("These copies are no longer duplicates.".into());
+    }
+    Ok(())
+}
+
 pub fn recommended_action(
     selected: &ComicBook,
     duplicate: &DuplicateMatch,
@@ -127,6 +173,7 @@ struct Pane {
     picture: gtk4::Picture,
     cover_status: gtk4::Label,
     details: gtk4::Label,
+    keep: gtk4::Button,
 }
 
 struct DialogState {
@@ -143,12 +190,8 @@ struct DialogState {
     next_book: gtk4::Button,
     previous_match: gtk4::Button,
     next_match: gtk4::Button,
-    action_box: gtk4::Box,
-    replace_library: gtk4::CheckButton,
-    delete_selected: gtk4::CheckButton,
-    delete_matching: gtk4::CheckButton,
     select_worst: gtk4::Button,
-    execute: gtk4::Button,
+    status: gtk4::Label,
     rules: DuplicateRules,
     executor: ActionExecutor,
     window: glib::WeakRef<gtk4::Window>,
@@ -180,8 +223,8 @@ pub fn show(
         .title("Compare Incoming")
         .transient_for(parent)
         .modal(true)
-        .default_width(920)
-        .default_height(680)
+        .default_width(1100)
+        .default_height(800)
         .build();
 
     let previous_book = gtk4::Button::with_label("Previous Book");
@@ -204,21 +247,11 @@ pub fn show(
     let match_position = gtk4::Label::new(None);
     let match_nav = navigation_row(&previous_match, &match_position, &next_match);
 
-    let replace_library = gtk4::CheckButton::with_label("Replace Library Copy");
-    let delete_selected = gtk4::CheckButton::with_label("Delete Selected Incoming Copy");
-    let delete_matching = gtk4::CheckButton::with_label("Delete Matching Incoming Copy");
-    delete_selected.set_group(Some(&replace_library));
-    delete_matching.set_group(Some(&replace_library));
     let select_worst = gtk4::Button::with_label("Select Worst Duplicates");
-    let execute = gtk4::Button::with_label("Run Selected Action");
-    let action_box = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
-    action_box.append(&replace_library);
-    action_box.append(&delete_selected);
-    action_box.append(&delete_matching);
-    let action_buttons = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
-    action_buttons.append(&select_worst);
-    action_buttons.append(&execute);
-    action_box.append(&action_buttons);
+    select_worst.set_halign(gtk4::Align::Center);
+    let status = gtk4::Label::new(Some("Ready"));
+    status.set_wrap(true);
+    status.set_selectable(true);
 
     let close = gtk4::Button::with_label("Close");
     close.set_halign(gtk4::Align::End);
@@ -230,7 +263,8 @@ pub fn show(
     content.append(&book_nav);
     content.append(&grid);
     content.append(&match_nav);
-    content.append(&action_box);
+    content.append(&select_worst);
+    content.append(&status);
     content.append(&close);
     let scroll = gtk4::ScrolledWindow::builder()
         .hscrollbar_policy(gtk4::PolicyType::Automatic)
@@ -254,12 +288,8 @@ pub fn show(
         next_book,
         previous_match,
         next_match,
-        action_box,
-        replace_library,
-        delete_selected,
-        delete_matching,
         select_worst,
-        execute,
+        status,
         rules,
         executor,
         window: window.downgrade(),
@@ -334,12 +364,15 @@ fn comparison_pane(heading: &str) -> Pane {
     details.set_xalign(0.0);
     details.set_wrap(true);
     details.set_selectable(true);
+    let keep = gtk4::Button::with_label("Keep This Copy");
+    keep.set_hexpand(true);
     Pane {
         heading,
         cover_stack,
         picture,
         cover_status,
         details,
+        keep,
     }
 }
 
@@ -349,6 +382,7 @@ fn pane_widget(pane: &Pane) -> gtk4::Box {
     box_.append(&pane.heading);
     box_.append(&pane.cover_stack);
     box_.append(&pane.details);
+    box_.append(&pane.keep);
     box_
 }
 
@@ -422,7 +456,7 @@ fn connect_actions(state: &Rc<DialogState>, cover_tx: &std::sync::mpsc::Sender<C
         let state = Rc::downgrade(state);
         button.connect_clicked(move |_| {
             let Some(state) = state.upgrade() else { return };
-            clear_action(&state);
+            clear_recommendation(&state);
             let book_index = state.book_index.get();
             let match_index = state.match_indexes.borrow()[book_index];
             let comparisons = state.comparisons.borrow();
@@ -432,124 +466,157 @@ fn connect_actions(state: &Rc<DialogState>, cover_tx: &std::sync::mpsc::Sender<C
             if let Some(action) =
                 recommended_action(&comparisons[book_index].selected, duplicate, &state.rules)
             {
-                set_action(&state, action);
+                let side = recommended_keep_side(action);
+                let button = keep_button(&state, side);
+                button.add_css_class("suggested-action");
+                button.grab_focus();
+                state.status.set_text(match side {
+                    KeepSide::Left => "Recommendation: keep the left copy.",
+                    KeepSide::Right => "Recommendation: keep the right copy.",
+                });
+            } else {
+                state
+                    .status
+                    .set_text("The copies tie. Choose the copy to keep.");
             }
         });
     }
-    {
-        let button = state.execute.clone();
+    for (button, side) in [
+        (state.left.keep.clone(), KeepSide::Left),
+        (state.right.keep.clone(), KeepSide::Right),
+    ] {
         let state = Rc::downgrade(state);
         let cover_tx = cover_tx.clone();
         button.connect_clicked(move |_| {
             let Some(state) = state.upgrade() else { return };
-            let Some(action) = selected_action(&state) else {
-                return;
-            };
-            let book_index = state.book_index.get();
-            let match_index = state.match_indexes.borrow()[book_index];
-            let comparisons = state.comparisons.borrow();
-            let Some(duplicate) = comparisons[book_index].matches.get(match_index) else {
-                return;
-            };
-            let ids = CrGuidPair {
-                selected: comparisons[book_index].selected.id,
-                matched: duplicate.book.id,
-            };
-            drop(comparisons);
-            let Some(window) = state.window.upgrade() else {
-                return;
-            };
-            let confirm = gtk4::MessageDialog::builder()
-                .transient_for(&window)
-                .modal(true)
-                .title("Confirm Compare Action")
-                .text(action_confirmation(action))
-                .message_type(gtk4::MessageType::Question)
-                .buttons(gtk4::ButtonsType::OkCancel)
-                .build();
-            let state = Rc::downgrade(&state);
-            let cover_tx = cover_tx.clone();
-            confirm.connect_response(move |dialog, response| {
-                dialog.close();
-                if response != gtk4::ResponseType::Ok {
-                    return;
-                }
-                let Some(state) = state.upgrade() else { return };
-                state.action_box.set_sensitive(false);
-                let weak = Rc::downgrade(&state);
-                let cover_tx = cover_tx.clone();
-                (state.executor)(
-                    action,
-                    ids,
-                    Box::new(move |result| {
-                        let Some(state) = weak.upgrade() else { return };
-                        state.action_box.set_sensitive(true);
-                        match result {
-                            Ok(()) => {
-                                remove_resolved(&state, action, ids);
-                                if state.comparisons.borrow().is_empty() {
-                                    if let Some(window) = state.window.upgrade() {
-                                        window.close();
-                                    }
-                                } else {
-                                    update_dialog(&state, &cover_tx);
-                                }
-                            }
-                            Err(error) => {
-                                if let Some(window) = state.window.upgrade() {
-                                    let failure = gtk4::MessageDialog::builder()
-                                        .transient_for(&window)
-                                        .modal(true)
-                                        .title("Compare Action Failed")
-                                        .text(&error)
-                                        .message_type(gtk4::MessageType::Error)
-                                        .buttons(gtk4::ButtonsType::Close)
-                                        .build();
-                                    failure.connect_response(|dialog, _| dialog.close());
-                                    failure.present();
-                                }
-                            }
-                        }
-                    }),
-                );
-            });
-            confirm.present();
+            start_keep_action(&state, side, &cover_tx);
         });
     }
 }
 
-fn selected_action(state: &DialogState) -> Option<CompareAction> {
-    if state.replace_library.is_active() {
-        Some(CompareAction::ReplaceLibraryCopy)
-    } else if state.delete_selected.is_active() {
-        Some(CompareAction::DeleteSelectedIncomingCopy)
-    } else if state.delete_matching.is_active() {
-        Some(CompareAction::DeleteMatchingIncomingCopy)
+fn recommended_keep_side(action: CompareAction) -> KeepSide {
+    match action {
+        CompareAction::ReplaceLibraryCopy | CompareAction::DeleteMatchingIncomingCopy => {
+            KeepSide::Left
+        }
+        CompareAction::DeleteSelectedIncomingCopy => KeepSide::Right,
+    }
+}
+
+fn keep_button(state: &DialogState, side: KeepSide) -> &gtk4::Button {
+    match side {
+        KeepSide::Left => &state.left.keep,
+        KeepSide::Right => &state.right.keep,
+    }
+}
+
+fn clear_recommendation(state: &DialogState) {
+    state.left.keep.remove_css_class("suggested-action");
+    state.right.keep.remove_css_class("suggested-action");
+}
+
+fn set_action_sensitive(state: &DialogState, sensitive: bool) {
+    state.left.keep.set_sensitive(sensitive);
+    state.right.keep.set_sensitive(sensitive);
+    state.previous_book.set_sensitive(sensitive);
+    state.next_book.set_sensitive(sensitive);
+    state.previous_match.set_sensitive(sensitive);
+    state.next_match.set_sensitive(sensitive);
+    state.select_worst.set_sensitive(sensitive);
+}
+
+fn start_keep_action(
+    state: &Rc<DialogState>,
+    side: KeepSide,
+    cover_tx: &std::sync::mpsc::Sender<CoverResult>,
+) {
+    let book_index = state.book_index.get();
+    let match_index = state.match_indexes.borrow()[book_index];
+    let comparisons = state.comparisons.borrow();
+    let Some(duplicate) = comparisons[book_index].matches.get(match_index).cloned() else {
+        return;
+    };
+    let selected = comparisons[book_index].selected.clone();
+    drop(comparisons);
+    let action = keep_action(duplicate.source, side);
+    let ids = CrGuidPair {
+        selected: selected.id,
+        matched: duplicate.book.id,
+    };
+    clear_recommendation(state);
+    set_action_sensitive(state, false);
+    if crate::library::is_scanning() {
+        crate::library::abort_scan();
+        state.status.set_text("Stopping background scan...");
+        let state = Rc::downgrade(state);
+        let cover_tx = cover_tx.clone();
+        glib::timeout_add_local(std::time::Duration::from_millis(50), move || {
+            let Some(state) = state.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
+            if crate::library::is_scanning() {
+                return glib::ControlFlow::Continue;
+            }
+            validate_and_execute(
+                &state,
+                selected.clone(),
+                duplicate.clone(),
+                action,
+                ids,
+                &cover_tx,
+            );
+            glib::ControlFlow::Break
+        });
     } else {
-        None
+        validate_and_execute(state, selected, duplicate, action, ids, cover_tx);
     }
 }
 
-fn set_action(state: &DialogState, action: CompareAction) {
-    match action {
-        CompareAction::ReplaceLibraryCopy => state.replace_library.set_active(true),
-        CompareAction::DeleteSelectedIncomingCopy => state.delete_selected.set_active(true),
-        CompareAction::DeleteMatchingIncomingCopy => state.delete_matching.set_active(true),
+fn validate_and_execute(
+    state: &Rc<DialogState>,
+    selected: ComicBook,
+    duplicate: DuplicateMatch,
+    action: CompareAction,
+    ids: CrGuidPair,
+    cover_tx: &std::sync::mpsc::Sender<CoverResult>,
+) {
+    let incoming = crate::library::incoming_books_snapshot();
+    let library = crate::library::session().borrow().database().books.clone();
+    if let Err(error) = revalidate_pair(&selected, &duplicate, &incoming, &library) {
+        state.status.set_text(&error);
+        set_action_sensitive(state, true);
+        update_dialog_sensitivity(state);
+        return;
     }
-}
-
-fn clear_action(state: &DialogState) {
-    state.replace_library.set_active(false);
-    state.delete_selected.set_active(false);
-    state.delete_matching.set_active(false);
-}
-
-fn action_confirmation(action: CompareAction) -> &'static str {
-    match action {
-        CompareAction::ReplaceLibraryCopy => "Replace the Library file with the Incoming file and move the old Library file to trash?",
-        CompareAction::DeleteSelectedIncomingCopy => "Move the selected Incoming file to trash?",
-        CompareAction::DeleteMatchingIncomingCopy => "Move the matching Incoming file to trash?",
-    }
+    state.status.set_text("Applying action...");
+    let weak = Rc::downgrade(state);
+    let cover_tx = cover_tx.clone();
+    (state.executor)(
+        action,
+        ids,
+        Box::new(move |result| {
+            let Some(state) = weak.upgrade() else { return };
+            match result {
+                Ok(()) => {
+                    remove_resolved(&state, action, ids);
+                    if state.comparisons.borrow().is_empty() {
+                        if let Some(window) = state.window.upgrade() {
+                            window.close();
+                        }
+                    } else {
+                        set_action_sensitive(&state, true);
+                        update_dialog(&state, &cover_tx);
+                        state.status.set_text("Action completed.");
+                    }
+                }
+                Err(error) => {
+                    state.status.set_text(&error);
+                    set_action_sensitive(&state, true);
+                    update_dialog_sensitivity(&state);
+                }
+            }
+        }),
+    );
 }
 
 fn remove_resolved(state: &DialogState, action: CompareAction, ids: CrGuidPair) {
@@ -590,10 +657,8 @@ fn update_dialog(state: &Rc<DialogState>, cover_tx: &std::sync::mpsc::Sender<Cov
     state
         .book_position
         .set_text(&format!("Book {} of {}", book_index + 1, comparisons.len()));
-    state.previous_book.set_sensitive(book_index > 0);
-    state
-        .next_book
-        .set_sensitive(book_index + 1 < comparisons.len());
+    clear_recommendation(state);
+    state.status.set_text("Ready");
     state.left.heading.set_text("Selected Incoming book");
     set_book(&state.left, &comparison.selected);
     queue_cover(
@@ -612,10 +677,6 @@ fn update_dialog(state: &Rc<DialogState>, cover_tx: &std::sync::mpsc::Sender<Cov
             match_index + 1,
             comparison.matches.len()
         ));
-        state.previous_match.set_sensitive(match_index > 0);
-        state
-            .next_match
-            .set_sensitive(match_index + 1 < comparison.matches.len());
         queue_cover(
             state,
             CoverSide::Right,
@@ -623,14 +684,8 @@ fn update_dialog(state: &Rc<DialogState>, cover_tx: &std::sync::mpsc::Sender<Cov
             generation,
             cover_tx,
         );
-        state.action_box.set_visible(true);
-        state
-            .replace_library
-            .set_visible(duplicate.source == MatchSource::Library);
-        state
-            .delete_matching
-            .set_visible(duplicate.source == MatchSource::Incoming);
-        clear_action(state);
+        state.left.keep.set_visible(true);
+        state.right.keep.set_visible(true);
     } else {
         state.right.heading.set_text("No matching duplicate");
         state.right.details.set_text("");
@@ -641,10 +696,28 @@ fn update_dialog(state: &Rc<DialogState>, cover_tx: &std::sync::mpsc::Sender<Cov
             .cover_stack
             .set_visible_child(&state.right.cover_status);
         state.match_position.set_text("No matches");
-        state.previous_match.set_sensitive(false);
-        state.next_match.set_sensitive(false);
-        state.action_box.set_visible(false);
+        state.left.keep.set_visible(false);
+        state.right.keep.set_visible(false);
     }
+    drop(comparisons);
+    update_dialog_sensitivity(state);
+}
+
+fn update_dialog_sensitivity(state: &DialogState) {
+    let book_index = state.book_index.get();
+    let comparisons = state.comparisons.borrow();
+    let Some(comparison) = comparisons.get(book_index) else {
+        return;
+    };
+    let match_index = state.match_indexes.borrow()[book_index];
+    state.previous_book.set_sensitive(book_index > 0);
+    state
+        .next_book
+        .set_sensitive(book_index + 1 < comparisons.len());
+    state.previous_match.set_sensitive(match_index > 0);
+    state
+        .next_match
+        .set_sensitive(match_index + 1 < comparison.matches.len());
 }
 
 fn set_book(pane: &Pane, book: &ComicBook) {
@@ -830,6 +903,64 @@ mod tests {
             recommended_action(&selected, &duplicate, &rules),
             Some(CompareAction::ReplaceLibraryCopy)
         );
+    }
+
+    #[test]
+    fn keep_buttons_map_to_source_specific_actions() {
+        assert_eq!(
+            keep_action(MatchSource::Library, KeepSide::Left),
+            CompareAction::ReplaceLibraryCopy
+        );
+        assert_eq!(
+            keep_action(MatchSource::Library, KeepSide::Right),
+            CompareAction::DeleteSelectedIncomingCopy
+        );
+        assert_eq!(
+            keep_action(MatchSource::Incoming, KeepSide::Left),
+            CompareAction::DeleteMatchingIncomingCopy
+        );
+        assert_eq!(
+            keep_action(MatchSource::Incoming, KeepSide::Right),
+            CompareAction::DeleteSelectedIncomingCopy
+        );
+    }
+
+    #[test]
+    fn revalidation_checks_source_paths_and_duplicate_relation() {
+        let selected = book(1, "Alpha", "1", "/incoming/a.cbz");
+        let matched = book(2, "Alpha", "1", "/library/a.cbz");
+        let duplicate = DuplicateMatch {
+            source: MatchSource::Library,
+            book: matched.clone(),
+        };
+        assert_eq!(
+            revalidate_pair(
+                &selected,
+                &duplicate,
+                std::slice::from_ref(&selected),
+                std::slice::from_ref(&matched)
+            ),
+            Ok(())
+        );
+
+        let mut changed_path = matched.clone();
+        changed_path.file_path = "/library/new.cbz".into();
+        assert!(revalidate_pair(
+            &selected,
+            &duplicate,
+            std::slice::from_ref(&selected),
+            &[changed_path]
+        )
+        .is_err());
+
+        let not_duplicate = book(2, "Beta", "1", "/library/a.cbz");
+        assert!(revalidate_pair(
+            &selected,
+            &duplicate,
+            std::slice::from_ref(&selected),
+            &[not_duplicate]
+        )
+        .is_err());
     }
 
     fn fixed(id: u8) -> CrGuid {

@@ -86,23 +86,31 @@ Match** move through the current book's Incoming and Library matches.
 
 For a Library match:
 
-1. Select **Replace Library Copy** to keep the Library record and replace its
+1. Select **Keep This Copy** below the Incoming book to replace the Library
    file with the Incoming file.
-2. Or select **Delete Selected Incoming Copy** to keep the Library file.
-3. Select **Run Selected Action**.
-4. Confirm the action.
+2. Or select **Keep This Copy** below the Library book to move the Incoming
+   file to trash.
 
 `CODE-READ`: Replacement keeps the Library ID and descriptive metadata. It
 keeps the Library base filename and uses the Incoming extension. It refreshes
 file size, dates, page count, and scan status. The old Library file moves to
 trash. ComicRust blocks replacement if a different destination file exists.
 
-For an Incoming match, select the left or right Incoming copy to delete. Then
-select **Run Selected Action** and confirm the action.
+For an Incoming match, select **Keep This Copy** below the copy that you want.
+ComicRust moves the other Incoming file to trash.
 
 Select **Select Worst Duplicates** to apply the configured duplicate rules to
-the displayed pair. This selects an action only. Review and run the action
-yourself. If the copies tie, ComicRust selects no action.
+the displayed pair. Compare highlights the recommended **Keep This Copy**
+button. It does not run the action. If the copies tie, Compare highlights no
+button.
+
+`CODE-READ`: If a background scan is active, a Keep button requests scan
+cancellation. Compare waits for the scan to finish, rechecks both copies, and
+then runs the action. The status line shows each step.
+
+`CODE-READ`: The book context menu also has **Select Worst Duplicates** in
+**Duplicates** and **Incoming Duplicates**. This command selects the worse
+Incoming copies. It does not delete files.
 
 `CODE-READ`: Compare actions have no application-level Undo. Files moved to
 trash remain available through the desktop trash.

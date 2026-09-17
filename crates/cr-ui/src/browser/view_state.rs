@@ -497,6 +497,14 @@ impl ViewState {
         &self.selected
     }
 
+    pub fn selection_in_display_order(&self) -> Vec<CrGuid> {
+        self.display_order
+            .iter()
+            .map(|index| self.books[*index].id)
+            .filter(|id| self.selected.contains(id))
+            .collect()
+    }
+
     pub fn focus(&self) -> Option<CrGuid> {
         self.focus
     }
@@ -653,6 +661,18 @@ mod tests {
                 "Peter Parker, the Spectacular Spider-Man"
             ]
         );
+    }
+
+    #[test]
+    fn selected_ids_follow_display_order() {
+        let first = book("First", 1.0, 1);
+        let second = book("Second", 1.0, 2);
+        let third = book("Third", 1.0, 3);
+        let mut view = ViewState::new(vec![first.clone(), second, third.clone()]);
+
+        view.restore_selection(&[third.id, first.id]);
+
+        assert_eq!(view.selection_in_display_order(), [first.id, third.id]);
     }
 
     /// The T4 timing gate: a reading-list-scale view (books + the

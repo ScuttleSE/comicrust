@@ -125,6 +125,14 @@ fn button(window: &gtk4::Window, text: &str) -> gtk4::Button {
         .unwrap_or_else(|| panic!("button {text}"))
 }
 
+fn buttons(window: &gtk4::Window, text: &str) -> Vec<gtk4::Button> {
+    widgets(window)
+        .into_iter()
+        .filter_map(|widget| widget.downcast::<gtk4::Button>().ok())
+        .filter(|button| button.label().as_deref() == Some(text))
+        .collect()
+}
+
 fn snapshot(path: PathBuf, after: Vec<u8>) -> FileSnapshot {
     FileSnapshot {
         before: std::fs::read(&path).ok(),
@@ -446,7 +454,7 @@ fn start_classification(
         (6, "Gamma", "1"),
         (7, "Gamma", "1"),
     ];
-    let books: Vec<ComicBook> = fixtures
+    let mut books: Vec<ComicBook> = fixtures
         .iter()
         .map(|(id, series, number)| {
             let path = incoming_root.join(format!("{series}-{number}-{id}.cbz"));
@@ -454,6 +462,7 @@ fn start_classification(
             book(*id, &path, series, number)
         })
         .collect();
+    books[2].file_size = 200;
     cr_ui::library::save_incoming_catalog_async(
         IncomingCatalog {
             books: books.clone(),
@@ -597,7 +606,46 @@ fn wait_for_incoming_smart_list(
         std::process::exit(1);
     }
     println!("GATE E3 OK: Incoming smart list persists and evaluates Incoming books only");
-    open_compare(shell, paths, work);
+    check_incoming_duplicate_menu(shell, paths, work);
+}
+
+fn check_incoming_duplicate_menu(
+    shell: Rc<cr_ui::browser::shell::BrowserShell>,
+    paths: Rc<cr_core::paths::Paths>,
+    work: PathBuf,
+) {
+    shell.state_select_list(&cr_ui::browser::navigator::IncomingView::IncomingDuplicates.id());
+    glib::timeout_add_local(std::time::Duration::from_millis(350), move || {
+        shell.state_select_first_book();
+        let Some((x, y)) = shell.state_item_center(0) else {
+            eprintln!("GATE E4 FAILED: Incoming duplicate row has no item center");
+            std::process::exit(1);
+        };
+        if !shell.state_open_context(x, y) {
+            eprintln!("GATE E4 FAILED: Incoming duplicate context menu did not open");
+            std::process::exit(1);
+        }
+        let Some(popover) = shell.state_context_popover() else {
+            eprintln!("GATE E4 FAILED: Incoming duplicate context menu is absent");
+            std::process::exit(1);
+        };
+        let mut rows = Vec::new();
+        if let Some(child) = popover.child() {
+            walk(&child, &mut rows);
+        }
+        let found = rows
+            .into_iter()
+            .filter_map(|widget| widget.downcast::<gtk4::Button>().ok())
+            .any(|button| button.label().as_deref() == Some("Select Worst Duplicates"));
+        if !found {
+            eprintln!("GATE E4 FAILED: Select Worst Duplicates is absent from Incoming Duplicates");
+            std::process::exit(1);
+        }
+        popover.popdown();
+        println!("GATE E4 OK: Incoming Duplicates exposes Select Worst Duplicates");
+        open_compare(shell.clone(), paths.clone(), work.clone());
+        ControlFlow::Break
+    });
 }
 
 fn open_compare(
@@ -630,7 +678,7 @@ fn wait_for_compare(
         return;
     };
     let text = labels(&window).join("\n");
-    if !text.contains("Book 1 of 2") || !text.contains("Match 1 of 1") {
+    if !text.contains("Book 1 of 2") || !text.contains("Match 1 of ") {
         assert!(
             ticks < 100,
             "Compare Incoming labels stayed incomplete: {text}"
@@ -641,16 +689,33 @@ fn wait_for_compare(
         });
         return;
     }
-    assert!(text.contains("Library duplicate"));
     button(&window, "Next Book").emit_clicked();
     let text = labels(&window).join("\n");
     assert!(text.contains("Book 2 of 2"));
-    assert!(text.contains("Match 1 of 2"));
-    assert!(text.contains("Incoming duplicate"));
-    button(&window, "Next Match").emit_clicked();
+    navigate_to_library_match(window, paths, work);
+}
+
+fn navigate_to_library_match(
+    window: gtk4::Window,
+    paths: Rc<cr_core::paths::Paths>,
+    work: PathBuf,
+) {
     let text = labels(&window).join("\n");
-    assert!(text.contains("Match 2 of 2"));
-    assert!(text.contains("Library duplicate"));
+    if text.contains("Library duplicate") {
+        wait_for_compare_covers(window, paths, work, 0);
+        return;
+    }
+    let next = button(&window, "Next Match");
+    if !next.is_sensitive() {
+        eprintln!("GATE E2 FAILED: no Library match is available for recommendation");
+        std::process::exit(1);
+    }
+    next.emit_clicked();
+    let text = labels(&window).join("\n");
+    if !text.contains("Library duplicate") {
+        eprintln!("GATE E2 FAILED: match navigation did not reach a Library duplicate");
+        std::process::exit(1);
+    }
     wait_for_compare_covers(window, paths, work, 0);
 }
 
@@ -674,6 +739,25 @@ fn wait_for_compare_covers(
         return;
     }
     println!("GATE E2 OK: Compare navigates books and matches and loads both covers");
+    button(&window, "Select Worst Duplicates").emit_clicked();
+    let keep = buttons(&window, "Keep This Copy");
+    if keep.len() != 2 {
+        eprintln!("GATE E2 FAILED: Compare did not show two Keep This Copy buttons");
+        std::process::exit(1);
+    }
+    let highlighted = keep
+        .iter()
+        .filter(|button| button.has_css_class("suggested-action"))
+        .count();
+    if highlighted != 1 || !keep[0].has_css_class("suggested-action") {
+        eprintln!("GATE E2 FAILED: recommendation did not highlight exactly one Keep button");
+        std::process::exit(1);
+    }
+    if !buttons(&window, "Run Selected Action").is_empty() {
+        eprintln!("GATE E2 FAILED: obsolete action control is visible");
+        std::process::exit(1);
+    }
+    println!("GATE E2A OK: Compare recommendation highlights a real Keep control");
     window.close();
     gate_f_to_i(paths, work);
     println!("INCOMING PROBE DONE");

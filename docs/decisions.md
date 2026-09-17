@@ -57,6 +57,7 @@ This index is navigation only. The entry below each ADR is the decision.
 | ADR-051 | Compare Incoming books side by side | accepted | ADR-049 |
 | ADR-052 | Compare resolves duplicates with durable actions | accepted | ADR-051 |
 | ADR-053 | Incoming smart lists use separate persistent storage | accepted | ADR-049 |
+| ADR-054 | Compare keeps either displayed copy with one action | accepted | ADR-052 |
 
 ADR-029 is reserved for the deferred Phase 9 (SQLite) decision. It is not written yet.
 
@@ -476,3 +477,11 @@ v0.1.0 and every rolling build after it, and one manual reinstall clears it.
 - **Context:** Users need saved queries over unresolved Incoming books. Normal smart lists belong to the main Library and `ComicDb.xml`. Storing Incoming lists there would mix the two catalog scopes.
 - **Decision:** User smart lists appear below `Incoming > Smart Lists`. Definitions use `SmartListItem` and persist atomically in `IncomingLists.xml`. They do not enter `ComicDb.xml` or Quick Open. Matching candidates, duplicate matching, and series statistics use Incoming books only. An Incoming smart list can use another Incoming smart list as its base. Missing bases, base cycles, and unknown matchers return an explicit error. `Not in Base List` evaluates as all Incoming books except the base result. Each custom list can store view settings. Fixed Incoming views remain immutable. Drag operations cannot cross between Library and Incoming lists.
 - **Consequences:** The existing smart-list editor and query language are reused. Incoming list evaluation and persistence run on workers. Adoption and discard remove books from results without changing definitions.
+
+## ADR-054: Compare keeps either displayed copy with one action
+
+- **Status:** accepted (2026-09-17, user decisions). This decision supersedes the action-selection and confirmation parts of ADR-052.
+- **Context:** Selecting an action, running it, and confirming it requires too many steps. A background scan holds the mutation guard and makes an action appear inactive while it waits.
+- **Decision:** Compare opens at 1100 by 800 pixels. Each pane has a Keep This Copy button. For a Library match, keeping Incoming replaces the Library file and keeping Library trashes the Incoming file. For an Incoming match, keeping either copy trashes the other copy. A Keep button starts the action without another confirmation. The dialog shows status and continues after success. If a scan is active, Compare requests scan cancellation, shows Stopping background scan, waits for the scan to land, revalidates both records, paths, and duplicate membership, then starts the action. A changed pair produces an inline error and no file change.
+- **Decision:** Select Worst Duplicates highlights the recommended Keep button and does not execute it. The book context menu also shows Select Worst Duplicates in the combined Duplicates view and the Incoming Duplicates view. That command remains selection-only. Library Duplicates does not show the context-menu command because its displayed set does not contain the Library copies.
+- **Consequences:** Compare has no action radio buttons, Run Selected Action button, or confirmation dialog. Trash remains the recovery path for removed files. The user must test scan cancellation and destructive actions on real data.

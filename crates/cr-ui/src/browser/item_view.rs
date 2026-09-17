@@ -807,13 +807,7 @@ impl ItemView {
 
     /// The selected ids (the shell commands read them).
     pub fn selection_ids(&self) -> Vec<CrGuid> {
-        self.state
-            .borrow()
-            .view
-            .selection()
-            .iter()
-            .copied()
-            .collect()
+        self.state.borrow().view.selection_in_display_order()
     }
 
     /// The books currently DISPLAYED (the filtered view — the
