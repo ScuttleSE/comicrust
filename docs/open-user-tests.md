@@ -138,6 +138,11 @@ Confirm that Compare shows two books side by side with both covers and details.
 Use the book controls to move through the selected books. Use the match controls
 to move through all Incoming and Library matches. Confirm that a missing cover
 shows a placeholder and that the window stays responsive while covers load.
+For a Library match, use Select Worst Duplicates and confirm that it selects an
+action without running it. Replace the Library copy. Confirm the Library ID and
+descriptive metadata stay unchanged, the file-derived fields refresh, and the
+old file enters trash. Confirm that a destination collision changes nothing.
+Delete an Incoming copy from Compare and confirm that the dialog continues.
 Run Preview Adoption and confirm that no file or catalog changes. Run Adopt with
 a Move profile. Confirm the destination, preserved metadata, and removal from
 Incoming. Test Cancel, Rename, and Replace for a destination conflict. Run
@@ -158,3 +163,13 @@ Use a large Incoming catalog. Switch through all review views, open Compare,
 and change folder roles while observing the window. Confirm that the UI stays
 responsive. Try to remove an Incoming folder that still has unresolved books.
 Confirm that ComicRust blocks the change. Resolve the books and remove the role.
+
+## 21. Incoming smart lists
+
+Create an Incoming smart list and a normal Library smart list with the same
+query. Confirm that each list shows books only from its own catalog. Create a
+second Incoming list that uses the first as its base. Test Not in Base List.
+Edit and delete an Incoming list. Give one list its own view settings. Restart
+and confirm the definitions, base, results, and view settings. Confirm that
+Incoming list changes do not change `ComicDb.xml`. Confirm that lists cannot be
+dragged between Library and Incoming.

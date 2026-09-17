@@ -496,6 +496,22 @@ fn run_list_command(
         ListCommand::NewSmartList => {
             // The C# `NewSmartList`: insert an empty smart list, then
             // open the editor; Cancel removes it.
+            if target
+                .as_ref()
+                .is_some_and(browser::navigator::is_incoming_scope_id)
+            {
+                let nav2 = Rc::clone(nav);
+                let window = parent.clone();
+                let id = library::new_incoming_smart_list("New Smart List", move |result| {
+                    if let Err(error) = result {
+                        show_attention_dialog(&window, &error);
+                    }
+                    nav2.refill(&library::comic_lists_snapshot());
+                });
+                nav.refill(&library::comic_lists_snapshot());
+                run_incoming_smart_list_editor(parent, nav, id);
+                return;
+            }
             let new_id = library::new_smart_list(target.as_ref(), "New Smart List", "");
             match new_id {
                 Ok(id) => {
@@ -512,6 +528,10 @@ fn run_list_command(
             let Some(id) = target else {
                 return;
             };
+            if library::is_incoming_custom_list(&id) {
+                run_incoming_smart_list_editor(parent, nav, id);
+                return;
+            }
             let lib = library::session();
             let l = lib.borrow();
             let item = cr_engine::lists::find_list_item(&l.database().comic_lists, &id);
@@ -598,8 +618,36 @@ fn run_list_command(
         }
         ListCommand::Delete => {
             if let Some(id) = target {
-                library::remove_list(&id);
-                nav.refill(&library::comic_lists_snapshot());
+                if library::is_incoming_custom_list(&id) {
+                    let confirm = gtk4::MessageDialog::builder()
+                        .transient_for(parent)
+                        .modal(true)
+                        .title("Delete Incoming Smart List")
+                        .text("Delete this Incoming smart list?")
+                        .message_type(gtk4::MessageType::Question)
+                        .buttons(gtk4::ButtonsType::OkCancel)
+                        .build();
+                    let nav2 = Rc::clone(nav);
+                    let window = parent.clone();
+                    confirm.connect_response(move |dialog, response| {
+                        dialog.close();
+                        if response != gtk4::ResponseType::Ok {
+                            return;
+                        }
+                        let nav3 = Rc::clone(&nav2);
+                        let window2 = window.clone();
+                        library::remove_incoming_smart_list(&id, move |result| {
+                            if let Err(error) = result {
+                                show_attention_dialog(&window2, &error);
+                            }
+                            nav3.refill(&library::comic_lists_snapshot());
+                        });
+                    });
+                    confirm.present();
+                } else {
+                    library::remove_list(&id);
+                    nav.refill(&library::comic_lists_snapshot());
+                }
             }
         }
         ListCommand::Sort => {
@@ -884,6 +932,52 @@ fn run_smart_list_editor(
         },
     );
     let _ = window2;
+}
+
+fn run_incoming_smart_list_editor(
+    parent: &ApplicationWindow,
+    nav: &Rc<browser::navigator::Navigator>,
+    id: CrGuid,
+) {
+    let Some(item) = library::find_incoming_smart_list(&id) else {
+        return;
+    };
+    let base_options = library::incoming_smart_list_base_options(&id);
+    let nav2 = Rc::clone(nav);
+    let window = parent.clone();
+    crate::dialogs::smart_list::show_smart_list_editor(
+        parent,
+        item,
+        base_options,
+        move |committed| match committed {
+            Some(updated) => {
+                let nav3 = Rc::clone(&nav2);
+                let window2 = window.clone();
+                library::update_incoming_smart_list(&id, updated, move |result| {
+                    if let Err(error) = result {
+                        show_attention_dialog(&window2, &error);
+                    }
+                    nav3.refill(&library::comic_lists_snapshot());
+                });
+                nav2.refill(&library::comic_lists_snapshot());
+            }
+            None => {
+                if library::find_incoming_smart_list(&id).is_some_and(|item| {
+                    item.matchers.is_empty() && item.base.name.as_deref() == Some("New Smart List")
+                }) {
+                    let nav3 = Rc::clone(&nav2);
+                    let window2 = window.clone();
+                    library::remove_incoming_smart_list(&id, move |result| {
+                        if let Err(error) = result {
+                            show_attention_dialog(&window2, &error);
+                        }
+                        nav3.refill(&library::comic_lists_snapshot());
+                    });
+                }
+                nav2.refill(&library::comic_lists_snapshot());
+            }
+        },
+    );
 }
 
 /// The list editor flow for folders and reading lists (the C#

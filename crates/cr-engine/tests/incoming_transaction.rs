@@ -4,8 +4,8 @@ use cr_core::durable::durable_replace;
 use cr_engine::incoming_transaction::{
     acquire_mutation_guard, database_epoch, operation_active, try_acquire_mutation_guard,
     try_begin_operation, CloseBarrier, CloseDecision, ExternalActionStatus, ExternalFileAction,
-    FileSnapshot, IncomingTransaction, RecoveryResult, TransactionEngine, TransactionError,
-    TransactionFiles, TransactionKind, TransactionStage,
+    FileSnapshot, IncomingTransaction, RecoveryResult, ReplacementStage, ReplacementTransaction,
+    TransactionEngine, TransactionError, TransactionFiles, TransactionKind, TransactionStage,
 };
 
 struct TestDir(PathBuf);
@@ -537,4 +537,442 @@ fn recovery_accepts_applied_delete_then_applied_rename_to_the_same_path_at_every
         assert_eq!(std::fs::read(destination).unwrap(), b"replacement");
         assert_after(&root, TransactionKind::Adoption);
     }
+}
+
+fn replacement(root: &TestDir) -> ReplacementTransaction {
+    let source = root.path("incoming/book.cbz");
+    let old_library = root.path("library/book.cbr");
+    std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+    std::fs::create_dir_all(old_library.parent().unwrap()).unwrap();
+    std::fs::write(&source, b"replacement comic bytes").unwrap();
+    std::fs::write(&old_library, b"old library comic").unwrap();
+    ReplacementTransaction::prepare(
+        source,
+        root.path("library/.book.cbz.incoming-stage"),
+        root.path("library/book.cbz"),
+        old_library,
+        snapshot(
+            root.path("ComicDb.xml"),
+            b"database-before",
+            b"database-after",
+        ),
+        snapshot(
+            root.path("IncomingDb.xml"),
+            b"incoming-before",
+            b"incoming-after",
+        ),
+    )
+    .unwrap()
+}
+
+fn write_replacement_journal(engine: &TransactionEngine, transaction: &ReplacementTransaction) {
+    durable_replace(
+        engine.journal_path(),
+        &serde_json::to_vec_pretty(transaction).unwrap(),
+    )
+    .unwrap();
+}
+
+fn fake_trash(root: &TestDir) -> impl Fn(&Path) -> std::io::Result<()> + '_ {
+    move |path| {
+        let trash = root.path("trash");
+        std::fs::create_dir_all(&trash)?;
+        std::fs::rename(path, trash.join(path.file_name().unwrap()))
+    }
+}
+
+fn seed_replacement_stage(
+    root: &TestDir,
+    transaction: &mut ReplacementTransaction,
+    stage: ReplacementStage,
+) {
+    transaction.stage = stage;
+    if matches!(
+        stage,
+        ReplacementStage::Staged | ReplacementStage::TrashPending
+    ) {
+        std::fs::copy(&transaction.source, &transaction.staging).unwrap();
+    }
+    if matches!(
+        stage,
+        ReplacementStage::OldLibraryTrashed
+            | ReplacementStage::Installed
+            | ReplacementStage::DatabaseSaved
+            | ReplacementStage::IncomingSaved
+            | ReplacementStage::SourceRemoved
+            | ReplacementStage::Committed
+    ) {
+        let trash = fake_trash(root);
+        trash(&transaction.old_library).unwrap();
+    }
+    if matches!(
+        stage,
+        ReplacementStage::OldLibraryTrashed
+            | ReplacementStage::Installed
+            | ReplacementStage::DatabaseSaved
+            | ReplacementStage::IncomingSaved
+            | ReplacementStage::SourceRemoved
+            | ReplacementStage::Committed
+    ) {
+        if stage == ReplacementStage::OldLibraryTrashed {
+            std::fs::copy(&transaction.source, &transaction.staging).unwrap();
+        } else {
+            std::fs::copy(&transaction.source, &transaction.destination).unwrap();
+        }
+    }
+    if matches!(
+        stage,
+        ReplacementStage::DatabaseSaved
+            | ReplacementStage::IncomingSaved
+            | ReplacementStage::SourceRemoved
+            | ReplacementStage::Committed
+    ) {
+        durable_replace(
+            &transaction.comic_database.path,
+            &transaction.comic_database.after,
+        )
+        .unwrap();
+    }
+    if matches!(
+        stage,
+        ReplacementStage::IncomingSaved
+            | ReplacementStage::SourceRemoved
+            | ReplacementStage::Committed
+    ) {
+        durable_replace(
+            &transaction.incoming_catalog.path,
+            &transaction.incoming_catalog.after,
+        )
+        .unwrap();
+    }
+    if matches!(
+        stage,
+        ReplacementStage::SourceRemoved | ReplacementStage::Committed
+    ) {
+        std::fs::remove_file(&transaction.source).unwrap();
+    }
+}
+
+#[test]
+fn replacement_recovers_from_every_persisted_stage() {
+    for stage in [
+        ReplacementStage::Prepared,
+        ReplacementStage::Staged,
+        ReplacementStage::TrashPending,
+        ReplacementStage::OldLibraryTrashed,
+        ReplacementStage::Installed,
+        ReplacementStage::DatabaseSaved,
+        ReplacementStage::IncomingSaved,
+        ReplacementStage::SourceRemoved,
+        ReplacementStage::Committed,
+    ] {
+        let root = TestDir::new(&format!("replacement-{stage:?}"));
+        let engine = TransactionEngine::from_journal_path(root.path("current.json"));
+        let mut transaction = replacement(&root);
+        seed_replacement_stage(&root, &mut transaction, stage);
+        write_replacement_journal(&engine, &transaction);
+
+        assert_eq!(
+            engine.recover_with_trash(&fake_trash(&root)).unwrap(),
+            RecoveryResult::Recovered
+        );
+        assert_eq!(
+            std::fs::read(&transaction.destination).unwrap(),
+            b"replacement comic bytes"
+        );
+        assert_eq!(
+            std::fs::read(&transaction.comic_database.path).unwrap(),
+            b"database-after"
+        );
+        assert_eq!(
+            std::fs::read(&transaction.incoming_catalog.path).unwrap(),
+            b"incoming-after"
+        );
+        assert!(!transaction.source.exists());
+        assert!(!transaction.old_library.exists());
+        assert!(!transaction.staging.exists());
+        assert!(!engine.journal_path().exists());
+    }
+}
+
+#[test]
+fn replacement_recovers_from_each_action_before_its_stage_update() {
+    for crash_point in [
+        "partial-copy",
+        "copy",
+        "trash",
+        "install-linked",
+        "install",
+        "database",
+        "incoming",
+        "remove",
+    ] {
+        let root = TestDir::new(&format!("replacement-crash-{crash_point}"));
+        let engine = TransactionEngine::from_journal_path(root.path("current.json"));
+        let mut transaction = replacement(&root);
+        std::fs::create_dir_all(transaction.destination.parent().unwrap()).unwrap();
+        match crash_point {
+            "partial-copy" => {
+                std::fs::write(&transaction.staging, b"partial").unwrap();
+            }
+            "copy" => {
+                std::fs::copy(&transaction.source, &transaction.staging).unwrap();
+            }
+            "trash" => {
+                std::fs::copy(&transaction.source, &transaction.staging).unwrap();
+                fake_trash(&root)(&transaction.old_library).unwrap();
+                transaction.stage = ReplacementStage::TrashPending;
+            }
+            "install-linked" => {
+                std::fs::copy(&transaction.source, &transaction.staging).unwrap();
+                fake_trash(&root)(&transaction.old_library).unwrap();
+                std::fs::hard_link(&transaction.staging, &transaction.destination).unwrap();
+                transaction.stage = ReplacementStage::OldLibraryTrashed;
+            }
+            "install" => {
+                std::fs::copy(&transaction.source, &transaction.destination).unwrap();
+                fake_trash(&root)(&transaction.old_library).unwrap();
+                transaction.stage = ReplacementStage::OldLibraryTrashed;
+            }
+            "database" => {
+                std::fs::copy(&transaction.source, &transaction.destination).unwrap();
+                fake_trash(&root)(&transaction.old_library).unwrap();
+                durable_replace(
+                    &transaction.comic_database.path,
+                    &transaction.comic_database.after,
+                )
+                .unwrap();
+                transaction.stage = ReplacementStage::Installed;
+            }
+            "incoming" => {
+                std::fs::copy(&transaction.source, &transaction.destination).unwrap();
+                fake_trash(&root)(&transaction.old_library).unwrap();
+                durable_replace(
+                    &transaction.comic_database.path,
+                    &transaction.comic_database.after,
+                )
+                .unwrap();
+                durable_replace(
+                    &transaction.incoming_catalog.path,
+                    &transaction.incoming_catalog.after,
+                )
+                .unwrap();
+                transaction.stage = ReplacementStage::DatabaseSaved;
+            }
+            "remove" => {
+                std::fs::copy(&transaction.source, &transaction.destination).unwrap();
+                fake_trash(&root)(&transaction.old_library).unwrap();
+                durable_replace(
+                    &transaction.comic_database.path,
+                    &transaction.comic_database.after,
+                )
+                .unwrap();
+                durable_replace(
+                    &transaction.incoming_catalog.path,
+                    &transaction.incoming_catalog.after,
+                )
+                .unwrap();
+                std::fs::remove_file(&transaction.source).unwrap();
+                transaction.stage = ReplacementStage::IncomingSaved;
+            }
+            _ => unreachable!(),
+        }
+        write_replacement_journal(&engine, &transaction);
+
+        assert_eq!(
+            engine.recover_with_trash(&fake_trash(&root)).unwrap(),
+            RecoveryResult::Recovered
+        );
+        assert_eq!(
+            std::fs::read(&transaction.destination).unwrap(),
+            b"replacement comic bytes"
+        );
+        assert!(!transaction.source.exists());
+        assert!(!transaction.staging.exists());
+    }
+}
+
+#[test]
+fn replacement_rejects_a_destination_collision_without_mutation() {
+    let root = TestDir::new("replacement-collision");
+    let engine = TransactionEngine::from_journal_path(root.path("current.json"));
+    let transaction = replacement(&root);
+    std::fs::create_dir_all(transaction.destination.parent().unwrap()).unwrap();
+    std::fs::write(&transaction.destination, b"existing library comic").unwrap();
+
+    assert!(matches!(
+        engine.begin_replacement(&transaction),
+        Err(TransactionError::Conflict(_))
+    ));
+    assert_eq!(
+        std::fs::read(&transaction.source).unwrap(),
+        b"replacement comic bytes"
+    );
+    assert_eq!(
+        std::fs::read(&transaction.old_library).unwrap(),
+        b"old library comic"
+    );
+    assert_eq!(
+        std::fs::read(&transaction.destination).unwrap(),
+        b"existing library comic"
+    );
+    assert!(!transaction.staging.exists());
+    assert!(!engine.journal_path().exists());
+}
+
+#[test]
+fn same_extension_existing_library_destination_is_expected() {
+    let root = TestDir::new("replacement-same-extension");
+    let engine = TransactionEngine::from_journal_path(root.path("current.json"));
+    let source = root.path("incoming/book.cbz");
+    let destination = root.path("library/book.cbz");
+    std::fs::create_dir_all(source.parent().unwrap()).unwrap();
+    std::fs::create_dir_all(destination.parent().unwrap()).unwrap();
+    std::fs::write(&source, b"replacement comic bytes").unwrap();
+    std::fs::write(&destination, b"old library comic").unwrap();
+    let mut transaction = ReplacementTransaction::prepare(
+        source,
+        root.path("library/.book.cbz.incoming-stage"),
+        destination.clone(),
+        destination,
+        snapshot(root.path("ComicDb.xml"), b"old-db", b"new-db"),
+        snapshot(root.path("IncomingDb.xml"), b"old-in", b"new-in"),
+    )
+    .unwrap();
+    engine.begin_replacement(&transaction).unwrap();
+
+    engine
+        .commit_replacement_with_trash(&mut transaction, &fake_trash(&root))
+        .unwrap();
+    assert_eq!(
+        std::fs::read(&transaction.destination).unwrap(),
+        b"replacement comic bytes"
+    );
+    assert_eq!(
+        std::fs::read(root.path("trash/book.cbz")).unwrap(),
+        b"old library comic"
+    );
+}
+
+#[test]
+fn replacement_copy_failure_does_not_mutate_source_or_destination() {
+    let root = TestDir::new("replacement-copy-failure");
+    let engine = TransactionEngine::from_journal_path(root.path("current.json"));
+    let mut transaction = replacement(&root);
+    engine.begin_replacement(&transaction).unwrap();
+    let fail_copy = |_transaction: &ReplacementTransaction| {
+        Err(TransactionError::Io(std::io::Error::other(
+            "test copy failure",
+        )))
+    };
+
+    assert!(matches!(
+        engine.commit_replacement_with_actions(&mut transaction, &fail_copy, &fake_trash(&root)),
+        Err(TransactionError::Io(_))
+    ));
+    assert_eq!(
+        std::fs::read(&transaction.source).unwrap(),
+        b"replacement comic bytes"
+    );
+    assert!(!transaction.staging.exists());
+    assert!(!transaction.destination.exists());
+    assert!(engine.journal_path().exists());
+}
+
+#[test]
+fn replacement_rejects_an_invalid_staged_copy() {
+    let root = TestDir::new("replacement-invalid-staging");
+    let engine = TransactionEngine::from_journal_path(root.path("current.json"));
+    let mut transaction = replacement(&root);
+    std::fs::create_dir_all(transaction.staging.parent().unwrap()).unwrap();
+    std::fs::write(&transaction.staging, b"truncated").unwrap();
+    transaction.stage = ReplacementStage::Staged;
+    write_replacement_journal(&engine, &transaction);
+
+    assert!(matches!(
+        engine.recover_with_trash(&fake_trash(&root)),
+        Err(TransactionError::Conflict(_))
+    ));
+    assert_eq!(std::fs::read(&transaction.staging).unwrap(), b"truncated");
+    assert!(!transaction.destination.exists());
+    assert_eq!(
+        std::fs::read(&transaction.source).unwrap(),
+        b"replacement comic bytes"
+    );
+    assert!(engine.journal_path().exists());
+}
+
+#[test]
+fn replacement_rejects_an_invalid_installed_file_before_catalog_changes() {
+    let root = TestDir::new("replacement-invalid-installed");
+    let engine = TransactionEngine::from_journal_path(root.path("current.json"));
+    let mut transaction = replacement(&root);
+    fake_trash(&root)(&transaction.old_library).unwrap();
+    std::fs::write(&transaction.destination, b"invalid installed file").unwrap();
+    transaction.stage = ReplacementStage::Installed;
+    write_replacement_journal(&engine, &transaction);
+
+    assert!(matches!(
+        engine.recover_with_trash(&fake_trash(&root)),
+        Err(TransactionError::Conflict(_))
+    ));
+    assert_eq!(
+        std::fs::read(&transaction.destination).unwrap(),
+        b"invalid installed file"
+    );
+    assert_eq!(
+        std::fs::read(&transaction.source).unwrap(),
+        b"replacement comic bytes"
+    );
+    assert!(!transaction.comic_database.path.exists());
+    assert!(!transaction.incoming_catalog.path.exists());
+    assert!(engine.journal_path().exists());
+}
+
+#[test]
+fn replacement_trash_failure_keeps_files_and_catalogs() {
+    let root = TestDir::new("replacement-trash-failure");
+    let engine = TransactionEngine::from_journal_path(root.path("current.json"));
+    let mut transaction = replacement(&root);
+    engine.begin_replacement(&transaction).unwrap();
+    let fail = |_path: &Path| Err(std::io::Error::other("test trash failure"));
+
+    assert!(matches!(
+        engine.commit_replacement_with_trash(&mut transaction, &fail),
+        Err(TransactionError::Io(_))
+    ));
+    assert_eq!(
+        std::fs::read(&transaction.old_library).unwrap(),
+        b"old library comic"
+    );
+    assert_eq!(
+        std::fs::read(&transaction.source).unwrap(),
+        b"replacement comic bytes"
+    );
+    assert!(!transaction.destination.exists());
+    assert!(!transaction.comic_database.path.exists());
+    assert!(!transaction.incoming_catalog.path.exists());
+    assert!(engine.journal_path().exists());
+}
+
+#[test]
+fn replacement_recovery_is_idempotent_after_completion() {
+    let root = TestDir::new("replacement-idempotent");
+    let engine = TransactionEngine::from_journal_path(root.path("current.json"));
+    let transaction = replacement(&root);
+    engine.begin_replacement(&transaction).unwrap();
+
+    assert_eq!(
+        engine.recover_with_trash(&fake_trash(&root)).unwrap(),
+        RecoveryResult::Recovered
+    );
+    assert_eq!(
+        engine.recover_with_trash(&fake_trash(&root)).unwrap(),
+        RecoveryResult::NoJournal
+    );
+    assert_eq!(
+        std::fs::read(&transaction.destination).unwrap(),
+        b"replacement comic bytes"
+    );
+    assert!(!transaction.source.exists());
 }

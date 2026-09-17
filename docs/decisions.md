@@ -55,6 +55,8 @@ This index is navigation only. The entry below each ADR is the decision.
 | ADR-049 | Incoming folders use a separate persistent catalog | accepted | — |
 | ADR-050 | Split Incoming duplicates by catalog source | accepted | ADR-049 |
 | ADR-051 | Compare Incoming books side by side | accepted | ADR-049 |
+| ADR-052 | Compare resolves duplicates with durable actions | accepted | ADR-051 |
+| ADR-053 | Incoming smart lists use separate persistent storage | accepted | ADR-049 |
 
 ADR-029 is reserved for the deferred Phase 9 (SQLite) decision. It is not written yet.
 
@@ -459,3 +461,18 @@ v0.1.0 and every rolling build after it, and one manual reinstall clears it.
 - **Context:** The text-only Compare report makes cover quality difficult to compare. A selection can contain multiple Incoming books. Each book can have multiple matches.
 - **Decision:** Compare uses a modal side-by-side dialog. The left pane shows one selected Incoming book. The right pane shows one matching Incoming or Library book. Separate controls move through selected books and through each book's matches. Each pane shows the cover and book details. Cover loading uses the image-pool worker queues. A generation value rejects stale cover results after navigation.
 - **Consequences:** Compare preserves all selected books and all matches. Missing covers show a placeholder. Archive access and image decoding do not block the GTK thread.
+
+## ADR-052: Compare resolves duplicates with durable actions
+
+- **Status:** accepted (2026-09-17, user decisions). This decision extends ADR-051.
+- **Context:** Compare identifies the copies but does not resolve them. Replacement can cross filesystems and changes two catalogs and multiple files. An interrupted replacement must not leave the catalogs without a valid Library file.
+- **Decision:** A Library match permits Replace Library Copy or Delete Incoming Copy. Replace keeps the Library record, ID, and descriptive metadata. It keeps the Library base filename and uses the Incoming extension. It refreshes file-derived fields from the Incoming file. It moves the old Library file to trash. It blocks a collision at a different destination path. A recoverable journal stages and validates a cross-filesystem copy, trashes the old file, installs the replacement, writes `ComicDb.xml`, writes `IncomingDb.xml`, and removes the Incoming source. An Incoming match permits deletion of either Incoming copy. All destructive actions require confirmation and have no application-level Undo. The dialog continues after success.
+- **Decision:** Select Worst Duplicates ranks only the displayed pair with the configured duplicate rules. It selects an action but does not execute it. A tie selects no action.
+- **Consequences:** Startup rolls an interrupted replacement forward. The desktop trash is the recovery method for a removed file. File and catalog work runs outside the GTK thread.
+
+## ADR-053: Incoming smart lists use separate persistent storage
+
+- **Status:** accepted (2026-09-17, user decisions). This decision extends ADR-049.
+- **Context:** Users need saved queries over unresolved Incoming books. Normal smart lists belong to the main Library and `ComicDb.xml`. Storing Incoming lists there would mix the two catalog scopes.
+- **Decision:** User smart lists appear below `Incoming > Smart Lists`. Definitions use `SmartListItem` and persist atomically in `IncomingLists.xml`. They do not enter `ComicDb.xml` or Quick Open. Matching candidates, duplicate matching, and series statistics use Incoming books only. An Incoming smart list can use another Incoming smart list as its base. Missing bases, base cycles, and unknown matchers return an explicit error. `Not in Base List` evaluates as all Incoming books except the base result. Each custom list can store view settings. Fixed Incoming views remain immutable. Drag operations cannot cross between Library and Incoming lists.
+- **Consequences:** The existing smart-list editor and query language are reused. Incoming list evaluation and persistence run on workers. Adoption and discard remove books from results without changing definitions.

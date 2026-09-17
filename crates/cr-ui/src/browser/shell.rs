@@ -366,6 +366,26 @@ fn save_and_finish_close(
     });
 }
 
+fn flush_lists_and_finish_close(
+    window: gtk4::ApplicationWindow,
+    barrier: Rc<RefCell<cr_engine::incoming_transaction::CloseBarrier>>,
+) {
+    library::flush_incoming_lists_for_close(move |result| match result {
+        Ok(()) => save_and_finish_close(window, barrier),
+        Err(error) => {
+            eprintln!("Incoming smart-list save failed: {error}");
+            barrier.borrow_mut().save_failed();
+            show_failure_dialog(
+                &window,
+                "ComicRust could not close",
+                &format!(
+                    "The Incoming smart lists could not be saved. The window remains open.\n\n{error}"
+                ),
+            );
+        }
+    });
+}
+
 use super::columns::{self, default_columns};
 use super::item_view::ItemView;
 use super::layout::ItemViewMode;
@@ -449,6 +469,7 @@ struct ShellState {
     /// list keeps whatever it had, so a list with no settings of its
     /// own stays inheriting.
     view_config_dirty: Cell<bool>,
+    incoming_list_eval_gen: Rc<Cell<u64>>,
     /// The `win.` action group members by name (the enable-state
     /// sync reaches them here). A RefCell: the map fills while the
     /// state itself already lives in its Rc.
@@ -503,7 +524,7 @@ impl ShellState {
         self.current_list
             .borrow()
             .as_ref()
-            .is_some_and(|id| super::navigator::IncomingView::from_id(id).is_some())
+            .is_some_and(super::navigator::is_incoming_scope_id)
     }
 
     fn selected_incoming_books(&self) -> Vec<ComicBook> {
@@ -534,10 +555,81 @@ impl ShellState {
             .expect("spawn Incoming compare worker");
         let window = self.window.clone();
         let pool = Arc::clone(&self.pool);
+        let weak_shell = Rc::downgrade(self);
         glib::timeout_add_local(std::time::Duration::from_millis(50), move || {
             match rx.try_recv() {
                 Ok(comparisons) => {
-                    crate::dialogs::incoming_compare::show(&window, Arc::clone(&pool), comparisons);
+                    let rules = cr_engine::duplicates::DuplicateRules::from_settings(
+                        &library::settings().borrow(),
+                    );
+                    let weak = weak_shell.clone();
+                    let executor: crate::dialogs::incoming_compare::ActionExecutor = Rc::new(
+                        move |action, ids, complete| {
+                            let Some(sh) = weak.upgrade() else {
+                                complete(Err(
+                                    "The browser closed before the action started.".into()
+                                ));
+                                return;
+                            };
+                            match action {
+                                crate::dialogs::incoming_compare::CompareAction::ReplaceLibraryCopy => {
+                                    let weak = Rc::downgrade(&sh);
+                                    library::replace_library_copy_async(ids.selected, ids.matched, move |result| {
+                                        let Some(sh) = weak.upgrade() else {
+                                            complete(Err("The browser closed before the action finished.".into()));
+                                            return;
+                                        };
+                                        let result = result.and_then(|(database, catalog, committed_epoch)| {
+                                            if cr_engine::incoming_transaction::database_epoch() != committed_epoch {
+                                                return Err("The live library changed after the transaction committed. Restart ComicRust to load the saved catalogs.".into());
+                                            }
+                                            library::session().borrow_mut().install_persisted_database(database);
+                                            library::replace_incoming_catalog(catalog);
+                                            sh.refresh_view_from_list();
+                                            sh.sync_enabled();
+                                            Ok(())
+                                        });
+                                        complete(result);
+                                    });
+                                }
+                                crate::dialogs::incoming_compare::CompareAction::DeleteSelectedIncomingCopy
+                                | crate::dialogs::incoming_compare::CompareAction::DeleteMatchingIncomingCopy => {
+                                    let id = if action == crate::dialogs::incoming_compare::CompareAction::DeleteSelectedIncomingCopy { ids.selected } else { ids.matched };
+                                    let Some(book) = library::incoming_books_by_ids(&[id]).into_iter().next() else {
+                                        complete(Err("The Incoming copy is no longer available.".into()));
+                                        return;
+                                    };
+                                    let weak = Rc::downgrade(&sh);
+                                    library::discard_incoming_async(vec![(id, book.file_path)], false, move |result| {
+                                        let Some(sh) = weak.upgrade() else {
+                                            complete(Err("The browser closed before the action finished.".into()));
+                                            return;
+                                        };
+                                        let result = result.and_then(|(catalog, outcome, committed_epoch)| {
+                                            if outcome.failed != 0 || outcome.removed != 1 {
+                                                return Err("The Incoming file could not be moved to trash.".into());
+                                            }
+                                            if cr_engine::incoming_transaction::database_epoch() != committed_epoch {
+                                                return Err("The live library changed after the transaction committed. Restart ComicRust to load the saved catalog.".into());
+                                            }
+                                            library::replace_incoming_catalog(catalog);
+                                            sh.refresh_view_from_list();
+                                            sh.sync_enabled();
+                                            Ok(())
+                                        });
+                                        complete(result);
+                                    });
+                                }
+                            }
+                        },
+                    );
+                    crate::dialogs::incoming_compare::show(
+                        &window,
+                        Arc::clone(&pool),
+                        comparisons,
+                        rules,
+                        executor,
+                    );
                     glib::ControlFlow::Break
                 }
                 Err(std::sync::mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
@@ -1257,11 +1349,20 @@ impl ShellState {
         let Some(id) = list else {
             return;
         };
-        if super::navigator::IncomingView::from_id(&id).is_some() {
+        if super::navigator::is_incoming_fixed_id(&id) {
             return;
         }
         let cfg = super::list_view_config::collect(&self.item_view);
-        library::set_list_view_config(&id, Some(cfg));
+        if library::is_incoming_custom_list(&id) {
+            let window = self.window.clone();
+            library::set_incoming_list_view_config(&id, Some(cfg), move |result| {
+                if let Err(error) = result {
+                    show_failure_dialog(&window, "Save Incoming Smart List", &error);
+                }
+            });
+        } else {
+            library::set_list_view_config(&id, Some(cfg));
+        }
     }
 
     /// Applies the INCOMING list's own settings (the C#
@@ -1270,11 +1371,16 @@ impl ShellState {
     /// A list with no `<View>` changes nothing: the browser keeps the
     /// view it shows, which is the C# behavior for a null config.
     fn apply_view_config(&self, list: &CrGuid) {
-        if super::navigator::IncomingView::from_id(list).is_some() {
+        if super::navigator::is_incoming_fixed_id(list) {
             self.view_config_dirty.set(false);
             return;
         }
-        if let Some(cfg) = library::list_view_config(list) {
+        let config = if library::is_incoming_custom_list(list) {
+            library::incoming_list_view_config(list)
+        } else {
+            library::list_view_config(list)
+        };
+        if let Some(cfg) = config {
             super::list_view_config::apply(&self.item_view, &cfg);
         }
         self.view_config_dirty.set(false);
@@ -1283,6 +1389,10 @@ impl ShellState {
     fn refresh_view_from_list(&self) {
         let id = *self.current_list.borrow();
         if let Some(id) = id {
+            if library::is_incoming_custom_list(&id) {
+                self.evaluate_incoming_custom_list(id);
+                return;
+            }
             if let Some((name, books)) = Self::evaluate_source(&id) {
                 crate::trace::trace(format!("refresh: evaluate {} books", books.len()));
                 // The list name feeds the status panel (a rename
@@ -1335,6 +1445,31 @@ impl ShellState {
             .filter_map(|classification| snapshot.books.get(classification.index).cloned())
             .collect();
         Some((view.name().to_string(), books))
+    }
+
+    fn evaluate_incoming_custom_list(&self, id: CrGuid) {
+        let generation = self.incoming_list_eval_gen.get().wrapping_add(1);
+        self.incoming_list_eval_gen.set(generation);
+        if let Some(item) = library::find_incoming_smart_list(&id) {
+            *self.current_list_name.borrow_mut() = item.base.name.unwrap_or_default();
+        }
+        let current_generation = Rc::clone(&self.incoming_list_eval_gen);
+        let item_view = self.item_view.clone();
+        let window = self.window.clone();
+        library::evaluate_incoming_smart_list_async(id, move |result| {
+            if current_generation.get() != generation {
+                return;
+            }
+            match result {
+                Ok((_name, books)) => {
+                    item_view.set_books(books);
+                }
+                Err(error) => {
+                    item_view.set_books(Vec::new());
+                    show_failure_dialog(&window, "Invalid Incoming Smart List", &error);
+                }
+            }
+        });
     }
 
     /// The status-bar panels (`OnUpdateGui`'s strip updates fold
@@ -1646,6 +1781,7 @@ impl BrowserShell {
             current_list: RefCell::new(None),
             current_list_name: RefCell::new(String::new()),
             view_config_dirty: Cell::new(false),
+            incoming_list_eval_gen: Rc::new(Cell::new(0)),
             actions: RefCell::new(HashMap::new()),
             list_history: RefCell::new(Vec::new()),
             list_history_pos: Cell::new(0),
@@ -2139,6 +2275,8 @@ impl BrowserShell {
                         let prev = *sh.current_list.borrow();
                         let changing = prev != Some(*id);
                         if changing {
+                            sh.incoming_list_eval_gen
+                                .set(sh.incoming_list_eval_gen.get().wrapping_add(1));
                             sh.store_view_config(prev);
                         }
                         *sh.current_list.borrow_mut() = Some(*id);
@@ -2156,7 +2294,9 @@ impl BrowserShell {
                             }
                         }
                         let t_eval = std::time::Instant::now();
-                        if let Some((name, books)) = ShellState::evaluate_source(id) {
+                        if library::is_incoming_custom_list(id) {
+                            sh.evaluate_incoming_custom_list(*id);
+                        } else if let Some((name, books)) = ShellState::evaluate_source(id) {
                             // The list name feeds the status-bar
                             // selection panel (`BookList.Name`).
                             *sh.current_list_name.borrow_mut() = name;
@@ -2501,7 +2641,7 @@ impl BrowserShell {
                         prepare_close(&sh);
                     }
                     drop(guard);
-                    save_and_finish_close(window.clone(), Rc::clone(&barrier));
+                    flush_lists_and_finish_close(window.clone(), Rc::clone(&barrier));
                     glib::ControlFlow::Break
                 });
                 glib::Propagation::Stop
@@ -3008,7 +3148,16 @@ impl BrowserShell {
     /// NOT change — there is nothing to fall back to, and the C#
     /// applies nothing for a null config either.
     pub fn state_reset_list_view_config(&self, id: &CrGuid) -> bool {
-        let cleared = library::set_list_view_config(id, None);
+        let cleared = if library::is_incoming_custom_list(id) {
+            let window = self.window.clone();
+            library::set_incoming_list_view_config(id, None, move |result| {
+                if let Err(error) = result {
+                    show_failure_dialog(&window, "Save Incoming Smart List", &error);
+                }
+            })
+        } else {
+            library::set_list_view_config(id, None)
+        };
         // The reset must not be undone by the pending-change store
         // when this list leaves.
         if *self.state.current_list.borrow() == Some(*id) {
@@ -3020,7 +3169,11 @@ impl BrowserShell {
     /// Whether the list carries its own view settings (the context
     /// menu's row gate and the probe).
     pub fn state_has_own_view_config(&self, id: &CrGuid) -> bool {
-        library::list_view_config(id).is_some()
+        if library::is_incoming_custom_list(id) {
+            library::incoming_list_view_config(id).is_some()
+        } else {
+            library::list_view_config(id).is_some()
+        }
     }
 
     /// The selected book's rating in the library (the probe).

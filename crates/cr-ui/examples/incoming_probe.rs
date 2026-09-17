@@ -9,13 +9,15 @@ use std::rc::Rc;
 use std::sync::atomic::AtomicBool;
 
 use cr_core::database::comic_database::ComicDatabase;
-use cr_core::database::list_items::{ComicListItem, IdListItem};
+use cr_core::database::list_items::{
+    ComicBookMatcher, ComicListItem, IdListItem, ListItemBase, SmartListItem, ValueMatcher,
+};
 use cr_core::model::comic_book::ComicBook;
 use cr_core::xml::scalar::CrGuid;
-use cr_engine::incoming::{IncomingCatalog, IncomingConfig};
+use cr_engine::incoming::{IncomingCatalog, IncomingConfig, IncomingLists};
 use cr_engine::incoming_transaction::{
-    FileSnapshot, IncomingTransaction, TransactionEngine, TransactionFiles, TransactionKind,
-    TransactionStage,
+    FileSnapshot, IncomingTransaction, ReplacementTransaction, TransactionEngine, TransactionFiles,
+    TransactionKind, TransactionStage,
 };
 use cr_organize::engine::{
     Apply, CoverSource, DuplicateAction, DuplicateAnswer, DuplicateAsk, LogEntry, MoveLanding,
@@ -209,8 +211,35 @@ fn main() {
     };
     cr_core::database::comic_database::save(&seed_database, &database_path)
         .expect("seed ComicDb.xml");
+    let comic_db_before_lists = std::fs::read(&database_path).expect("read ComicDb before lists");
+    let incoming_list_id = fixed_id(200);
+    IncomingLists {
+        lists: vec![SmartListItem {
+            base: ListItemBase {
+                id: incoming_list_id,
+                name: Some("Incoming Alpha".into()),
+                ..Default::default()
+            },
+            matchers: vec![ComicBookMatcher::Value(ValueMatcher {
+                type_name: "ComicBookSeriesMatcher".into(),
+                match_value: "Alpha".into(),
+                match_operator: 0,
+                ..Default::default()
+            })],
+            ..Default::default()
+        }],
+    }
+    .save(&paths)
+    .expect("seed IncomingLists.xml");
+    assert_eq!(
+        std::fs::read(&database_path).expect("read ComicDb after lists"),
+        comic_db_before_lists,
+        "Incoming list save must not change ComicDb.xml"
+    );
     let comic_db_before_scan = std::fs::read(&database_path).expect("read seeded ComicDb.xml");
     println!("GATE A OK: isolated paths, valid CBZ seed, and fixed IDs are ready");
+
+    gate_compare_actions(&work);
 
     gtk4::init().expect("GTK init");
     cr_ui::theme::init();
@@ -246,7 +275,7 @@ fn main() {
             .position(|name| name == "Incoming")
             .expect("Incoming navigator root");
         assert_eq!(
-            &names[incoming_index..incoming_index + 8],
+            &names[incoming_index..incoming_index + 10],
             [
                 "Incoming",
                 "All",
@@ -256,6 +285,8 @@ fn main() {
                 "Incoming Duplicates",
                 "New Series",
                 "Needs Review",
+                "Smart Lists",
+                "Incoming Alpha",
             ]
         );
         shell.state_select_list(&cr_ui::browser::navigator::IncomingView::All.id());
@@ -323,6 +354,81 @@ fn main() {
         });
     });
     let _ = app.run();
+}
+
+fn gate_compare_actions(work: &Path) {
+    use cr_ui::dialogs::incoming_compare::{
+        recommended_action, CompareAction, DuplicateMatch, MatchSource,
+    };
+
+    let root = work.join("compare-actions");
+    let incoming_path = root.join("incoming/Replacement.cbz");
+    let old_library_path = root.join("library/Library Name.cbr");
+    std::fs::create_dir_all(incoming_path.parent().unwrap()).expect("create action Incoming root");
+    std::fs::create_dir_all(old_library_path.parent().unwrap())
+        .expect("create action Library root");
+    write_cbz(&incoming_path, "Replacement", "1");
+    let source_bytes = std::fs::read(&incoming_path).expect("read replacement source");
+    std::fs::write(&old_library_path, b"old library bytes").expect("write old Library file");
+
+    let mut incoming = book(40, &incoming_path, "Replacement", "1");
+    incoming.file_size = 200;
+    let mut library = book(41, &old_library_path, "Replacement", "1");
+    library.file_size = 100;
+    let duplicate = DuplicateMatch {
+        source: MatchSource::Library,
+        book: library.clone(),
+    };
+    let rules = cr_engine::duplicates::DuplicateRules {
+        cbr_worse_than_cbz: false,
+        smaller_file_worse: true,
+        fewer_pages_worse: false,
+        older_file_worse: false,
+        incoming_path: String::new(),
+    };
+    if recommended_action(&incoming, &duplicate, &rules) != Some(CompareAction::ReplaceLibraryCopy)
+    {
+        eprintln!("GATE A2 FAILED: the worse Library copy was not recommended for replacement");
+        std::process::exit(1);
+    }
+
+    let destination = old_library_path.with_extension("cbz");
+    let staging = root.join("library/.Library Name.cbz.incoming-stage");
+    let database_path = root.join("ComicDb.xml");
+    let incoming_catalog_path = root.join("IncomingDb.xml");
+    let journal_path = root.join("transaction.json");
+    let mut transaction = ReplacementTransaction::prepare(
+        incoming_path.clone(),
+        staging,
+        destination.clone(),
+        old_library_path.clone(),
+        snapshot(database_path.clone(), b"database after".to_vec()),
+        snapshot(incoming_catalog_path.clone(), b"incoming after".to_vec()),
+    )
+    .expect("prepare replacement probe");
+    let engine = TransactionEngine::from_journal_path(journal_path);
+    engine
+        .begin_replacement(&transaction)
+        .expect("begin replacement probe");
+    let trash_root = root.join("trash");
+    engine
+        .commit_replacement_with_trash(&mut transaction, &|path| {
+            std::fs::create_dir_all(&trash_root)?;
+            std::fs::rename(path, trash_root.join(path.file_name().unwrap()))
+        })
+        .expect("commit replacement probe");
+    let replacement_bytes = std::fs::read(&destination).expect("read replacement destination");
+    if replacement_bytes != source_bytes
+        || incoming_path.exists()
+        || old_library_path.exists()
+        || std::fs::read(&database_path).ok().as_deref() != Some(b"database after")
+        || std::fs::read(&incoming_catalog_path).ok().as_deref() != Some(b"incoming after")
+        || engine.journal_path().exists()
+    {
+        eprintln!("GATE A2 FAILED: the isolated replacement did not commit safely");
+        std::process::exit(1);
+    }
+    println!("GATE A2 OK: Compare recommendation and isolated replacement are safe");
 }
 
 fn start_classification(
@@ -434,7 +540,7 @@ fn check_view(
 ) {
     if index == views.len() {
         println!("GATE E OK: exact memberships and asynchronous UI projections match");
-        open_compare(shell, paths, work);
+        check_incoming_smart_list(shell, paths, work);
         return;
     }
     let (view, expected) = views[index];
@@ -449,6 +555,49 @@ fn check_view(
         check_view(shell.clone(), paths.clone(), work.clone(), views, index + 1);
         ControlFlow::Break
     });
+}
+
+fn check_incoming_smart_list(
+    shell: Rc<cr_ui::browser::shell::BrowserShell>,
+    paths: Rc<cr_core::paths::Paths>,
+    work: PathBuf,
+) {
+    let id = fixed_id(200);
+    shell.state_select_list(&id);
+    glib::timeout_add_local(std::time::Duration::from_millis(350), move || {
+        wait_for_incoming_smart_list(shell.clone(), paths.clone(), work.clone(), id, 0);
+        ControlFlow::Break
+    });
+}
+
+fn wait_for_incoming_smart_list(
+    shell: Rc<cr_ui::browser::shell::BrowserShell>,
+    paths: Rc<cr_core::paths::Paths>,
+    work: PathBuf,
+    id: CrGuid,
+    ticks: u32,
+) {
+    if shell.state_grid_book_count() != 3 {
+        if ticks >= 100 {
+            eprintln!(
+                "GATE E3 FAILED: Incoming smart list showed {} books instead of 3",
+                shell.state_grid_book_count()
+            );
+            std::process::exit(1);
+        }
+        glib::timeout_add_local(std::time::Duration::from_millis(50), move || {
+            wait_for_incoming_smart_list(shell.clone(), paths.clone(), work.clone(), id, ticks + 1);
+            ControlFlow::Break
+        });
+        return;
+    }
+    let loaded = IncomingLists::load(&paths).expect("reload IncomingLists.xml");
+    if loaded.lists.len() != 1 || loaded.lists[0].base.id != id {
+        eprintln!("GATE E3 FAILED: Incoming smart list did not reload with its stable ID");
+        std::process::exit(1);
+    }
+    println!("GATE E3 OK: Incoming smart list persists and evaluates Incoming books only");
+    open_compare(shell, paths, work);
 }
 
 fn open_compare(

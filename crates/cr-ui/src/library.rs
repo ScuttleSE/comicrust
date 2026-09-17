@@ -5,7 +5,7 @@
 //! scan worker (the C# "Book Scanner" low-priority thread).
 
 use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::Path;
 use std::rc::Rc;
 
@@ -44,6 +44,11 @@ thread_local! {
     static SESSION: RefCell<Option<Rc<RefCell<Library>>>> = const { RefCell::new(None) };
     static INCOMING_SESSION: RefCell<Option<Rc<RefCell<cr_engine::incoming::IncomingCatalog>>>> =
         const { RefCell::new(None) };
+    static INCOMING_LISTS_SESSION: RefCell<Option<Rc<RefCell<cr_engine::incoming::IncomingLists>>>> =
+        const { RefCell::new(None) };
+    static INCOMING_LIST_SAVE_QUEUE: RefCell<VecDeque<IncomingListSave>> =
+        const { RefCell::new(VecDeque::new()) };
+    static INCOMING_LIST_SAVE_ACTIVE: Cell<bool> = const { Cell::new(false) };
     static INCOMING_EXTERNAL_GAPS: RefCell<cr_engine::incoming::ExternalGapCache> =
         RefCell::new(cr_engine::incoming::ExternalGapCache::new());
     static INCOMING_CLASSIFICATION: RefCell<Option<IncomingClassificationSnapshot>> =
@@ -452,6 +457,7 @@ pub fn initialize() -> anyhow::Result<Option<String>> {
 pub struct BootstrapData {
     library: Library,
     incoming: cr_engine::incoming::IncomingCatalog,
+    incoming_lists: cr_engine::incoming::IncomingLists,
     message: Option<String>,
 }
 
@@ -471,14 +477,30 @@ pub fn load_bootstrap() -> anyhow::Result<BootstrapData> {
                 )),
             ),
         };
-    let message = match (open_message(status), incoming_message) {
-        (Some(library), Some(incoming)) => Some(format!("{library}\n\n{incoming}")),
-        (library, incoming) => library.or(incoming),
-    };
+    let (incoming_lists, incoming_lists_message) =
+        match cr_engine::incoming::IncomingLists::load(&paths) {
+            Ok(lists) => (lists, None),
+            Err(error) => (
+                cr_engine::incoming::IncomingLists::default(),
+                Some(format!(
+                    "The Incoming smart lists could not be opened. Incoming smart lists start empty for this session. The list file was not changed.\n\n{error}"
+                )),
+            ),
+        };
+    let message = [
+        open_message(status),
+        incoming_message,
+        incoming_lists_message,
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>()
+    .join("\n\n");
     Ok(BootstrapData {
         library,
         incoming,
-        message,
+        incoming_lists,
+        message: (!message.is_empty()).then_some(message),
     })
 }
 
@@ -491,6 +513,9 @@ pub fn install_bootstrap(bootstrap: BootstrapData) -> Option<String> {
     });
     INCOMING_SESSION.with(|cell| {
         *cell.borrow_mut() = Some(Rc::new(RefCell::new(bootstrap.incoming)));
+    });
+    INCOMING_LISTS_SESSION.with(|cell| {
+        *cell.borrow_mut() = Some(Rc::new(RefCell::new(bootstrap.incoming_lists)));
     });
     bootstrap.message
 }
@@ -899,6 +924,288 @@ pub fn incoming_session() -> Rc<RefCell<cr_engine::incoming::IncomingCatalog>> {
             .clone()
             .expect("incoming session not initialized")
     })
+}
+
+/// The separate Incoming smart-list session. It is installed on the GTK thread.
+pub fn incoming_lists_session() -> Rc<RefCell<cr_engine::incoming::IncomingLists>> {
+    INCOMING_LISTS_SESSION.with(|cell| {
+        cell.borrow()
+            .clone()
+            .expect("incoming list session not initialized")
+    })
+}
+
+pub fn incoming_lists_snapshot() -> cr_engine::incoming::IncomingLists {
+    incoming_lists_session().borrow().clone()
+}
+
+pub fn is_incoming_custom_list(id: &CrGuid) -> bool {
+    incoming_lists_session()
+        .borrow()
+        .lists
+        .iter()
+        .any(|list| list.base.id == *id)
+}
+
+type IncomingListSaveDone = Box<dyn FnOnce(Result<(), String>)>;
+
+struct IncomingListSave {
+    lists: cr_engine::incoming::IncomingLists,
+    done: IncomingListSaveDone,
+}
+
+fn queue_incoming_lists_save(
+    lists: cr_engine::incoming::IncomingLists,
+    done: impl FnOnce(Result<(), String>) + 'static,
+) {
+    INCOMING_LIST_SAVE_QUEUE.with(|queue| {
+        queue.borrow_mut().push_back(IncomingListSave {
+            lists,
+            done: Box::new(done),
+        });
+    });
+    start_next_incoming_lists_save();
+}
+
+/// Queues the current Incoming-list state after all prior list saves.
+/// Close uses this as a barrier before it saves the main database.
+pub fn flush_incoming_lists_for_close(done: impl FnOnce(Result<(), String>) + 'static) {
+    queue_incoming_lists_save(incoming_lists_snapshot(), done);
+}
+
+fn start_next_incoming_lists_save() {
+    if INCOMING_LIST_SAVE_ACTIVE.with(Cell::get) {
+        return;
+    }
+    let Some(job) = INCOMING_LIST_SAVE_QUEUE.with(|queue| queue.borrow_mut().pop_front()) else {
+        return;
+    };
+    INCOMING_LIST_SAVE_ACTIVE.with(|active| active.set(true));
+    let (tx, rx) = std::sync::mpsc::channel();
+    let mut done = Some(job.done);
+    let lists = job.lists;
+    let spawn = std::thread::Builder::new()
+        .name("Save Incoming Lists".into())
+        .spawn(move || {
+            let result = lists
+                .save(&cr_core::paths::Paths::new_default())
+                .map_err(|error| error.to_string());
+            let _ = tx.send(result);
+        });
+    if let Err(error) = spawn {
+        INCOMING_LIST_SAVE_ACTIVE.with(|active| active.set(false));
+        if let Some(done) = done.take() {
+            done(Err(format!(
+                "The Incoming smart-list save worker could not start: {error}"
+            )));
+        }
+        start_next_incoming_lists_save();
+        return;
+    }
+    glib::timeout_add_local(std::time::Duration::from_millis(50), move || {
+        match rx.try_recv() {
+            Ok(result) => {
+                INCOMING_LIST_SAVE_ACTIVE.with(|active| active.set(false));
+                if let Some(done) = done.take() {
+                    done(result);
+                }
+                start_next_incoming_lists_save();
+                ControlFlow::Break
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => ControlFlow::Continue,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                INCOMING_LIST_SAVE_ACTIVE.with(|active| active.set(false));
+                start_next_incoming_lists_save();
+                ControlFlow::Break
+            }
+        }
+    });
+}
+
+pub fn new_incoming_smart_list(
+    name: &str,
+    done: impl FnOnce(Result<(), String>) + 'static,
+) -> CrGuid {
+    let session = incoming_lists_session();
+    let mut lists = session.borrow_mut();
+    let id = lists.add(cr_core::database::list_items::SmartListItem {
+        base: cr_core::database::list_items::ListItemBase {
+            name: Some(name.to_string()),
+            quick_open: false,
+            ..Default::default()
+        },
+        ..Default::default()
+    });
+    let snapshot = lists.clone();
+    drop(lists);
+    queue_incoming_lists_save(snapshot, done);
+    id
+}
+
+pub fn find_incoming_smart_list(
+    id: &CrGuid,
+) -> Option<cr_core::database::list_items::SmartListItem> {
+    incoming_lists_session()
+        .borrow()
+        .lists
+        .iter()
+        .find(|list| list.base.id == *id)
+        .cloned()
+}
+
+pub fn update_incoming_smart_list(
+    id: &CrGuid,
+    mut item: cr_core::database::list_items::SmartListItem,
+    done: impl FnOnce(Result<(), String>) + 'static,
+) -> bool {
+    let session = incoming_lists_session();
+    let mut lists = session.borrow_mut();
+    let Some(existing) = lists.lists.iter_mut().find(|list| list.base.id == *id) else {
+        return false;
+    };
+    item.base.id = *id;
+    item.base.quick_open = false;
+    *existing = item;
+    let snapshot = lists.clone();
+    drop(lists);
+    queue_incoming_lists_save(snapshot, done);
+    true
+}
+
+pub fn remove_incoming_smart_list(
+    id: &CrGuid,
+    done: impl FnOnce(Result<(), String>) + 'static,
+) -> bool {
+    let session = incoming_lists_session();
+    let mut lists = session.borrow_mut();
+    let old_len = lists.lists.len();
+    lists.lists.retain(|list| list.base.id != *id);
+    if lists.lists.len() == old_len {
+        return false;
+    }
+    for list in &mut lists.lists {
+        if list.base_list_id == *id {
+            list.base_list_id = CrGuid::EMPTY;
+        }
+    }
+    let snapshot = lists.clone();
+    drop(lists);
+    queue_incoming_lists_save(snapshot, done);
+    true
+}
+
+pub fn incoming_smart_list_base_options(edit_id: &CrGuid) -> Vec<(CrGuid, String)> {
+    let lists = incoming_lists_snapshot();
+    let mut options = vec![(CrGuid::EMPTY, "Incoming".to_string())];
+    options.extend(
+        lists
+            .lists
+            .iter()
+            .filter(|list| list.base.id != *edit_id)
+            .filter(|candidate| {
+                let mut id = candidate.base_list_id;
+                let mut seen = HashSet::new();
+                while !id.is_empty() && seen.insert(id) {
+                    if id == *edit_id {
+                        return false;
+                    }
+                    id = lists
+                        .lists
+                        .iter()
+                        .find(|list| list.base.id == id)
+                        .map_or(CrGuid::EMPTY, |list| list.base_list_id);
+                }
+                true
+            })
+            .map(|list| (list.base.id, list.base.name.clone().unwrap_or_default())),
+    );
+    options
+}
+
+pub fn incoming_list_view_config(
+    id: &CrGuid,
+) -> Option<cr_core::database::display_config::ItemViewConfig> {
+    find_incoming_smart_list(id)?.base.display?.view
+}
+
+pub fn set_incoming_list_view_config(
+    id: &CrGuid,
+    view: Option<cr_core::database::display_config::ItemViewConfig>,
+    done: impl FnOnce(Result<(), String>) + 'static,
+) -> bool {
+    let session = incoming_lists_session();
+    let mut lists = session.borrow_mut();
+    let Some(list) = lists.lists.iter_mut().find(|list| list.base.id == *id) else {
+        return false;
+    };
+    let current = list
+        .base
+        .display
+        .as_ref()
+        .and_then(|display| display.view.clone());
+    if current == view {
+        return false;
+    }
+    match view {
+        Some(view) => {
+            list.base.display.get_or_insert_with(Default::default).view = Some(view);
+        }
+        None => list.base.display = None,
+    }
+    let snapshot = lists.clone();
+    drop(lists);
+    queue_incoming_lists_save(snapshot, done);
+    true
+}
+
+pub fn evaluate_incoming_smart_list_async(
+    id: CrGuid,
+    done: impl FnOnce(Result<(String, Vec<ComicBook>), String>) + 'static,
+) {
+    let lists = incoming_lists_snapshot();
+    let catalog = incoming_session().borrow().clone();
+    let (tx, rx) = std::sync::mpsc::channel();
+    let spawn = std::thread::Builder::new()
+        .name("Evaluate Incoming Smart List".into())
+        .spawn(move || {
+            let name = lists
+                .lists
+                .iter()
+                .find(|list| list.base.id == id)
+                .and_then(|list| list.base.name.clone())
+                .unwrap_or_default();
+            let result = lists
+                .evaluate(id, &catalog)
+                .map(|books| (name, books.into_iter().cloned().collect()))
+                .map_err(|error| error.to_string());
+            let _ = tx.send(result);
+        });
+    if let Err(error) = spawn {
+        done(Err(format!(
+            "The Incoming smart-list evaluation worker could not start: {error}"
+        )));
+        return;
+    }
+    let mut done = Some(done);
+    glib::timeout_add_local(std::time::Duration::from_millis(50), move || {
+        match rx.try_recv() {
+            Ok(result) => {
+                if let Some(done) = done.take() {
+                    done(result);
+                }
+                ControlFlow::Break
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => ControlFlow::Continue,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                if let Some(done) = done.take() {
+                    done(Err(
+                        "The Incoming smart-list evaluation worker stopped.".into()
+                    ));
+                }
+                ControlFlow::Break
+            }
+        }
+    });
 }
 
 /// A main-thread snapshot for Incoming views and worker jobs.
@@ -2050,6 +2357,141 @@ pub fn discard_incoming_async(
                 cr_engine::incoming_transaction::end_operation();
                 if let Some(done) = done.take() {
                     done(Err("The Incoming discard worker stopped.".into()));
+                }
+                ControlFlow::Break
+            }
+        }
+    });
+}
+
+pub fn replace_library_copy_async(
+    incoming_id: CrGuid,
+    library_id: CrGuid,
+    done: impl FnOnce(
+            Result<
+                (
+                    cr_core::database::comic_database::ComicDatabase,
+                    cr_engine::incoming::IncomingCatalog,
+                    u64,
+                ),
+                String,
+            >,
+        ) + 'static,
+) {
+    let database_snapshot = session().borrow().database().clone();
+    let incoming_snapshot = incoming_session().borrow().clone();
+    let captured_epoch = cr_engine::incoming_transaction::database_epoch();
+    let Some(operation) = cr_engine::incoming_transaction::try_begin_operation() else {
+        done(Err("Another operation is active.".into()));
+        return;
+    };
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .name("Replace Library Copy".into())
+        .spawn(move || {
+            let result = (|| -> Result<_, String> {
+                let guard = cr_engine::incoming_transaction::acquire_mutation_guard();
+                if cr_engine::incoming_transaction::database_epoch() != captured_epoch {
+                    return Err("The library changed before the replacement started. Try again.".into());
+                }
+                let mut database = database_snapshot;
+                let mut catalog = incoming_snapshot;
+                let incoming = catalog
+                    .books
+                    .iter()
+                    .find(|book| book.id == incoming_id)
+                    .cloned()
+                    .ok_or_else(|| "The Incoming copy is no longer available.".to_string())?;
+                let library_index = database
+                    .books
+                    .iter()
+                    .position(|book| book.id == library_id)
+                    .ok_or_else(|| "The Library copy is no longer available.".to_string())?;
+                let old_library = std::path::PathBuf::from(&database.books[library_index].file_path);
+                let source = std::path::PathBuf::from(&incoming.file_path);
+                let extension = source
+                    .extension()
+                    .ok_or_else(|| "The Incoming copy has no file extension.".to_string())?;
+                let destination = old_library.with_extension(extension);
+                let file_name = destination
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .ok_or_else(|| "The replacement destination has no valid file name.".to_string())?;
+                let staging = destination.with_file_name(format!(
+                    ".{file_name}.{}.incoming-stage",
+                    incoming_id.to_d_string()
+                ));
+
+                let mut replacement = database.books[library_index].clone();
+                replacement.file_path = incoming.file_path.clone();
+                replacement.info.page_count = 0;
+                let (_, verdict) = cr_engine::scanner::refresh_file_info_reported(&mut replacement);
+                if let Some(verdict) = verdict {
+                    cr_core::scan_status::apply(
+                        &mut replacement,
+                        &verdict,
+                        &chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true),
+                    );
+                }
+                replacement.file_path = destination.to_string_lossy().into_owned();
+                database.books[library_index] = replacement;
+                catalog.books.retain(|book| book.id != incoming_id);
+
+                let paths = cr_core::paths::Paths::new_default();
+                let database_path = cr_core::paths::database_file(&paths);
+                let incoming_path = cr_core::paths::incoming_file(&paths);
+                let mut transaction = cr_engine::incoming_transaction::ReplacementTransaction::prepare(
+                    source,
+                    staging,
+                    destination,
+                    old_library,
+                    cr_engine::incoming_transaction::FileSnapshot {
+                        before: std::fs::read(&database_path).ok(),
+                        path: database_path,
+                        after: cr_core::database::comic_database::save_bytes(&database)
+                            .map_err(|error| error.to_string())?,
+                        remove_after: false,
+                    },
+                    cr_engine::incoming_transaction::FileSnapshot {
+                        before: std::fs::read(&incoming_path).ok(),
+                        path: incoming_path,
+                        after: catalog.to_bytes().map_err(|error| error.to_string())?,
+                        remove_after: false,
+                    },
+                )
+                .map_err(|error| error.to_string())?;
+                let engine = cr_engine::incoming_transaction::TransactionEngine::new(&paths);
+                engine
+                    .begin_replacement(&transaction)
+                    .map_err(|error| error.to_string())?;
+                if cr_engine::incoming_transaction::database_epoch() != captured_epoch {
+                    return Err("The library changed before the replacement committed. Restart ComicRust to recover the pending transaction.".into());
+                }
+                engine
+                    .commit_replacement(&mut transaction)
+                    .map_err(|error| error.to_string())?;
+                let committed_epoch = cr_engine::incoming_transaction::commit_database_epoch();
+                drop(guard);
+                Ok((database, catalog, committed_epoch))
+            })();
+            let _ = tx.send((operation, result));
+        })
+        .expect("spawn Library replacement");
+    let mut done = Some(done);
+    glib::timeout_add_local(std::time::Duration::from_millis(50), move || {
+        match rx.try_recv() {
+            Ok((operation, result)) => {
+                operation.finish(|_| {
+                    if let Some(done) = done.take() {
+                        done(result);
+                    }
+                });
+                ControlFlow::Break
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => ControlFlow::Continue,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                if let Some(done) = done.take() {
+                    done(Err("The Library replacement worker stopped.".into()));
                 }
                 ControlFlow::Break
             }

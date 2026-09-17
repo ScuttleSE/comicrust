@@ -1,13 +1,18 @@
 //! Durable transactions for Incoming catalog mutations.
 
-use std::fs::File;
+use std::fs::{File, OpenOptions};
+use std::io::{Read, Write};
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Mutex, MutexGuard, TryLockError};
 
 use cr_core::durable::{durable_remove, durable_replace};
 use cr_core::paths::{incoming_transaction_file, Paths};
 use serde::{Deserialize, Serialize};
+use sha1::{Digest, Sha1};
 
 static MUTATION_LOCK: Mutex<()> = Mutex::new(());
 static DATABASE_EPOCH: AtomicU64 = AtomicU64::new(0);
@@ -214,6 +219,68 @@ pub struct IncomingTransaction {
     pub external_actions: Vec<ExternalFileAction>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ReplacementKind {
+    CrossFilesystemReplacement,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ReplacementStage {
+    Prepared,
+    Staged,
+    TrashPending,
+    OldLibraryTrashed,
+    Installed,
+    DatabaseSaved,
+    IncomingSaved,
+    SourceRemoved,
+    Committed,
+}
+
+/// Durable state for a copy, same-filesystem install, and source removal.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ReplacementTransaction {
+    pub kind: ReplacementKind,
+    pub stage: ReplacementStage,
+    pub source: PathBuf,
+    pub staging: PathBuf,
+    pub destination: PathBuf,
+    pub old_library: PathBuf,
+    pub expected_len: u64,
+    pub sha1: String,
+    pub comic_database: FileSnapshot,
+    pub incoming_catalog: FileSnapshot,
+}
+
+impl ReplacementTransaction {
+    /// Reads the source identity before a journal permits file mutation.
+    pub fn prepare(
+        source: PathBuf,
+        staging: PathBuf,
+        destination: PathBuf,
+        old_library: PathBuf,
+        comic_database: FileSnapshot,
+        incoming_catalog: FileSnapshot,
+    ) -> Result<Self, TransactionError> {
+        let (expected_len, sha1) = file_identity(&source)?;
+        let transaction = Self {
+            kind: ReplacementKind::CrossFilesystemReplacement,
+            stage: ReplacementStage::Prepared,
+            source,
+            staging,
+            destination,
+            old_library,
+            expected_len,
+            sha1,
+            comic_database,
+            incoming_catalog,
+        };
+        validate_replacement(&transaction)?;
+        reject_replacement_collisions(&transaction)?;
+        Ok(transaction)
+    }
+}
+
 #[derive(Debug)]
 pub enum TransactionError {
     Io(std::io::Error),
@@ -290,6 +357,21 @@ impl TransactionEngine {
         self.write_journal(transaction)
     }
 
+    /// Creates a durable journal before the replacement changes any file.
+    pub fn begin_replacement(
+        &self,
+        transaction: &ReplacementTransaction,
+    ) -> Result<(), TransactionError> {
+        validate_replacement(transaction)?;
+        if self.journal_path.exists() {
+            return Err(TransactionError::Active);
+        }
+        if transaction.stage == ReplacementStage::Prepared {
+            reject_replacement_collisions(transaction)?;
+        }
+        self.write_replacement_journal(transaction)
+    }
+
     /// Replaces the durable journal with the caller's current state.
     pub fn update(&self, transaction: &IncomingTransaction) -> Result<(), TransactionError> {
         validate(transaction)?;
@@ -333,6 +415,21 @@ impl TransactionEngine {
         self.install_after_images(transaction)
     }
 
+    /// Copies, validates, installs, and removes the source in durable steps.
+    pub fn commit_replacement(
+        &self,
+        transaction: &mut ReplacementTransaction,
+    ) -> Result<(), TransactionError> {
+        if !self.journal_path.exists() {
+            return Err(TransactionError::Invalid(
+                "the current journal does not exist".into(),
+            ));
+        }
+        validate_replacement(transaction)?;
+        self.write_replacement_journal(transaction)?;
+        self.roll_replacement_forward(transaction, &copy_to_staging, &trash_to_desktop)
+    }
+
     /// Rolls the current journal forward. Conflicts leave the journal unchanged.
     pub fn recover(&self) -> Result<RecoveryResult, TransactionError> {
         let bytes = match std::fs::read(&self.journal_path) {
@@ -342,6 +439,11 @@ impl TransactionEngine {
             }
             Err(error) => return Err(error.into()),
         };
+        if let Ok(mut replacement) = serde_json::from_slice::<ReplacementTransaction>(&bytes) {
+            validate_replacement(&replacement)?;
+            self.roll_replacement_forward(&mut replacement, &copy_to_staging, &trash_to_desktop)?;
+            return Ok(RecoveryResult::Recovered);
+        }
         let mut transaction: IncomingTransaction = serde_json::from_slice(&bytes)?;
         validate(&transaction)?;
         if transaction.stage == TransactionStage::Committed {
@@ -436,6 +538,418 @@ impl TransactionEngine {
         durable_replace(&self.journal_path, &bytes)?;
         Ok(())
     }
+
+    fn write_replacement_journal(
+        &self,
+        transaction: &ReplacementTransaction,
+    ) -> Result<(), TransactionError> {
+        let bytes = serde_json::to_vec_pretty(transaction)?;
+        durable_replace(&self.journal_path, &bytes)?;
+        Ok(())
+    }
+
+    fn roll_replacement_forward(
+        &self,
+        transaction: &mut ReplacementTransaction,
+        copy: &dyn Fn(&ReplacementTransaction) -> Result<(), TransactionError>,
+        trash: &dyn Fn(&Path) -> std::io::Result<()>,
+    ) -> Result<(), TransactionError> {
+        if transaction.stage == ReplacementStage::Committed {
+            durable_remove(&self.journal_path)?;
+            return Ok(());
+        }
+
+        if transaction.stage == ReplacementStage::Prepared {
+            if transaction.destination != transaction.old_library
+                && transaction.destination.exists()
+            {
+                return Err(replacement_collision(transaction));
+            }
+            if transaction.staging.exists() {
+                if validate_file(
+                    &transaction.staging,
+                    transaction.expected_len,
+                    &transaction.sha1,
+                )
+                .is_err()
+                {
+                    durable_remove(&transaction.staging)?;
+                    copy(transaction)?;
+                }
+            } else {
+                copy(transaction)?;
+            }
+            transaction.stage = ReplacementStage::Staged;
+            self.write_replacement_journal(transaction)?;
+        }
+
+        if transaction.stage == ReplacementStage::Staged {
+            validate_file(
+                &transaction.staging,
+                transaction.expected_len,
+                &transaction.sha1,
+            )?;
+            if transaction.destination != transaction.old_library
+                && transaction.destination.exists()
+            {
+                return Err(replacement_collision(transaction));
+            }
+            transaction.stage = ReplacementStage::TrashPending;
+            self.write_replacement_journal(transaction)?;
+        }
+
+        if transaction.stage == ReplacementStage::TrashPending {
+            if transaction.old_library.exists() {
+                trash(&transaction.old_library)?;
+            }
+            if transaction.old_library.exists() {
+                return Err(TransactionError::Conflict(format!(
+                    "old Library file still exists after trash: {}",
+                    transaction.old_library.display()
+                )));
+            }
+            transaction.stage = ReplacementStage::OldLibraryTrashed;
+            self.write_replacement_journal(transaction)?;
+        }
+
+        if transaction.stage == ReplacementStage::OldLibraryTrashed {
+            if transaction.old_library.exists() {
+                return Err(TransactionError::Conflict(format!(
+                    "old Library file exists after its trash stage: {}",
+                    transaction.old_library.display()
+                )));
+            }
+            match (
+                transaction.staging.exists(),
+                transaction.destination.exists(),
+            ) {
+                (true, false) => {
+                    validate_file(
+                        &transaction.staging,
+                        transaction.expected_len,
+                        &transaction.sha1,
+                    )?;
+                    if let Err(error) =
+                        std::fs::hard_link(&transaction.staging, &transaction.destination)
+                    {
+                        if error.kind() == std::io::ErrorKind::AlreadyExists {
+                            return Err(replacement_collision(transaction));
+                        }
+                        return Err(error.into());
+                    }
+                    sync_parent(&transaction.destination)?;
+                    durable_remove(&transaction.staging)?;
+                }
+                (false, true) => validate_file(
+                    &transaction.destination,
+                    transaction.expected_len,
+                    &transaction.sha1,
+                )?,
+                (true, true) => {
+                    if !same_file(&transaction.staging, &transaction.destination)? {
+                        return Err(replacement_collision(transaction));
+                    }
+                    validate_file(
+                        &transaction.staging,
+                        transaction.expected_len,
+                        &transaction.sha1,
+                    )?;
+                    validate_file(
+                        &transaction.destination,
+                        transaction.expected_len,
+                        &transaction.sha1,
+                    )?;
+                    durable_remove(&transaction.staging)?;
+                }
+                _ => return Err(replacement_collision(transaction)),
+            }
+            transaction.stage = ReplacementStage::Installed;
+            self.write_replacement_journal(transaction)?;
+        }
+
+        if transaction.stage == ReplacementStage::Installed {
+            reject_reappeared_old_library(transaction)?;
+            validate_file(
+                &transaction.destination,
+                transaction.expected_len,
+                &transaction.sha1,
+            )?;
+            install_snapshot(&transaction.comic_database)?;
+            transaction.stage = ReplacementStage::DatabaseSaved;
+            self.write_replacement_journal(transaction)?;
+        }
+
+        if transaction.stage == ReplacementStage::DatabaseSaved {
+            reject_reappeared_old_library(transaction)?;
+            validate_file(
+                &transaction.destination,
+                transaction.expected_len,
+                &transaction.sha1,
+            )?;
+            install_snapshot(&transaction.incoming_catalog)?;
+            transaction.stage = ReplacementStage::IncomingSaved;
+            self.write_replacement_journal(transaction)?;
+        }
+
+        if transaction.stage == ReplacementStage::IncomingSaved {
+            reject_reappeared_old_library(transaction)?;
+            validate_file(
+                &transaction.destination,
+                transaction.expected_len,
+                &transaction.sha1,
+            )?;
+            if transaction.source.exists() {
+                validate_file(
+                    &transaction.source,
+                    transaction.expected_len,
+                    &transaction.sha1,
+                )?;
+                durable_remove(&transaction.source)?;
+            }
+            transaction.stage = ReplacementStage::SourceRemoved;
+            self.write_replacement_journal(transaction)?;
+        }
+
+        if transaction.stage == ReplacementStage::SourceRemoved {
+            reject_reappeared_old_library(transaction)?;
+            if transaction.source.exists() {
+                return Err(TransactionError::Conflict(format!(
+                    "replacement source still exists: {}",
+                    transaction.source.display()
+                )));
+            }
+            validate_file(
+                &transaction.destination,
+                transaction.expected_len,
+                &transaction.sha1,
+            )?;
+            transaction.stage = ReplacementStage::Committed;
+            self.write_replacement_journal(transaction)?;
+        }
+
+        durable_remove(&self.journal_path)?;
+        Ok(())
+    }
+
+    #[doc(hidden)]
+    pub fn commit_replacement_with_trash(
+        &self,
+        transaction: &mut ReplacementTransaction,
+        trash: &dyn Fn(&Path) -> std::io::Result<()>,
+    ) -> Result<(), TransactionError> {
+        if !self.journal_path.exists() {
+            return Err(TransactionError::Invalid(
+                "the current journal does not exist".into(),
+            ));
+        }
+        validate_replacement(transaction)?;
+        self.write_replacement_journal(transaction)?;
+        self.roll_replacement_forward(transaction, &copy_to_staging, trash)
+    }
+
+    #[doc(hidden)]
+    pub fn commit_replacement_with_actions(
+        &self,
+        transaction: &mut ReplacementTransaction,
+        copy: &dyn Fn(&ReplacementTransaction) -> Result<(), TransactionError>,
+        trash: &dyn Fn(&Path) -> std::io::Result<()>,
+    ) -> Result<(), TransactionError> {
+        if !self.journal_path.exists() {
+            return Err(TransactionError::Invalid(
+                "the current journal does not exist".into(),
+            ));
+        }
+        validate_replacement(transaction)?;
+        self.write_replacement_journal(transaction)?;
+        self.roll_replacement_forward(transaction, copy, trash)
+    }
+
+    #[doc(hidden)]
+    pub fn recover_with_trash(
+        &self,
+        trash: &dyn Fn(&Path) -> std::io::Result<()>,
+    ) -> Result<RecoveryResult, TransactionError> {
+        let bytes = match std::fs::read(&self.journal_path) {
+            Ok(bytes) => bytes,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(RecoveryResult::NoJournal)
+            }
+            Err(error) => return Err(error.into()),
+        };
+        let mut transaction: ReplacementTransaction = serde_json::from_slice(&bytes)?;
+        validate_replacement(&transaction)?;
+        self.roll_replacement_forward(&mut transaction, &copy_to_staging, trash)?;
+        Ok(RecoveryResult::Recovered)
+    }
+}
+
+fn copy_to_staging(transaction: &ReplacementTransaction) -> Result<(), TransactionError> {
+    if (transaction.destination != transaction.old_library && transaction.destination.exists())
+        || transaction.staging.exists()
+    {
+        return Err(replacement_collision(transaction));
+    }
+    validate_file(
+        &transaction.source,
+        transaction.expected_len,
+        &transaction.sha1,
+    )?;
+    let parent = transaction.staging.parent().ok_or_else(|| {
+        TransactionError::Invalid("replacement staging path has no parent".into())
+    })?;
+    std::fs::create_dir_all(parent)?;
+    let mut source = File::open(&transaction.source)?;
+    let mut staging = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&transaction.staging)?;
+    let result = (|| {
+        std::io::copy(&mut source, &mut staging)?;
+        staging.flush()?;
+        staging.sync_all()?;
+        drop(staging);
+        validate_file(
+            &transaction.staging,
+            transaction.expected_len,
+            &transaction.sha1,
+        )?;
+        File::open(parent)?.sync_all()?;
+        Ok::<(), TransactionError>(())
+    })();
+    if result.is_err() {
+        let _ = durable_remove(&transaction.staging);
+    }
+    result
+}
+
+fn validate_replacement(transaction: &ReplacementTransaction) -> Result<(), TransactionError> {
+    if transaction.source == transaction.staging
+        || transaction.source == transaction.destination
+        || transaction.staging == transaction.destination
+        || transaction.source == transaction.old_library
+    {
+        return Err(TransactionError::Invalid(
+            "replacement paths must be distinct".into(),
+        ));
+    }
+    if transaction.staging.parent() != transaction.destination.parent() {
+        return Err(TransactionError::Invalid(
+            "replacement staging and destination paths must have the same parent".into(),
+        ));
+    }
+    let incoming_extension = transaction
+        .source
+        .extension()
+        .ok_or_else(|| TransactionError::Invalid("replacement source has no extension".into()))?;
+    if transaction.destination != transaction.old_library.with_extension(incoming_extension) {
+        return Err(TransactionError::Invalid(
+            "replacement destination must use the Library basename and Incoming extension".into(),
+        ));
+    }
+    if transaction.comic_database.remove_after || transaction.incoming_catalog.remove_after {
+        return Err(TransactionError::Invalid(
+            "replacement catalog snapshots cannot remove files".into(),
+        ));
+    }
+    if transaction.sha1.len() != 40
+        || !transaction
+            .sha1
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit())
+    {
+        return Err(TransactionError::Invalid(
+            "replacement SHA-1 is invalid".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn reject_replacement_collisions(
+    transaction: &ReplacementTransaction,
+) -> Result<(), TransactionError> {
+    if transaction.staging.exists()
+        || (transaction.destination != transaction.old_library && transaction.destination.exists())
+        || !transaction.old_library.exists()
+    {
+        Err(replacement_collision(transaction))
+    } else {
+        Ok(())
+    }
+}
+
+fn trash_to_desktop(path: &Path) -> std::io::Result<()> {
+    let status = Command::new("gio").arg("trash").arg(path).status()?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(std::io::Error::other(format!(
+            "gio trash failed for {} with status {status}",
+            path.display()
+        )))
+    }
+}
+
+fn replacement_collision(transaction: &ReplacementTransaction) -> TransactionError {
+    TransactionError::Conflict(format!(
+        "replacement staging or destination exists: {} and {}",
+        transaction.staging.display(),
+        transaction.destination.display()
+    ))
+}
+
+fn reject_reappeared_old_library(
+    transaction: &ReplacementTransaction,
+) -> Result<(), TransactionError> {
+    if transaction.old_library != transaction.destination && transaction.old_library.exists() {
+        return Err(TransactionError::Conflict(format!(
+            "old Library file exists after its trash stage: {}",
+            transaction.old_library.display()
+        )));
+    }
+    Ok(())
+}
+
+fn validate_file(
+    path: &Path,
+    expected_len: u64,
+    expected_sha1: &str,
+) -> Result<(), TransactionError> {
+    let (actual_len, actual_sha1) = file_identity(path)?;
+    if actual_len != expected_len || actual_sha1 != expected_sha1 {
+        return Err(TransactionError::Conflict(format!(
+            "replacement file validation failed: {}",
+            path.display()
+        )));
+    }
+    Ok(())
+}
+
+fn file_identity(path: &Path) -> Result<(u64, String), TransactionError> {
+    let mut file = File::open(path)?;
+    let mut digest = Sha1::new();
+    let mut length = 0_u64;
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let count = file.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        length += count as u64;
+        digest.update(&buffer[..count]);
+    }
+    Ok((length, format!("{:x}", digest.finalize())))
+}
+
+#[cfg(unix)]
+fn same_file(left: &Path, right: &Path) -> std::io::Result<bool> {
+    let left = left.metadata()?;
+    let right = right.metadata()?;
+    Ok(left.dev() == right.dev() && left.ino() == right.ino())
+}
+
+#[cfg(not(unix))]
+fn same_file(_left: &Path, _right: &Path) -> std::io::Result<bool> {
+    Ok(false)
 }
 
 fn install_snapshot(snapshot: &FileSnapshot) -> Result<(), TransactionError> {

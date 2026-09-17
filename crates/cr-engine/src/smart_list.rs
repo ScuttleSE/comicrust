@@ -12,6 +12,21 @@ use crate::matcher::eval::{match_set, MatchContext};
 use crate::matcher::tree::Matcher;
 use crate::sort::randomize;
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SmartListError {
+    UnknownMatcher(String),
+}
+
+impl std::fmt::Display for SmartListError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::UnknownMatcher(name) => write!(f, "unknown matcher type: {name}"),
+        }
+    }
+}
+
+impl std::error::Error for SmartListError {}
+
 /// Binds one raw XML matcher tree node. Unknown class names return
 /// `None` (the C# would not load such a file at all).
 pub fn bind_matcher(raw: &ComicBookMatcher) -> Option<Matcher> {
@@ -30,22 +45,42 @@ pub fn evaluate_smart_list<'a>(
     library: &[&'a ComicBook],
     base_list: Option<&[&'a ComicBook]>,
 ) -> Vec<&'a ComicBook> {
+    evaluate_smart_list_checked(list, library, base_list).unwrap_or_default()
+}
+
+/// Evaluates a smart list and reports matcher types that this engine cannot bind.
+pub fn evaluate_smart_list_checked<'a>(
+    list: &SmartListItem,
+    library: &[&'a ComicBook],
+    base_list: Option<&[&'a ComicBook]>,
+) -> Result<Vec<&'a ComicBook>, SmartListError> {
     let t_total = std::time::Instant::now();
     crate::matcher::eval::trace_accum::reset();
-    let mut items: Vec<&ComicBook> = match base_list {
-        Some(base) => base.to_vec(),
-        None => library.to_vec(),
-    };
-    // `NotInBaseList`: Library.Books.Except(baseList).
-    if list.not_in_base_list && base_list.is_some() {
+    // C# `OnGetBooks`: `NotInBaseList` complements the resolved base against
+    // the complete library. With no base, it complements all books to empty.
+    let items: Vec<&ComicBook> = if list.not_in_base_list {
+        let base = base_list.unwrap_or(library);
         let base_ids: std::collections::HashSet<_> =
-            items.iter().map(|b| (*b) as *const ComicBook).collect();
-        items.retain(|b| !base_ids.contains(&(*b as *const ComicBook)));
-    }
+            base.iter().map(|b| (*b) as *const ComicBook).collect();
+        library
+            .iter()
+            .copied()
+            .filter(|book| !base_ids.contains(&(*book as *const ComicBook)))
+            .collect()
+    } else {
+        base_list.map_or_else(|| library.to_vec(), <[_]>::to_vec)
+    };
 
-    // Bind the matchers; skip unknown ones (the C# cannot load them).
+    // The C# XML serializer rejects an unknown matcher class. Report the same
+    // invalid-list state instead of dropping the matcher and matching all.
     let mut pairs: Vec<(MatcherMode, bool, &Matcher)> = Vec::new();
-    let bound: Vec<Matcher> = list.matchers.iter().filter_map(bind_matcher).collect();
+    let bound: Vec<Matcher> = list
+        .matchers
+        .iter()
+        .map(|raw| {
+            bind_matcher(raw).ok_or_else(|| SmartListError::UnknownMatcher(matcher_type(raw)))
+        })
+        .collect::<Result<_, _>>()?;
     for matcher in &bound {
         pairs.push((list.matcher_mode, matcher.not(), matcher));
     }
@@ -102,7 +137,18 @@ pub fn evaluate_smart_list<'a>(
     }
     let books_in = items.len();
     crate::matcher::eval::trace_accum::flush("smartlist", t_total, books_in, result.len());
-    result
+    Ok(result)
+}
+
+fn matcher_type(raw: &ComicBookMatcher) -> String {
+    match raw {
+        ComicBookMatcher::Value(value) => value.type_name.clone(),
+        ComicBookMatcher::Group(group) => group
+            .matchers
+            .iter()
+            .find_map(|child| bind_matcher(child).is_none().then(|| matcher_type(child)))
+            .unwrap_or_else(|| "ComicBookGroupMatcher".into()),
+    }
 }
 
 /// `LimitBySize`: the C# `TakeWhile(cb => (size += cb.FileSize) < max)`
@@ -225,14 +271,37 @@ mod tests {
     }
 
     #[test]
-    fn unknown_matcher_is_skipped() {
+    fn unknown_matcher_is_an_error_and_never_matches_all() {
         let list = smart_list(vec![raw_matcher("ComicBookNoSuchMatcher", 0, "")]);
         let a = ComicBook {
             enable_proposed: false,
             ..Default::default()
         };
         let library = vec![&a];
-        let result = evaluate_smart_list(&list, &library, None);
+        assert_eq!(
+            evaluate_smart_list_checked(&list, &library, None),
+            Err(SmartListError::UnknownMatcher(
+                "ComicBookNoSuchMatcher".into()
+            ))
+        );
+        assert!(evaluate_smart_list(&list, &library, None).is_empty());
+    }
+
+    #[test]
+    fn not_in_base_list_uses_the_full_library_complement() {
+        let a = ComicBook::default();
+        let b = ComicBook::default();
+        let library = vec![&a, &b];
+        let base = vec![&a];
+        let mut list = smart_list(Vec::new());
+        list.not_in_base_list = true;
+
+        let result = evaluate_smart_list_checked(&list, &library, Some(&base)).unwrap();
         assert_eq!(result.len(), 1);
+        assert!(std::ptr::eq(result[0], &b));
+
+        assert!(evaluate_smart_list_checked(&list, &library, None)
+            .unwrap()
+            .is_empty());
     }
 }

@@ -15,10 +15,37 @@ use cr_core::model::comic_book::ComicBook;
 use cr_core::model::enums::ComicFolderCombineMode;
 use cr_core::xml::scalar::CrGuid;
 
-use crate::smart_list::evaluate_smart_list;
+use crate::smart_list::{evaluate_smart_list_checked, SmartListError};
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum ListEvaluationError {
+    MissingBase(CrGuid),
+    BaseCycle(CrGuid),
+    Matcher(SmartListError),
+}
+
+impl std::fmt::Display for ListEvaluationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MissingBase(id) => write!(f, "base list does not exist: {id}"),
+            Self::BaseCycle(id) => write!(f, "base-list cycle at: {id}"),
+            Self::Matcher(error) => error.fmt(f),
+        }
+    }
+}
+
+impl std::error::Error for ListEvaluationError {}
 
 /// Evaluates one tree node to its book set (first-seen order).
 pub fn evaluate_list<'a>(item: &ComicListItem, db: &'a ComicDatabase) -> Vec<&'a ComicBook> {
+    try_evaluate_list(item, db).unwrap_or_default()
+}
+
+/// Evaluates one tree node and reports invalid base references or matchers.
+pub fn try_evaluate_list<'a>(
+    item: &ComicListItem,
+    db: &'a ComicDatabase,
+) -> Result<Vec<&'a ComicBook>, ListEvaluationError> {
     evaluate_inner(item, db, &mut Vec::new())
 }
 
@@ -34,79 +61,83 @@ fn evaluate_inner<'a>(
     item: &ComicListItem,
     db: &'a ComicDatabase,
     visiting: &mut Vec<CrGuid>,
-) -> Vec<&'a ComicBook> {
+) -> Result<Vec<&'a ComicBook>, ListEvaluationError> {
     let id = item.base().id;
     if visiting.contains(&id) {
         // A recursive list resolves to nothing (the C# marks the
         // recursion red in the tree).
-        return Vec::new();
+        return Err(ListEvaluationError::BaseCycle(id));
     }
     visiting.push(id);
-    let result: Vec<&'a ComicBook> = match item {
-        ComicListItem::Library(_) => db.books.iter().collect(),
-        ComicListItem::Smart(smart) => with_books(db, |all| {
-            let base_list = base_list_books(smart.base_list_id, db, visiting);
-            evaluate_smart_list(smart, all, base_list.as_deref())
-        }),
-        ComicListItem::Folder(folder) => match folder.combine_mode {
-            ComicFolderCombineMode::Or => {
-                // Union by book id, first-seen order (the C#
-                // `Union(..., ComicBook.GuidEquality)`). The membership
-                // set is a HashSet — a linear scan made the union
-                // O(N²) (the T10 measurement: 28 s at 10k books).
-                let mut seen: std::collections::HashSet<CrGuid> = std::collections::HashSet::new();
-                let mut union: Vec<&ComicBook> = Vec::new();
-                for child in &folder.items {
-                    for book in evaluate_inner(child, db, visiting) {
-                        if seen.insert(book.id) {
-                            union.push(book);
+    let result: Vec<&'a ComicBook> = (|| {
+        Ok(match item {
+            ComicListItem::Library(_) => db.books.iter().collect(),
+            ComicListItem::Smart(smart) => with_books(db, |all| {
+                let base_list = base_list_books(smart.base_list_id, db, visiting)?;
+                evaluate_smart_list_checked(smart, all, base_list.as_deref())
+                    .map_err(ListEvaluationError::Matcher)
+            })?,
+            ComicListItem::Folder(folder) => match folder.combine_mode {
+                ComicFolderCombineMode::Or => {
+                    // Union by book id, first-seen order (the C#
+                    // `Union(..., ComicBook.GuidEquality)`). The membership
+                    // set is a HashSet — a linear scan made the union
+                    // O(N²) (the T10 measurement: 28 s at 10k books).
+                    let mut seen: std::collections::HashSet<CrGuid> =
+                        std::collections::HashSet::new();
+                    let mut union: Vec<&ComicBook> = Vec::new();
+                    for child in &folder.items {
+                        for book in evaluate_inner(child, db, visiting)? {
+                            if seen.insert(book.id) {
+                                union.push(book);
+                            }
                         }
                     }
+                    union
                 }
-                union
-            }
-            ComicFolderCombineMode::And => {
-                // Intersect by book id; an empty child result makes
-                // the whole folder empty (the C# breaks early).
-                let mut intersection: Option<Vec<&ComicBook>> = None;
-                for child in &folder.items {
-                    let child_books = evaluate_inner(child, db, visiting);
-                    let ids: std::collections::HashSet<CrGuid> =
-                        child_books.iter().map(|b| b.id).collect();
-                    intersection = Some(match intersection {
-                        None => child_books,
-                        Some(current) => current
-                            .into_iter()
-                            .filter(|b| ids.contains(&b.id))
-                            .collect(),
-                    });
-                    if intersection.as_ref().is_none_or(|v| v.is_empty()) {
-                        break;
+                ComicFolderCombineMode::And => {
+                    // Intersect by book id; an empty child result makes
+                    // the whole folder empty (the C# breaks early).
+                    let mut intersection: Option<Vec<&ComicBook>> = None;
+                    for child in &folder.items {
+                        let child_books = evaluate_inner(child, db, visiting)?;
+                        let ids: std::collections::HashSet<CrGuid> =
+                            child_books.iter().map(|b| b.id).collect();
+                        intersection = Some(match intersection {
+                            None => child_books,
+                            Some(current) => current
+                                .into_iter()
+                                .filter(|b| ids.contains(&b.id))
+                                .collect(),
+                        });
+                        if intersection.as_ref().is_none_or(|v| v.is_empty()) {
+                            break;
+                        }
                     }
+                    intersection.unwrap_or_default()
                 }
-                intersection.unwrap_or_default()
+                ComicFolderCombineMode::Empty => Vec::new(),
+            },
+            // The C# `OnGetBooks` walks `bookIds` in LIST order (the .cbl
+            // item order — the reading-list point) over a HashSet (the
+            // first-seen dedupe; stale ids evaluate to nothing). The
+            // browser shows the unsorted list in exactly this order.
+            ComicListItem::IdList(list) => {
+                let index: std::collections::HashMap<CrGuid, &ComicBook> =
+                    db.books.iter().map(|b| (b.id, b)).collect();
+                // First-seen dedupe over a HashSet (a linear Vec scan made
+                // the walk O(N²) — the T10 measurement: 277 ms at 10k).
+                let mut seen: std::collections::HashSet<CrGuid> = std::collections::HashSet::new();
+                list.book_ids
+                    .iter()
+                    .filter(|id| seen.insert(**id))
+                    .filter_map(|id| index.get(id).copied())
+                    .collect()
             }
-            ComicFolderCombineMode::Empty => Vec::new(),
-        },
-        // The C# `OnGetBooks` walks `bookIds` in LIST order (the .cbl
-        // item order — the reading-list point) over a HashSet (the
-        // first-seen dedupe; stale ids evaluate to nothing). The
-        // browser shows the unsorted list in exactly this order.
-        ComicListItem::IdList(list) => {
-            let index: std::collections::HashMap<CrGuid, &ComicBook> =
-                db.books.iter().map(|b| (b.id, b)).collect();
-            // First-seen dedupe over a HashSet (a linear Vec scan made
-            // the walk O(N²) — the T10 measurement: 277 ms at 10k).
-            let mut seen: std::collections::HashSet<CrGuid> = std::collections::HashSet::new();
-            list.book_ids
-                .iter()
-                .filter(|id| seen.insert(**id))
-                .filter_map(|id| index.get(id).copied())
-                .collect()
-        }
-    };
+        })
+    })()?;
     visiting.pop();
-    result
+    Ok(result)
 }
 
 /// Resolves a smart list's `BaseListId` to the base list's book set.
@@ -115,12 +146,13 @@ fn base_list_books<'a>(
     base_list_id: CrGuid,
     db: &'a ComicDatabase,
     visiting: &mut Vec<CrGuid>,
-) -> Option<Vec<&'a ComicBook>> {
+) -> Result<Option<Vec<&'a ComicBook>>, ListEvaluationError> {
     if base_list_id.is_empty() {
-        return None;
+        return Ok(None);
     }
-    let item = find_list_item(&db.comic_lists, &base_list_id)?;
-    Some(evaluate_inner(&item, db, visiting))
+    let item = find_list_item(&db.comic_lists, &base_list_id)
+        .ok_or(ListEvaluationError::MissingBase(base_list_id))?;
+    Ok(Some(evaluate_inner(&item, db, visiting)?))
 }
 
 /// Finds a node by id anywhere in the tree (breadth over the tree
@@ -373,8 +405,30 @@ mod tests {
         if let ComicListItem::Smart(ref mut s) = list {
             s.base_list_id = s.base.id;
         }
-        let db = create_new();
+        let mut db = create_new();
+        db.comic_lists.push(list.clone());
         let books = evaluate_list(&list, &db);
         assert!(books.is_empty());
+        assert!(matches!(
+            try_evaluate_list(&list, &db),
+            Err(ListEvaluationError::BaseCycle(_))
+        ));
+    }
+
+    #[test]
+    fn missing_base_is_an_explicit_error() {
+        let list = ComicListItem::Smart(SmartListItem {
+            base: ListItemBase {
+                id: CrGuid::new_random(),
+                ..Default::default()
+            },
+            base_list_id: CrGuid::new_random(),
+            ..Default::default()
+        });
+
+        assert!(matches!(
+            try_evaluate_list(&list, &create_new()),
+            Err(ListEvaluationError::MissingBase(_))
+        ));
     }
 }

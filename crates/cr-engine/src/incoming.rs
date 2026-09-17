@@ -139,8 +139,10 @@ use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;
 
+use cr_core::database::list_items::{ComicListItem, SmartListItem};
 use cr_core::model::comic_book::ComicBook;
-use cr_core::paths::{incoming_file, Paths};
+use cr_core::paths::{incoming_file, incoming_lists_file, Paths};
+use cr_core::xml::scalar::CrGuid;
 use cr_core::xml::{Emitter, Tok, XmlError, XmlReader};
 
 use crate::matcher::{book_view, eval::grouped_duplicate_indexes};
@@ -282,6 +284,197 @@ impl IncomingCatalog {
         emitter.end()?;
         emitter.finish()?;
         Ok(output)
+    }
+}
+
+/// User smart lists stored independently from both comic catalogs.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct IncomingLists {
+    pub lists: Vec<SmartListItem>,
+}
+
+#[derive(Debug)]
+pub enum IncomingListError {
+    Io(std::io::Error),
+    Xml(XmlError),
+    EmptyId,
+    DuplicateId(CrGuid),
+    MissingList(CrGuid),
+    Evaluation(crate::lists::ListEvaluationError),
+}
+
+impl std::fmt::Display for IncomingListError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Io(error) => write!(f, "incoming list I/O error: {error}"),
+            Self::Xml(error) => write!(f, "incoming list XML error: {error}"),
+            Self::EmptyId => write!(f, "incoming smart-list ID must not be empty"),
+            Self::DuplicateId(id) => write!(f, "duplicate incoming smart-list ID: {id}"),
+            Self::MissingList(id) => write!(f, "incoming smart list does not exist: {id}"),
+            Self::Evaluation(error) => error.fmt(f),
+        }
+    }
+}
+
+impl std::error::Error for IncomingListError {}
+
+impl From<std::io::Error> for IncomingListError {
+    fn from(error: std::io::Error) -> Self {
+        Self::Io(error)
+    }
+}
+
+impl From<XmlError> for IncomingListError {
+    fn from(error: XmlError) -> Self {
+        Self::Xml(error)
+    }
+}
+
+impl IncomingLists {
+    pub fn load(paths: &Paths) -> Result<Self, IncomingListError> {
+        Self::load_from(&incoming_lists_file(paths))
+    }
+
+    pub fn load_from(path: &Path) -> Result<Self, IncomingListError> {
+        let file = match File::open(path) {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(Self::default())
+            }
+            Err(error) => return Err(error.into()),
+        };
+        let mut input = BufReader::new(file);
+        let mut reader = XmlReader::new(&mut input);
+        match reader.next_tok()? {
+            Tok::Start(start) if start.name == "IncomingLists" => {}
+            Tok::Start(start) => {
+                return Err(XmlError(format!("unexpected root <{}>", start.name)).into())
+            }
+            Tok::Eof => return Err(XmlError("empty incoming list file".into()).into()),
+            token => {
+                return Err(XmlError(format!(
+                    "unexpected token before incoming-list root: {token:?}"
+                ))
+                .into())
+            }
+        }
+        let mut lists = Vec::new();
+        loop {
+            match reader.next_tok()? {
+                Tok::Start(start) if start.name == "Item" => {
+                    match ComicListItem::from_start(&start, &mut reader)? {
+                        ComicListItem::Smart(list) => lists.push(list),
+                        _ => {
+                            return Err(XmlError(
+                                "IncomingLists.xml supports smart lists only".into(),
+                            )
+                            .into())
+                        }
+                    }
+                }
+                Tok::Start(start) => reader.skip_element(&start.name)?,
+                Tok::End(name) if name == "IncomingLists" => break,
+                Tok::Eof => return Err(XmlError("eof before </IncomingLists>".into()).into()),
+                _ => {}
+            }
+        }
+        let result = Self { lists };
+        result.validate_ids()?;
+        Ok(result)
+    }
+
+    pub fn save(&self, paths: &Paths) -> Result<(), IncomingListError> {
+        self.save_to(&incoming_lists_file(paths))
+    }
+
+    pub fn save_to(&self, path: &Path) -> Result<(), IncomingListError> {
+        self.validate_ids()?;
+        let mut output = Vec::new();
+        let mut emitter = Emitter::new(&mut output)?;
+        emitter.root("IncomingLists")?;
+        for list in &self.lists {
+            ComicListItem::Smart(list.clone()).write_xml_with_optional_display(&mut emitter)?;
+        }
+        emitter.end()?;
+        emitter.finish()?;
+        cr_core::durable::durable_replace(path, &output).map_err(IncomingListError::Io)
+    }
+
+    /// Adds a user list. A new ID is assigned once when the caller did not supply one.
+    pub fn add(&mut self, mut list: SmartListItem) -> CrGuid {
+        if list.base.id.is_empty() {
+            loop {
+                list.base.id = CrGuid::new_random();
+                if !self.lists.iter().any(|item| item.base.id == list.base.id) {
+                    break;
+                }
+            }
+        }
+        let id = list.base.id;
+        self.lists.push(list);
+        id
+    }
+
+    /// Evaluates a user list against Incoming books only.
+    pub fn evaluate<'a>(
+        &self,
+        id: CrGuid,
+        catalog: &'a IncomingCatalog,
+    ) -> Result<Vec<&'a ComicBook>, IncomingListError> {
+        self.validate_ids()?;
+        let all: Vec<&ComicBook> = catalog.books.iter().collect();
+        self.evaluate_inner(id, &all, &mut Vec::new())
+    }
+
+    fn validate_ids(&self) -> Result<(), IncomingListError> {
+        let mut ids = HashSet::new();
+        for list in &self.lists {
+            if list.base.id.is_empty() {
+                return Err(IncomingListError::EmptyId);
+            }
+            if !ids.insert(list.base.id) {
+                return Err(IncomingListError::DuplicateId(list.base.id));
+            }
+        }
+        Ok(())
+    }
+
+    fn evaluate_inner<'a>(
+        &self,
+        id: CrGuid,
+        all: &[&'a ComicBook],
+        visiting: &mut Vec<CrGuid>,
+    ) -> Result<Vec<&'a ComicBook>, IncomingListError> {
+        if visiting.contains(&id) {
+            return Err(IncomingListError::Evaluation(
+                crate::lists::ListEvaluationError::BaseCycle(id),
+            ));
+        }
+        let list = self
+            .lists
+            .iter()
+            .find(|list| list.base.id == id)
+            .ok_or(IncomingListError::MissingList(id))?;
+        visiting.push(id);
+        let base = if list.base_list_id.is_empty() {
+            None
+        } else if self
+            .lists
+            .iter()
+            .any(|base| base.base.id == list.base_list_id)
+        {
+            Some(self.evaluate_inner(list.base_list_id, all, visiting)?)
+        } else {
+            return Err(IncomingListError::Evaluation(
+                crate::lists::ListEvaluationError::MissingBase(list.base_list_id),
+            ));
+        };
+        let result = crate::smart_list::evaluate_smart_list_checked(list, all, base.as_deref())
+            .map_err(|error| {
+                IncomingListError::Evaluation(crate::lists::ListEvaluationError::Matcher(error))
+            });
+        visiting.pop();
+        result
     }
 }
 
@@ -429,7 +622,9 @@ fn normalize_series(text: &str) -> String {
 mod tests {
     use super::*;
     use cr_core::database::comic_database::{save as save_comic_db, ComicDatabase};
-    use cr_core::database::list_items::{ComicListItem, IdListItem};
+    use cr_core::database::list_items::{
+        ComicBookMatcher, ComicListItem, IdListItem, ListItemBase, SmartListItem, ValueMatcher,
+    };
     use cr_core::xml::scalar::CrGuid;
 
     fn book(id: &str, series: &str, number: &str) -> ComicBook {
@@ -461,6 +656,23 @@ mod tests {
                 .as_nanos()
         ));
         Paths::from_xdg_root(&root)
+    }
+
+    fn smart_list(name: &str, matcher_type: &str, op: i32, value: &str) -> SmartListItem {
+        SmartListItem {
+            base: ListItemBase {
+                id: CrGuid::new_random(),
+                name: Some(name.into()),
+                ..Default::default()
+            },
+            matchers: vec![ComicBookMatcher::Value(ValueMatcher {
+                type_name: matcher_type.into(),
+                match_operator: op,
+                match_value: value.into(),
+                ..Default::default()
+            })],
+            ..Default::default()
+        }
     }
 
     #[test]
@@ -698,6 +910,126 @@ last_organizer_profile = "Move to Library"
         .unwrap();
 
         assert_eq!(std::fs::read(comic_db_path).unwrap(), before);
+    }
+
+    #[test]
+    fn incoming_lists_roundtrip_separately_with_stable_ids() {
+        let paths = temp_paths("lists-roundtrip");
+        let comic_db_path = cr_core::paths::database_file(&paths);
+        save_comic_db(&ComicDatabase::default(), &comic_db_path).unwrap();
+        let comic_db_before = std::fs::read(&comic_db_path).unwrap();
+        let mut lists = IncomingLists::default();
+        let id = lists.add(smart_list("Alpha", "ComicBookSeriesMatcher", 0, "Alpha"));
+
+        lists.save(&paths).unwrap();
+        let loaded = IncomingLists::load(&paths).unwrap();
+
+        assert_eq!(loaded, lists);
+        assert_eq!(loaded.lists[0].base.id, id);
+        assert!(incoming_lists_file(&paths).is_file());
+        assert_eq!(std::fs::read(comic_db_path).unwrap(), comic_db_before);
+        let xml = std::fs::read_to_string(incoming_lists_file(&paths)).unwrap();
+        assert!(xml.contains("<IncomingLists"));
+        assert!(xml.contains("xsi:type=\"ComicSmartListItem\""));
+        assert!(!xml.contains("<Display"));
+    }
+
+    #[test]
+    fn incoming_list_matchers_use_only_incoming_candidates_and_statistics() {
+        let alpha_one = book(&id(1), "Alpha", "1");
+        let alpha_two = book(&id(2), "Alpha", "2");
+        let beta = book(&id(3), "Beta", "1");
+        let catalog = IncomingCatalog {
+            books: vec![alpha_one, alpha_two, beta],
+        };
+        let duplicates = smart_list("Duplicates", "ComicBookDuplicateMatcher", 0, "");
+        let duplicate_id = duplicates.base.id;
+        let count = smart_list("Series count", "SmartListSeriesCountMatcher", 1, "1");
+        let count_id = count.base.id;
+        let lists = IncomingLists {
+            lists: vec![duplicates, count],
+        };
+
+        // No Incoming duplicates exist. A Library book is not a candidate.
+        assert!(lists.evaluate(duplicate_id, &catalog).unwrap().is_empty());
+        let result = lists.evaluate(count_id, &catalog).unwrap();
+        assert_eq!(result.len(), 2);
+        assert!(result.iter().all(|book| book.info.series == "Alpha"));
+    }
+
+    #[test]
+    fn incoming_lists_support_bases_and_report_invalid_graphs() {
+        let catalog = IncomingCatalog {
+            books: vec![
+                book(&id(1), "Alpha", "1"),
+                book(&id(2), "Alpha", "2"),
+                book(&id(3), "Beta", "1"),
+            ],
+        };
+        let alpha = smart_list("Alpha", "ComicBookSeriesMatcher", 0, "Alpha");
+        let alpha_id = alpha.base.id;
+        let mut outside = SmartListItem {
+            base: ListItemBase {
+                id: CrGuid::new_random(),
+                name: Some("Outside Alpha".into()),
+                ..Default::default()
+            },
+            base_list_id: alpha_id,
+            not_in_base_list: true,
+            ..Default::default()
+        };
+        let outside_id = outside.base.id;
+        let lists = IncomingLists {
+            lists: vec![alpha.clone(), outside.clone()],
+        };
+        let result = lists.evaluate(outside_id, &catalog).unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].info.series, "Beta");
+
+        outside.base_list_id = CrGuid::new_random();
+        let missing = IncomingLists {
+            lists: vec![outside.clone()],
+        };
+        assert!(matches!(
+            missing.evaluate(outside_id, &catalog),
+            Err(IncomingListError::Evaluation(
+                crate::lists::ListEvaluationError::MissingBase(_)
+            ))
+        ));
+
+        outside.base_list_id = alpha_id;
+        let mut cyclic_alpha = alpha;
+        cyclic_alpha.base_list_id = outside_id;
+        let cyclic = IncomingLists {
+            lists: vec![cyclic_alpha, outside],
+        };
+        assert!(matches!(
+            cyclic.evaluate(outside_id, &catalog),
+            Err(IncomingListError::Evaluation(
+                crate::lists::ListEvaluationError::BaseCycle(_)
+            ))
+        ));
+    }
+
+    #[test]
+    fn incoming_unknown_matcher_is_an_explicit_error() {
+        let invalid = smart_list("Invalid", "ComicBookNoSuchMatcher", 0, "");
+        let list_id = invalid.base.id;
+        let lists = IncomingLists {
+            lists: vec![invalid],
+        };
+        let catalog = IncomingCatalog {
+            books: vec![book(&id(1), "Alpha", "1")],
+        };
+
+        assert!(matches!(
+            lists.evaluate(list_id, &catalog),
+            Err(IncomingListError::Evaluation(
+                crate::lists::ListEvaluationError::Matcher(
+                    crate::smart_list::SmartListError::UnknownMatcher(_)
+                )
+            ))
+        ));
     }
 
     #[test]

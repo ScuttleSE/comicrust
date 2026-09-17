@@ -53,6 +53,14 @@ pub fn incoming_file(paths: &Paths) -> PathBuf {
         .join("IncomingDb.xml")
 }
 
+/// The separate user smart-list file for the Incoming catalog.
+pub fn incoming_lists_file(paths: &Paths) -> PathBuf {
+    paths
+        .application_data_path
+        .join("Incoming")
+        .join("IncomingLists.xml")
+}
+
 /// The private journal for the current Incoming mutation.
 pub fn incoming_transaction_file(paths: &Paths) -> PathBuf {
     paths
@@ -196,6 +204,12 @@ mod tests {
             root.join("comicrust")
                 .join("Incoming")
                 .join("IncomingDb.xml")
+        );
+        assert_eq!(
+            incoming_lists_file(&paths),
+            root.join("comicrust")
+                .join("Incoming")
+                .join("IncomingLists.xml")
         );
         assert!(paths.database_path.is_dir());
     }

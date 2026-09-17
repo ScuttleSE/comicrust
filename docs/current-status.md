@@ -8,8 +8,8 @@ Do not append history. Git and `docs/archive/` hold history.
 **Phase 18: Incoming folders.**
 
 The implementation and automated gates are complete. The user tests are open.
-See `docs/phases/phase-18.md`, `docs/open-user-tests.md`, ADR-049, ADR-050, and
-ADR-051.
+See `docs/phases/phase-18.md`, `docs/open-user-tests.md`, and ADR-049 through
+ADR-053.
 
 Phase 16, Comic Vine scraper quality of life, is PLANNED. No task started.
 Phase 9, the SQLite database backend, is DEFERRED to `docs/backlog.md`.
@@ -30,18 +30,11 @@ The user confirmed these four tests as passed on 2026-09-16:
 - Cold startup shows the window before the watch-folder worker completes.
   The watcher installs later and detects a new file.
 
-The Incoming Compare report now shows matching Incoming and Library copies in
-separate sections. The automated report tests pass. The GTK user test remains
-open.
-
-The Incoming Duplicates row now contains Library Duplicates and Incoming
-Duplicates child views. The parent keeps the combined duplicate set. ADR-050
-records this change. The release probe passed. The user test on real data
-remains open.
-
-Incoming Compare now shows two books side by side with covers and details.
-Separate controls navigate selected books and their matches. ADR-051 records
-this change. The release probe passed. The user test on real data remains open.
+Incoming has source-specific duplicate views and persistent custom smart lists.
+Compare shows covers and details side by side. It can resolve Library and
+Incoming duplicates after confirmation. A durable transaction supports
+cross-filesystem Library replacement. ADR-050 through ADR-053 record these
+changes. User tests on real data remain open.
 
 ## Open user tests
 
@@ -67,10 +60,11 @@ The steps are in `docs/open-user-tests.md`.
 18. Incoming adoption, comparison, and undo.
 19. Incoming discard and Comic Vine refresh.
 20. Incoming responsiveness and role protection.
+21. Incoming smart lists.
 
 ## Open work
 
-- Phase 18 implementation is complete. Its four user tests remain open.
+- Phase 18 implementation is complete. Its five user tests remain open.
 - Phase 16 has eight planned Comic Vine scraper tasks. Start with T1 in
   `docs/phases/phase-16.md`.
 - The Library Organizer startup auto-run is deferred in `docs/backlog.md`.
@@ -94,24 +88,24 @@ licenses` is not a CI gate.
 
 ## Latest verification
 
-The Incoming side-by-side Compare dialog passed local verification on
-2026-09-17.
+The Compare resolution actions and Incoming smart lists passed local
+verification on 2026-09-17.
 
 - `cargo fmt --all`: passed.
 - `cargo clippy --workspace --all-targets -- -D warnings`: passed.
 - `cargo test --workspace`: passed.
-- The `cr-ui` suite passed 176 tests. Two comparison-model tests cover multiple
-  selections, source order, self-exclusion, and selections without matches.
-- The `cr-engine` suite passed 143 tests. Its Incoming tests cover Library-only,
-  Incoming-only, and mixed duplicate-source classification.
-- The release `incoming_probe` passed Gates A-I and E2. E2 confirms selected-book
-  navigation, match navigation, source labels, and two asynchronously loaded
-  covers. The other gates confirm the nested duplicate views, exact memberships,
-  isolated storage, configuration, scan isolation, transactional conversion,
-  ID-preserving adoption, simulation immutability, operation serialization, and
-  reload persistence.
-- The transaction integration suite passed 21 tests. It covers recovery,
-  overwrite, discard, conversion, stale epochs, and close behavior.
+- The `cr-ui` suite passed 178 tests. Four Compare tests cover comparison order,
+  self-exclusion, ranking recommendations, and ties.
+- The `cr-engine` suite passed 149 tests. Incoming-list tests cover separate
+  persistence, stable IDs, bases, invalid graphs, duplicate matching, and series
+  statistics.
+- The release `incoming_probe` passed Gates A-I, A2, E2, and E3. A2 confirms
+  Compare recommendation and isolated replacement. E2 confirms navigation,
+  source labels, and two asynchronously loaded covers. E3 confirms Incoming
+  smart-list persistence, Incoming-only evaluation, and `ComicDb.xml` isolation.
+- The transaction integration suite passed 30 tests. It covers replacement at
+  every durable stage, collisions, copy and trash failures, invalid files,
+  discard, conversion, adoption, undo, stale epochs, and close behavior.
 
 ## Environment notes
 

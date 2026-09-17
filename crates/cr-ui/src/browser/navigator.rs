@@ -84,9 +84,30 @@ const INCOMING_LIBRARY_DUPLICATES_BYTES: [u8; 16] = [
 const INCOMING_INCOMING_DUPLICATES_BYTES: [u8; 16] = [
     0x63, 0x72, 0x75, 0x73, 0x74, 0x2d, 0x49, 0x4e, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x07,
 ];
+const INCOMING_SMART_LISTS_BYTES: [u8; 16] = [
+    0x63, 0x72, 0x75, 0x73, 0x74, 0x2d, 0x49, 0x4e, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x08,
+];
 
 fn incoming_root_id() -> CrGuid {
     CrGuid::from_bytes(INCOMING_ROOT_BYTES)
+}
+
+pub fn incoming_smart_lists_id() -> CrGuid {
+    CrGuid::from_bytes(INCOMING_SMART_LISTS_BYTES)
+}
+
+pub fn is_incoming_fixed_id(id: &CrGuid) -> bool {
+    *id == incoming_smart_lists_id() || IncomingView::from_id(id).is_some()
+}
+
+pub fn is_incoming_scope_id(id: &CrGuid) -> bool {
+    is_incoming_fixed_id(id) || crate::library::is_incoming_custom_list(id)
+}
+
+fn is_incoming_create_target(id: &CrGuid) -> bool {
+    *id == incoming_root_id()
+        || *id == incoming_smart_lists_id()
+        || crate::library::is_incoming_custom_list(id)
 }
 
 /// A fixed dynamic view over the separate Incoming catalog.
@@ -148,10 +169,6 @@ impl IncomingView {
     }
 }
 
-fn is_incoming_id(id: &CrGuid) -> bool {
-    IncomingView::from_id(id).is_some()
-}
-
 /// The tree columns. `COL_NAME` is the plain name (selection,
 /// lookups, probes); `COL_LABEL` is the DISPLAY text — the name with
 /// the C# gauge badges appended as Pango markup
@@ -166,7 +183,7 @@ const COL_LABEL_I: i32 = COL_LABEL as i32;
 
 /// The context-menu commands the host implements
 /// (`treeContextMenu`, the common subset).
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ListCommand {
     NewSmartList,
     NewList,
@@ -367,7 +384,11 @@ impl Navigator {
     fn fire_command(&self, command: ListCommand) {
         if self
             .current_selection()
-            .is_some_and(|(id, _)| is_incoming_id(&id))
+            .is_some_and(|(id, _)| is_incoming_scope_id(&id))
+            && (command != ListCommand::NewSmartList
+                || !self
+                    .current_selection()
+                    .is_some_and(|(id, _)| is_incoming_create_target(&id)))
         {
             return;
         }
@@ -480,7 +501,7 @@ impl Navigator {
                 if matches!(
                     crate::library::find_list_item_any(&id),
                     Some(ComicListItem::Library(_))
-                ) || is_incoming_id(&id)
+                ) || is_incoming_scope_id(&id)
                 {
                     return None;
                 }
@@ -561,12 +582,12 @@ impl Navigator {
     /// and leaves the tree alone.
     fn apply_drop(&self, src: &CrGuid, x: f64, y: f64) -> bool {
         let drop = self.drop_target_at(x, y);
-        if is_incoming_id(src)
+        if is_incoming_scope_id(src)
             || matches!(
                 &drop,
                 crate::library::ListDrop::BeforeItem(id)
                     | crate::library::ListDrop::IntoFolder(id)
-                    if is_incoming_id(id)
+                    if is_incoming_scope_id(id)
             )
         {
             return false;
@@ -614,12 +635,6 @@ impl Navigator {
     fn context_menu_at(self: &Rc<Self>, x: f64, y: f64) {
         if let Some((Some(path), ..)) = self.view.path_at_pos(x as i32, y as i32) {
             self.selection.select_path(&path);
-            if self
-                .current_selection()
-                .is_some_and(|(id, _)| is_incoming_id(&id))
-            {
-                return;
-            }
             self.open_menu(x, y);
         }
     }
@@ -628,7 +643,7 @@ impl Navigator {
         let Some(id) = self.row_id(iter) else {
             return;
         };
-        if is_incoming_id(&id) {
+        if is_incoming_fixed_id(&id) {
             return;
         }
         crate::library::set_folder_collapsed(&id, !expanded);
@@ -956,6 +971,22 @@ impl Navigator {
                 }
             }
         }
+        let smart_lists = self.store.append(Some(&root));
+        self.set_virtual_row(
+            &smart_lists,
+            "Smart Lists",
+            &incoming_smart_lists_id(),
+            "SearchFolder",
+        );
+        for list in crate::library::incoming_lists_snapshot().lists {
+            let child = self.store.append(Some(&smart_lists));
+            self.set_virtual_row(
+                &child,
+                list.base.name.as_deref().unwrap_or(""),
+                &list.base.id,
+                "SearchDocument",
+            );
+        }
     }
 
     fn set_virtual_row(&self, iter: &TreeIter, name: &str, id: &CrGuid, icon_name: &str) {
@@ -1094,7 +1125,13 @@ impl Navigator {
     /// Phase 8 T1 report). `ContextMenuStrip.Show(cursor)` parity.
     fn open_menu(self: &Rc<Self>, x: f64, y: f64) {
         let target = self.current_selection().map(|(id, _)| id);
-        if target.as_ref().is_some_and(is_incoming_id) {
+        let incoming_fixed = target.as_ref().is_some_and(is_incoming_fixed_id);
+        let incoming_custom = target
+            .as_ref()
+            .is_some_and(crate::library::is_incoming_custom_list);
+        let incoming = incoming_fixed || incoming_custom;
+        let incoming_create = target.as_ref().is_some_and(is_incoming_create_target);
+        if incoming_fixed && !incoming_create {
             return;
         }
         // "Scan List Contents" exists only for the list kinds (the
@@ -1107,9 +1144,13 @@ impl Navigator {
         // "Reset View Settings" shows only for a list that HAS its
         // own settings; an inheriting list has nothing to reset
         // (ADR-039).
-        let has_own_view = target
-            .as_ref()
-            .is_some_and(|id| crate::library::list_view_config(id).is_some());
+        let has_own_view = target.as_ref().is_some_and(|id| {
+            if crate::library::is_incoming_custom_list(id) {
+                crate::library::incoming_list_view_config(id).is_some()
+            } else {
+                crate::library::list_view_config(id).is_some()
+            }
+        });
         // "Sort" is a folder-row command in the C#
         // (`commands.Add(SortList, () => ... is ComicListItemFolder)`,
         // ComicListLibraryBrowser.cs:338).
@@ -1142,15 +1183,29 @@ impl Navigator {
             box_.append(&button);
         };
         add_item(&box_, "New Smart List…", ListCommand::NewSmartList);
-        add_item(&box_, "New List…", ListCommand::NewList);
+        if incoming_fixed {
+            popover.set_child(Some(&box_));
+            popover.set_parent(&self.view);
+            popover.connect_closed(|p| p.unparent());
+            let rect = gtk4::gdk::Rectangle::new(x as i32, y as i32 + 8, 1, 1);
+            popover.set_pointing_to(Some(&rect));
+            *self.last_menu.borrow_mut() = Some(popover.clone());
+            popover.popup();
+            return;
+        }
+        if !incoming {
+            add_item(&box_, "New List…", ListCommand::NewList);
+        }
         // `miEditSmartList`: the C# routes smart lists, folders and
         // reading lists through their editors from this one item.
         add_item(&box_, "Edit…", ListCommand::Edit);
         if scanable {
             add_item(&box_, "Scan List Contents", ListCommand::ScanList);
         }
-        add_item(&box_, "New Folder…", ListCommand::NewFolder);
-        add_item(&box_, "Rename…", ListCommand::Rename);
+        if !incoming {
+            add_item(&box_, "New Folder…", ListCommand::NewFolder);
+            add_item(&box_, "Rename…", ListCommand::Rename);
+        }
         // The C# context menu order is Edit, Rename, Sort
         // (`treeContextMenu.Items`, Designer:142-144).
         if sortable {
@@ -1159,7 +1214,9 @@ impl Navigator {
         add_item(&box_, "Delete", ListCommand::Delete);
         // `miImportReadingList` (the C# menu sits between the
         // Export/Import pair and the Open commands).
-        add_item(&box_, "Import Reading List…", ListCommand::Import);
+        if !incoming {
+            add_item(&box_, "Import Reading List…", ListCommand::Import);
+        }
         if has_own_view {
             add_item(&box_, "Reset View Settings", ListCommand::ResetViewSettings);
         }

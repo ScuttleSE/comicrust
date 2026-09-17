@@ -84,6 +84,44 @@ Match** move through the current book's Incoming and Library matches.
 
 `CODE-READ`: Covers load in the background. A missing cover shows a placeholder.
 
+For a Library match:
+
+1. Select **Replace Library Copy** to keep the Library record and replace its
+   file with the Incoming file.
+2. Or select **Delete Selected Incoming Copy** to keep the Library file.
+3. Select **Run Selected Action**.
+4. Confirm the action.
+
+`CODE-READ`: Replacement keeps the Library ID and descriptive metadata. It
+keeps the Library base filename and uses the Incoming extension. It refreshes
+file size, dates, page count, and scan status. The old Library file moves to
+trash. ComicRust blocks replacement if a different destination file exists.
+
+For an Incoming match, select the left or right Incoming copy to delete. Then
+select **Run Selected Action** and confirm the action.
+
+Select **Select Worst Duplicates** to apply the configured duplicate rules to
+the displayed pair. This selects an action only. Review and run the action
+yourself. If the copies tie, ComicRust selects no action.
+
+`CODE-READ`: Compare actions have no application-level Undo. Files moved to
+trash remain available through the desktop trash.
+
+## Incoming smart lists
+
+1. Select **Incoming** or **Incoming > Smart Lists**.
+2. Select **New Smart List** on the navigator toolbar, or use the right-click
+   menu.
+3. Configure the rules and select **OK**.
+
+`CODE-READ`: Incoming smart lists evaluate only unresolved Incoming books.
+Duplicate and series-statistic rules also use Incoming books only. A list can
+use another Incoming smart list as its base.
+
+`CODE-READ`: Definitions persist in `IncomingLists.xml`. They do not change
+`ComicDb.xml` and do not appear in Quick Open. Right-click a custom Incoming
+smart list to edit or delete it. Custom lists keep their own view settings.
+
 ## Preview adoption
 
 1. Select one or more Incoming books.
@@ -187,7 +225,8 @@ After you resolve all books:
 ## Storage and recovery
 
 `MEASURED`: The main Library stays in `ComicDb.xml`. Incoming records use the
-separate `IncomingDb.xml` catalog under the ComicRust data directory.
+separate `IncomingDb.xml` catalog under the ComicRust data directory. Incoming
+smart-list definitions use `IncomingLists.xml` in the same directory.
 
 `CODE-READ`: ComicRust records adoption, undo, discard, conversion, and
 Incoming scans in a durable journal. If ComicRust stops during one of these

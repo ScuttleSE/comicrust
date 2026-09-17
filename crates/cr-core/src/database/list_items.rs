@@ -390,6 +390,22 @@ impl ComicListItem {
     /// Writes `<Item xsi:type="...">`. Attr order: Id, Name, Favorite,
     /// QuickOpen, then concrete attrs. Elements: base first.
     pub fn write_xml<W: Write>(&self, e: &mut Emitter<W>) -> std::io::Result<()> {
+        self.write_xml_inner(e, true)
+    }
+
+    /// Writes an Incoming smart-list item and preserves an absent `Display`.
+    pub fn write_xml_with_optional_display<W: Write>(
+        &self,
+        e: &mut Emitter<W>,
+    ) -> std::io::Result<()> {
+        self.write_xml_inner(e, false)
+    }
+
+    fn write_xml_inner<W: Write>(
+        &self,
+        e: &mut Emitter<W>,
+        write_default_display: bool,
+    ) -> std::io::Result<()> {
         e.start("Item")?;
         e.attr("xsi:type", self.xsi_type())?;
         self.write_base_attrs(e)?;
@@ -412,7 +428,7 @@ impl ComicListItem {
             }
             _ => {}
         }
-        self.write_base_elements(e)?;
+        self.write_base_elements(e, write_default_display)?;
         match self {
             ComicListItem::Smart(i) => {
                 e.start("Matchers")?;
@@ -486,7 +502,11 @@ impl ComicListItem {
         Ok(())
     }
 
-    fn write_base_elements<W: Write>(&self, e: &mut Emitter<W>) -> std::io::Result<()> {
+    fn write_base_elements<W: Write>(
+        &self,
+        e: &mut Emitter<W>,
+        write_default_display: bool,
+    ) -> std::io::Result<()> {
         let b = self.base();
         if b.book_count != 0 {
             e.text_elem("BookCount", &b.book_count.to_string())?;
@@ -511,9 +531,10 @@ impl ComicListItem {
         // written (empty config → `<Display />`).
         match &b.display {
             Some(d) => d.write_xml(e)?,
-            None => {
+            None if write_default_display => {
                 DisplayListConfig::default().write_xml(e)?;
             }
+            None => {}
         }
         Ok(())
     }
