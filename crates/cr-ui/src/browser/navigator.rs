@@ -78,6 +78,12 @@ const INCOMING_NEW_SERIES_BYTES: [u8; 16] = [
 const INCOMING_NEEDS_REVIEW_BYTES: [u8; 16] = [
     0x63, 0x72, 0x75, 0x73, 0x74, 0x2d, 0x49, 0x4e, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x05,
 ];
+const INCOMING_LIBRARY_DUPLICATES_BYTES: [u8; 16] = [
+    0x63, 0x72, 0x75, 0x73, 0x74, 0x2d, 0x49, 0x4e, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x06,
+];
+const INCOMING_INCOMING_DUPLICATES_BYTES: [u8; 16] = [
+    0x63, 0x72, 0x75, 0x73, 0x74, 0x2d, 0x49, 0x4e, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x07,
+];
 
 fn incoming_root_id() -> CrGuid {
     CrGuid::from_bytes(INCOMING_ROOT_BYTES)
@@ -89,6 +95,8 @@ pub enum IncomingView {
     All,
     GapFills,
     Duplicates,
+    LibraryDuplicates,
+    IncomingDuplicates,
     NewSeries,
     NeedsReview,
 }
@@ -102,6 +110,10 @@ impl IncomingView {
             Some(Self::GapFills)
         } else if *id == Self::Duplicates.id() {
             Some(Self::Duplicates)
+        } else if *id == Self::LibraryDuplicates.id() {
+            Some(Self::LibraryDuplicates)
+        } else if *id == Self::IncomingDuplicates.id() {
+            Some(Self::IncomingDuplicates)
         } else if *id == Self::NewSeries.id() {
             Some(Self::NewSeries)
         } else if *id == Self::NeedsReview.id() {
@@ -116,6 +128,8 @@ impl IncomingView {
             Self::All => INCOMING_ALL_BYTES,
             Self::GapFills => INCOMING_GAP_FILLS_BYTES,
             Self::Duplicates => INCOMING_DUPLICATES_BYTES,
+            Self::LibraryDuplicates => INCOMING_LIBRARY_DUPLICATES_BYTES,
+            Self::IncomingDuplicates => INCOMING_INCOMING_DUPLICATES_BYTES,
             Self::NewSeries => INCOMING_NEW_SERIES_BYTES,
             Self::NeedsReview => INCOMING_NEEDS_REVIEW_BYTES,
         })
@@ -126,6 +140,8 @@ impl IncomingView {
             Self::All => "All",
             Self::GapFills => "Gap Fills",
             Self::Duplicates => "Duplicates",
+            Self::LibraryDuplicates => "Library Duplicates",
+            Self::IncomingDuplicates => "Incoming Duplicates",
             Self::NewSeries => "New Series",
             Self::NeedsReview => "Needs Review",
         }
@@ -913,12 +929,32 @@ impl Navigator {
         for view in [
             IncomingView::All,
             IncomingView::GapFills,
-            IncomingView::Duplicates,
             IncomingView::NewSeries,
             IncomingView::NeedsReview,
         ] {
             let child = self.store.append(Some(&root));
             self.set_virtual_row(&child, view.name(), &view.id(), "List");
+            if view == IncomingView::GapFills {
+                let duplicates = self.store.append(Some(&root));
+                self.set_virtual_row(
+                    &duplicates,
+                    IncomingView::Duplicates.name(),
+                    &IncomingView::Duplicates.id(),
+                    "List",
+                );
+                for duplicate_view in [
+                    IncomingView::LibraryDuplicates,
+                    IncomingView::IncomingDuplicates,
+                ] {
+                    let duplicate_child = self.store.append(Some(&duplicates));
+                    self.set_virtual_row(
+                        &duplicate_child,
+                        duplicate_view.name(),
+                        &duplicate_view.id(),
+                        "List",
+                    );
+                }
+            }
         }
     }
 
@@ -1384,6 +1420,8 @@ mod tests {
             IncomingView::All,
             IncomingView::GapFills,
             IncomingView::Duplicates,
+            IncomingView::LibraryDuplicates,
+            IncomingView::IncomingDuplicates,
             IncomingView::NewSeries,
             IncomingView::NeedsReview,
         ];

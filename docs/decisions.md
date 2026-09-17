@@ -53,6 +53,7 @@ This index is navigation only. The entry below each ADR is the decision.
 | ADR-042 | The rolling version counts from 0.1 | superseded | ADR-043 |
 | ADR-043 | The rolling build counter restarts at every stable tag | accepted | — |
 | ADR-049 | Incoming folders use a separate persistent catalog | accepted | — |
+| ADR-050 | Split Incoming duplicates by catalog source | accepted | ADR-049 |
 
 ADR-029 is reserved for the deferred Phase 9 (SQLite) decision. It is not written yet.
 
@@ -443,3 +444,10 @@ v0.1.0 and every rolling build after it, and one manual reinstall clears it.
 - **Decision:** The fixed Incoming navigator has All, Gap Fills, Duplicates, New Series, and Needs Review views. These are dynamic views, so one book can occur in more than one view. Series identity uses ComicRack shadow Series, Volume, Format, and Language values. Gap Fills include internal numeric gaps and cached Comic Vine gaps. Opening or refreshing Incoming does not make a network request. A user can request a Comic Vine refresh for selected series. New Series means that a valid series identity does not occur in the main library. Needs Review means that no duplicate, gap-fill, or new-series rule matches.
 - **Decision:** Adoption uses a user-selected Library Organizer profile in Move mode. The UI remembers the last selected profile. Simulation is available before adoption. A successful move transfers the same complete record and ID into the main library. Failed and skipped books remain Incoming. Undo moves the file to its original Incoming path and transfers the record back to the Incoming catalog. The existing three-field `undo.dat` format stays compatible; adoption-specific state uses a companion file. Discard sends the file to trash by default. A separate option deletes it permanently. A failed deletion keeps the Incoming record.
 - **Consequences:** Incoming catalog reads, writes, scans, classification passes, file moves, Comic Vine requests, and deletes run on workers. GTK applies finished results on the main thread. `ComicDb.xml` golden output does not change. Cross-catalog operations need durable recovery state because a file move and two catalog writes cannot form one filesystem transaction. Automated tests and a user test are required before this feature ships.
+
+## ADR-050: Split Incoming duplicates by catalog source
+
+- **Status:** accepted (2026-09-17, user decision). This decision extends ADR-049.
+- **Context:** The combined Duplicates view shows Incoming books that match the Library or another Incoming book. A user cannot identify the match source from that view. Opening Compare for every book requires too much work.
+- **Decision:** Keep Duplicates as the combined selectable view. Add Library Duplicates and Incoming Duplicates as child views. Library Duplicates contains Incoming books that match at least one Library record. Incoming Duplicates contains Incoming books that match at least one other Incoming record. A book that matches both sources occurs in both child views.
+- **Consequences:** Duplicate classification records the two source flags in addition to the combined flag. Compare remains available for detailed copy information. The two child views use fixed virtual IDs and do not change either catalog schema.

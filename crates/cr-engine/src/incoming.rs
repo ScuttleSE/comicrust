@@ -184,6 +184,8 @@ pub struct IncomingClassification {
     /// Index into the input incoming-book slice. Every input has one result.
     pub index: usize,
     pub duplicate: bool,
+    pub library_duplicate: bool,
+    pub incoming_duplicate: bool,
     pub gap_fill: bool,
     pub new_series: bool,
     pub needs_review: bool,
@@ -329,9 +331,18 @@ pub fn classify_incoming(
 ) -> Vec<IncomingClassification> {
     let all: Vec<&ComicBook> = incoming.iter().chain(library).collect();
     let mut duplicate = vec![false; incoming.len()];
+    let mut library_duplicate = vec![false; incoming.len()];
+    let mut incoming_duplicate = vec![false; incoming.len()];
     for group in grouped_duplicate_indexes(&all) {
+        let has_library_match = group.iter().any(|index| *index >= incoming.len());
+        let incoming_match_count = group
+            .iter()
+            .filter(|index| **index < incoming.len())
+            .count();
         for index in group.into_iter().filter(|index| *index < incoming.len()) {
             duplicate[index] = true;
+            library_duplicate[index] = has_library_match;
+            incoming_duplicate[index] = incoming_match_count > 1;
         }
     }
 
@@ -374,6 +385,8 @@ pub fn classify_incoming(
             IncomingClassification {
                 index,
                 duplicate: duplicate[index],
+                library_duplicate: library_duplicate[index],
+                incoming_duplicate: incoming_duplicate[index],
                 gap_fill,
                 new_series,
                 needs_review,
@@ -702,13 +715,33 @@ last_organizer_profile = "Move to Library"
 
         assert_eq!(result.len(), incoming.len());
         assert!(result[0].duplicate);
+        assert!(result[0].library_duplicate);
+        assert!(!result[0].incoming_duplicate);
         assert!(result[1].gap_fill);
         assert!(result[2].new_series);
         assert!(result[2].duplicate);
+        assert!(!result[2].library_duplicate);
+        assert!(result[2].incoming_duplicate);
         assert!(result[4].new_series);
         assert!(result[4].duplicate);
+        assert!(!result[4].library_duplicate);
+        assert!(result[4].incoming_duplicate);
         assert!(result[3].needs_review);
         assert!(!result[0].needs_review);
+    }
+
+    #[test]
+    fn duplicate_classification_can_match_both_catalogs() {
+        let library = vec![book(&id(10), "Alpha", "1")];
+        let incoming = vec![book(&id(1), "Alpha", "1"), book(&id(2), "Alpha", "1")];
+
+        let result = classify_incoming(&incoming, &library, &ExternalGapCache::new());
+
+        for classification in result {
+            assert!(classification.duplicate);
+            assert!(classification.library_duplicate);
+            assert!(classification.incoming_duplicate);
+        }
     }
 
     #[test]

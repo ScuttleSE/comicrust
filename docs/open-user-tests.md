@@ -127,7 +127,9 @@ In Preferences, change a scratch Library folder to Incoming. Confirm the count
 before conversion. Cancel once and confirm that nothing changes. Repeat and
 save. Confirm that Watch stays selected and cannot be cleared. Confirm that the
 books leave Library and appear under Incoming. Check All, Gap Fills,
-Duplicates, New Series, and Needs Review. Restart and confirm the same state.
+Duplicates, Library Duplicates, Incoming Duplicates, New Series, and Needs
+Review. Confirm that Duplicates contains the combined set. Restart and confirm
+the same state.
 
 ## 18. Incoming adoption, comparison, and undo
 

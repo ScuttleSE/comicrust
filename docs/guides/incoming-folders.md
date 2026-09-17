@@ -50,18 +50,23 @@ Select **Incoming** in the library navigator to review the books.
 
 ## Review Incoming books
 
-`MEASURED`: Incoming has five dynamic views.
+`CODE-READ`: Incoming has five main dynamic views. Duplicates has two child
+views.
 
 - `CODE-READ`: **All** shows every unresolved Incoming book.
 - `CODE-READ`: **Gap Fills** shows books that can fill a gap in a Library series.
 - `CODE-READ`: **Duplicates** shows books that match another Incoming or
   Library record.
+- `CODE-READ`: **Library Duplicates** shows Incoming books that match a Library
+  record.
+- `CODE-READ`: **Incoming Duplicates** shows Incoming books that match another
+  Incoming record.
 - `CODE-READ`: **New Series** shows series that do not occur in the main
   Library.
 - `CODE-READ`: **Needs Review** shows books that have no useful match.
 
-`MEASURED`: A book can occur in more than one view. For example, books can
-occur in both Duplicates and New Series.
+`CODE-READ`: A book can occur in more than one view. A book that matches both
+catalogs occurs in both duplicate child views and the combined Duplicates view.
 
 `CODE-READ`: Series matching uses Series, Volume, Format, and Language.
 ComicRust uses values from the file name when stored metadata is empty.

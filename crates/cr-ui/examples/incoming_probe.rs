@@ -201,12 +201,14 @@ fn main() {
             .position(|name| name == "Incoming")
             .expect("Incoming navigator root");
         assert_eq!(
-            &names[incoming_index..incoming_index + 6],
+            &names[incoming_index..incoming_index + 8],
             [
                 "Incoming",
                 "All",
                 "Gap Fills",
                 "Duplicates",
+                "Library Duplicates",
+                "Incoming Duplicates",
                 "New Series",
                 "Needs Review",
             ]
@@ -353,6 +355,8 @@ fn wait_for_classification(
     };
     assert_eq!(ids(|class| class.gap_fill), set(&[2]));
     assert_eq!(ids(|class| class.duplicate), set(&[1, 3, 5]));
+    assert_eq!(ids(|class| class.library_duplicate), set(&[1]));
+    assert_eq!(ids(|class| class.incoming_duplicate), set(&[3, 5]));
     assert_eq!(ids(|class| class.new_series), set(&[3, 5]));
     assert_eq!(ids(|class| class.needs_review), set(&[4]));
 
@@ -360,6 +364,14 @@ fn wait_for_classification(
         (cr_ui::browser::navigator::IncomingView::All, 5usize),
         (cr_ui::browser::navigator::IncomingView::GapFills, 1),
         (cr_ui::browser::navigator::IncomingView::Duplicates, 3),
+        (
+            cr_ui::browser::navigator::IncomingView::LibraryDuplicates,
+            1,
+        ),
+        (
+            cr_ui::browser::navigator::IncomingView::IncomingDuplicates,
+            2,
+        ),
         (cr_ui::browser::navigator::IncomingView::NewSeries, 2),
         (cr_ui::browser::navigator::IncomingView::NeedsReview, 1),
     ];
@@ -370,7 +382,7 @@ fn check_view(
     shell: Rc<cr_ui::browser::shell::BrowserShell>,
     paths: Rc<cr_core::paths::Paths>,
     work: PathBuf,
-    views: [(cr_ui::browser::navigator::IncomingView, usize); 5],
+    views: [(cr_ui::browser::navigator::IncomingView, usize); 7],
     index: usize,
 ) {
     if index == views.len() {

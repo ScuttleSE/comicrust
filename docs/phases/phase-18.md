@@ -3,8 +3,8 @@
 ## Status
 
 IMPLEMENTED, USER TEST PENDING. The user approved the behavior on 2026-09-16.
-Implementation and automated gates completed on 2026-09-17. ADR-049 records
-the decisions.
+Implementation and automated gates completed on 2026-09-17. ADR-049 and
+ADR-050 record the decisions.
 
 ## Goal
 
@@ -15,6 +15,7 @@ Add persistent Incoming folders for books that wait for review. Incoming books s
 - Support multiple Incoming folders. The role implies recursive live monitoring.
 - Store full incoming records in a separate atomic catalog. Do not change the `ComicDb.xml` schema.
 - Add fixed All, Gap Fills, Duplicates, New Series, and Needs Review views.
+  Add Library Duplicates and Incoming Duplicates below Duplicates.
 - Use shadow Series, Volume, Format, and Language as the series identity.
 - Use internal gaps and cached Comic Vine gaps. Do not contact Comic Vine automatically.
 - Let a book occur in more than one dynamic view.
@@ -43,7 +44,8 @@ Add persistent Incoming folders for books that wait for review. Incoming books s
   Incoming scans, and folder conversion. Startup completes an interrupted
   operation before it creates watchers.
 - The navigator contains All, Gap Fills, Duplicates, New Series, and Needs
-  Review. Classification and Comic Vine cache projection run on workers.
+  Review. Duplicates contains Library Duplicates and Incoming Duplicates.
+  Classification and Comic Vine cache projection run on workers.
 - Adoption accepts Move profiles only. It preserves the complete record and ID.
   A companion manifest keeps the existing `undo.dat` bytes compatible.
 - Discard uses trash by default and offers a separate permanent-delete choice.

@@ -1318,6 +1318,12 @@ impl ShellState {
                 super::navigator::IncomingView::All => true,
                 super::navigator::IncomingView::GapFills => classification.gap_fill,
                 super::navigator::IncomingView::Duplicates => classification.duplicate,
+                super::navigator::IncomingView::LibraryDuplicates => {
+                    classification.library_duplicate
+                }
+                super::navigator::IncomingView::IncomingDuplicates => {
+                    classification.incoming_duplicate
+                }
                 super::navigator::IncomingView::NewSeries => classification.new_series,
                 super::navigator::IncomingView::NeedsReview => classification.needs_review,
             })
