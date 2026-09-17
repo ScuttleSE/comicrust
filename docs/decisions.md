@@ -54,6 +54,7 @@ This index is navigation only. The entry below each ADR is the decision.
 | ADR-043 | The rolling build counter restarts at every stable tag | accepted | — |
 | ADR-049 | Incoming folders use a separate persistent catalog | accepted | — |
 | ADR-050 | Split Incoming duplicates by catalog source | accepted | ADR-049 |
+| ADR-051 | Compare Incoming books side by side | accepted | ADR-049 |
 
 ADR-029 is reserved for the deferred Phase 9 (SQLite) decision. It is not written yet.
 
@@ -451,3 +452,10 @@ v0.1.0 and every rolling build after it, and one manual reinstall clears it.
 - **Context:** The combined Duplicates view shows Incoming books that match the Library or another Incoming book. A user cannot identify the match source from that view. Opening Compare for every book requires too much work.
 - **Decision:** Keep Duplicates as the combined selectable view. Add Library Duplicates and Incoming Duplicates as child views. Library Duplicates contains Incoming books that match at least one Library record. Incoming Duplicates contains Incoming books that match at least one other Incoming record. A book that matches both sources occurs in both child views.
 - **Consequences:** Duplicate classification records the two source flags in addition to the combined flag. Compare remains available for detailed copy information. The two child views use fixed virtual IDs and do not change either catalog schema.
+
+## ADR-051: Compare Incoming books side by side
+
+- **Status:** accepted (2026-09-17, user decision). This decision extends ADR-049.
+- **Context:** The text-only Compare report makes cover quality difficult to compare. A selection can contain multiple Incoming books. Each book can have multiple matches.
+- **Decision:** Compare uses a modal side-by-side dialog. The left pane shows one selected Incoming book. The right pane shows one matching Incoming or Library book. Separate controls move through selected books and through each book's matches. Each pane shows the cover and book details. Cover loading uses the image-pool worker queues. A generation value rejects stale cover results after navigation.
+- **Consequences:** Compare preserves all selected books and all matches. Missing covers show a placeholder. Archive access and image decoding do not block the GTK thread.

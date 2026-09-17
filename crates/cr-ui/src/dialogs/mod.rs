@@ -6,6 +6,7 @@ pub mod bulk_edit;
 pub mod display_settings;
 pub mod export;
 pub mod import_list;
+pub mod incoming_compare;
 pub mod list_editor;
 pub mod missing_issues;
 pub mod name_prompt;

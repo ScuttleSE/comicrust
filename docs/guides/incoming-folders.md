@@ -77,9 +77,12 @@ ComicRust uses values from the file name when stored metadata is empty.
 2. Right-click the selection.
 3. Select **Compare**.
 
-`CODE-READ`: The report shows each selected Incoming book. It shows matching
-copies from Incoming and the Library in separate sections. It includes issue
-details, page counts, and file paths.
+`CODE-READ`: Compare shows the selected Incoming book and one matching copy
+side by side. Both panes show the cover and book details. **Previous Book** and
+**Next Book** move through the selected books. **Previous Match** and **Next
+Match** move through the current book's Incoming and Library matches.
+
+`CODE-READ`: Covers load in the background. A missing cover shows a placeholder.
 
 ## Preview adoption
 

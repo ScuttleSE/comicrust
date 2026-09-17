@@ -8,7 +8,8 @@ Do not append history. Git and `docs/archive/` hold history.
 **Phase 18: Incoming folders.**
 
 The implementation and automated gates are complete. The user tests are open.
-See `docs/phases/phase-18.md`, `docs/open-user-tests.md`, ADR-049, and ADR-050.
+See `docs/phases/phase-18.md`, `docs/open-user-tests.md`, ADR-049, ADR-050, and
+ADR-051.
 
 Phase 16, Comic Vine scraper quality of life, is PLANNED. No task started.
 Phase 9, the SQLite database backend, is DEFERRED to `docs/backlog.md`.
@@ -37,6 +38,10 @@ The Incoming Duplicates row now contains Library Duplicates and Incoming
 Duplicates child views. The parent keeps the combined duplicate set. ADR-050
 records this change. The release probe passed. The user test on real data
 remains open.
+
+Incoming Compare now shows two books side by side with covers and details.
+Separate controls navigate selected books and their matches. ADR-051 records
+this change. The release probe passed. The user test on real data remains open.
 
 ## Open user tests
 
@@ -89,20 +94,22 @@ licenses` is not a CI gate.
 
 ## Latest verification
 
-The Incoming duplicate-source views passed local verification on 2026-09-17.
+The Incoming side-by-side Compare dialog passed local verification on
+2026-09-17.
 
 - `cargo fmt --all`: passed.
 - `cargo clippy --workspace --all-targets -- -D warnings`: passed.
 - `cargo test --workspace`: passed.
-- The `cr-ui` suite passed 177 tests. Three Compare report tests cover
-  Incoming-only, Library-only, and mixed duplicate groups.
+- The `cr-ui` suite passed 176 tests. Two comparison-model tests cover multiple
+  selections, source order, self-exclusion, and selections without matches.
 - The `cr-engine` suite passed 143 tests. Its Incoming tests cover Library-only,
   Incoming-only, and mixed duplicate-source classification.
-- The release `incoming_probe` passed Gates A-I. It confirms the nested
-  duplicate views and their exact memberships. It also confirms isolated
-  storage, configuration, scan isolation, transactional conversion,
-  ID-preserving adoption, simulation immutability, operation serialization,
-  and reload persistence.
+- The release `incoming_probe` passed Gates A-I and E2. E2 confirms selected-book
+  navigation, match navigation, source labels, and two asynchronously loaded
+  covers. The other gates confirm the nested duplicate views, exact memberships,
+  isolated storage, configuration, scan isolation, transactional conversion,
+  ID-preserving adoption, simulation immutability, operation serialization, and
+  reload persistence.
 - The transaction integration suite passed 21 tests. It covers recovery,
   overwrite, discard, conversion, stale epochs, and close behavior.
 

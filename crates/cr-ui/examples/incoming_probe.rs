@@ -70,9 +70,10 @@ fn book(id: u8, path: &Path, series: &str, number: &str) -> ComicBook {
 fn write_cbz(path: &Path, series: &str, number: &str) {
     let file = std::fs::File::create(path).expect("create CBZ");
     let mut zip = zip::ZipWriter::new(file);
-    zip.start_file("000.jpg", zip::write::SimpleFileOptions::default())
+    zip.start_file("000.png", zip::write::SimpleFileOptions::default())
         .expect("start page");
-    std::io::Write::write_all(&mut zip, &[0xff, 0xd8, 0xff, 0xd9]).expect("write page");
+    std::io::Write::write_all(&mut zip, include_bytes!("../assets/icons/List.png"))
+        .expect("write page");
     zip.start_file("ComicInfo.xml", zip::write::SimpleFileOptions::default())
         .expect("start metadata");
     let metadata = format!(
@@ -80,6 +81,46 @@ fn write_cbz(path: &Path, series: &str, number: &str) {
     );
     std::io::Write::write_all(&mut zip, metadata.as_bytes()).expect("write metadata");
     zip.finish().expect("finish CBZ");
+}
+
+fn find_toplevel(title: &str) -> Option<gtk4::Window> {
+    gtk4::Window::list_toplevels()
+        .into_iter()
+        .filter_map(|widget| widget.downcast::<gtk4::Window>().ok())
+        .find(|window| window.title().as_deref() == Some(title))
+}
+
+fn walk(widget: &gtk4::Widget, output: &mut Vec<gtk4::Widget>) {
+    output.push(widget.clone());
+    let mut child = widget.first_child();
+    while let Some(widget) = child {
+        walk(&widget, output);
+        child = widget.next_sibling();
+    }
+}
+
+fn widgets(window: &gtk4::Window) -> Vec<gtk4::Widget> {
+    let mut output = Vec::new();
+    if let Some(child) = window.child() {
+        walk(&child, &mut output);
+    }
+    output
+}
+
+fn labels(window: &gtk4::Window) -> Vec<String> {
+    widgets(window)
+        .into_iter()
+        .filter_map(|widget| widget.downcast::<gtk4::Label>().ok())
+        .map(|label| label.text().to_string())
+        .collect()
+}
+
+fn button(window: &gtk4::Window, text: &str) -> gtk4::Button {
+    widgets(window)
+        .into_iter()
+        .filter_map(|widget| widget.downcast::<gtk4::Button>().ok())
+        .find(|button| button.label().as_deref() == Some(text))
+        .unwrap_or_else(|| panic!("button {text}"))
 }
 
 fn snapshot(path: PathBuf, after: Vec<u8>) -> FileSnapshot {
@@ -152,6 +193,9 @@ fn main() {
     std::fs::create_dir_all(&library_root).expect("create library root");
     let scanned_path = incoming_root.join("Scanned 001.cbz");
     write_cbz(&scanned_path, "Scanned", "1");
+    write_cbz(&library_root.join("Alpha 001.cbz"), "Alpha", "1");
+    write_cbz(&library_root.join("Alpha 003.cbz"), "Alpha", "3");
+    write_cbz(&library_root.join("Beta 001.cbz"), "Beta", "1");
 
     let paths = Rc::new(cr_core::paths::Paths::from_roots(&data, &config));
     let database_path = cr_core::paths::database_file(&paths);
@@ -159,6 +203,7 @@ fn main() {
         books: vec![
             book(101, &library_root.join("Alpha 001.cbz"), "Alpha", "1"),
             book(103, &library_root.join("Alpha 003.cbz"), "Alpha", "3"),
+            book(105, &library_root.join("Beta 001.cbz"), "Beta", "1"),
         ],
         ..Default::default()
     };
@@ -292,6 +337,8 @@ fn start_classification(
         (3, "Beta", "1"),
         (4, "Alpha", "9"),
         (5, "Beta", "1"),
+        (6, "Gamma", "1"),
+        (7, "Gamma", "1"),
     ];
     let books: Vec<ComicBook> = fixtures
         .iter()
@@ -354,23 +401,23 @@ fn wait_for_classification(
         id_set(&books, classes.iter().filter(|class| predicate(class)))
     };
     assert_eq!(ids(|class| class.gap_fill), set(&[2]));
-    assert_eq!(ids(|class| class.duplicate), set(&[1, 3, 5]));
-    assert_eq!(ids(|class| class.library_duplicate), set(&[1]));
-    assert_eq!(ids(|class| class.incoming_duplicate), set(&[3, 5]));
-    assert_eq!(ids(|class| class.new_series), set(&[3, 5]));
+    assert_eq!(ids(|class| class.duplicate), set(&[1, 3, 5, 6, 7]));
+    assert_eq!(ids(|class| class.library_duplicate), set(&[1, 3, 5]));
+    assert_eq!(ids(|class| class.incoming_duplicate), set(&[3, 5, 6, 7]));
+    assert_eq!(ids(|class| class.new_series), set(&[6, 7]));
     assert_eq!(ids(|class| class.needs_review), set(&[4]));
 
     let views = [
-        (cr_ui::browser::navigator::IncomingView::All, 5usize),
+        (cr_ui::browser::navigator::IncomingView::All, 7usize),
         (cr_ui::browser::navigator::IncomingView::GapFills, 1),
-        (cr_ui::browser::navigator::IncomingView::Duplicates, 3),
+        (cr_ui::browser::navigator::IncomingView::Duplicates, 5),
         (
             cr_ui::browser::navigator::IncomingView::LibraryDuplicates,
-            1,
+            3,
         ),
         (
             cr_ui::browser::navigator::IncomingView::IncomingDuplicates,
-            2,
+            4,
         ),
         (cr_ui::browser::navigator::IncomingView::NewSeries, 2),
         (cr_ui::browser::navigator::IncomingView::NeedsReview, 1),
@@ -387,9 +434,8 @@ fn check_view(
 ) {
     if index == views.len() {
         println!("GATE E OK: exact memberships and asynchronous UI projections match");
-        gate_f_to_i(paths, work);
-        println!("INCOMING PROBE DONE");
-        std::process::exit(0);
+        open_compare(shell, paths, work);
+        return;
     }
     let (view, expected) = views[index];
     shell.state_select_list(&view.id());
@@ -403,6 +449,86 @@ fn check_view(
         check_view(shell.clone(), paths.clone(), work.clone(), views, index + 1);
         ControlFlow::Break
     });
+}
+
+fn open_compare(
+    shell: Rc<cr_ui::browser::shell::BrowserShell>,
+    paths: Rc<cr_core::paths::Paths>,
+    work: PathBuf,
+) {
+    shell.state_select_list(&cr_ui::browser::navigator::IncomingView::Duplicates.id());
+    glib::timeout_add_local(std::time::Duration::from_millis(350), move || {
+        shell.state_reselect(&[fixed_id(1), fixed_id(3)]);
+        assert_eq!(shell.state_grid_selection_len(), 2);
+        shell.state_compare_incoming();
+        wait_for_compare(shell.clone(), paths.clone(), work.clone(), 0);
+        ControlFlow::Break
+    });
+}
+
+fn wait_for_compare(
+    shell: Rc<cr_ui::browser::shell::BrowserShell>,
+    paths: Rc<cr_core::paths::Paths>,
+    work: PathBuf,
+    ticks: u32,
+) {
+    let Some(window) = find_toplevel("Compare Incoming") else {
+        assert!(ticks < 100, "Compare Incoming did not open");
+        glib::timeout_add_local(std::time::Duration::from_millis(50), move || {
+            wait_for_compare(shell.clone(), paths.clone(), work.clone(), ticks + 1);
+            ControlFlow::Break
+        });
+        return;
+    };
+    let text = labels(&window).join("\n");
+    if !text.contains("Book 1 of 2") || !text.contains("Match 1 of 1") {
+        assert!(
+            ticks < 100,
+            "Compare Incoming labels stayed incomplete: {text}"
+        );
+        glib::timeout_add_local(std::time::Duration::from_millis(50), move || {
+            wait_for_compare(shell.clone(), paths.clone(), work.clone(), ticks + 1);
+            ControlFlow::Break
+        });
+        return;
+    }
+    assert!(text.contains("Library duplicate"));
+    button(&window, "Next Book").emit_clicked();
+    let text = labels(&window).join("\n");
+    assert!(text.contains("Book 2 of 2"));
+    assert!(text.contains("Match 1 of 2"));
+    assert!(text.contains("Incoming duplicate"));
+    button(&window, "Next Match").emit_clicked();
+    let text = labels(&window).join("\n");
+    assert!(text.contains("Match 2 of 2"));
+    assert!(text.contains("Library duplicate"));
+    wait_for_compare_covers(window, paths, work, 0);
+}
+
+fn wait_for_compare_covers(
+    window: gtk4::Window,
+    paths: Rc<cr_core::paths::Paths>,
+    work: PathBuf,
+    ticks: u32,
+) {
+    let painted = widgets(&window)
+        .into_iter()
+        .filter_map(|widget| widget.downcast::<gtk4::Picture>().ok())
+        .filter(|picture| picture.paintable().is_some())
+        .count();
+    if painted < 2 {
+        assert!(ticks < 200, "Compare covers did not load");
+        glib::timeout_add_local(std::time::Duration::from_millis(50), move || {
+            wait_for_compare_covers(window.clone(), paths.clone(), work.clone(), ticks + 1);
+            ControlFlow::Break
+        });
+        return;
+    }
+    println!("GATE E2 OK: Compare navigates books and matches and loads both covers");
+    window.close();
+    gate_f_to_i(paths, work);
+    println!("INCOMING PROBE DONE");
+    std::process::exit(0);
 }
 
 fn set(ids: &[u8]) -> BTreeSet<String> {
