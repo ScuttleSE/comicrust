@@ -45,12 +45,15 @@ these changes. User tests on real data remain open.
 removed its Incoming record. A later Incoming scan reported a stale database
 epoch. A second trace recorded `discard_incoming_async`, not replacement. It
 held the operation for 49.480 seconds while it changed a 73,050-book Incoming
-catalog. That trace ended before a later scan or popup. `UNKNOWN`: Why the user
-selected replacement but the action dispatched discard. `UNKNOWN`: Which part
-of discard used 49.480 seconds. `CODE-READ`: `CR_TRACE` now also records the
-clicked pane, match source, selected action, catalog serialization, trash
-command, journal writes, catalog installation, and transaction stages. Repeat
-the action once and continue the trace through any popup.
+catalog. A third trace confirmed the correct left-pane replacement. A Library
+watcher rescan started during replacement at epoch 32. It waited 52.976 seconds
+for the transaction guard, then replacement committed epoch 33. The stale scan
+rejected its result and produced an incorrectly labeled Incoming error.
+`CODE-READ`: Watcher rescans now stay pending while an Incoming operation is
+active. Scan errors now keep their Library or Incoming target. Replacement
+traces now record every durable stage. `UNKNOWN`: Which replacement stage used
+most of the measured 66.762 seconds. Repeat the replacement once to verify the
+race fix and measure each stage.
 
 ## Open user tests
 
@@ -104,16 +107,17 @@ licenses` is not a CI gate.
 
 ## Latest verification
 
-Incoming Compare and transaction timing instrumentation passed local
-verification on 2026-09-17.
+The watcher and Incoming-transaction race fix passed local verification on
+2026-09-17.
 
 - `cargo fmt --all`: passed.
 - `cargo clippy --workspace --all-targets -- -D warnings`: passed.
 - `cargo test --workspace`: passed.
-- The `cr-ui` suite passed 182 tests. Compare tests cover Keep-button action
+- The `cr-ui` suite passed 183 tests. Compare tests cover Keep-button action
   mapping, pair revalidation, comparison order, self-exclusion, ranking
   recommendations, and ties. A focused run confirms source-specific Keep-button
-  mapping. A selection test confirms displayed-book order.
+  mapping. A selection test confirms displayed-book order. The new watcher test
+  confirms that rescan events stay pending during scans and Incoming operations.
 - The `cr-engine` suite passed 149 tests. Incoming-list tests cover separate
   persistence, stable IDs, bases, invalid graphs, duplicate matching, and series
   statistics.

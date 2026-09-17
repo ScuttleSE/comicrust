@@ -5690,11 +5690,22 @@ impl ShellState {
         if library::is_scanning() {
             return;
         }
-        if let Some(error) = library::take_scan_completion_error() {
+        if let Some((target, error)) = library::take_scan_completion_error() {
+            let message = match target {
+                library::ScanTarget::Incoming => {
+                    format!("The Incoming catalog could not be saved.\n\n{error}")
+                }
+                library::ScanTarget::Library => {
+                    format!("The Library scan could not finish.\n\n{error}")
+                }
+            };
             show_failure_dialog(
                 &self.window,
-                "Incoming Scan",
-                &format!("The Incoming catalog could not be saved.\n\n{error}"),
+                match target {
+                    library::ScanTarget::Incoming => "Incoming Scan",
+                    library::ScanTarget::Library => "Library Scan",
+                },
+                &message,
             );
         }
         let summary = library::take_scan_problem_summary();

@@ -804,10 +804,14 @@ pub fn add_folder_dialog(parent: &impl IsA<Window>) {
         let window = window.clone();
         let path_display = path.display().to_string();
         library::add_folder_to_library(&path, move |result| {
-            if let Some(error) = library::take_scan_completion_error() {
+            if let Some((target, error)) = library::take_scan_completion_error() {
+                let scope = match target {
+                    library::ScanTarget::Incoming => "Incoming",
+                    library::ScanTarget::Library => "Library",
+                };
                 show_attention_dialog(
                     &window,
-                    &format!("The Incoming scan could not save its catalog.\n\n{error}"),
+                    &format!("The {scope} scan could not finish.\n\n{error}"),
                 );
                 return;
             }

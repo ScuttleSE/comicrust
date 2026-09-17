@@ -101,7 +101,7 @@ thread_local! {
             skipped: 0,
             skipped_known_bad: 0,
         }) };
-    static SCAN_COMPLETION_ERROR: RefCell<Option<String>> = const { RefCell::new(None) };
+    static SCAN_COMPLETION_ERROR: RefCell<Option<(ScanTarget, String)>> = const { RefCell::new(None) };
     /// Book ids removed on the main thread while a scan is in flight
     /// (the remove flow records them): the landing merge drops them
     /// from the worker's storage copy instead of resurrecting them.
@@ -435,7 +435,7 @@ pub fn take_scan_problem_summary() -> ScanProblemSummary {
 }
 
 /// Takes a worker failure that prevented a scan from landing.
-pub fn take_scan_completion_error() -> Option<String> {
+pub fn take_scan_completion_error() -> Option<(ScanTarget, String)> {
     SCAN_COMPLETION_ERROR.with(|cell| cell.borrow_mut().take())
 }
 
@@ -2150,7 +2150,7 @@ fn start_scan_worker(q: QueuedScan) {
                 }
                 Ok(ScanWorkerMsg::Failed(error)) => {
                     eprintln!("incoming scan save failed: {error}");
-                    SCAN_COMPLETION_ERROR.with(|cell| *cell.borrow_mut() = Some(error));
+                    SCAN_COMPLETION_ERROR.with(|cell| *cell.borrow_mut() = Some((target, error)));
                     SCAN_IN_FLIGHT.with(|cell| *cell.borrow_mut() = false);
                     SCAN_LOCATION.with(|cell| cell.borrow_mut().clear());
                     SCAN_STOP.with(|cell| *cell.borrow_mut() = None);
@@ -2170,7 +2170,7 @@ fn start_scan_worker(q: QueuedScan) {
                 Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                     let error = "The scan worker stopped without a result.".to_string();
                     crate::trace::trace(&error);
-                    SCAN_COMPLETION_ERROR.with(|cell| *cell.borrow_mut() = Some(error));
+                    SCAN_COMPLETION_ERROR.with(|cell| *cell.borrow_mut() = Some((target, error)));
                     SCAN_IN_FLIGHT.with(|cell| *cell.borrow_mut() = false);
                     SCAN_LOCATION.with(|cell| cell.borrow_mut().clear());
                     SCAN_STOP.with(|cell| *cell.borrow_mut() = None);
@@ -2211,7 +2211,10 @@ fn start_scan_worker(q: QueuedScan) {
 /// scan stacks a full re-scan storm; the roots deliver once the scan
 /// ends.
 pub fn take_watch_folder_rescans() -> Vec<String> {
-    if is_scanning() {
+    if watcher_rescans_deferred(
+        is_scanning(),
+        cr_engine::incoming_transaction::operation_active(),
+    ) {
         return Vec::new();
     }
     let roots = session().borrow_mut().take_watch_folder_rescans();
@@ -2224,6 +2227,10 @@ pub fn take_watch_folder_rescans() -> Vec<String> {
         ));
     }
     roots
+}
+
+fn watcher_rescans_deferred(scanning: bool, operation_active: bool) -> bool {
+    scanning || operation_active
 }
 
 /// The collapsed Windows-path roots (the migration dialog rows; the
@@ -4766,6 +4773,14 @@ mod tests {
     use super::*;
     use cr_core::model::comic_book::ComicBook;
     use cr_scrape::cache::CvCache;
+
+    #[test]
+    fn watcher_rescans_wait_for_scans_and_incoming_operations() {
+        assert!(!watcher_rescans_deferred(false, false));
+        assert!(watcher_rescans_deferred(true, false));
+        assert!(watcher_rescans_deferred(false, true));
+        assert!(watcher_rescans_deferred(true, true));
+    }
 
     fn book(path: &str) -> ComicBook {
         ComicBook {

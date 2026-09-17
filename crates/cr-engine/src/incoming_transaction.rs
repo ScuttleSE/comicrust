@@ -648,6 +648,14 @@ impl TransactionEngine {
         copy: &dyn Fn(&ReplacementTransaction) -> Result<(), TransactionError>,
         trash: &dyn Fn(&Path) -> std::io::Result<()>,
     ) -> Result<(), TransactionError> {
+        let started = std::time::Instant::now();
+        crate::trace::trace(format!(
+            "replacement roll-forward start stage={:?} bytes={} source='{}' destination='{}'",
+            transaction.stage,
+            transaction.expected_len,
+            transaction.source.display(),
+            transaction.destination.display()
+        ));
         if transaction.stage == ReplacementStage::Committed {
             durable_remove(&self.journal_path)?;
             return Ok(());
@@ -675,6 +683,7 @@ impl TransactionEngine {
             }
             transaction.stage = ReplacementStage::Staged;
             self.write_replacement_journal(transaction)?;
+            trace_replacement_stage(transaction.stage, started);
         }
 
         if transaction.stage == ReplacementStage::Staged {
@@ -690,6 +699,7 @@ impl TransactionEngine {
             }
             transaction.stage = ReplacementStage::TrashPending;
             self.write_replacement_journal(transaction)?;
+            trace_replacement_stage(transaction.stage, started);
         }
 
         if transaction.stage == ReplacementStage::TrashPending {
@@ -704,6 +714,7 @@ impl TransactionEngine {
             }
             transaction.stage = ReplacementStage::OldLibraryTrashed;
             self.write_replacement_journal(transaction)?;
+            trace_replacement_stage(transaction.stage, started);
         }
 
         if transaction.stage == ReplacementStage::OldLibraryTrashed {
@@ -759,6 +770,7 @@ impl TransactionEngine {
             }
             transaction.stage = ReplacementStage::Installed;
             self.write_replacement_journal(transaction)?;
+            trace_replacement_stage(transaction.stage, started);
         }
 
         if transaction.stage == ReplacementStage::Installed {
@@ -771,6 +783,7 @@ impl TransactionEngine {
             install_snapshot(&transaction.comic_database)?;
             transaction.stage = ReplacementStage::DatabaseSaved;
             self.write_replacement_journal(transaction)?;
+            trace_replacement_stage(transaction.stage, started);
         }
 
         if transaction.stage == ReplacementStage::DatabaseSaved {
@@ -783,6 +796,7 @@ impl TransactionEngine {
             install_snapshot(&transaction.incoming_catalog)?;
             transaction.stage = ReplacementStage::IncomingSaved;
             self.write_replacement_journal(transaction)?;
+            trace_replacement_stage(transaction.stage, started);
         }
 
         if transaction.stage == ReplacementStage::IncomingSaved {
@@ -802,6 +816,7 @@ impl TransactionEngine {
             }
             transaction.stage = ReplacementStage::SourceRemoved;
             self.write_replacement_journal(transaction)?;
+            trace_replacement_stage(transaction.stage, started);
         }
 
         if transaction.stage == ReplacementStage::SourceRemoved {
@@ -819,9 +834,14 @@ impl TransactionEngine {
             )?;
             transaction.stage = ReplacementStage::Committed;
             self.write_replacement_journal(transaction)?;
+            trace_replacement_stage(transaction.stage, started);
         }
 
         durable_remove(&self.journal_path)?;
+        crate::trace::trace(format!(
+            "replacement roll-forward finish elapsed_ms={}",
+            started.elapsed().as_millis()
+        ));
         Ok(())
     }
 
@@ -914,6 +934,13 @@ fn copy_to_staging(transaction: &ReplacementTransaction) -> Result<(), Transacti
         let _ = durable_remove(&transaction.staging);
     }
     result
+}
+
+fn trace_replacement_stage(stage: ReplacementStage, started: std::time::Instant) {
+    crate::trace::trace(format!(
+        "replacement stage={stage:?} elapsed_ms={}",
+        started.elapsed().as_millis()
+    ));
 }
 
 fn validate_replacement(transaction: &ReplacementTransaction) -> Result<(), TransactionError> {
