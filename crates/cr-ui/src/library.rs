@@ -2469,6 +2469,7 @@ pub fn replace_library_copy_async(
                     cr_core::database::comic_database::ComicDatabase,
                     cr_engine::incoming::IncomingCatalog,
                     u64,
+                    Vec<std::path::PathBuf>,
                 ),
                 String,
             >,
@@ -2583,8 +2584,14 @@ pub fn replace_library_copy_async(
                     "replacement durable commit complete epoch_before_commit={captured_epoch}"
                 ));
                 let committed_epoch = cr_engine::incoming_transaction::commit_database_epoch();
+                let controlled_paths = vec![
+                    transaction.source.clone(),
+                    transaction.staging.clone(),
+                    transaction.destination.clone(),
+                    transaction.old_library.clone(),
+                ];
                 drop(guard);
-                Ok((database, catalog, committed_epoch))
+                Ok((database, catalog, committed_epoch, controlled_paths))
             })();
             let _ = tx.send((operation, result));
         })

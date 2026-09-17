@@ -54,12 +54,14 @@ active. Scan errors now keep their Library or Incoming target. Replacement
 traces now record every durable stage. `UNKNOWN`: Which replacement stage used
 most of the measured 73.622 seconds. The latest trace measured 60.129 seconds
 in durable roll-forward. Each stage added 6 to 9 seconds, including stages with
-little file work. It also confirmed that no scan started before replacement
-ended. `UNKNOWN`: The time split inside each stage. `UNKNOWN`: Whether all
-post-replacement watcher events came from the transaction. `CODE-READ`:
-`CR_TRACE` now measures each journal write, SHA-1 validation, copy, sync, trash,
-catalog install, link, and removal. It also prints each watcher event path and
-its mapped root. Repeat replacement once to collect these measurements.
+little file work. The final trace measured the cause. Each stage rewrote a
+3,341,135,538-byte JSON journal that embedded both catalogs as decimal byte
+arrays. Ten writes produced approximately 33.4 GB. The 40,151,248-byte comic
+copy took 152 ms. All six post-replacement watcher events came from the
+transaction paths. `CODE-READ`: ADR-055 replaces embedded arrays with two
+one-time durable catalog sidecars and a compact journal. Successful replacement
+also filters exact transaction paths from watcher events. Unrelated events stay
+pending. The real-data replacement speed and scan suppression need a user test.
 
 ## Open user tests
 
@@ -113,8 +115,8 @@ licenses` is not a CI gate.
 
 ## Latest verification
 
-The watcher and Incoming-transaction race fix passed local verification on
-2026-09-17.
+The compact replacement journal and watcher suppression passed local
+verification on 2026-09-17.
 
 - `cargo fmt --all`: passed.
 - `cargo clippy --workspace --all-targets -- -D warnings`: passed.
@@ -124,20 +126,26 @@ The watcher and Incoming-transaction race fix passed local verification on
   recommendations, and ties. A focused run confirms source-specific Keep-button
   mapping. A selection test confirms displayed-book order. The new watcher test
   confirms that rescan events stay pending during scans and Incoming operations.
-- The `cr-engine` suite passed 149 tests. Incoming-list tests cover separate
+- The `cr-engine` suite passed 150 tests. Incoming-list tests cover separate
   persistence, stable IDs, bases, invalid graphs, duplicate matching, and series
   statistics.
 - Three isolated release `incoming_probe` runs passed Gates A-I, A2, E2, E2A,
   E3, and E4. E2A confirms Keep controls and recommendation highlighting. E4
   confirms Select Worst Duplicates in Incoming Duplicates. The other gates
   confirm replacement, navigation, covers, smart lists, and catalog isolation.
-- The transaction integration suite passes 31 tests. It covers replacement at
+- The transaction integration suite passes 32 tests. It covers replacement at
   every durable stage, collisions, copy and trash failures, invalid files,
   discard, conversion, adoption, undo, stale epochs, and close behavior. The
   new test confirms that a replacement epoch invalidates a rescan that waits
   for the mutation guard. A `CR_TRACE=1` focused run contains the epoch
   transition, guard acquisition, source call sites, journal stages, and catalog
   installation stages.
+- The compact-journal test confirms that replacement stores two one-time
+  after-images, keeps `current.json` below 4 KiB for the test transaction, and
+  removes all three files after commit. A watcher test confirms that exact
+  transaction paths are filtered while unrelated events remain.
+- An isolated release `incoming_probe` run passed Gates A-I, A2, E2, E2A, E3,
+  and E4 with the compact journal.
 
 ## Environment notes
 

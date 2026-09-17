@@ -587,6 +587,39 @@ fn replacement(root: &TestDir) -> ReplacementTransaction {
     .unwrap()
 }
 
+#[test]
+fn replacement_journal_references_one_time_after_images() {
+    let root = TestDir::new("replacement-compact-journal");
+    let engine = TransactionEngine::from_journal_path(root.path("current.json"));
+    let mut transaction = replacement(&root);
+
+    engine.begin_replacement(&transaction).unwrap();
+    let journal = std::fs::read(engine.journal_path()).unwrap();
+    assert!(journal.len() < 4096);
+    let journal_text = String::from_utf8(journal).unwrap();
+    assert!(journal_text.contains("SidecarAfterImagesV1"));
+    assert!(!journal_text.contains("database-after"));
+    assert!(!journal_text.contains("incoming-after"));
+    let sidecars: Vec<PathBuf> = std::fs::read_dir(engine.journal_path().parent().unwrap())
+        .unwrap()
+        .filter_map(|entry| {
+            let path = entry.unwrap().path();
+            let is_sidecar = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.ends_with(".after"));
+            is_sidecar.then_some(path)
+        })
+        .collect();
+    assert_eq!(sidecars.len(), 2);
+
+    engine
+        .commit_replacement_with_trash(&mut transaction, &fake_trash(&root))
+        .unwrap();
+    assert!(!engine.journal_path().exists());
+    assert!(sidecars.iter().all(|path| !path.exists()));
+}
+
 fn write_replacement_journal(engine: &TransactionEngine, transaction: &ReplacementTransaction) {
     durable_replace(
         engine.journal_path(),

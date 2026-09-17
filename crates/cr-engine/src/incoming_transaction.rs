@@ -294,6 +294,32 @@ pub struct ReplacementTransaction {
     pub incoming_catalog: FileSnapshot,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+enum ReplacementJournalFormat {
+    SidecarAfterImagesV1,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct ReplacementJournalSnapshot {
+    path: PathBuf,
+    after_image: PathBuf,
+}
+
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct ReplacementJournal {
+    journal_format: ReplacementJournalFormat,
+    kind: ReplacementKind,
+    stage: ReplacementStage,
+    source: PathBuf,
+    staging: PathBuf,
+    destination: PathBuf,
+    old_library: PathBuf,
+    expected_len: u64,
+    sha1: String,
+    comic_database: ReplacementJournalSnapshot,
+    incoming_catalog: ReplacementJournalSnapshot,
+}
+
 impl ReplacementTransaction {
     /// Reads the source identity before a journal permits file mutation.
     pub fn prepare(
@@ -375,6 +401,11 @@ pub struct TransactionEngine {
     journal_path: PathBuf,
 }
 
+struct ReplacementSidecars {
+    comic_database: PathBuf,
+    incoming_catalog: PathBuf,
+}
+
 impl TransactionEngine {
     pub fn new(paths: &Paths) -> Self {
         Self {
@@ -411,7 +442,13 @@ impl TransactionEngine {
         if transaction.stage == ReplacementStage::Prepared {
             reject_replacement_collisions(transaction)?;
         }
-        self.write_replacement_journal(transaction)
+        self.cleanup_replacement_sidecars()?;
+        self.write_replacement_after_images(transaction)?;
+        if let Err(error) = self.write_replacement_journal(transaction) {
+            let _ = self.cleanup_replacement_sidecars();
+            return Err(error);
+        }
+        Ok(())
     }
 
     /// Replaces the durable journal with the caller's current state.
@@ -498,12 +535,17 @@ impl TransactionEngine {
         let bytes = match std::fs::read(&self.journal_path) {
             Ok(bytes) => bytes,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                return Ok(RecoveryResult::NoJournal)
+                self.cleanup_replacement_sidecars()?;
+                return Ok(RecoveryResult::NoJournal);
             }
             Err(error) => return Err(error.into()),
         };
-        if let Ok(mut replacement) = serde_json::from_slice::<ReplacementTransaction>(&bytes) {
-            validate_replacement(&replacement)?;
+        if let Some(mut replacement) = self.load_replacement(&bytes)? {
+            if replacement.stage == ReplacementStage::Committed {
+                self.finish_replacement()?;
+                return Ok(RecoveryResult::Recovered);
+            }
+            self.ensure_compact_replacement_journal(&replacement, &bytes)?;
             self.roll_replacement_forward(&mut replacement, &copy_to_staging, &trash_to_desktop)?;
             return Ok(RecoveryResult::Recovered);
         }
@@ -638,7 +680,32 @@ impl TransactionEngine {
         transaction: &ReplacementTransaction,
     ) -> Result<(), TransactionError> {
         let started = std::time::Instant::now();
-        let bytes = serde_json::to_vec_pretty(transaction)?;
+        let sidecars = self.replacement_sidecars();
+        if transaction.stage != ReplacementStage::Committed
+            && (!sidecars.comic_database.exists() || !sidecars.incoming_catalog.exists())
+        {
+            self.write_replacement_after_images(transaction)?;
+        }
+        let journal = ReplacementJournal {
+            journal_format: ReplacementJournalFormat::SidecarAfterImagesV1,
+            kind: transaction.kind,
+            stage: transaction.stage,
+            source: transaction.source.clone(),
+            staging: transaction.staging.clone(),
+            destination: transaction.destination.clone(),
+            old_library: transaction.old_library.clone(),
+            expected_len: transaction.expected_len,
+            sha1: transaction.sha1.clone(),
+            comic_database: ReplacementJournalSnapshot {
+                path: transaction.comic_database.path.clone(),
+                after_image: sidecars.comic_database,
+            },
+            incoming_catalog: ReplacementJournalSnapshot {
+                path: transaction.incoming_catalog.path.clone(),
+                after_image: sidecars.incoming_catalog,
+            },
+        };
+        let bytes = serde_json::to_vec_pretty(&journal)?;
         let serialized_ms = started.elapsed().as_millis();
         durable_replace(&self.journal_path, &bytes)?;
         crate::trace::trace(format!(
@@ -648,6 +715,113 @@ impl TransactionEngine {
             started.elapsed().as_millis()
         ));
         Ok(())
+    }
+
+    fn replacement_sidecars(&self) -> ReplacementSidecars {
+        let file_name = self
+            .journal_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("current.json");
+        ReplacementSidecars {
+            comic_database: self
+                .journal_path
+                .with_file_name(format!("{file_name}.comic-database.after")),
+            incoming_catalog: self
+                .journal_path
+                .with_file_name(format!("{file_name}.incoming-catalog.after")),
+        }
+    }
+
+    fn write_replacement_after_images(
+        &self,
+        transaction: &ReplacementTransaction,
+    ) -> Result<(), TransactionError> {
+        let sidecars = self.replacement_sidecars();
+        durable_replace(&sidecars.comic_database, &transaction.comic_database.after)?;
+        durable_replace(
+            &sidecars.incoming_catalog,
+            &transaction.incoming_catalog.after,
+        )?;
+        Ok(())
+    }
+
+    fn cleanup_replacement_sidecars(&self) -> Result<(), TransactionError> {
+        let sidecars = self.replacement_sidecars();
+        durable_remove(&sidecars.comic_database)?;
+        durable_remove(&sidecars.incoming_catalog)?;
+        Ok(())
+    }
+
+    fn finish_replacement(&self) -> Result<(), TransactionError> {
+        self.cleanup_replacement_sidecars()?;
+        durable_remove(&self.journal_path)?;
+        Ok(())
+    }
+
+    fn load_replacement(
+        &self,
+        bytes: &[u8],
+    ) -> Result<Option<ReplacementTransaction>, TransactionError> {
+        if let Ok(journal) = serde_json::from_slice::<ReplacementJournal>(bytes) {
+            let sidecars = self.replacement_sidecars();
+            if journal.comic_database.after_image != sidecars.comic_database
+                || journal.incoming_catalog.after_image != sidecars.incoming_catalog
+            {
+                return Err(TransactionError::Invalid(
+                    "replacement journal references unexpected sidecars".into(),
+                ));
+            }
+            let committed = journal.stage == ReplacementStage::Committed;
+            let comic_after = if committed {
+                Vec::new()
+            } else {
+                std::fs::read(&sidecars.comic_database)?
+            };
+            let incoming_after = if committed {
+                Vec::new()
+            } else {
+                std::fs::read(&sidecars.incoming_catalog)?
+            };
+            return Ok(Some(ReplacementTransaction {
+                kind: journal.kind,
+                stage: journal.stage,
+                source: journal.source,
+                staging: journal.staging,
+                destination: journal.destination,
+                old_library: journal.old_library,
+                expected_len: journal.expected_len,
+                sha1: journal.sha1,
+                comic_database: FileSnapshot {
+                    path: journal.comic_database.path,
+                    before: None,
+                    after: comic_after,
+                    remove_after: false,
+                },
+                incoming_catalog: FileSnapshot {
+                    path: journal.incoming_catalog.path,
+                    before: None,
+                    after: incoming_after,
+                    remove_after: false,
+                },
+            }));
+        }
+        match serde_json::from_slice::<ReplacementTransaction>(bytes) {
+            Ok(transaction) => Ok(Some(transaction)),
+            Err(_) => Ok(None),
+        }
+    }
+
+    fn ensure_compact_replacement_journal(
+        &self,
+        transaction: &ReplacementTransaction,
+        bytes: &[u8],
+    ) -> Result<(), TransactionError> {
+        if serde_json::from_slice::<ReplacementJournal>(bytes).is_ok() {
+            return Ok(());
+        }
+        self.write_replacement_after_images(transaction)?;
+        self.write_replacement_journal(transaction)
     }
 
     fn roll_replacement_forward(
@@ -665,7 +839,7 @@ impl TransactionEngine {
             transaction.destination.display()
         ));
         if transaction.stage == ReplacementStage::Committed {
-            durable_remove(&self.journal_path)?;
+            self.finish_replacement()?;
             return Ok(());
         }
 
@@ -857,7 +1031,7 @@ impl TransactionEngine {
             trace_replacement_stage(transaction.stage, started);
         }
 
-        durable_remove(&self.journal_path)?;
+        self.finish_replacement()?;
         crate::trace::trace(format!(
             "replacement roll-forward finish elapsed_ms={}",
             started.elapsed().as_millis()
@@ -910,8 +1084,15 @@ impl TransactionEngine {
             }
             Err(error) => return Err(error.into()),
         };
-        let mut transaction: ReplacementTransaction = serde_json::from_slice(&bytes)?;
+        let mut transaction = self.load_replacement(&bytes)?.ok_or_else(|| {
+            TransactionError::Invalid("the journal is not a replacement transaction".into())
+        })?;
+        if transaction.stage == ReplacementStage::Committed {
+            self.finish_replacement()?;
+            return Ok(RecoveryResult::Recovered);
+        }
         validate_replacement(&transaction)?;
+        self.ensure_compact_replacement_journal(&transaction, &bytes)?;
         self.roll_replacement_forward(&mut transaction, &copy_to_staging, trash)?;
         Ok(RecoveryResult::Recovered)
     }

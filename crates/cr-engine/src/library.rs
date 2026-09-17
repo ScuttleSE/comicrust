@@ -9,6 +9,7 @@
 //! a 255-book scan is fast and the caller can defer to a thread),
 //! and `ComicRack.Engine/QueueManager.cs` (`StartScan`).
 
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{self, Receiver};
 
@@ -47,6 +48,24 @@ pub struct Library {
     /// Preferences OK that rebuilds while one build runs drops the
     /// stale result).
     watcher_gen: u64,
+    suppressed_watch_paths: HashSet<PathBuf>,
+}
+
+fn filter_suppressed_watch_events(
+    events: Vec<PathBuf>,
+    suppressed: &mut HashSet<PathBuf>,
+) -> Vec<PathBuf> {
+    let matched: HashSet<PathBuf> = events
+        .iter()
+        .filter(|path| suppressed.contains(*path))
+        .cloned()
+        .collect();
+    let kept = events
+        .into_iter()
+        .filter(|path| !matched.contains(path))
+        .collect();
+    suppressed.retain(|path| !matched.contains(path));
+    kept
 }
 
 impl Library {
@@ -76,6 +95,7 @@ impl Library {
             watcher: None,
             watcher_rx: None,
             watcher_gen: 0,
+            suppressed_watch_paths: HashSet::new(),
         };
         Ok((lib, status))
     }
@@ -240,10 +260,17 @@ impl Library {
     /// back to the watch roots — see
     /// [`Library::take_watch_folder_rescans`].
     pub fn take_watch_events(&mut self) -> Vec<PathBuf> {
-        self.watcher
+        let events = self
+            .watcher
             .as_mut()
             .map(Watcher::take_pending)
-            .unwrap_or_default()
+            .unwrap_or_default();
+        filter_suppressed_watch_events(events, &mut self.suppressed_watch_paths)
+    }
+
+    /// Drops watcher events for exact paths that ComicRust changed itself.
+    pub fn suppress_watch_paths(&mut self, paths: impl IntoIterator<Item = PathBuf>) {
+        self.suppressed_watch_paths.extend(paths);
     }
 
     /// Takes the pending watch events and returns the watch roots
@@ -451,6 +478,21 @@ mod tests {
         ));
         std::fs::create_dir_all(&dir).unwrap();
         dir
+    }
+
+    #[test]
+    fn transaction_watch_paths_are_filtered_without_dropping_other_events() {
+        let changed = PathBuf::from("/library/changed.cbz");
+        let unrelated = PathBuf::from("/library/unrelated.cbz");
+        let mut suppressed = HashSet::from([changed.clone()]);
+
+        let kept = filter_suppressed_watch_events(
+            vec![changed.clone(), changed, unrelated.clone()],
+            &mut suppressed,
+        );
+
+        assert_eq!(kept, vec![unrelated]);
+        assert!(suppressed.is_empty());
     }
 
     /// The async watcher mechanism: `rebuild_watcher` no longer

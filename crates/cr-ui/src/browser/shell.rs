@@ -585,11 +585,15 @@ impl ShellState {
                                             complete(Err("The browser closed before the action finished.".into()));
                                             return;
                                         };
-                                        let result = result.and_then(|(database, catalog, committed_epoch)| {
+                                        let result = result.and_then(|(database, catalog, committed_epoch, controlled_paths)| {
                                             if cr_engine::incoming_transaction::database_epoch() != committed_epoch {
                                                 return Err("The live library changed after the transaction committed. Restart ComicRust to load the saved catalogs.".into());
                                             }
-                                            library::session().borrow_mut().install_persisted_database(database);
+                                            let session = library::session();
+                                            let mut session = session.borrow_mut();
+                                            session.suppress_watch_paths(controlled_paths);
+                                            session.install_persisted_database(database);
+                                            drop(session);
                                             library::replace_incoming_catalog(catalog);
                                             sh.refresh_view_from_list();
                                             sh.sync_enabled();
