@@ -68,3 +68,5 @@ Add persistent Incoming folders for books that wait for review. Incoming books s
 
 The automated gates pass. The user tests in `docs/open-user-tests.md` decide the
 final GTK behavior.
+
+The user procedure is in `docs/guides/incoming-folders.md`.

@@ -15,8 +15,8 @@ Phase 9, the SQLite database backend, is DEFERRED to `docs/backlog.md`.
 
 ## Current task
 
-The separate Incoming catalog, review views, scan routing, adoption, discard,
-Comic Vine refresh, durable recovery, and undo workflow are implemented.
+The Incoming workflow is implemented. The user procedure is in
+`docs/guides/incoming-folders.md`.
 
 The user confirmed these four tests as passed on 2026-09-16:
 

@@ -119,6 +119,38 @@ time and produces false work.
   a database pass, an image decode) runs on a worker thread. The pattern and
   its constraints are in `docs/guides/gtk-and-ui.md`.
 
+### Rule 10: Tagged claims, named unknowns, no fix design before measurement
+
+1. **Tag every claim.** Put one source tag on every claim about a cause, a
+   cost, or behavior at run time: `MEASURED` (you or the user ran it and read
+   the output), `CODE-READ` (you read it in code, it can be wrong), or
+   `UNKNOWN` (nobody knows). A claim with no tag is a breach.
+2. **One guess format.** State a cause guess only as `Speculation N of 2:`,
+   with the evidence and the data that decides it. A cause guess in any other
+   form ("hypothesis", "likely", "probably", "most plausible") is a breach.
+   Two speculations per problem (Rule 0).
+3. **Data requests need a named unknown.** Before you ask the user for data,
+   write the unknown it resolves and the decision it feeds. Do not request
+   data that only supports a guess. A request with no stated unknown is a
+   breach.
+4. **Code reading is not run-time evidence.** Reading code never proves where
+   time, memory, or cost sits. A claim about that needs a measurement, or it
+   is a speculation under Rule 0.
+5. **No fix design before the measured cause.** While the cause is
+   unmeasured, a plan contains only: the unknown, the instrument that
+   measures it, and the run that produces the data. Fix designs, options, and
+   code shapes come after the measurement names the cause.
+6. **Stop without a named unknown.** If you cannot say which unknown your
+   current read or test resolves, stop. Write "I do not know" and ask for the
+   measurement.
+7. **No workarounds.** A rule blocks the action, not the wording. The same
+   action through another tool, other words, smaller steps, or a later phase
+   is a second breach. If you think a rule blocks the right action, stop and
+   ask the user to change the rule.
+8. **Given data serves its stated decision only.** Use data the user gave you
+   for the decision stated with the request. A new use needs a new stated
+   unknown and the user's approval first.
+
 ### Breach response
 
 A breach of any rule above has one permitted response: stop immediately,
