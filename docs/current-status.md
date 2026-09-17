@@ -5,20 +5,18 @@ Do not append history. Git and `docs/archive/` hold history.
 
 ## Active phase
 
-**Phase 17: Native modules II, the Library Organizer.**
+**Phase 18: Incoming folders.**
 
-The implementation and automated gates are complete. The three user tests
-are open. See `docs/phases/phase-17.md` and `docs/open-user-tests.md`.
+The implementation and automated gates are complete. The user tests are open.
+See `docs/phases/phase-18.md`, `docs/open-user-tests.md`, and ADR-049.
 
 Phase 16, Comic Vine scraper quality of life, is PLANNED. No task started.
 Phase 9, the SQLite database backend, is DEFERRED to `docs/backlog.md`.
 
 ## Current task
 
-The Library Organizer configuration dialog now shows both template editors.
-The Folders page shows and edits the stored folder template, provides the
-token picker and folder-separator control, and keeps its existing folder
-options. The release organizer probe covers folder-template persistence.
+The separate Incoming catalog, review views, scan routing, adoption, discard,
+Comic Vine refresh, durable recovery, and undo workflow are implemented.
 
 The user confirmed these four tests as passed on 2026-09-16:
 
@@ -51,9 +49,14 @@ The steps are in `docs/open-user-tests.md`.
 14. Smart-list dialog responsiveness.
 15. Detail-column text overflow.
 16. Per-list view settings.
+17. Incoming folder setup and review views.
+18. Incoming adoption, comparison, and undo.
+19. Incoming discard and Comic Vine refresh.
+20. Incoming responsiveness and role protection.
 
 ## Open work
 
+- Phase 18 implementation is complete. Its four user tests remain open.
 - Phase 16 has eight planned Comic Vine scraper tasks. Start with T1 in
   `docs/phases/phase-16.md`.
 - The Library Organizer startup auto-run is deferred in `docs/backlog.md`.
@@ -77,15 +80,17 @@ licenses` is not a CI gate.
 
 ## Latest verification
 
-The Library Organizer folder-template editor passed local verification on
-2026-09-16.
+The Incoming-folder implementation passed local verification on 2026-09-17.
 
 - `cargo fmt --all`: passed.
 - `cargo clippy --workspace --all-targets -- -D warnings`: passed.
 - `cargo test --workspace`: passed.
-- The release `organize_probe` passed gates A-F. Gate A confirms that both
-  template editors are visible. Gate B confirms that a changed folder
-  template survives storage, dialog reload, and profile selection.
+- The release `incoming_probe` passed Gates A-I. It confirms isolated storage,
+  navigator structure, configuration, scan isolation, review classification,
+  transactional conversion, ID-preserving adoption, simulation immutability,
+  operation serialization, and reload persistence.
+- The transaction integration suite passed 21 tests. It covers recovery,
+  overwrite, discard, conversion, stale epochs, and close behavior.
 
 ## Environment notes
 

@@ -75,6 +75,7 @@ targeted rounds, each opened from a user request or from the backlog.
 | 15 | Comic Vine cache, rate budget, missing-issue fill (ADR-037, ADR-038) | COMPLETE, user-tested 2026-09-12 |
 | 16 | Comic Vine scraper quality of life | PLANNED |
 | 17 | Native modules II: the Library Organizer (`cr-organize`, ADR-031) | COMPLETE, probe-gated; the user test is open |
+| 18 | Incoming folders and review workflow (ADR-049) | IN PROGRESS |
 
 Phases 12, 15-16, and 17 follow ADR-031: one crate per former plugin,
 behind a thin UI seam. Phase 16 ports the usability work of the

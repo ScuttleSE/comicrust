@@ -60,6 +60,82 @@ const SELECT_DEBOUNCE_MS: u64 = 200;
 /// row instead of into it (`SetDropEffects`: `point2.Y < 4`).
 const SEPARATOR_EDGE_PX: i32 = 4;
 
+const INCOMING_ROOT_BYTES: [u8; 16] = [
+    0x63, 0x72, 0x75, 0x73, 0x74, 0x2d, 0x49, 0x4e, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+];
+const INCOMING_ALL_BYTES: [u8; 16] = [
+    0x63, 0x72, 0x75, 0x73, 0x74, 0x2d, 0x49, 0x4e, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01,
+];
+const INCOMING_GAP_FILLS_BYTES: [u8; 16] = [
+    0x63, 0x72, 0x75, 0x73, 0x74, 0x2d, 0x49, 0x4e, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x02,
+];
+const INCOMING_DUPLICATES_BYTES: [u8; 16] = [
+    0x63, 0x72, 0x75, 0x73, 0x74, 0x2d, 0x49, 0x4e, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x03,
+];
+const INCOMING_NEW_SERIES_BYTES: [u8; 16] = [
+    0x63, 0x72, 0x75, 0x73, 0x74, 0x2d, 0x49, 0x4e, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x04,
+];
+const INCOMING_NEEDS_REVIEW_BYTES: [u8; 16] = [
+    0x63, 0x72, 0x75, 0x73, 0x74, 0x2d, 0x49, 0x4e, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x05,
+];
+
+fn incoming_root_id() -> CrGuid {
+    CrGuid::from_bytes(INCOMING_ROOT_BYTES)
+}
+
+/// A fixed dynamic view over the separate Incoming catalog.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IncomingView {
+    All,
+    GapFills,
+    Duplicates,
+    NewSeries,
+    NeedsReview,
+}
+
+impl IncomingView {
+    /// Maps a virtual navigator ID to its Incoming view. The root selects All.
+    pub fn from_id(id: &CrGuid) -> Option<Self> {
+        if *id == incoming_root_id() || *id == Self::All.id() {
+            Some(Self::All)
+        } else if *id == Self::GapFills.id() {
+            Some(Self::GapFills)
+        } else if *id == Self::Duplicates.id() {
+            Some(Self::Duplicates)
+        } else if *id == Self::NewSeries.id() {
+            Some(Self::NewSeries)
+        } else if *id == Self::NeedsReview.id() {
+            Some(Self::NeedsReview)
+        } else {
+            None
+        }
+    }
+
+    pub fn id(self) -> CrGuid {
+        CrGuid::from_bytes(match self {
+            Self::All => INCOMING_ALL_BYTES,
+            Self::GapFills => INCOMING_GAP_FILLS_BYTES,
+            Self::Duplicates => INCOMING_DUPLICATES_BYTES,
+            Self::NewSeries => INCOMING_NEW_SERIES_BYTES,
+            Self::NeedsReview => INCOMING_NEEDS_REVIEW_BYTES,
+        })
+    }
+
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::All => "All",
+            Self::GapFills => "Gap Fills",
+            Self::Duplicates => "Duplicates",
+            Self::NewSeries => "New Series",
+            Self::NeedsReview => "Needs Review",
+        }
+    }
+}
+
+fn is_incoming_id(id: &CrGuid) -> bool {
+    IncomingView::from_id(id).is_some()
+}
+
 /// The tree columns. `COL_NAME` is the plain name (selection,
 /// lookups, probes); `COL_LABEL` is the DISPLAY text — the name with
 /// the C# gauge badges appended as Pango markup
@@ -273,6 +349,12 @@ impl Navigator {
     /// the target (the toolbar buttons and the context menu share
     /// the host callback).
     fn fire_command(&self, command: ListCommand) {
+        if self
+            .current_selection()
+            .is_some_and(|(id, _)| is_incoming_id(&id))
+        {
+            return;
+        }
         if let Some(f) = self.on_command.borrow().as_ref() {
             let target = self.current_selection().map(|(id, _)| id);
             f(command, target);
@@ -382,7 +464,8 @@ impl Navigator {
                 if matches!(
                     crate::library::find_list_item_any(&id),
                     Some(ComicListItem::Library(_))
-                ) {
+                ) || is_incoming_id(&id)
+                {
                     return None;
                 }
                 Some(gdk::ContentProvider::for_value(
@@ -462,6 +545,16 @@ impl Navigator {
     /// and leaves the tree alone.
     fn apply_drop(&self, src: &CrGuid, x: f64, y: f64) -> bool {
         let drop = self.drop_target_at(x, y);
+        if is_incoming_id(src)
+            || matches!(
+                &drop,
+                crate::library::ListDrop::BeforeItem(id)
+                    | crate::library::ListDrop::IntoFolder(id)
+                    if is_incoming_id(id)
+            )
+        {
+            return false;
+        }
         if !crate::library::move_list_item(src, &drop) {
             return false;
         }
@@ -505,6 +598,12 @@ impl Navigator {
     fn context_menu_at(self: &Rc<Self>, x: f64, y: f64) {
         if let Some((Some(path), ..)) = self.view.path_at_pos(x as i32, y as i32) {
             self.selection.select_path(&path);
+            if self
+                .current_selection()
+                .is_some_and(|(id, _)| is_incoming_id(&id))
+            {
+                return;
+            }
             self.open_menu(x, y);
         }
     }
@@ -513,6 +612,9 @@ impl Navigator {
         let Some(id) = self.row_id(iter) else {
             return;
         };
+        if is_incoming_id(&id) {
+            return;
+        }
         crate::library::set_folder_collapsed(&id, !expanded);
         if expanded {
             self.expanded.borrow_mut().insert(id);
@@ -594,6 +696,8 @@ impl Navigator {
         let items = filter_items(items, filter.trim());
         self.store.clear();
         self.fill_items(None, &items);
+        self.fill_incoming();
+        expanded.insert(incoming_root_id());
         self.apply_expansion(None, &expanded);
         let target = previous.or_else(|| items.first().map(|i| i.base().id));
         if let Some(id) = target {
@@ -607,7 +711,8 @@ impl Navigator {
     /// else expand all. The row-expanded/collapsed signals keep the
     /// id set in step.
     fn expand_collapse_all(&self) {
-        if !self.expanded.borrow().is_empty() {
+        let has_expanded_rows = !self.expanded.borrow().is_empty();
+        if has_expanded_rows {
             self.view.collapse_all();
             self.expanded.borrow_mut().clear();
         } else {
@@ -802,6 +907,33 @@ impl Navigator {
         }
     }
 
+    fn fill_incoming(&self) {
+        let root = self.store.append(None);
+        self.set_virtual_row(&root, "Incoming", &incoming_root_id(), "SearchFolder");
+        for view in [
+            IncomingView::All,
+            IncomingView::GapFills,
+            IncomingView::Duplicates,
+            IncomingView::NewSeries,
+            IncomingView::NeedsReview,
+        ] {
+            let child = self.store.append(Some(&root));
+            self.set_virtual_row(&child, view.name(), &view.id(), "List");
+        }
+    }
+
+    fn set_virtual_row(&self, iter: &TreeIter, name: &str, id: &CrGuid, icon_name: &str) {
+        let id = id.to_d_string();
+        let label = glib::markup_escape_text(name).to_string();
+        let texture = icon::icon(icon_name);
+        let mut values: Vec<(u32, &dyn gtk4::glib::prelude::ToValue)> =
+            vec![(COL_NAME, &name), (COL_ID, &id), (COL_LABEL, &label)];
+        if let Some(texture) = texture.as_ref() {
+            values.push((COL_ICON, texture));
+        }
+        self.store.set(iter, &values);
+    }
+
     /// Replaces one row's display label (the gauge pass applying new
     /// counters in place — the C# repaint-only
     /// `library_ComicListsChanged` path). A missing row is skipped.
@@ -926,6 +1058,9 @@ impl Navigator {
     /// Phase 8 T1 report). `ContextMenuStrip.Show(cursor)` parity.
     fn open_menu(self: &Rc<Self>, x: f64, y: f64) {
         let target = self.current_selection().map(|(id, _)| id);
+        if target.as_ref().is_some_and(is_incoming_id) {
+            return;
+        }
         // "Scan List Contents" exists only for the list kinds (the
         // user's scope: smart lists and reading lists — ADR-036). The
         // Library root, folders, and a missing node never show it.
@@ -1242,6 +1377,30 @@ mod tests {
 
     const ALL: cr_core::settings::enums::LibraryGauges =
         cr_core::settings::enums::LibraryGauges(0x1007);
+
+    #[test]
+    fn incoming_ids_are_stable_distinct_and_map_to_views() {
+        let views = [
+            IncomingView::All,
+            IncomingView::GapFills,
+            IncomingView::Duplicates,
+            IncomingView::NewSeries,
+            IncomingView::NeedsReview,
+        ];
+        let ids: HashSet<_> = views.iter().map(|view| view.id()).collect();
+        assert_eq!(ids.len(), views.len());
+        assert_eq!(
+            IncomingView::from_id(&incoming_root_id()),
+            Some(IncomingView::All)
+        );
+        for view in views {
+            assert_eq!(IncomingView::from_id(&view.id()), Some(view));
+        }
+        assert_eq!(
+            IncomingView::All.id().to_d_string(),
+            "63727573-742d-494e-8000-000000000001"
+        );
+    }
 
     #[test]
     fn badges_render_in_c_sharp_order_and_colors() {

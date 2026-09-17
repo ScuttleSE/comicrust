@@ -45,6 +45,23 @@ pub fn database_file(paths: &Paths) -> PathBuf {
     paths.database_path.join("ComicDb.xml")
 }
 
+/// The separate incoming catalog under `ApplicationDataPath/Incoming`.
+pub fn incoming_file(paths: &Paths) -> PathBuf {
+    paths
+        .application_data_path
+        .join("Incoming")
+        .join("IncomingDb.xml")
+}
+
+/// The private journal for the current Incoming mutation.
+pub fn incoming_transaction_file(paths: &Paths) -> PathBuf {
+    paths
+        .application_data_path
+        .join("Incoming")
+        .join("Transactions")
+        .join("current.json")
+}
+
 /// The unified config file — `comicrust.toml` in the config tree
 /// (`cr_core::settings::unified`; ADR-033). The C# `Settings.Load`/
 /// `Save` + the `IniFile.Default` chain both collapsed into it.
@@ -173,6 +190,12 @@ mod tests {
         assert_eq!(
             database_file(&paths),
             root.join("comicrust").join("ComicDb").join("ComicDb.xml")
+        );
+        assert_eq!(
+            incoming_file(&paths),
+            root.join("comicrust")
+                .join("Incoming")
+                .join("IncomingDb.xml")
         );
         assert!(paths.database_path.is_dir());
     }

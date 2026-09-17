@@ -17,6 +17,7 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
+use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::{
     Align, Box as GtkBox, Button, CheckButton, ComboBoxText, Dialog, Entry, Label, Orientation,
@@ -77,7 +78,7 @@ pub fn show_preferences(
     );
 
     // ----- Libraries (the watch folders; staged, committed on OK) -----
-    let (libraries_page, watch_commit) = build_libraries_page();
+    let (libraries_page, folder_commit, original_roles) = build_libraries_page();
     stack.add_titled(&libraries_page, Some("libraries"), "Libraries");
 
     // ----- Advanced (the cache sizes + file update flow) -----
@@ -121,27 +122,75 @@ pub fn show_preferences(
     dialog.add_button("Cancel", gtk4::ResponseType::Cancel);
 
     let working_commit = Rc::clone(&working);
+    let on_ok = Rc::new(RefCell::new(Some(Box::new(on_ok) as Box<dyn FnOnce()>)));
     dialog.connect_response(move |dlg, response| {
-        if response == gtk4::ResponseType::Ok {
-            // The behavior rows read back on OK (`RetrieveOptionsFromPanel`),
-            // the clone commits into the session, and the settings
-            // file saves (the C# persists at app exit).
-            behavior_panel.retrieve(&working_commit);
-            *session.borrow_mut() = working_commit.borrow().clone();
-            library::save_settings();
-            // The scraper page commits its plugin section on OK
-            // (Cancel discards).
-            let config = scraper.collect();
-            library::store_scraper_config(&config);
-            // The Libraries staging commits into the live database
-            // and rebuilds the watcher (the C#
-            // `CopyWatchFoldersToDatabase` runs on OK too).
-            let lib = library::session();
-            lib.borrow_mut()
-                .set_watch_folders(watch_commit.borrow().clone());
-            on_ok();
+        if response != gtk4::ResponseType::Ok {
+            dlg.close();
+            return;
         }
-        dlg.close();
+        behavior_panel.retrieve(&working_commit);
+        let roles = folder_commit.borrow().clone();
+        if let Err(message) = cr_engine::incoming::validate_folder_roots(&roles) {
+            show_preferences_message(
+                dlg,
+                gtk4::MessageType::Error,
+                "Invalid folder roles",
+                &message,
+            );
+            return;
+        }
+        let incoming_books = library::incoming_books_snapshot();
+        if let Err(message) = cr_engine::incoming::validate_unresolved_removals(
+            &original_roles,
+            &roles,
+            &incoming_books,
+        ) {
+            show_preferences_message(
+                dlg,
+                gtk4::MessageType::Error,
+                "Folder role cannot change",
+                &message,
+            );
+            return;
+        }
+        let old_config = library::incoming_config();
+        let discovery_old_config = old_config.clone();
+        let discovery_roles = roles.clone();
+        let confirmation_parent = dlg.clone();
+        let commit = {
+            let dlg = dlg.clone();
+            let working = working_commit.borrow().clone();
+            let scraper_config = scraper.collect();
+            let on_ok = Rc::clone(&on_ok);
+            move || {
+                commit_folder_roles_async(
+                    &dlg,
+                    working,
+                    scraper_config,
+                    roles,
+                    old_config,
+                    move || {
+                        if let Some(callback) = on_ok.borrow_mut().take() {
+                            callback();
+                        }
+                    },
+                );
+            }
+        };
+        let library_books = library::session().borrow().database().books.clone();
+        discover_conversion_count_async(
+            dlg,
+            library_books,
+            discovery_old_config,
+            discovery_roles,
+            move |transfer_count| {
+                if transfer_count == 0 {
+                    commit();
+                } else {
+                    confirm_conversion(&confirmation_parent, transfer_count, commit);
+                }
+            },
+        );
     });
 
     // The cache-folder row writes the ini at click time (the
@@ -151,18 +200,18 @@ pub fn show_preferences(
         .cache_path
         .clone();
     dialog.connect_response(move |dlg, response| {
-        if response != gtk4::ResponseType::Ok
-            && cr_core::settings::ExtendedSettings::global().cache_path != open_cache_path
-        {
-            let mut ext = cr_core::settings::ExtendedSettings::global_mut();
-            ext.cache_path = open_cache_path.clone();
-            drop(ext);
-            match open_cache_path.as_deref() {
-                Some(p) => library::save_ini_keys(&[("CachePath", p)]),
-                None => library::save_ini_keys(&[("CachePath", "")]),
+        if response != gtk4::ResponseType::Ok {
+            if cr_core::settings::ExtendedSettings::global().cache_path != open_cache_path {
+                let mut ext = cr_core::settings::ExtendedSettings::global_mut();
+                ext.cache_path = open_cache_path.clone();
+                drop(ext);
+                match open_cache_path.as_deref() {
+                    Some(p) => library::save_ini_keys(&[("CachePath", p)]),
+                    None => library::save_ini_keys(&[("CachePath", "")]),
+                }
             }
+            dlg.close();
         }
-        dlg.close();
     });
     dialog.present();
 }
@@ -253,7 +302,7 @@ fn build_reader_page(settings: &SettingsRef) -> GtkBox {
 
 /// The staged watch-folder list the Libraries page edits; the OK
 /// handler commits it through `Library::set_watch_folders`.
-type StagedWatchFolders = Rc<RefCell<Vec<cr_core::database::list_items::WatchFolder>>>;
+type StagedFolderRoles = Rc<RefCell<Vec<cr_engine::incoming::FolderRole>>>;
 
 /// The Libraries page: the database watch folders (`lbPaths` in the
 /// C# — a folder per row with a Watch check). The C# edits the list
@@ -261,33 +310,53 @@ type StagedWatchFolders = Rc<RefCell<Vec<cr_core::database::list_items::WatchFol
 /// OK (`CopyWatchFoldersToDatabase`); the port stages the same way and
 /// returns the staged list for the OK commit (`show_preferences`).
 /// Cancel drops the staging, so a toggle, an add, or a remove reverts.
-fn build_libraries_page() -> (GtkBox, StagedWatchFolders) {
+fn build_libraries_page() -> (
+    GtkBox,
+    StagedFolderRoles,
+    Vec<cr_engine::incoming::FolderRole>,
+) {
     let page = GtkBox::new(Orientation::Vertical, 6);
     page.set_margin_top(8);
     page.set_margin_bottom(8);
     page.set_margin_start(8);
     page.set_margin_end(8);
 
-    page.append(&section_label("Watch Folders"));
-    let staged: StagedWatchFolders = Rc::new(RefCell::new({
+    page.append(&section_label("Library Folders"));
+    let incoming = library::incoming_config();
+    let mut original_roles = {
         let lib = library::session();
         let l = lib.borrow();
-        l.database().watch_folders.clone()
-    }));
+        l.database()
+            .watch_folders
+            .iter()
+            .map(|folder| cr_engine::incoming::FolderRole {
+                folder: folder.folder.clone(),
+                incoming: incoming
+                    .incoming_folders
+                    .iter()
+                    .any(|root| cr_engine::incoming::roots_equal(root, &folder.folder)),
+                watch: folder.watch,
+            })
+            .collect::<Vec<_>>()
+    };
+    for root in &incoming.incoming_folders {
+        if !original_roles
+            .iter()
+            .any(|role| cr_engine::incoming::roots_equal(&role.folder, root))
+        {
+            original_roles.push(cr_engine::incoming::FolderRole {
+                folder: root.clone(),
+                incoming: true,
+                watch: true,
+            });
+        }
+    }
+    let staged: StagedFolderRoles = Rc::new(RefCell::new(original_roles.clone()));
     let list = gtk4::ListBox::new();
     // The C# `lbPaths` carries a SelectedIndex that gates btRemove
     // (`btRemoveFolder.Enabled = lbPaths.SelectedIndex != -1`).
     list.set_selection_mode(gtk4::SelectionMode::Single);
     refill_watch_rows(&list, &staged);
-
-    // The selected row names its folder through the row CheckButton
-    // label (folder strings are unique — the add rejects duplicates).
-    let selected_folder = |list: &gtk4::ListBox| -> Option<String> {
-        list.selected_row()
-            .and_then(|row| row.child())
-            .and_downcast::<CheckButton>()
-            .and_then(|cb| cb.label().map(|l| l.to_string()))
-    };
 
     let remove = Button::with_label("Remove");
     remove.set_halign(Align::Start);
@@ -302,10 +371,13 @@ fn build_libraries_page() -> (GtkBox, StagedWatchFolders) {
         let list = list.clone();
         let staged = Rc::clone(&staged);
         remove.connect_clicked(move |_| {
-            let Some(folder) = selected_folder(&list) else {
+            let Some(index) = list.selected_row().map(|row| row.index() as usize) else {
                 return;
             };
-            staged.borrow_mut().retain(|w| w.folder != folder);
+            if index >= staged.borrow().len() {
+                return;
+            }
+            staged.borrow_mut().remove(index);
             refill_watch_rows(&list, &staged);
         });
     }
@@ -335,8 +407,9 @@ fn build_libraries_page() -> (GtkBox, StagedWatchFolders) {
                             // items); the port rejects them on add.
                             let mut staged_list = staged.borrow_mut();
                             if !staged_list.iter().any(|w| w.folder == folder) {
-                                staged_list.push(cr_core::database::list_items::WatchFolder {
+                                staged_list.push(cr_engine::incoming::FolderRole {
                                     folder,
+                                    incoming: false,
                                     watch: true,
                                 });
                                 drop(staged_list);
@@ -354,28 +427,388 @@ fn build_libraries_page() -> (GtkBox, StagedWatchFolders) {
     buttons.append(&remove);
     page.append(&list);
     page.append(&buttons);
-    (page, staged)
+    (page, staged, original_roles)
 }
 
 /// Rebuilds the watch-folder rows from the staged list (one
 /// CheckButton per folder; the check writes `WatchFolder.Watch` in
 /// the staging — the C# `lbPaths` item check).
-fn refill_watch_rows(list: &gtk4::ListBox, staged: &StagedWatchFolders) {
+fn refill_watch_rows(list: &gtk4::ListBox, staged: &StagedFolderRoles) {
     while let Some(child) = list.first_child() {
         list.remove(&child);
     }
-    for wf in staged.borrow().iter() {
-        let watch = CheckButton::with_label(&wf.folder);
-        watch.set_active(wf.watch);
-        let folder = wf.folder.clone();
+    for role in staged.borrow().iter() {
+        let row = GtkBox::new(Orientation::Horizontal, 8);
+        let folder_label = Label::builder()
+            .label(&role.folder)
+            .halign(Align::Start)
+            .hexpand(true)
+            .build();
+        let role_combo = ComboBoxText::new();
+        role_combo.append_text("Library");
+        role_combo.append_text("Incoming");
+        role_combo.set_active(Some(u32::from(role.incoming)));
+        let watch = CheckButton::with_label("Watch");
+        watch.set_active(role.incoming || role.watch);
+        watch.set_sensitive(!role.incoming);
+        let folder = role.folder.clone();
+        let staged_for_role = Rc::clone(staged);
+        let watch_for_role = watch.clone();
+        role_combo.connect_changed(move |combo| {
+            let incoming = combo.active() == Some(1);
+            if let Some(role) = staged_for_role
+                .borrow_mut()
+                .iter_mut()
+                .find(|role| role.folder == folder)
+            {
+                role.incoming = incoming;
+            }
+            watch_for_role.set_active(true);
+            watch_for_role.set_sensitive(!incoming);
+        });
+        let folder = role.folder.clone();
         let staged = Rc::clone(staged);
-        watch.connect_toggled(move |cb| {
-            if let Some(w) = staged.borrow_mut().iter_mut().find(|w| w.folder == folder) {
-                w.watch = cb.is_active();
+        watch.connect_toggled(move |check| {
+            if !check.is_sensitive() {
+                return;
+            }
+            if let Some(role) = staged
+                .borrow_mut()
+                .iter_mut()
+                .find(|role| role.folder == folder)
+            {
+                role.watch = check.is_active();
             }
         });
-        list.append(&watch);
+        row.append(&folder_label);
+        row.append(&role_combo);
+        row.append(&watch);
+        list.append(&row);
     }
+}
+
+fn show_preferences_message(
+    parent: &impl IsA<gtk4::Window>,
+    kind: gtk4::MessageType,
+    heading: &str,
+    message: &str,
+) {
+    let dialog = gtk4::MessageDialog::builder()
+        .transient_for(parent)
+        .modal(true)
+        .message_type(kind)
+        .text(heading)
+        .secondary_text(message)
+        .buttons(gtk4::ButtonsType::Close)
+        .build();
+    dialog.connect_response(|dialog, _| dialog.close());
+    dialog.present();
+}
+
+fn confirm_conversion(
+    parent: &impl IsA<gtk4::Window>,
+    count: usize,
+    commit: impl FnOnce() + 'static,
+) {
+    let dialog = gtk4::MessageDialog::builder()
+        .transient_for(parent)
+        .modal(true)
+        .message_type(gtk4::MessageType::Question)
+        .text(format!(
+            "Move {count} library record(s) to the Incoming catalog?"
+        ))
+        .secondary_text("The records keep their IDs and saved-list references.")
+        .build();
+    dialog.add_button("Cancel", gtk4::ResponseType::Cancel);
+    dialog.add_button("Move and Save", gtk4::ResponseType::Ok);
+    let commit = Rc::new(RefCell::new(Some(commit)));
+    dialog.connect_response(move |dialog, response| {
+        dialog.close();
+        if response == gtk4::ResponseType::Ok {
+            if let Some(commit) = commit.borrow_mut().take() {
+                commit();
+            }
+        }
+    });
+    dialog.present();
+}
+
+fn discover_conversion_count_async(
+    parent: &Dialog,
+    books: Vec<cr_core::model::comic_book::ComicBook>,
+    old_config: cr_engine::incoming::IncomingConfig,
+    roles: Vec<cr_engine::incoming::FolderRole>,
+    done: impl FnOnce(usize) + 'static,
+) {
+    let ok_button = parent.widget_for_response(gtk4::ResponseType::Ok);
+    if let Some(button) = ok_button.as_ref() {
+        button.set_sensitive(false);
+    }
+    let (tx, rx) = std::sync::mpsc::channel();
+    let spawn = std::thread::Builder::new()
+        .name("Incoming Conversion Discovery".into())
+        .spawn(move || {
+            let count = cr_engine::incoming::conversion_indexes(&books, &old_config, &roles).len();
+            let _ = tx.send(count);
+        });
+    if let Err(error) = spawn {
+        if let Some(button) = ok_button.as_ref() {
+            button.set_sensitive(true);
+        }
+        show_preferences_message(
+            parent,
+            gtk4::MessageType::Error,
+            "Preferences were not saved",
+            &format!("The conversion discovery worker could not start: {error}"),
+        );
+        return;
+    }
+    let parent = parent.clone();
+    let mut done = Some(done);
+    glib::timeout_add_local(std::time::Duration::from_millis(25), move || {
+        match rx.try_recv() {
+            Ok(count) => {
+                if let Some(button) = ok_button.as_ref() {
+                    button.set_sensitive(true);
+                }
+                if parent.is_visible() {
+                    if let Some(done) = done.take() {
+                        done(count);
+                    }
+                }
+                glib::ControlFlow::Break
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                if let Some(button) = ok_button.as_ref() {
+                    button.set_sensitive(true);
+                }
+                if parent.is_visible() {
+                    show_preferences_message(
+                        &parent,
+                        gtk4::MessageType::Error,
+                        "Preferences were not saved",
+                        "The conversion discovery worker stopped without a result.",
+                    );
+                }
+                glib::ControlFlow::Break
+            }
+        }
+    });
+}
+
+fn commit_folder_roles_async(
+    dialog: &Dialog,
+    settings: cr_core::settings::Settings,
+    scraper: cr_scrape::config::Configuration,
+    roles: Vec<cr_engine::incoming::FolderRole>,
+    mut incoming_config: cr_engine::incoming::IncomingConfig,
+    on_ok: impl FnOnce() + 'static,
+) {
+    if cr_engine::incoming_transaction::operation_active() {
+        show_preferences_message(
+            dialog,
+            gtk4::MessageType::Error,
+            "Preferences were not saved",
+            "Another Incoming operation is active. Try again after it finishes.",
+        );
+        return;
+    }
+    let Some(incoming_table) = cr_core::settings::unified::serialize_plugin(&incoming_config)
+    else {
+        show_preferences_message(
+            dialog,
+            gtk4::MessageType::Error,
+            "Preferences were not saved",
+            "The Incoming configuration could not be serialized.",
+        );
+        return;
+    };
+    let Some(scraper_table) = cr_core::settings::unified::serialize_plugin(&scraper) else {
+        show_preferences_message(
+            dialog,
+            gtk4::MessageType::Error,
+            "Preferences were not saved",
+            "The scraper configuration could not be serialized.",
+        );
+        return;
+    };
+    let paths = cr_core::paths::Paths::new_default();
+    let database_file = cr_core::paths::database_file(&paths);
+    let config_file = cr_core::paths::config_file(&paths);
+    let replacements = vec![
+        (library::INCOMING_PLUGIN.to_string(), incoming_table),
+        (library::SCRAPER_PLUGIN.to_string(), scraper_table),
+    ];
+    let worker_settings = settings.clone();
+    let mut worker_database = library::session().borrow().database().clone();
+    let mut worker_incoming = library::incoming_session().borrow().clone();
+    let captured_epoch = cr_engine::incoming_transaction::database_epoch();
+    let (tx, rx) = std::sync::mpsc::channel();
+    if !cr_engine::incoming_transaction::begin_operation() {
+        show_preferences_message(
+            dialog,
+            gtk4::MessageType::Error,
+            "Preferences were not saved",
+            "Another operation is active. Try again after it finishes.",
+        );
+        return;
+    }
+    let spawn = std::thread::Builder::new()
+        .name("preferences-save".into())
+        .spawn(move || {
+            let result = (|| -> Result<_, String> {
+                let _guard = cr_engine::incoming_transaction::acquire_mutation_guard();
+                if cr_engine::incoming_transaction::database_epoch() != captured_epoch {
+                    return Err(
+                        "The library changed before the folder conversion started. Try again."
+                            .into(),
+                    );
+                }
+                let database_before =
+                    cr_core::database::comic_database::save_bytes(&worker_database)
+                        .map_err(|error| error.to_string())?;
+                let incoming_before = worker_incoming
+                    .to_bytes()
+                    .map_err(|error| error.to_string())?;
+                cr_engine::incoming::transfer_new_incoming_records(
+                    &mut worker_database,
+                    &mut worker_incoming,
+                    &incoming_config,
+                    &roles,
+                );
+                worker_database.watch_folders = roles
+                    .iter()
+                    .map(|role| cr_core::database::list_items::WatchFolder {
+                        folder: role.folder.clone(),
+                        watch: role.incoming || role.watch,
+                    })
+                    .collect();
+                incoming_config.incoming_folders = roles
+                    .iter()
+                    .filter(|role| role.incoming)
+                    .map(|role| role.folder.clone())
+                    .collect();
+                let mut transaction = cr_engine::incoming_transaction::IncomingTransaction {
+                    kind: cr_engine::incoming_transaction::TransactionKind::FolderConversion,
+                    stage: cr_engine::incoming_transaction::TransactionStage::Prepared,
+                    files: cr_engine::incoming_transaction::TransactionFiles {
+                        incoming_catalog: Some(cr_engine::incoming_transaction::FileSnapshot {
+                            before: Some(incoming_before),
+                            after: worker_incoming
+                                .to_bytes()
+                                .map_err(|error| error.to_string())?,
+                            path: cr_core::paths::incoming_file(&paths),
+                            remove_after: false,
+                        }),
+                        comic_database: Some(cr_engine::incoming_transaction::FileSnapshot {
+                            before: Some(database_before),
+                            after: cr_core::database::comic_database::save_bytes(&worker_database)
+                                .map_err(|error| error.to_string())?,
+                            path: database_file,
+                            remove_after: false,
+                        }),
+                        config: Some(cr_engine::incoming_transaction::FileSnapshot {
+                            before: std::fs::read(&config_file).ok(),
+                            after: cr_core::settings::unified::save_bytes_with_plugin_tables(
+                                &worker_settings,
+                                &replacements,
+                            )
+                            .map_err(|error| error.to_string())?,
+                            path: config_file,
+                            remove_after: false,
+                        }),
+                        auxiliary: Vec::new(),
+                    },
+                    external_actions: Vec::new(),
+                };
+                let engine = cr_engine::incoming_transaction::TransactionEngine::new(&paths);
+                engine
+                    .begin(&transaction)
+                    .map_err(|error| error.to_string())?;
+                if cr_engine::incoming_transaction::database_epoch() != captured_epoch {
+                    engine.abort_prepared().map_err(|error| error.to_string())?;
+                    return Err(
+                        "The library changed during the folder conversion. Try again.".into(),
+                    );
+                }
+                let committed_epoch = _guard
+                    .commit_if_epoch(captured_epoch, &engine, &mut transaction)
+                    .inspect_err(|error| {
+                        if matches!(
+                            error,
+                            cr_engine::incoming_transaction::TransactionError::EpochChanged
+                        ) {
+                            let _ = engine.abort_prepared();
+                        }
+                    })
+                    .map_err(|error| error.to_string())?;
+                Ok((
+                    worker_database,
+                    worker_incoming,
+                    incoming_config,
+                    committed_epoch,
+                ))
+            })();
+            let _ = tx.send(result);
+        });
+    if let Err(error) = spawn {
+        cr_engine::incoming_transaction::end_operation();
+        show_preferences_message(
+            dialog,
+            gtk4::MessageType::Error,
+            "Preferences were not saved",
+            &format!("The save worker could not start: {error}"),
+        );
+        return;
+    }
+
+    dialog.set_sensitive(false);
+    let dialog = dialog.clone();
+    let on_ok = Rc::new(RefCell::new(Some(on_ok)));
+    glib::timeout_add_local(std::time::Duration::from_millis(25), move || {
+        let result = match rx.try_recv() {
+            Ok(result) => result,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return glib::ControlFlow::Continue,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                Err("The save worker stopped without a result.".into())
+            }
+        };
+        cr_engine::incoming_transaction::end_operation();
+        dialog.set_sensitive(true);
+        match result {
+            Ok((database, incoming, incoming_config, committed_epoch)) => {
+                if cr_engine::incoming_transaction::database_epoch() != committed_epoch {
+                    show_preferences_message(
+                        &dialog,
+                        gtk4::MessageType::Error,
+                        "Preferences were saved",
+                        "The live library changed after the save. Restart ComicRust to load the saved folder roles.",
+                    );
+                    return glib::ControlFlow::Break;
+                }
+                *library::settings().borrow_mut() = settings.clone();
+                cr_core::settings::unified::set_plugin(library::INCOMING_PLUGIN, &incoming_config);
+                cr_core::settings::unified::set_plugin(library::SCRAPER_PLUGIN, &scraper);
+                library::session()
+                    .borrow_mut()
+                    .install_persisted_database(database.clone());
+                library::replace_incoming_catalog(incoming);
+                crate::gauges::invalidate();
+                if let Some(callback) = on_ok.borrow_mut().take() {
+                    callback();
+                }
+                dialog.close();
+            }
+            Err(error) => show_preferences_message(
+                &dialog,
+                gtk4::MessageType::Error,
+                "Preferences were not saved",
+                &error,
+            ),
+        }
+        glib::ControlFlow::Break
+    });
 }
 
 /// The Advanced page: the cache sizes (the C# `numMemPageCount`

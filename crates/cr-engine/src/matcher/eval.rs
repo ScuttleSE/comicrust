@@ -1122,6 +1122,12 @@ pub(crate) fn duplicate_groups(items: &[&ComicBook]) -> Vec<Vec<usize>> {
     out
 }
 
+/// Groups books with the same rules as `ComicBookDuplicateMatcher`.
+/// Returned values contain indexes into `items`; singleton groups are omitted.
+pub fn grouped_duplicate_indexes(items: &[&ComicBook]) -> Vec<Vec<usize>> {
+    duplicate_groups(items)
+}
+
 /// `GroupInfo.CompressedName`: drop separator-delimited articles,
 /// concatenate. The C# uses the (ini-configured) article list; the
 /// default here is the list shipped in ComicRack.ini.

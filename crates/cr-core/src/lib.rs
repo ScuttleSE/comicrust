@@ -5,6 +5,7 @@
 //! ComicRackCE (net48). See `xml` module docs for the exact rules.
 
 pub mod database;
+pub mod durable;
 pub mod model;
 pub mod paths;
 pub mod registry;

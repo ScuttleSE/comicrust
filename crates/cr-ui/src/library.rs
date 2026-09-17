@@ -27,7 +27,14 @@ struct QueuedScan {
     label: String,
     items: Vec<ScanItem>,
     limits: cr_engine::scanner::ScanLimits,
+    target: ScanTarget,
     done: Box<dyn FnOnce(ScanResult)>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScanTarget {
+    Library,
+    Incoming,
 }
 
 /// The shell's per-batch view refresh (a Weak capture lives inside).
@@ -35,6 +42,17 @@ type ScanViewHook = Box<dyn Fn(&[ComicBook])>;
 
 thread_local! {
     static SESSION: RefCell<Option<Rc<RefCell<Library>>>> = const { RefCell::new(None) };
+    static INCOMING_SESSION: RefCell<Option<Rc<RefCell<cr_engine::incoming::IncomingCatalog>>>> =
+        const { RefCell::new(None) };
+    static INCOMING_EXTERNAL_GAPS: RefCell<cr_engine::incoming::ExternalGapCache> =
+        RefCell::new(cr_engine::incoming::ExternalGapCache::new());
+    static INCOMING_CLASSIFICATION: RefCell<Option<IncomingClassificationSnapshot>> =
+        const { RefCell::new(None) };
+    static INCOMING_CLASSIFICATION_GENERATION: Cell<u64> = const { Cell::new(0) };
+    static INCOMING_CLASSIFICATION_ACTIVE: Cell<bool> = const { Cell::new(false) };
+    static INCOMING_GAP_GENERATION: Cell<u64> = const { Cell::new(0) };
+    static INCOMING_GAP_REFRESH_ACTIVE: Cell<bool> = const { Cell::new(false) };
+    static INCOMING_GAP_VIEW_HOOK: RefCell<Option<Box<dyn Fn()>>> = const { RefCell::new(None) };
     /// The Comic Vine cache job that runs now (ADR-037, ADR-038): the
     /// MCL import, the incremental sweep, or the warm task. One at a
     /// time, because the sweep and the warm task share one
@@ -53,6 +71,7 @@ thread_local! {
     /// while the worker runs wait here, in arrival order.
     static SCAN_QUEUE: RefCell<Vec<QueuedScan>> = const { RefCell::new(Vec::new()) };
     static SCAN_IN_FLIGHT: RefCell<bool> = const { RefCell::new(false) };
+    static SCAN_TARGET: Cell<ScanTarget> = const { Cell::new(ScanTarget::Library) };
     /// The location the in-flight scan walks (`Scanner.CurrentLocation`
     /// — the Tasks dialog's scan row).
     static SCAN_LOCATION: RefCell<String> = const { RefCell::new(String::new()) };
@@ -77,6 +96,7 @@ thread_local! {
             skipped: 0,
             skipped_known_bad: 0,
         }) };
+    static SCAN_COMPLETION_ERROR: RefCell<Option<String>> = const { RefCell::new(None) };
     /// Book ids removed on the main thread while a scan is in flight
     /// (the remove flow records them): the landing merge drops them
     /// from the worker's storage copy instead of resurrecting them.
@@ -99,6 +119,16 @@ thread_local! {
         const { RefCell::new(None) };
 }
 
+thread_local! {
+    static BACKGROUND_SAVE_IN_FLIGHT: RefCell<bool> = const { RefCell::new(false) };
+}
+
+#[derive(Clone)]
+pub struct IncomingClassificationSnapshot {
+    pub books: Vec<ComicBook>,
+    pub classifications: Vec<cr_engine::incoming::IncomingClassification>,
+}
+
 /// Installs the per-batch scan view refresh (the shell does this at
 /// creation; the hook must not own the shell — use a Weak capture).
 pub fn set_scan_view_hook(hook: Option<ScanViewHook>) {
@@ -117,7 +147,7 @@ fn fire_scan_view_hook(batch: &[ComicBook]) {
 /// flight (the landing merge must not resurrect it from the worker's
 /// storage copy).
 pub fn record_scan_removal(id: &CrGuid) {
-    if is_scanning() {
+    if is_library_scanning() {
         SCAN_REMOVED_IDS.with(|s| s.borrow_mut().insert(*id));
     }
 }
@@ -125,9 +155,13 @@ pub fn record_scan_removal(id: &CrGuid) {
 /// Records a book id the main thread mutated while a scan is in
 /// flight (the landing merge keeps the database copy for it).
 fn record_scan_touch(id: &CrGuid) {
-    if is_scanning() {
+    if is_library_scanning() {
         SCAN_TOUCHED_IDS.with(|s| s.borrow_mut().insert(*id));
     }
+}
+
+fn is_library_scanning() -> bool {
+    is_scanning() && SCAN_TARGET.with(|cell| cell.get() == ScanTarget::Library)
 }
 
 /// Drains the mid-scan side-effect records (the landing merge).
@@ -187,6 +221,7 @@ pub enum CvJobKind {
     Import,
     Sweep,
     Warm,
+    IncomingRefresh,
 }
 
 impl CvJobKind {
@@ -196,6 +231,7 @@ impl CvJobKind {
             CvJobKind::Import => "Importing an MCL file",
             CvJobKind::Sweep => "Updating the Comic Vine cache",
             CvJobKind::Warm => "Warming the Comic Vine cache",
+            CvJobKind::IncomingRefresh => "Refreshing Incoming from Comic Vine",
         }
     }
 }
@@ -393,6 +429,11 @@ pub fn take_scan_problem_summary() -> ScanProblemSummary {
     SCAN_PROBLEMS.with(|cell| std::mem::take(&mut *cell.borrow_mut()))
 }
 
+/// Takes a worker failure that prevented a scan from landing.
+pub fn take_scan_completion_error() -> Option<String> {
+    SCAN_COMPLETION_ERROR.with(|cell| cell.borrow_mut().take())
+}
+
 /// Opens the library database at the default location (`Program`'s
 /// startup `DatabaseManager.Open`). Returns the `OpenMessage` the C#
 /// would show in the attention dialog (None for a plain load).
@@ -401,14 +442,62 @@ pub fn take_scan_problem_summary() -> ScanProblemSummary {
 /// `comicrust.toml` (the C# `Settings.Load` + the `IniFile` chain —
 /// ADR-033) plus the argv switches for `EngineConfiguration`/
 /// `ExtendedSettings` (the `CommandLineParser` boot).
-pub fn initialize() -> Result<Option<String>, cr_core::database::DbError> {
-    let (library, status) = Library::open_at_default_location()?;
-    let message = open_message(status);
+pub fn initialize() -> anyhow::Result<Option<String>> {
+    let bootstrap = load_bootstrap()?;
+    initialize_settings();
+    Ok(install_bootstrap(bootstrap))
+}
+
+/// Data loaded before the GTK session can be installed.
+pub struct BootstrapData {
+    library: Library,
+    incoming: cr_engine::incoming::IncomingCatalog,
+    message: Option<String>,
+}
+
+/// Recovers transactions and loads both catalogs. Call this on a worker.
+pub fn load_bootstrap() -> anyhow::Result<BootstrapData> {
+    let paths = cr_core::paths::Paths::new_default();
+    let _guard = cr_engine::incoming_transaction::acquire_mutation_guard();
+    cr_engine::incoming_transaction::TransactionEngine::new(&paths).recover()?;
+    let (library, status) = Library::open_without_watcher(&cr_core::paths::database_file(&paths))?;
+    let (incoming, incoming_message) =
+        match cr_engine::incoming::IncomingCatalog::load(&paths) {
+            Ok(catalog) => (catalog, None),
+            Err(error) => (
+                cr_engine::incoming::IncomingCatalog::default(),
+                Some(format!(
+                    "The Incoming catalog could not be opened. Incoming starts empty for this session. The catalog file was not changed.\n\n{error}"
+                )),
+            ),
+        };
+    let message = match (open_message(status), incoming_message) {
+        (Some(library), Some(incoming)) => Some(format!("{library}\n\n{incoming}")),
+        (library, incoming) => library.or(incoming),
+    };
+    Ok(BootstrapData {
+        library,
+        incoming,
+        message,
+    })
+}
+
+/// Installs worker-loaded startup data on the GTK thread.
+pub fn install_bootstrap(bootstrap: BootstrapData) -> Option<String> {
+    let mut library = bootstrap.library;
+    library.start_watcher();
     SESSION.with(|cell| {
         *cell.borrow_mut() = Some(Rc::new(RefCell::new(library)));
     });
+    INCOMING_SESSION.with(|cell| {
+        *cell.borrow_mut() = Some(Rc::new(RefCell::new(bootstrap.incoming)));
+    });
+    bootstrap.message
+}
+
+/// Loads settings after the startup worker completes.
+pub fn initialize_bootstrap_settings() {
     initialize_settings();
-    Ok(message)
 }
 
 /// The settings boot (`Settings.Load` + the ini keys + argv). A
@@ -557,26 +646,32 @@ pub fn organizer_undo_path() -> std::path::PathBuf {
         .join("undo.dat")
 }
 
-/// The Comic Vine disk cache (ADR-037), opened once per process.
+/// The Comic Vine disk cache (ADR-037), retained after a successful open.
 ///
 /// The cache is a file, and the sweep, the warm task, and the scrape
 /// worker all use it. `None` means the file could not be opened; the
 /// caller must then work without a cache, not fail.
 pub fn cv_cache() -> Option<std::sync::Arc<cr_scrape::cache::SqliteCache>> {
-    use std::sync::OnceLock;
-    static CACHE: OnceLock<Option<std::sync::Arc<cr_scrape::cache::SqliteCache>>> = OnceLock::new();
-    CACHE
-        .get_or_init(|| {
-            let path = cr_scrape::cache::default_cache_path();
-            match cr_scrape::cache::SqliteCache::open(&path) {
-                Ok(cache) => Some(std::sync::Arc::new(cache)),
-                Err(e) => {
-                    crate::trace::trace(format!("the Comic Vine cache could not open: {e}"));
-                    None
-                }
-            }
-        })
-        .clone()
+    use std::sync::{Mutex, OnceLock};
+    static CACHE: OnceLock<Mutex<Option<std::sync::Arc<cr_scrape::cache::SqliteCache>>>> =
+        OnceLock::new();
+    let cache = CACHE.get_or_init(|| Mutex::new(None));
+    let mut cached = cache.lock().unwrap();
+    if let Some(cache) = cached.as_ref() {
+        return Some(std::sync::Arc::clone(cache));
+    }
+    let path = cr_scrape::cache::default_cache_path();
+    match cr_scrape::cache::SqliteCache::open(&path) {
+        Ok(cache) => {
+            let cache = std::sync::Arc::new(cache);
+            *cached = Some(std::sync::Arc::clone(&cache));
+            Some(cache)
+        }
+        Err(error) => {
+            crate::trace::trace(format!("the Comic Vine cache could not open: {error}"));
+            None
+        }
+    }
 }
 
 /// The per-resource request budget over the shared cache, built from
@@ -584,13 +679,13 @@ pub fn cv_cache() -> Option<std::sync::Arc<cr_scrape::cache::SqliteCache>> {
 /// is off, or its file could not open.
 pub fn cv_budget(
     config: &cr_scrape::config::Configuration,
+    cache: std::sync::Arc<cr_scrape::cache::SqliteCache>,
     cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
     on_wait: Option<Box<cr_scrape::cache::budget::WaitFn>>,
 ) -> Option<std::sync::Arc<cr_scrape::cache::budget::Budget>> {
     if !config.advanced().cache_enabled {
         return None;
     }
-    let cache = cv_cache()?;
     let (policy, _, _) = cr_scrape::cache::policies_from(config.advanced());
     let mut budget = cr_scrape::cache::budget::Budget::new(
         cache as std::sync::Arc<dyn cr_scrape::cache::CvCache>,
@@ -667,6 +762,9 @@ pub fn install_cache_events(pool: &std::sync::Arc<cr_engine::image_pool::ImagePo
     pool.set_event_tx(cr_engine::image_pool::CacheEventTx::new(tx));
     let library = session();
     glib::timeout_add_local(std::time::Duration::from_millis(500), move || {
+        if cr_engine::incoming_transaction::operation_active() {
+            return ControlFlow::Continue;
+        }
         // Drain every pending event per tick (the warm-up emits
         // thousands; one per tick would lag the write-back behind
         // for hours).
@@ -794,6 +892,409 @@ pub fn try_session() -> Option<Rc<RefCell<Library>>> {
     SESSION.with(|cell| cell.borrow().clone())
 }
 
+/// The separate Incoming catalog session. Panics before [`initialize`].
+pub fn incoming_session() -> Rc<RefCell<cr_engine::incoming::IncomingCatalog>> {
+    INCOMING_SESSION.with(|cell| {
+        cell.borrow()
+            .clone()
+            .expect("incoming session not initialized")
+    })
+}
+
+/// A main-thread snapshot for Incoming views and worker jobs.
+pub fn incoming_books_snapshot() -> Vec<ComicBook> {
+    incoming_session().borrow().books.clone()
+}
+
+/// Returns Incoming books in the requested ID order.
+pub fn incoming_books_by_ids(ids: &[CrGuid]) -> Vec<ComicBook> {
+    let catalog = incoming_session();
+    let catalog = catalog.borrow();
+    ids.iter()
+        .filter_map(|id| catalog.books.iter().find(|book| book.id == *id).cloned())
+        .collect()
+}
+
+/// Lands a worker-saved Incoming catalog in the main-thread session.
+pub fn replace_incoming_catalog(catalog: cr_engine::incoming::IncomingCatalog) {
+    INCOMING_CLASSIFICATION.with(|snapshot| *snapshot.borrow_mut() = None);
+    *incoming_session().borrow_mut() = catalog;
+    cr_engine::incoming_transaction::advance_database_epoch();
+    INCOMING_GAP_VIEW_HOOK.with(|cell| {
+        if let Some(hook) = cell.borrow().as_ref() {
+            hook();
+        }
+    });
+    refresh_incoming_classification_async();
+    refresh_incoming_external_gaps_async();
+}
+
+/// Saves an Incoming snapshot on a worker and returns it for main-thread landing.
+pub fn save_incoming_catalog_async(
+    catalog: cr_engine::incoming::IncomingCatalog,
+    done: impl FnOnce(Result<cr_engine::incoming::IncomingCatalog, String>) + 'static,
+) {
+    if cr_engine::incoming_transaction::operation_active() {
+        done(Err("Another Incoming operation is active.".into()));
+        return;
+    }
+    let epoch = cr_engine::incoming_transaction::database_epoch();
+    let (tx, rx) = std::sync::mpsc::channel();
+    if !cr_engine::incoming_transaction::begin_operation() {
+        done(Err("Another operation is active.".into()));
+        return;
+    }
+    std::thread::Builder::new()
+        .name("Save Incoming Catalog".into())
+        .spawn(move || {
+            let _guard = cr_engine::incoming_transaction::acquire_mutation_guard();
+            let paths = cr_core::paths::Paths::new_default();
+            let result = (|| -> Result<_, String> {
+                let mut transaction = cr_engine::incoming_transaction::IncomingTransaction {
+                    kind: cr_engine::incoming_transaction::TransactionKind::Scan,
+                    stage: cr_engine::incoming_transaction::TransactionStage::Prepared,
+                    files: cr_engine::incoming_transaction::TransactionFiles {
+                        incoming_catalog: Some(cr_engine::incoming_transaction::FileSnapshot {
+                            path: cr_core::paths::incoming_file(&paths),
+                            before: std::fs::read(cr_core::paths::incoming_file(&paths)).ok(),
+                            after: catalog.to_bytes().map_err(|error| error.to_string())?,
+                            remove_after: false,
+                        }),
+                        ..Default::default()
+                    },
+                    external_actions: Vec::new(),
+                };
+                let engine = cr_engine::incoming_transaction::TransactionEngine::new(&paths);
+                engine
+                    .begin(&transaction)
+                    .map_err(|error| error.to_string())?;
+                _guard
+                    .commit_if_epoch(epoch, &engine, &mut transaction)
+                    .inspect_err(|error| {
+                        if matches!(
+                            error,
+                            cr_engine::incoming_transaction::TransactionError::EpochChanged
+                        ) {
+                            let _ = engine.abort_prepared();
+                        }
+                    })
+                    .map_err(|error| error.to_string())?;
+                Ok(catalog)
+            })();
+            let _ = tx.send(result);
+        })
+        .expect("spawn Incoming catalog save");
+    let mut done = Some(done);
+    glib::timeout_add_local(std::time::Duration::from_millis(50), move || {
+        match rx.try_recv() {
+            Ok(result) => {
+                cr_engine::incoming_transaction::end_operation();
+                if let Some(done) = done.take() {
+                    done(result);
+                }
+                ControlFlow::Break
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => ControlFlow::Continue,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                cr_engine::incoming_transaction::end_operation();
+                if let Some(done) = done.take() {
+                    done(Err("The Incoming catalog save worker stopped.".into()));
+                }
+                ControlFlow::Break
+            }
+        }
+    });
+}
+
+/// Saves the Incoming catalog and residual organizer undo state on one worker.
+pub fn save_incoming_and_undo_async(
+    catalog: cr_engine::incoming::IncomingCatalog,
+    undo_path: std::path::PathBuf,
+    residual: cr_organize::engine::UndoCollection,
+    manifest: Option<cr_organize::engine::AdoptionManifest>,
+    done: impl FnOnce(Result<cr_engine::incoming::IncomingCatalog, String>) + 'static,
+) {
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .name("Save Incoming Undo".into())
+        .spawn(move || {
+            let manifest_path = cr_organize::engine::adoption_manifest_path(&undo_path);
+            let result = (|| -> Result<_, String> {
+                catalog
+                    .save(&cr_core::paths::Paths::new_default())
+                    .map_err(|error| error.to_string())?;
+                if residual.is_empty() {
+                    remove_if_present(&undo_path)?;
+                    remove_if_present(&manifest_path)?;
+                } else {
+                    residual
+                        .save_for_retry(&undo_path)
+                        .map_err(|error| error.to_string())?;
+                    if let Some(manifest) = manifest {
+                        manifest
+                            .save(&manifest_path)
+                            .map_err(|error| error.to_string())?;
+                    }
+                }
+                Ok(catalog)
+            })();
+            let _ = tx.send(result);
+        })
+        .expect("spawn Incoming undo save");
+    let mut done = Some(done);
+    glib::timeout_add_local(std::time::Duration::from_millis(50), move || {
+        match rx.try_recv() {
+            Ok(result) => {
+                if let Some(done) = done.take() {
+                    done(result);
+                }
+                ControlFlow::Break
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => ControlFlow::Continue,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                if let Some(done) = done.take() {
+                    done(Err("The Incoming undo save worker stopped.".into()));
+                }
+                ControlFlow::Break
+            }
+        }
+    });
+}
+
+fn remove_if_present(path: &Path) -> Result<(), String> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+/// Returns the last worker-built Incoming classification snapshot.
+pub fn incoming_classification_snapshot() -> Option<IncomingClassificationSnapshot> {
+    INCOMING_CLASSIFICATION.with(|snapshot| snapshot.borrow().clone())
+}
+
+/// Rebuilds Incoming dynamic-view membership on a worker.
+pub fn refresh_incoming_classification_async() {
+    let generation = INCOMING_CLASSIFICATION_GENERATION.with(|cell| {
+        let next = cell.get().wrapping_add(1);
+        cell.set(next);
+        next
+    });
+    let active = INCOMING_CLASSIFICATION_ACTIVE.with(|cell| {
+        let active = cell.get();
+        if !active {
+            cell.set(true);
+        }
+        active
+    });
+    if active {
+        return;
+    }
+    let books = incoming_books_snapshot();
+    let library = session().borrow().database().books.clone();
+    let external_gaps = incoming_external_gap_cache();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .name("Incoming Classification".into())
+        .spawn(move || {
+            let classifications =
+                cr_engine::incoming::classify_incoming(&books, &library, &external_gaps);
+            let _ = tx.send((generation, books, classifications));
+        })
+        .expect("spawn Incoming classification worker");
+    glib::timeout_add_local(std::time::Duration::from_millis(50), move || {
+        match rx.try_recv() {
+            Ok((completed, books, classifications)) => {
+                let current = INCOMING_CLASSIFICATION_GENERATION.with(Cell::get);
+                INCOMING_CLASSIFICATION_ACTIVE.with(|cell| cell.set(false));
+                if completed == current {
+                    INCOMING_CLASSIFICATION.with(|snapshot| {
+                        *snapshot.borrow_mut() = Some(IncomingClassificationSnapshot {
+                            books,
+                            classifications,
+                        });
+                    });
+                    INCOMING_GAP_VIEW_HOOK.with(|cell| {
+                        if let Some(hook) = cell.borrow().as_ref() {
+                            hook();
+                        }
+                    });
+                } else {
+                    refresh_incoming_classification_async();
+                }
+                ControlFlow::Break
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => ControlFlow::Continue,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                INCOMING_CLASSIFICATION_ACTIVE.with(|cell| cell.set(false));
+                crate::trace::trace(format!(
+                    "Incoming classification worker stopped at generation {generation}"
+                ));
+                let current = INCOMING_CLASSIFICATION_GENERATION.with(Cell::get);
+                if generation != current {
+                    refresh_incoming_classification_async();
+                }
+                ControlFlow::Break
+            }
+        }
+    });
+}
+
+/// Supplies the last worker-built cached external gaps to Incoming evaluation.
+pub fn incoming_external_gap_cache() -> cr_engine::incoming::ExternalGapCache {
+    INCOMING_EXTERNAL_GAPS.with(|cache| cache.borrow().clone())
+}
+
+/// Installs the view refresh that runs after a current gap snapshot lands.
+pub fn set_incoming_gap_view_hook(hook: Option<Box<dyn Fn()>>) {
+    INCOMING_GAP_VIEW_HOOK.with(|cell| *cell.borrow_mut() = hook);
+}
+
+fn incoming_volume_ids_for(
+    identities: &HashSet<cr_engine::incoming::IncomingIdentity>,
+    incoming: &[ComicBook],
+    library: &[ComicBook],
+    config: &cr_scrape::config::Configuration,
+) -> HashMap<cr_engine::incoming::IncomingIdentity, i64> {
+    identities
+        .iter()
+        .filter_map(|identity| {
+            let keys = incoming
+                .iter()
+                .chain(library)
+                .filter(|book| {
+                    cr_engine::incoming::incoming_identity(book).as_ref() == Some(identity)
+                })
+                .map(|book| cr_scrape::bookdata::BookData::from_book(book, config).series_key);
+            cr_scrape::cache::missing::volume_id_of(keys).map(|id| (identity.clone(), id))
+        })
+        .collect()
+}
+
+/// Returns the distinct Comic Vine volume IDs for selected linked Incoming series.
+pub fn selected_incoming_volume_ids(selected: &[ComicBook]) -> Vec<i64> {
+    let identities: HashSet<_> = selected
+        .iter()
+        .filter(|book| !book.file_path.is_empty())
+        .filter_map(cr_engine::incoming::incoming_identity)
+        .collect();
+    let incoming = incoming_books_snapshot();
+    let library = session().borrow().database().books.clone();
+    let config = scraper_config();
+    let mut ids: Vec<_> = incoming_volume_ids_for(&identities, &incoming, &library, &config)
+        .into_values()
+        .collect();
+    ids.sort_unstable();
+    ids.dedup();
+    ids
+}
+
+/// Checks only the selected records for a direct Comic Vine volume link.
+pub fn selected_incoming_has_volume_id(selected: &[ComicBook]) -> bool {
+    let config = scraper_config();
+    selected.iter().any(|book| {
+        cr_scrape::bookdata::BookData::from_book(book, &config)
+            .series_key
+            .trim()
+            .parse::<i64>()
+            .is_ok_and(|id| id > 0)
+    })
+}
+
+fn project_incoming_external_gaps(
+    cache: &dyn cr_scrape::cache::CvCache,
+    incoming: &[ComicBook],
+    library: &[ComicBook],
+    config: &cr_scrape::config::Configuration,
+) -> cr_engine::incoming::ExternalGapCache {
+    let identities: HashSet<_> = incoming
+        .iter()
+        .filter_map(cr_engine::incoming::incoming_identity)
+        .collect();
+    let volume_ids = incoming_volume_ids_for(&identities, incoming, library, config);
+    let mut result = cr_engine::incoming::ExternalGapCache::new();
+    for (identity, volume_id) in volume_ids {
+        let Ok(issues) = cache.issues_of_volume(volume_id) else {
+            continue;
+        };
+        let owned: Vec<String> = library
+            .iter()
+            .filter(|book| cr_engine::incoming::incoming_identity(book).as_ref() == Some(&identity))
+            .map(|book| book.info.number.clone())
+            .collect();
+        let gaps: Vec<_> = cr_scrape::cache::missing::missing_issues(&issues, &owned)
+            .into_iter()
+            .filter_map(|issue| cr_engine::incoming::IssueNumber::parse(&issue.issue_number))
+            .collect();
+        if !gaps.is_empty() {
+            result.insert(identity, gaps);
+        }
+    }
+    result
+}
+
+/// Refreshes the offline Incoming gap projection without blocking GTK.
+pub fn refresh_incoming_external_gaps_async() {
+    let generation = INCOMING_GAP_GENERATION.with(|cell| {
+        let next = cell.get().wrapping_add(1);
+        cell.set(next);
+        next
+    });
+    let active = INCOMING_GAP_REFRESH_ACTIVE.with(|cell| {
+        let active = cell.get();
+        if !active {
+            cell.set(true);
+        }
+        active
+    });
+    if active {
+        return;
+    }
+    let incoming = incoming_books_snapshot();
+    let library = session().borrow().database().books.clone();
+    let config = scraper_config();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .name("Incoming Comic Vine Gaps".into())
+        .spawn(move || {
+            let cache = cv_cache();
+            let gaps = cache
+                .as_deref()
+                .map(|cache| project_incoming_external_gaps(cache, &incoming, &library, &config))
+                .unwrap_or_default();
+            let _ = tx.send((generation, gaps));
+        })
+        .expect("spawn Incoming Comic Vine gap worker");
+    glib::timeout_add_local(std::time::Duration::from_millis(50), move || {
+        match rx.try_recv() {
+            Ok((completed, gaps)) => {
+                let current = INCOMING_GAP_GENERATION.with(Cell::get);
+                INCOMING_GAP_REFRESH_ACTIVE.with(|cell| cell.set(false));
+                if completed == current {
+                    INCOMING_EXTERNAL_GAPS.with(|cache| *cache.borrow_mut() = gaps);
+                    refresh_incoming_classification_async();
+                } else {
+                    refresh_incoming_external_gaps_async();
+                }
+                ControlFlow::Break
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => ControlFlow::Continue,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                INCOMING_GAP_REFRESH_ACTIVE.with(|cell| cell.set(false));
+                crate::trace::trace(format!(
+                    "Incoming Comic Vine gap worker stopped at generation {generation}"
+                ));
+                let current = INCOMING_GAP_GENERATION.with(Cell::get);
+                if generation != current {
+                    refresh_incoming_external_gaps_async();
+                }
+                ControlFlow::Break
+            }
+        }
+    });
+}
+
 /// The database path shown in diagnostics.
 pub fn database_file() -> std::path::PathBuf {
     session().borrow().file().to_path_buf()
@@ -808,6 +1309,9 @@ pub fn database_file() -> std::path::PathBuf {
 /// makes the create use `CreateBookOption.AddToStorage` (a new book
 /// with `AddedTime = now` joins the database).
 pub fn open_book(path: &str) -> Option<ComicBook> {
+    if cr_engine::incoming_transaction::operation_active() {
+        return None;
+    }
     let library = session();
     let mut lib = library.borrow_mut();
     let mut found = None;
@@ -845,6 +1349,9 @@ pub fn open_book(path: &str) -> Option<ComicBook> {
 /// `set_current_page` carries the `LastPageRead` high-water mark).
 /// Temporary books have no library entry and are skipped.
 pub fn record_page_change(path: &str, page: i32) {
+    if cr_engine::incoming_transaction::operation_active() {
+        return;
+    }
     let library = session();
     let mut lib = library.borrow_mut();
     if let Some(book) = lib.find_book_mut(path) {
@@ -856,11 +1363,37 @@ pub fn record_page_change(path: &str, page: i32) {
     }
 }
 
-/// `AddFolderToLibrary` — scans the folder (recursively, no removal)
-/// into the library on the scan worker. `done` runs on the UI thread
-/// with the result.
+/// `AddFolderToLibrary` — scans the folder recursively on the scan
+/// worker. Configured Incoming roots go to the Incoming catalog. All
+/// other roots go to the library. `done` runs on the UI thread.
 pub fn add_folder_to_library(path: &Path, done: impl FnOnce(ScanResult) + 'static) {
-    scan_async(path.to_string_lossy().into_owned(), done);
+    let location = path.to_string_lossy().into_owned();
+    let target = scan_target_for_path(&location, &incoming_config());
+    scan_async(location, target, done);
+}
+
+/// Selects the catalog for a folder or watcher root.
+pub fn scan_target_for_path(
+    path: &str,
+    config: &cr_engine::incoming::IncomingConfig,
+) -> ScanTarget {
+    let components = |value: &str| {
+        value
+            .split(['/', '\\'])
+            .filter(|part| !part.is_empty())
+            .map(str::to_ascii_lowercase)
+            .collect::<Vec<_>>()
+    };
+    let path_components = components(path);
+    let is_root = config
+        .incoming_folders
+        .iter()
+        .any(|root| !path_components.is_empty() && path_components == components(root));
+    if is_root || config.is_incoming_path(path) {
+        ScanTarget::Incoming
+    } else {
+        ScanTarget::Library
+    }
 }
 
 /// Scans explicit file paths (the context-menu "Rescan Book File(s)"
@@ -895,6 +1428,7 @@ pub fn scan_files(
         label: label.to_string(),
         items,
         limits,
+        target: ScanTarget::Library,
         done: Box::new(done),
     });
 }
@@ -953,7 +1487,7 @@ pub fn list_book_paths(id: &CrGuid) -> Option<(String, Vec<String>)> {
 /// merges at the landing, keeping what the main thread added / edited
 /// / removed while the scan ran. Requests arriving mid-scan queue and
 /// run in arrival order.
-fn scan_async(location: String, done: impl FnOnce(ScanResult) + 'static) {
+fn scan_async(location: String, target: ScanTarget, done: impl FnOnce(ScanResult) + 'static) {
     queue_scan(QueuedScan {
         label: location.clone(),
         items: vec![ScanItem {
@@ -963,6 +1497,7 @@ fn scan_async(location: String, done: impl FnOnce(ScanResult) + 'static) {
             force_refresh_info: false,
         }],
         limits: scan_limits(),
+        target,
         done: Box::new(done),
     });
 }
@@ -982,7 +1517,8 @@ fn queue_scan(q: QueuedScan) {
 /// final merge.
 enum ScanWorkerMsg {
     Batch(Vec<ComicBook>),
-    Done(Vec<ComicBook>, Box<ScanResult>),
+    Done(Vec<ComicBook>, Box<ScanResult>, std::sync::mpsc::Sender<()>),
+    Failed(String),
 }
 
 /// Books per batch send (the pump appends + refreshes per tick; a
@@ -1006,19 +1542,33 @@ fn scan_limits() -> cr_engine::scanner::ScanLimits {
 fn start_scan_worker(q: QueuedScan) {
     let location = q.label.clone();
     let library = session();
-    let books = {
-        let lib = library.borrow_mut();
-        SCAN_IN_FLIGHT.with(|cell| *cell.borrow_mut() = true);
-        SCAN_LOCATION.with(|cell| *cell.borrow_mut() = q.label.clone());
-        // A CLONE, not a take: the database keeps the full library
-        // while the scan runs. The take emptied it — a re-scan sends
-        // zero batches (only NEW files fire `on_new`), so every list
-        // evaluation read an empty library mid-scan and the search
-        // results blanked until a restart (user report 2026-09-11).
-        // The landing merge reconciles the worker's updates with the
-        // mid-scan side effects.
-        lib.database().books.clone()
+    let incoming = incoming_session();
+    SCAN_IN_FLIGHT.with(|cell| *cell.borrow_mut() = true);
+    SCAN_TARGET.with(|cell| cell.set(q.target));
+    SCAN_LOCATION.with(|cell| *cell.borrow_mut() = q.label.clone());
+    let books = match q.target {
+        ScanTarget::Library => {
+            let lib = library.borrow();
+            // A CLONE, not a take: the database keeps the full library
+            // while the scan runs. The take emptied it — a re-scan sends
+            // zero batches (only NEW files fire `on_new`), so every list
+            // evaluation read an empty library mid-scan and the search
+            // results blanked until a restart (user report 2026-09-11).
+            // The landing merge reconciles the worker's updates with the
+            // mid-scan side effects.
+            lib.database().books.clone()
+        }
+        ScanTarget::Incoming => incoming.borrow().books.clone(),
     };
+    let scan_epoch = cr_engine::incoming_transaction::database_epoch();
+    if q.target == ScanTarget::Incoming && !cr_engine::incoming_transaction::begin_operation() {
+        SCAN_IN_FLIGHT.with(|cell| *cell.borrow_mut() = false);
+        SCAN_LOCATION.with(|cell| cell.borrow_mut().clear());
+        (q.done)(ScanResult::default());
+        return;
+    }
+    let target = q.target;
+    let incoming_paths = cr_core::paths::Paths::new_default();
     let items = q.items;
     let limits = q.limits;
     let now = CrDateTime::now();
@@ -1038,6 +1588,13 @@ fn start_scan_worker(q: QueuedScan) {
     std::thread::Builder::new()
         .name("Book Scanner".into())
         .spawn(move || {
+            let _mutation_guard = cr_engine::incoming_transaction::acquire_mutation_guard();
+            if cr_engine::incoming_transaction::database_epoch() != scan_epoch {
+                let _ = tx.send(ScanWorkerMsg::Failed(
+                    "The library changed before the scan started. Run the scan again.".into(),
+                ));
+                return;
+            }
             let mut storage = books;
             let t = std::time::Instant::now();
             crate::trace::trace(format!("scan start '{location}'"));
@@ -1060,9 +1617,11 @@ fn start_scan_worker(q: QueuedScan) {
                 &control,
                 limits,
                 &mut |book: &ComicBook| {
-                    batch.push(book.clone());
-                    if batch.len() >= SCAN_BATCH_SIZE {
-                        let _ = tx.send(ScanWorkerMsg::Batch(std::mem::take(&mut batch)));
+                    if target == ScanTarget::Library {
+                        batch.push(book.clone());
+                        if batch.len() >= SCAN_BATCH_SIZE {
+                            let _ = tx.send(ScanWorkerMsg::Batch(std::mem::take(&mut batch)));
+                        }
                     }
                 },
             );
@@ -1087,7 +1646,71 @@ fn start_scan_worker(q: QueuedScan) {
                 result.skipped.len(),
                 result.skipped_known_bad.len()
             ));
-            let _ = tx.send(ScanWorkerMsg::Done(storage, Box::new(result)));
+            if target == ScanTarget::Incoming {
+                let catalog = cr_engine::incoming::IncomingCatalog {
+                    books: storage.clone(),
+                };
+                let result = (|| -> Result<(), String> {
+                    let path = cr_core::paths::incoming_file(&incoming_paths);
+                    let incoming_before = std::fs::read(&path).ok();
+                    let mut transaction = cr_engine::incoming_transaction::IncomingTransaction {
+                        kind: cr_engine::incoming_transaction::TransactionKind::Scan,
+                        stage: cr_engine::incoming_transaction::TransactionStage::Prepared,
+                        files: cr_engine::incoming_transaction::TransactionFiles {
+                            incoming_catalog: Some(
+                                cr_engine::incoming_transaction::FileSnapshot {
+                                    before: incoming_before,
+                                    after: catalog
+                                        .to_bytes()
+                                        .map_err(|error| error.to_string())?,
+                                    path,
+                                    remove_after: false,
+                                },
+                            ),
+                            ..Default::default()
+                        },
+                        external_actions: Vec::new(),
+                    };
+                    let engine = cr_engine::incoming_transaction::TransactionEngine::new(
+                        &incoming_paths,
+                    );
+                    engine
+                        .begin(&transaction)
+                        .map_err(|error| error.to_string())?;
+                    if cr_engine::incoming_transaction::database_epoch() != scan_epoch {
+                        engine
+                            .abort_prepared()
+                            .map_err(|error| error.to_string())?;
+                        return Err(
+                            "The catalogs changed during the Incoming scan. Run the scan again."
+                                .into(),
+                        );
+                    }
+                    _mutation_guard
+                        .commit_if_epoch(scan_epoch, &engine, &mut transaction)
+                        .inspect_err(|error| {
+                            if matches!(
+                                error,
+                                cr_engine::incoming_transaction::TransactionError::EpochChanged
+                            ) {
+                                let _ = engine.abort_prepared();
+                            }
+                        })
+                        .map(|_| ())
+                        .map_err(|error| error.to_string())
+                })();
+                if let Err(error) = result {
+                    let _ = tx.send(ScanWorkerMsg::Failed(error));
+                    return;
+                }
+            }
+            let (landed_tx, landed_rx) = std::sync::mpsc::channel();
+            if tx
+                .send(ScanWorkerMsg::Done(storage, Box::new(result), landed_tx))
+                .is_ok()
+            {
+                let _ = landed_rx.recv();
+            }
         })
         .expect("spawn Book Scanner");
 
@@ -1096,6 +1719,9 @@ fn start_scan_worker(q: QueuedScan) {
     let mut done = Some(q.done);
     let mut seen_files: usize = 0;
     glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
+        if target == ScanTarget::Library && cr_engine::incoming_transaction::operation_active() {
+            return ControlFlow::Continue;
+        }
         // Drain the progress channel first: the last walked file
         // becomes the live scan location (the Tasks line + the
         // CR_TRACE evidence). Bind the recv result before matching —
@@ -1128,27 +1754,43 @@ fn start_scan_worker(q: QueuedScan) {
                 Ok(ScanWorkerMsg::Batch(batch)) => {
                     tick_batch.extend(batch);
                 }
-                Ok(ScanWorkerMsg::Done(books, result)) => {
+                Ok(ScanWorkerMsg::Done(books, result, landed)) => {
                     // The run summary accumulates across the queued
                     // scans; the shell reports it once at the end.
                     record_scan_problems(&result);
                     // Late batches ride the final storage — the landing
                     // merge replaces the appends wholesale.
                     tick_batch.clear();
-                    {
-                        let mut lib = library.borrow_mut();
-                        let (removed, touched) = take_scan_side_effects();
-                        let merged =
-                            merge_scan_storage(books, &lib.database().books, &removed, &touched);
-                        lib.database_mut().books = merged;
-                        let changed = !result.added.is_empty()
-                            || !result.updated.is_empty()
-                            || !result.moved.is_empty()
-                            || !result.removed.is_empty();
-                        if changed {
-                            lib.mark_dirty();
-                            crate::gauges::invalidate();
+                    let data_changed = !result.added.is_empty()
+                        || !result.updated.is_empty()
+                        || !result.moved.is_empty()
+                        || !result.removed.is_empty();
+                    match target {
+                        ScanTarget::Library => {
+                            let mut lib = library.borrow_mut();
+                            let (removed, touched) = take_scan_side_effects();
+                            let merged = merge_scan_storage(
+                                books,
+                                &lib.database().books,
+                                &removed,
+                                &touched,
+                            );
+                            lib.database_mut().books = merged;
+                            if data_changed {
+                                lib.mark_dirty();
+                                crate::gauges::invalidate();
+                            }
                         }
+                        ScanTarget::Incoming => {
+                            replace_incoming_catalog(cr_engine::incoming::IncomingCatalog { books })
+                        }
+                    }
+                    if target == ScanTarget::Incoming {
+                        cr_engine::incoming_transaction::end_operation();
+                    }
+                    let _ = landed.send(());
+                    if data_changed {
+                        refresh_incoming_external_gaps_async();
                     }
                     SCAN_IN_FLIGHT.with(|cell| *cell.borrow_mut() = false);
                     SCAN_LOCATION.with(|cell| cell.borrow_mut().clear());
@@ -1174,13 +1816,42 @@ fn start_scan_worker(q: QueuedScan) {
                     }
                     return ControlFlow::Break;
                 }
-                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                Ok(ScanWorkerMsg::Failed(error)) => {
+                    eprintln!("incoming scan save failed: {error}");
+                    SCAN_COMPLETION_ERROR.with(|cell| *cell.borrow_mut() = Some(error));
                     SCAN_IN_FLIGHT.with(|cell| *cell.borrow_mut() = false);
                     SCAN_LOCATION.with(|cell| cell.borrow_mut().clear());
                     SCAN_STOP.with(|cell| *cell.borrow_mut() = None);
                     SCAN_SKIP.with(|cell| *cell.borrow_mut() = None);
+                    if target == ScanTarget::Incoming {
+                        cr_engine::incoming_transaction::end_operation();
+                    }
                     if let Some(d) = done.take() {
                         d(ScanResult::default());
+                    }
+                    let next = SCAN_QUEUE.with(|queue| queue.borrow_mut().pop());
+                    if let Some(next) = next {
+                        start_scan_worker(next);
+                    }
+                    return ControlFlow::Break;
+                }
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    let error = "The scan worker stopped without a result.".to_string();
+                    crate::trace::trace(&error);
+                    SCAN_COMPLETION_ERROR.with(|cell| *cell.borrow_mut() = Some(error));
+                    SCAN_IN_FLIGHT.with(|cell| *cell.borrow_mut() = false);
+                    SCAN_LOCATION.with(|cell| cell.borrow_mut().clear());
+                    SCAN_STOP.with(|cell| *cell.borrow_mut() = None);
+                    SCAN_SKIP.with(|cell| *cell.borrow_mut() = None);
+                    if target == ScanTarget::Incoming {
+                        cr_engine::incoming_transaction::end_operation();
+                    }
+                    if let Some(d) = done.take() {
+                        d(ScanResult::default());
+                    }
+                    let next = SCAN_QUEUE.with(|queue| queue.borrow_mut().pop());
+                    if let Some(next) = next {
+                        start_scan_worker(next);
                     }
                     return ControlFlow::Break;
                 }
@@ -1188,6 +1859,7 @@ fn start_scan_worker(q: QueuedScan) {
             }
         }
         if !tick_batch.is_empty() {
+            debug_assert_eq!(target, ScanTarget::Library);
             {
                 let mut lib = library.borrow_mut();
                 lib.database_mut().books.extend(tick_batch.iter().cloned());
@@ -1229,11 +1901,12 @@ pub fn windows_path_roots() -> Vec<cr_engine::path_migration::PathRoot> {
 // the scan uses). Cancel: the Tasks row and the status-bar lamp.
 
 /// The outcome of one bulk remove job.
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct RemoveBooksOutcome {
     pub removed: usize,
     pub failed: usize,
     pub canceled: bool,
+    pub removed_ids: Vec<CrGuid>,
 }
 
 /// Worker → pump messages: landing batches of (id, file-deletion-ok)
@@ -1241,6 +1914,147 @@ pub struct RemoveBooksOutcome {
 enum RemoveWorkerMsg {
     Batch(Vec<(CrGuid, bool)>),
     Done(bool),
+}
+
+fn delete_path(path: &str, permanent: bool) -> bool {
+    if path.is_empty() {
+        return true;
+    }
+    let path = Path::new(path);
+    if !path.is_file() {
+        return !path.exists();
+    }
+    if permanent {
+        let _ = std::fs::remove_file(path);
+    } else {
+        let _ = std::process::Command::new("gio")
+            .args(["trash", &path.to_string_lossy()])
+            .status();
+    }
+    !path.exists()
+}
+
+pub fn trash_file(path: &str) -> bool {
+    delete_path(path, false)
+}
+
+pub fn discard_incoming_async(
+    items: Vec<(CrGuid, String)>,
+    permanent: bool,
+    done: impl FnOnce(
+            Result<
+                (
+                    cr_engine::incoming::IncomingCatalog,
+                    RemoveBooksOutcome,
+                    u64,
+                ),
+                String,
+            >,
+        ) + 'static,
+) {
+    let mut catalog = incoming_session().borrow().clone();
+    let captured_epoch = cr_engine::incoming_transaction::database_epoch();
+    let before = match catalog.to_bytes() {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            done(Err(error.to_string()));
+            return;
+        }
+    };
+    let (tx, rx) = std::sync::mpsc::channel();
+    if !cr_engine::incoming_transaction::begin_operation() {
+        done(Err("Another operation is active.".into()));
+        return;
+    }
+    std::thread::Builder::new()
+        .name("Discard Incoming".into())
+        .spawn(move || {
+            let result = (|| -> Result<_, String> {
+                let _guard = cr_engine::incoming_transaction::acquire_mutation_guard();
+                if cr_engine::incoming_transaction::database_epoch() != captured_epoch {
+                    return Err("The library changed before the discard started. Try again.".into());
+                }
+                let paths = cr_core::paths::Paths::new_default();
+                let catalog_path = cr_core::paths::incoming_file(&paths);
+                let engine = cr_engine::incoming_transaction::TransactionEngine::new(&paths);
+                let mut transaction = cr_engine::incoming_transaction::IncomingTransaction {
+                    kind: cr_engine::incoming_transaction::TransactionKind::Discard,
+                    stage: cr_engine::incoming_transaction::TransactionStage::Prepared,
+                    files: cr_engine::incoming_transaction::TransactionFiles {
+                        incoming_catalog: Some(cr_engine::incoming_transaction::FileSnapshot {
+                            before: Some(before),
+                            after: catalog.to_bytes().map_err(|error| error.to_string())?,
+                            path: catalog_path,
+                            remove_after: false,
+                        }),
+                        ..Default::default()
+                    },
+                    external_actions: Vec::new(),
+                };
+                engine
+                    .begin(&transaction)
+                    .map_err(|error| error.to_string())?;
+                let mut outcome = RemoveBooksOutcome::default();
+                for (id, path) in items {
+                    transaction.external_actions.push(
+                        cr_engine::incoming_transaction::ExternalFileAction::Delete {
+                            source: path.clone().into(),
+                            status: cr_engine::incoming_transaction::ExternalActionStatus::Pending,
+                        },
+                    );
+                    engine
+                        .update(&transaction)
+                        .map_err(|error| error.to_string())?;
+                    if delete_path(&path, permanent) {
+                        if let Some(cr_engine::incoming_transaction::ExternalFileAction::Delete {
+                            status,
+                            ..
+                        }) = transaction.external_actions.last_mut()
+                        {
+                            *status =
+                                cr_engine::incoming_transaction::ExternalActionStatus::Applied;
+                        }
+                        catalog.books.retain(|book| book.id != id);
+                        transaction.files.incoming_catalog.as_mut().unwrap().after =
+                            catalog.to_bytes().map_err(|error| error.to_string())?;
+                        outcome.removed += 1;
+                        outcome.removed_ids.push(id);
+                    } else {
+                        transaction.external_actions.pop();
+                        outcome.failed += 1;
+                    }
+                    engine
+                        .update(&transaction)
+                        .map_err(|error| error.to_string())?;
+                }
+                let committed_epoch = _guard
+                    .commit_if_epoch(captured_epoch, &engine, &mut transaction)
+                    .map_err(|error| error.to_string())?;
+                Ok((catalog, outcome, committed_epoch))
+            })();
+            let _ = tx.send(result);
+        })
+        .expect("spawn Incoming discard");
+    let mut done = Some(done);
+    glib::timeout_add_local(std::time::Duration::from_millis(50), move || {
+        match rx.try_recv() {
+            Ok(result) => {
+                cr_engine::incoming_transaction::end_operation();
+                if let Some(done) = done.take() {
+                    done(result);
+                }
+                ControlFlow::Break
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => ControlFlow::Continue,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                cr_engine::incoming_transaction::end_operation();
+                if let Some(done) = done.take() {
+                    done(Err("The Incoming discard worker stopped.".into()));
+                }
+                ControlFlow::Break
+            }
+        }
+    });
 }
 
 /// Books per batch send (the pump lands each batch in ONE retain —
@@ -1330,6 +2144,33 @@ pub fn remove_books_async(
             (id, path)
         })
         .collect();
+    remove_items_async(items, delete_files, permanent, land_ids, done);
+}
+
+/// Deletes explicit `(id, path)` items. Callers outside the main library use
+/// the returned IDs to land only successful file operations.
+pub fn delete_items_async(
+    items: Vec<(CrGuid, String)>,
+    permanent: bool,
+    done: impl FnOnce(RemoveBooksOutcome) + 'static,
+) {
+    remove_items_async(items, true, permanent, false, done);
+}
+
+fn remove_items_async(
+    items: Vec<(CrGuid, String)>,
+    delete_files: bool,
+    permanent: bool,
+    land_ids: bool,
+    done: impl FnOnce(RemoveBooksOutcome) + 'static,
+) {
+    if remove_books_in_flight() || cr_engine::incoming_transaction::operation_active() {
+        done(RemoveBooksOutcome {
+            canceled: true,
+            ..Default::default()
+        });
+        return;
+    }
     let total = items.len();
     let (tx, rx) = std::sync::mpsc::channel::<RemoveWorkerMsg>();
     let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -1354,34 +2195,16 @@ pub fn remove_books_async(
                 }
                 let mut ok = true;
                 if delete_files && !path.is_empty() {
-                    let p = Path::new(&path);
-                    // The is-file guard: a fileless book (empty
-                    // path) and a missing file skip the deletion
-                    // and keep the book landing (the C# deletes
-                    // linked files only; the empty-path trash
-                    // would hit the working directory).
-                    if p.is_file() {
+                    if Path::new(&path).is_file() {
                         let t0 = std::time::Instant::now();
                         if permanent {
-                            // ADR-045: the immediate unlink — the
-                            // C# has no counterpart (its shell
-                            // delete is always the recycle bin).
-                            let _ = std::fs::remove_file(p);
                             n_unlink += 1;
                         } else {
-                            // ADR-006: the recycle bin → GIO trash
-                            // (the `gio` CLI per file).
-                            let _ = std::process::Command::new("gio")
-                                .args(["trash", &path])
-                                .status();
                             n_trash += 1;
                         }
                         t_file_time += t0.elapsed();
-                        // The C# checks File.Exists after the delete
-                        // and a failed delete KEEPS the book (the
-                        // `continue` before library.Remove).
-                        ok = !p.exists();
                     }
+                    ok = delete_path(&path, permanent);
                 }
                 batch.push((id, ok));
                 if batch.len() >= REMOVE_BATCH_SIZE {
@@ -1402,8 +2225,12 @@ pub fn remove_books_async(
     let mut done = Some(done);
     let mut removed_total: usize = 0;
     let mut failed_total: usize = 0;
+    let mut removed_ids = Vec::new();
     let land = land_ids;
     glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
+        if land && cr_engine::incoming_transaction::operation_active() {
+            return glib::ControlFlow::Continue;
+        }
         let mut tick_removed: HashSet<CrGuid> = HashSet::new();
         let mut end: Option<bool> = None;
         loop {
@@ -1415,6 +2242,8 @@ pub fn remove_books_async(
                     });
                     for (id, ok) in batch {
                         if ok {
+                            removed_ids.push(id);
+                            removed_total += 1;
                             if land {
                                 tick_removed.insert(id);
                             }
@@ -1453,7 +2282,6 @@ pub fn remove_books_async(
                     crate::gauges::invalidate();
                 }
             }
-            removed_total += tick_removed.len();
             crate::trace::trace(format!(
                 "remove-books: {removed_total} removed, {failed_total} failed, {} processed",
                 REMOVE_PROGRESS.with(|cell| cell.borrow().0)
@@ -1470,6 +2298,7 @@ pub fn remove_books_async(
                 removed: removed_total,
                 failed: failed_total,
                 canceled,
+                removed_ids: std::mem::take(&mut removed_ids),
             });
         }
         ControlFlow::Break
@@ -1484,16 +2313,44 @@ pub fn delete_files_async(
     permanent: bool,
     done: impl FnOnce(RemoveBooksOutcome) + 'static,
 ) {
-    let ids = vec![CrGuid::default(); paths.len()];
-    remove_books_async(
-        ids,
-        true,
-        permanent,
-        false,
-        move |outcome: RemoveBooksOutcome| {
-            done(outcome);
-        },
-    );
+    let items = paths
+        .into_iter()
+        .enumerate()
+        .map(|(index, path)| {
+            let id =
+                CrGuid::parse(&format!("00000000-0000-0000-0000-{index:012}")).unwrap_or_default();
+            (id, path)
+        })
+        .collect();
+    delete_items_async(items, permanent, done);
+}
+
+#[cfg(test)]
+mod delete_path_tests {
+    use super::delete_path;
+
+    #[test]
+    fn permanent_delete_uses_the_supplied_path() {
+        let path = std::env::temp_dir().join(format!(
+            "comicrust-delete-path-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::write(&path, b"test").unwrap();
+
+        assert!(delete_path(&path.to_string_lossy(), true));
+        assert!(!path.exists());
+    }
+
+    #[test]
+    fn missing_path_is_a_success_and_directory_is_not_deleted() {
+        let missing = std::env::temp_dir().join("comicrust-delete-path-missing");
+        assert!(delete_path(&missing.to_string_lossy(), true));
+        assert!(!delete_path(&std::env::temp_dir().to_string_lossy(), true));
+    }
 }
 
 /// Any Windows-style path left in the database? (The `win.migrate-paths`
@@ -1508,6 +2365,9 @@ pub fn has_windows_paths() -> bool {
 pub fn apply_path_migration(
     mappings: &[cr_engine::path_migration::Mapping],
 ) -> cr_engine::path_migration::ApplyReport {
+    if cr_engine::incoming_transaction::operation_active() {
+        return cr_engine::path_migration::ApplyReport::default();
+    }
     let t = std::time::Instant::now();
     let report = session().borrow_mut().apply_path_migration(mappings);
     crate::trace::trace(format!(
@@ -1535,7 +2395,62 @@ pub fn save() -> Result<(), cr_core::database::DbError> {
         // drive the loop until it runs.
         glib::MainContext::default().iteration(true);
     }
+    let _guard = cr_engine::incoming_transaction::acquire_mutation_guard();
     session().borrow_mut().save()
+}
+
+/// Saves while the caller holds the mutation guard.
+pub fn save_with_mutation_guard(
+    guard: &cr_engine::incoming_transaction::MutationGuard,
+) -> Result<(), cr_core::database::DbError> {
+    debug_assert!(guard.is_held());
+    session().borrow_mut().save()
+}
+
+/// Saves the current live database on a worker after the coordinator becomes idle.
+pub fn save_for_close_async(done: impl FnOnce(Result<bool, String>) + 'static) {
+    let (database, path, generation) = session().borrow().persistence_snapshot();
+    let epoch = cr_engine::incoming_transaction::database_epoch();
+    let (tx, rx) = std::sync::mpsc::channel();
+    if !cr_engine::incoming_transaction::begin_operation() {
+        done(Ok(false));
+        return;
+    }
+    std::thread::Builder::new()
+        .name("Database Close Save".into())
+        .spawn(move || {
+            let _guard = cr_engine::incoming_transaction::acquire_mutation_guard();
+            let result = if cr_engine::incoming_transaction::database_epoch() != epoch {
+                Ok(None)
+            } else {
+                cr_core::database::comic_database::save(&database, &path)
+                    .map(|()| Some(generation))
+                    .map_err(|error| error.to_string())
+            };
+            let _ = tx.send(result);
+        })
+        .expect("spawn database close save");
+    let mut done = Some(done);
+    glib::timeout_add_local(std::time::Duration::from_millis(50), move || {
+        let result = match rx.try_recv() {
+            Ok(Ok(Some(generation))) => {
+                let epoch_unchanged = cr_engine::incoming_transaction::database_epoch() == epoch;
+                session().borrow_mut().mark_saved(generation);
+                Ok(epoch_unchanged && !session().borrow().is_dirty())
+            }
+            Ok(Ok(None)) => Ok(false),
+            Ok(Err(error)) => Err(error),
+            Err(std::sync::mpsc::TryRecvError::Empty) => return ControlFlow::Continue,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                Err("The database close-save worker stopped.".into())
+            }
+        };
+        cr_engine::incoming_transaction::end_operation();
+        if let Some(done) = done.take() {
+            done(result);
+        }
+        ControlFlow::Break
+    });
 }
 
 /// `DatabaseManager.SaveInBackground`: saves only when dirty. Runs
@@ -1545,11 +2460,72 @@ pub fn save() -> Result<(), cr_core::database::DbError> {
 /// walks. Returns whether a save ran.
 pub fn save_if_dirty() -> Result<bool, cr_core::database::DbError> {
     let t = std::time::Instant::now();
+    let _guard = cr_engine::incoming_transaction::acquire_mutation_guard();
     let saved = session().borrow_mut().save_if_dirty();
     if saved.as_ref().is_ok_and(|ran| *ran) {
         crate::trace::trace(format!("save_if_dirty: saved {:?}", t.elapsed()));
     }
     saved
+}
+
+/// Saves a dirty database snapshot on a worker and clears dirty state only for that generation.
+pub fn save_if_dirty_async(done: impl FnOnce(Result<bool, String>) + 'static) {
+    if BACKGROUND_SAVE_IN_FLIGHT.with(|value| *value.borrow()) {
+        done(Ok(false));
+        return;
+    }
+    let snapshot = session().borrow().save_snapshot();
+    let Some((database, path, generation)) = snapshot else {
+        done(Ok(false));
+        return;
+    };
+    BACKGROUND_SAVE_IN_FLIGHT.with(|value| *value.borrow_mut() = true);
+    let epoch = cr_engine::incoming_transaction::database_epoch();
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .name("Database Background Save".into())
+        .spawn(move || {
+            let _guard = cr_engine::incoming_transaction::acquire_mutation_guard();
+            if cr_engine::incoming_transaction::database_epoch() != epoch {
+                let _ = tx.send(Ok(None));
+                return;
+            }
+            let result = cr_core::database::comic_database::save(&database, &path)
+                .map(|()| Some(generation))
+                .map_err(|error| error.to_string());
+            let _ = tx.send(result);
+        })
+        .expect("spawn database background save");
+    let mut done = Some(done);
+    glib::timeout_add_local(std::time::Duration::from_millis(50), move || {
+        match rx.try_recv() {
+            Ok(Ok(generation)) => {
+                if let Some(generation) = generation {
+                    session().borrow_mut().mark_saved(generation);
+                }
+                BACKGROUND_SAVE_IN_FLIGHT.with(|value| *value.borrow_mut() = false);
+                if let Some(done) = done.take() {
+                    done(Ok(generation.is_some()));
+                }
+                ControlFlow::Break
+            }
+            Ok(Err(error)) => {
+                BACKGROUND_SAVE_IN_FLIGHT.with(|value| *value.borrow_mut() = false);
+                if let Some(done) = done.take() {
+                    done(Err(error));
+                }
+                ControlFlow::Break
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => ControlFlow::Continue,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                BACKGROUND_SAVE_IN_FLIGHT.with(|value| *value.borrow_mut() = false);
+                if let Some(done) = done.take() {
+                    done(Err("The database save worker stopped.".into()));
+                }
+                ControlFlow::Break
+            }
+        }
+    });
 }
 
 fn scan_in_flight() -> bool {
@@ -1647,6 +2623,9 @@ pub fn evaluate_list(id: &CrGuid) -> Option<(String, Vec<CrGuid>, usize)> {
 /// UnreadBookCount, and NewBookCountDate = the pass snapshot) and
 /// marks the database dirty so they persist into ComicDb.xml.
 pub fn store_list_gauges(id: &CrGuid, gauges: cr_engine::gauges::Gauges, now: CrDateTime) -> bool {
+    if cr_engine::incoming_transaction::operation_active() {
+        return false;
+    }
     let lib = session();
     let mut l = lib.borrow_mut();
     let Some(base) = find_base_mut(&mut l.database_mut().comic_lists, id) else {
@@ -1669,6 +2648,9 @@ pub fn insert_list_item(
     after: Option<&CrGuid>,
     item: cr_core::database::list_items::ComicListItem,
 ) {
+    if cr_engine::incoming_transaction::operation_active() {
+        return;
+    }
     let lib = session();
     let mut l = lib.borrow_mut();
     let lists = &mut l.database_mut().comic_lists;
@@ -1776,6 +2758,9 @@ pub fn duplicate_smart_list(
     folder: &CrGuid,
     filter: &cr_engine::matcher::tree::Matcher,
 ) -> Result<CrGuid, String> {
+    if cr_engine::incoming_transaction::operation_active() {
+        return Err("An Incoming operation is active.".into());
+    }
     // The matcher values become the name (the C# joins the
     // `MatchValue` texts of every value matcher in the tree).
     fn collect_values(m: &cr_engine::matcher::tree::Matcher, out: &mut Vec<String>) {
@@ -1877,6 +2862,9 @@ pub fn set_list_view_config(
     id: &CrGuid,
     view: Option<cr_core::database::display_config::ItemViewConfig>,
 ) -> bool {
+    if cr_engine::incoming_transaction::operation_active() {
+        return false;
+    }
     let lib = session();
     let mut l = lib.borrow_mut();
     let lists = &mut l.database_mut().comic_lists;
@@ -1894,6 +2882,9 @@ pub fn set_list_view_config(
 
 /// Rename (the C# `AfterLabelEdit` → `comicListItem.Name = label`).
 pub fn rename_list(id: &CrGuid, name: &str) {
+    if cr_engine::incoming_transaction::operation_active() {
+        return;
+    }
     let lib = session();
     let mut l = lib.borrow_mut();
     let lists = &mut l.database_mut().comic_lists;
@@ -1909,6 +2900,9 @@ pub fn rename_list(id: &CrGuid, name: &str) {
 /// at the next start). The database goes dirty only on a real change.
 /// An id that is not a folder (the Library root, a list) is inert.
 pub fn set_folder_collapsed(id: &CrGuid, collapsed: bool) {
+    if cr_engine::incoming_transaction::operation_active() {
+        return;
+    }
     use cr_core::database::list_items::ComicListItem;
     /// True when this subtree changed.
     fn walk(items: &mut [ComicListItem], id: &CrGuid, collapsed: bool) -> bool {
@@ -1959,6 +2953,9 @@ pub fn is_library_list(id: &CrGuid) -> bool {
 
 /// `RemoveListOrFolder` — the Library root is protected.
 pub fn remove_list(id: &CrGuid) {
+    if cr_engine::incoming_transaction::operation_active() {
+        return;
+    }
     let lib = session();
     let mut l = lib.borrow_mut();
     let lists = &mut l.database_mut().comic_lists;
@@ -2001,6 +2998,9 @@ pub enum ListDrop {
 /// these at `SetDropEffects` time through the recursive `Nodes.Find`,
 /// `FormUtility.cs:399`).
 pub fn move_list_item(id: &CrGuid, drop: &ListDrop) -> bool {
+    if cr_engine::incoming_transaction::operation_active() {
+        return false;
+    }
     let lib = session();
     let mut l = lib.borrow_mut();
     let moved = apply_list_move(&mut l.database_mut().comic_lists, id, drop);
@@ -2017,6 +3017,9 @@ pub fn move_list_item(id: &CrGuid, drop: &ListDrop) -> bool {
 /// `ZeroesFirst | IgnoreArticles | IgnoreCase` comparer. The C# enables
 /// the command only for a folder row, so the root list never sorts.
 pub fn sort_folder(id: &CrGuid) -> bool {
+    if cr_engine::incoming_transaction::operation_active() {
+        return false;
+    }
     let lib = session();
     let mut l = lib.borrow_mut();
     let Some(folder) = find_folder_mut(&mut l.database_mut().comic_lists, id) else {
@@ -2235,6 +3238,21 @@ pub fn evaluate_books(id: &CrGuid) -> Option<(String, Vec<ComicBook>)> {
 /// false when the book is not in the library (a temporary session
 /// book).
 pub fn apply_edited(edited: &ComicBook) -> bool {
+    if cr_engine::incoming_transaction::operation_active() {
+        return false;
+    }
+    apply_edited_inner(edited)
+}
+
+/// Applies an organizer result while its exclusive operation is still active.
+pub(crate) fn apply_edited_from_organizer(
+    edited: &ComicBook,
+    _operation: &cr_engine::incoming_transaction::ActiveOperation,
+) -> bool {
+    apply_edited_inner(edited)
+}
+
+fn apply_edited_inner(edited: &ComicBook) -> bool {
     let lib = session();
     let mut l = lib.borrow_mut();
     let Some(slot) = l
@@ -2254,6 +3272,7 @@ pub fn apply_edited(edited: &ComicBook) -> bool {
     drop(l);
     // The commit may carry AddedTime / read progress — reclassify.
     crate::gauges::invalidate();
+    refresh_incoming_external_gaps_async();
     schedule_book_file_update(&id);
     true
 }
@@ -2264,6 +3283,20 @@ pub fn apply_edited(edited: &ComicBook) -> bool {
 /// book editor commits fire per save point (Apply/OK), so the INSERT
 /// must run once and later commits apply instead.
 pub fn insert_new_book(book: &ComicBook) -> bool {
+    if cr_engine::incoming_transaction::operation_active() {
+        return false;
+    }
+    insert_new_book_inner(book)
+}
+
+pub(crate) fn insert_new_book_from_organizer(
+    book: &ComicBook,
+    _operation: &cr_engine::incoming_transaction::ActiveOperation,
+) -> bool {
+    insert_new_book_inner(book)
+}
+
+fn insert_new_book_inner(book: &ComicBook) -> bool {
     let lib = session();
     let mut l = lib.borrow_mut();
     if l.database().books.iter().any(|b| b.id == book.id) {
@@ -2272,6 +3305,8 @@ pub fn insert_new_book(book: &ComicBook) -> bool {
     l.database_mut().books.push(book.clone());
     l.mark_dirty();
     crate::gauges::invalidate();
+    drop(l);
+    refresh_incoming_external_gaps_async();
     true
 }
 
@@ -2521,6 +3556,9 @@ fn ensure_write_worker() {
     // (with the re-edit guard), run the per-book callbacks.
     let library = session();
     glib::timeout_add_local(std::time::Duration::from_millis(100), move || {
+        if cr_engine::incoming_transaction::operation_active() {
+            return glib::ControlFlow::Continue;
+        }
         loop {
             // Bind the recv result before matching — a `while let`
             // scrutinee borrow lives through the loop body.
@@ -2610,6 +3648,9 @@ pub fn export_post_process_with(
     out_path: &Path,
     trash: &dyn Fn(&str) -> bool,
 ) -> Result<(), String> {
+    if cr_engine::incoming_transaction::operation_active() {
+        return Err("An Incoming operation is active.".into());
+    }
     use cr_io::export::{ExportImageProcessingSource, ExportTarget};
 
     let Some(kcb) = group.first() else {
@@ -2738,14 +3779,33 @@ pub fn export_post_process_with(
 /// Removes one book from the library by id (the context-menu
 /// command; the file on disk is untouched).
 pub fn remove_book(id: &CrGuid) {
+    if cr_engine::incoming_transaction::operation_active() {
+        return;
+    }
+    remove_book_inner(id);
+}
+
+pub(crate) fn remove_book_from_organizer(
+    id: &CrGuid,
+    _operation: &cr_engine::incoming_transaction::ActiveOperation,
+) {
+    remove_book_inner(id);
+}
+
+fn remove_book_inner(id: &CrGuid) {
     let lib = session();
     let mut l = lib.borrow_mut();
     let before = l.database().books.len();
     l.database_mut().books.retain(|b| b.id != *id);
-    if l.database().books.len() != before {
+    let changed = l.database().books.len() != before;
+    if changed {
         record_scan_removal(id);
         l.mark_dirty();
         crate::gauges::invalidate();
+    }
+    drop(l);
+    if changed {
+        refresh_incoming_external_gaps_async();
     }
 }
 
@@ -2872,6 +3932,9 @@ pub fn find_smart_list(id: &CrGuid) -> Option<cr_core::database::list_items::Sma
 /// `ComicSmartListItem.SetList`: replaces the smart-list item's
 /// model fields (position + id stay; the extra values move over).
 pub fn update_smart_list(id: &CrGuid, item: cr_core::database::list_items::SmartListItem) -> bool {
+    if cr_engine::incoming_transaction::operation_active() {
+        return false;
+    }
     let t = std::time::Instant::now();
     let lib = session();
     let mut l = lib.borrow_mut();
@@ -3009,6 +4072,9 @@ pub fn import_list_item(
     item: cr_core::database::list_items::ComicListItem,
 ) -> CrGuid {
     let id = item.base().id;
+    if cr_engine::incoming_transaction::operation_active() {
+        return id;
+    }
     let lib = session();
     let mut l = lib.borrow_mut();
     let lists = &mut l.database_mut().comic_lists;
@@ -3033,6 +4099,9 @@ pub fn import_list_item(
 /// Returns the id of the inserted item.
 pub fn import_temporary_item(item: cr_core::database::list_items::ComicListItem) -> CrGuid {
     let id = item.base().id;
+    if cr_engine::incoming_transaction::operation_active() {
+        return id;
+    }
     let lib = session();
     let mut l = lib.borrow_mut();
     let temp = l.database_mut().temporary_folder();
@@ -3044,7 +4113,7 @@ pub fn import_temporary_item(item: cr_core::database::list_items::ComicListItem)
 /// The `Library.Books.AddRange(newBooks)` parity: appends the books
 /// (the imported missing placeholders) and marks the database dirty.
 pub fn add_books(books: Vec<cr_core::model::comic_book::ComicBook>) {
-    if books.is_empty() {
+    if books.is_empty() || cr_engine::incoming_transaction::operation_active() {
         return;
     }
     let lib = session();
@@ -3052,6 +4121,8 @@ pub fn add_books(books: Vec<cr_core::model::comic_book::ComicBook>) {
     l.database_mut().books.extend(books);
     l.mark_dirty();
     crate::gauges::invalidate();
+    drop(l);
+    refresh_incoming_external_gaps_async();
 }
 
 /// `EditListDialog.Edit` result for one item: the fields the dialog
@@ -3067,6 +4138,9 @@ pub struct ListEditFields {
 /// `EditListDialog.Edit` write-back; `SetList` parity for the base
 /// fields). Returns false when the id is not a folder/id list.
 pub fn update_list_fields(id: &CrGuid, fields: &ListEditFields) -> bool {
+    if cr_engine::incoming_transaction::operation_active() {
+        return false;
+    }
     let lib = session();
     let mut l = lib.borrow_mut();
     fn apply(
@@ -3139,6 +4213,7 @@ pub fn last_export_setting() -> Option<cr_io::export::ExportSetting> {
 mod tests {
     use super::*;
     use cr_core::model::comic_book::ComicBook;
+    use cr_scrape::cache::CvCache;
 
     fn book(path: &str) -> ComicBook {
         ComicBook {
@@ -3146,6 +4221,22 @@ mod tests {
             id: CrGuid::new_random(),
             ..ComicBook::default()
         }
+    }
+
+    fn series_book(path: &str, number: &str, volume_id: Option<i64>) -> ComicBook {
+        let mut book = book(path);
+        book.info.series = "Example Series".into();
+        book.info.volume = 2020;
+        book.info.number = number.into();
+        book.info.language_iso = "en".into();
+        if let Some(volume_id) = volume_id {
+            cr_scrape::bookdata::set_custom_value(
+                &mut book,
+                "comicvine_volume",
+                &volume_id.to_string(),
+            );
+        }
+        book
     }
 
     fn ids(books: &[ComicBook]) -> Vec<String> {
@@ -3243,6 +4334,70 @@ mod tests {
             "b.cbz".to_string(),
         ]);
         assert_eq!(paths, vec!["a.cbz".to_string(), "b.cbz".to_string()]);
+    }
+
+    #[test]
+    fn cached_issue_skeletons_project_to_incoming_gaps_without_fetching() {
+        let cache = cr_scrape::cache::SqliteCache::in_memory().expect("cache");
+        cache
+            .put_issues(&[
+                cr_scrape::cache::IssueSkeleton {
+                    issue_id: 1,
+                    volume_id: 771,
+                    issue_number: "1".into(),
+                    ..Default::default()
+                },
+                cr_scrape::cache::IssueSkeleton {
+                    issue_id: 2,
+                    volume_id: 771,
+                    issue_number: "2".into(),
+                    ..Default::default()
+                },
+                cr_scrape::cache::IssueSkeleton {
+                    issue_id: 3,
+                    volume_id: 771,
+                    issue_number: "Special".into(),
+                    ..Default::default()
+                },
+            ])
+            .expect("seed issues");
+        let incoming = vec![series_book("incoming-2.cbz", "2", None)];
+        let library = vec![series_book("owned-1.cbz", "1", Some(771))];
+
+        let gaps = project_incoming_external_gaps(
+            &cache,
+            &incoming,
+            &library,
+            &cr_scrape::config::Configuration::default(),
+        );
+
+        let identity = cr_engine::incoming::incoming_identity(&incoming[0]).expect("identity");
+        let values: Vec<f32> = gaps[&identity]
+            .iter()
+            .map(|number| number.value())
+            .collect();
+        assert_eq!(values, vec![2.0]);
+    }
+
+    #[test]
+    fn folder_scan_routing_is_component_aware() {
+        let config = cr_engine::incoming::IncomingConfig {
+            incoming_folders: vec!["/comics/incoming".into()],
+            ..Default::default()
+        };
+
+        assert_eq!(
+            scan_target_for_path("/COMICS/incoming/", &config),
+            ScanTarget::Incoming
+        );
+        assert_eq!(
+            scan_target_for_path("/comics/incoming/series", &config),
+            ScanTarget::Incoming
+        );
+        assert_eq!(
+            scan_target_for_path("/comics/incoming-old", &config),
+            ScanTarget::Library
+        );
     }
 }
 

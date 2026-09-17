@@ -75,6 +75,8 @@ pub enum Apply {
     Update(ComicBook),
     /// `library::insert_new_book` — the copy-mode copy.
     Insert(ComicBook),
+    /// Insert a moved book without changing its ID or metadata.
+    Adopt(ComicBook),
     /// `library::remove_book` — the replaced book of an overwrite.
     Remove(cr_core::xml::scalar::CrGuid),
 }
@@ -100,7 +102,35 @@ pub trait OrganizeUi: MultiValueAsker {
     fn progress(&mut self, done: usize, total: usize);
 }
 
-pub use crate::mover::{run_undo, OrganizeReport, RunContext, UndoCollection, UndoReport};
+/// Notifications around destructive organizer filesystem effects.
+pub trait FilesystemEffects: Send + Sync {
+    fn before_rename(&self, _source: &str, _destination: &str) -> std::io::Result<()> {
+        Ok(())
+    }
+
+    fn after_rename(
+        &self,
+        _source: &str,
+        _destination: &str,
+        _succeeded: bool,
+    ) -> std::io::Result<()> {
+        Ok(())
+    }
+
+    fn before_delete(&self, _path: &str) -> std::io::Result<()> {
+        Ok(())
+    }
+
+    fn after_delete(&self, _path: &str, _succeeded: bool) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+pub use crate::mover::{
+    adoption_manifest_path, missing_manifest_is_unsafe, run_undo, AdoptionManifest,
+    AdoptionManifestEntry, MoveLanding, OrganizeReport, RunContext, UndoCollection, UndoEntry,
+    UndoReport,
+};
 
 /// Runs the organizer (`WorkerForm`'s worker body). The profiles run
 /// in order; returns the report and the session mutations.

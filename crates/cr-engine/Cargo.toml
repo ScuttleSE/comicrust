@@ -12,6 +12,7 @@ chrono.workspace = true
 fancy-regex = "0.14"
 notify = "6"
 serde.workspace = true
+serde_json.workspace = true
 
 [lints]
 workspace = true

@@ -336,6 +336,43 @@ pub fn load(file: &Path) -> LoadedConfig {
 /// session (the C# never writes its ini either — only the explicit
 /// [`update_extended_keys`] changes them).
 pub fn save_file(file: &Path, settings: &super::settings::Settings) -> std::io::Result<()> {
+    save_file_with_plugin_tables(file, settings, &[])
+}
+
+/// A serialized plugin table for a config write that must not change session state.
+pub type PluginTable = toml::Table;
+
+pub fn serialize_plugin<T: serde::Serialize>(value: &T) -> Option<PluginTable> {
+    match Value::try_from(value).ok()? {
+        Value::Table(table) => Some(table),
+        _ => None,
+    }
+}
+
+/// Writes config with staged plugin replacements without changing global session state.
+pub fn save_file_with_plugin_tables(
+    file: &Path,
+    settings: &super::settings::Settings,
+    replacements: &[(String, PluginTable)],
+) -> std::io::Result<()> {
+    let bytes = save_bytes_with_plugin_tables(settings, replacements)?;
+    let tmp = file.with_extension("toml.tmp");
+    std::fs::write(&tmp, bytes)?;
+    std::fs::rename(tmp, file)
+}
+
+/// Serializes config with staged plugin replacements without changing session state.
+pub fn save_bytes_with_plugin_tables(
+    settings: &super::settings::Settings,
+    replacements: &[(String, PluginTable)],
+) -> std::io::Result<Vec<u8>> {
+    let mut plugins = PLUGINS
+        .read()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+        .clone();
+    for (name, table) in replacements {
+        plugins.insert(name.clone(), table.clone());
+    }
     let doc = UnifiedDoc {
         version: CONFIG_VERSION,
         extended: EXTENDED_SECTION
@@ -347,13 +384,12 @@ pub fn save_file(file: &Path, settings: &super::settings::Settings) -> std::io::
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clone(),
         settings: settings.clone(),
-        plugins: PLUGINS
-            .read()
-            .unwrap_or_else(std::sync::PoisonError::into_inner)
-            .clone(),
+        plugins,
         data: data_section(),
     };
-    write_doc(file, &doc)
+    toml::to_string_pretty(&doc)
+        .map(String::into_bytes)
+        .map_err(std::io::Error::other)
 }
 
 fn write_doc(file: &Path, doc: &UnifiedDoc) -> std::io::Result<()> {

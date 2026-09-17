@@ -120,3 +120,35 @@ Give two lists different view modes and sizes. Switch between them and
 confirm that each setting returns. Create a list and confirm that it inherits
 the current view. Reset one list's view settings. Restart and confirm that
 the saved and reset states persist.
+
+## 17. Incoming folder setup and review views
+
+In Preferences, change a scratch Library folder to Incoming. Confirm the count
+before conversion. Cancel once and confirm that nothing changes. Repeat and
+save. Confirm that Watch stays selected and cannot be cleared. Confirm that the
+books leave Library and appear under Incoming. Check All, Gap Fills,
+Duplicates, New Series, and Needs Review. Restart and confirm the same state.
+
+## 18. Incoming adoption, comparison, and undo
+
+Select Incoming books. Confirm that Compare shows the matching library copy.
+Run Preview Adoption and confirm that no file or catalog changes. Run Adopt
+with a Move profile. Confirm the destination, preserved metadata, and removal
+from Incoming. Test Cancel, Rename, and Replace for a destination conflict.
+Run Library Organizer - Revert Last Move. Confirm that the same record and ID
+return to Incoming at the original path.
+
+## 19. Incoming discard and Comic Vine refresh
+
+Discard one Incoming book to trash. Discard another with permanent deletion.
+Force one delete failure and confirm that its record remains. Select books with
+Comic Vine series IDs and run Refresh from Comic Vine. Confirm that only the
+explicit command uses the network and that the Gap Fills view updates. Confirm
+that opening and refreshing Incoming does not start a Comic Vine request.
+
+## 20. Incoming responsiveness and role protection
+
+Use a large Incoming catalog. Switch through all review views, open Compare,
+and change folder roles while observing the window. Confirm that the UI stays
+responsive. Try to remove an Incoming folder that still has unresolved books.
+Confirm that ComicRust blocks the change. Resolve the books and remove the role.

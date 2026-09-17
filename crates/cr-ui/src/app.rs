@@ -82,55 +82,7 @@ pub fn run(args: Vec<String>) {
     }
 
     if !app.is_remote() {
-        // The library session (`Program.DatabaseManager.Open` at
-        // startup) — the primary only.
-        crate::trace::trace("startup: opening library");
-        match library::initialize() {
-            Ok(message) => set_open_message(message),
-            Err(err) => set_open_message(Some(format!(
-                "There was an error opening the Database:\n{err}"
-            ))),
-        }
-        crate::trace::trace("startup: library open done");
-
-        // The theme from the extended settings (`ThemeManager.Initialize(
-        // ExtendedSettings.Theme)` parity — the C# `Theme` getter resolves
-        // `UseDarkMode` → Dark, `Default` renders light).
-        theme::set_dark(
-            cr_core::settings::ExtendedSettings::global().effective_theme()
-                == cr_core::settings::enums::Themes::Dark,
-        );
-
-        // `DatabaseBackgroundSaving` (default 600 s): the periodic save
-        // while the library is dirty. The ini/config key decides
-        // (Program.cs:758 parity); clamped to >= 1 s.
-        let background_save_secs = cr_core::settings::ExtendedSettings::global()
-            .database_background_saving
-            .max(1) as u64;
-        glib::timeout_add_local(std::time::Duration::from_secs(background_save_secs), || {
-            if let Err(err) = library::save_if_dirty() {
-                eprintln!("background save failed: {err}");
-            }
-            glib::ControlFlow::Continue
-        });
-
-        // The watch-folder poll: debounced watch events map back to the
-        // stored watch roots and each root rescans on the scan worker
-        // (`remove_missing: false` — vanished files flag as missing).
-        glib::timeout_add_local(std::time::Duration::from_secs(1), || {
-            for root in library::take_watch_folder_rescans() {
-                library::add_folder_to_library(Path::new(&root), |_| {
-                    // The scan landed: the browser re-evaluates (the
-                    // C# scan events update the live view).
-                    if let Some(shell) =
-                        BROWSER.with(|cell| cell.borrow().as_ref().map(|s| s.clone()))
-                    {
-                        shell.refresh_after_data_change();
-                    }
-                });
-            }
-            glib::ControlFlow::Continue
-        });
+        start_bootstrap_worker();
 
         // The console kill signals (Ctrl+C / `kill`): route them
         // through the GRACEFUL close — the close-request handler
@@ -170,6 +122,17 @@ pub fn run(args: Vec<String>) {
         glib::ExitCode::SUCCESS
     });
     app.connect_open(|app, files, _| {
+        if library::try_session().is_none() {
+            let mut argv = vec![String::new()];
+            argv.extend(
+                files
+                    .iter()
+                    .filter_map(|file| file.path())
+                    .map(|path| path.to_string_lossy().into_owned()),
+            );
+            await_bootstrap(app, &argv);
+            return;
+        }
         let shell = ensure_shell(app);
         for file in files {
             if let Some(path) = file.path() {
@@ -189,10 +152,120 @@ thread_local! {
     /// The command-line pipeline already ran (the primary's own boot
     /// is the FIRST call; every later call is a handoff).
     static COMMAND_LINE_SEEN: Cell<bool> = const { Cell::new(false) };
+    static BOOTSTRAP_RX: RefCell<Option<std::sync::mpsc::Receiver<anyhow::Result<library::BootstrapData>>>> =
+        const { RefCell::new(None) };
+    static BOOTSTRAP_WINDOW: RefCell<Option<(ApplicationWindow, gtk4::Label)>> = const { RefCell::new(None) };
+    static PENDING_COMMAND_LINES: RefCell<Vec<Vec<String>>> = const { RefCell::new(Vec::new()) };
+    static BOOTSTRAP_POLLING: Cell<bool> = const { Cell::new(false) };
 }
 
 fn set_open_message(message: Option<String>) {
     OPEN_MESSAGE.with(|cell| *cell.borrow_mut() = message);
+}
+
+fn start_bootstrap_worker() {
+    let (tx, rx) = std::sync::mpsc::channel();
+    BOOTSTRAP_RX.with(|cell| *cell.borrow_mut() = Some(rx));
+    std::thread::Builder::new()
+        .name("Application Bootstrap".into())
+        .spawn(move || {
+            crate::trace::trace("startup: opening library");
+            let _ = tx.send(library::load_bootstrap());
+        })
+        .expect("spawn application bootstrap worker");
+}
+
+fn await_bootstrap(app: &Application, argv: &[String]) {
+    PENDING_COMMAND_LINES.with(|cell| cell.borrow_mut().push(argv.to_vec()));
+    if BOOTSTRAP_POLLING.replace(true) {
+        return;
+    }
+    let label = gtk4::Label::new(Some("Loading the library..."));
+    label.set_margin_top(24);
+    label.set_margin_bottom(24);
+    label.set_margin_start(32);
+    label.set_margin_end(32);
+    let window = ApplicationWindow::builder()
+        .application(app)
+        .title("ComicRust")
+        .child(&label)
+        .default_width(360)
+        .build();
+    window.present();
+    BOOTSTRAP_WINDOW.with(|cell| *cell.borrow_mut() = Some((window, label)));
+    let app = app.clone();
+    glib::timeout_add_local(std::time::Duration::from_millis(25), move || {
+        let received = BOOTSTRAP_RX.with(|cell| {
+            cell.borrow()
+                .as_ref()
+                .map(std::sync::mpsc::Receiver::try_recv)
+        });
+        let result = match received {
+            Some(Ok(result)) => result,
+            Some(Err(std::sync::mpsc::TryRecvError::Empty)) => return glib::ControlFlow::Continue,
+            Some(Err(std::sync::mpsc::TryRecvError::Disconnected)) | None => Err(anyhow::anyhow!(
+                "The startup worker stopped without a result."
+            )),
+        };
+        match result {
+            Ok(bootstrap) => {
+                library::initialize_bootstrap_settings();
+                set_open_message(library::install_bootstrap(bootstrap));
+                crate::trace::trace("startup: library open done");
+                theme::set_dark(
+                    cr_core::settings::ExtendedSettings::global().effective_theme()
+                        == cr_core::settings::enums::Themes::Dark,
+                );
+                install_session_timers();
+                BOOTSTRAP_WINDOW.with(|cell| {
+                    if let Some((window, _)) = cell.borrow_mut().take() {
+                        window.close();
+                    }
+                });
+                let pending =
+                    PENDING_COMMAND_LINES.with(|cell| std::mem::take(&mut *cell.borrow_mut()));
+                for argv in pending {
+                    process_command_line(&app, &argv);
+                }
+            }
+            Err(error) => {
+                let text = format!("ComicRust could not load its application data.\n\n{error}");
+                eprintln!("application data initialization failed: {error}");
+                BOOTSTRAP_WINDOW.with(|cell| {
+                    if let Some((window, label)) = cell.borrow().as_ref() {
+                        window.set_title(Some("ComicRust startup error"));
+                        label.set_label(&text);
+                    }
+                });
+            }
+        }
+        glib::ControlFlow::Break
+    });
+}
+
+fn install_session_timers() {
+    let background_save_secs = cr_core::settings::ExtendedSettings::global()
+        .database_background_saving
+        .max(1) as u64;
+    glib::timeout_add_local(std::time::Duration::from_secs(background_save_secs), || {
+        library::save_if_dirty_async(|result| {
+            if let Err(err) = result {
+                eprintln!("background save failed: {err}");
+            }
+        });
+        glib::ControlFlow::Continue
+    });
+    glib::timeout_add_local(std::time::Duration::from_secs(1), || {
+        for root in library::take_watch_folder_rescans() {
+            library::add_folder_to_library(Path::new(&root), |_| {
+                if let Some(shell) = BROWSER.with(|cell| cell.borrow().as_ref().cloned()) {
+                    shell.refresh_after_data_change();
+                    shell.state_report_scan_problems();
+                }
+            });
+        }
+        glib::ControlFlow::Continue
+    });
 }
 
 /// The `-waitpid <pid>` wait (the C# `Program.cs:1127-1136`,
@@ -218,6 +291,14 @@ fn wait_for_restart_pid(args: &[String]) {
 /// `activate` never fires under HANDLES_COMMAND_LINE) and every
 /// second-instance handoff (`StartLast`).
 fn handle_command_line(app: &Application, argv: &[String]) {
+    if library::try_session().is_none() {
+        await_bootstrap(app, argv);
+        return;
+    }
+    process_command_line(app, argv);
+}
+
+fn process_command_line(app: &Application, argv: &[String]) {
     // The probe evidence: BOTH deliveries carry the program path as
     // element 0 — the parse must never see it (a non-switch argument
     // would land in `files` and the binary would open as a comic).
@@ -675,6 +756,13 @@ pub fn add_folder_dialog(parent: &impl IsA<Window>) {
         let window = window.clone();
         let path_display = path.display().to_string();
         library::add_folder_to_library(&path, move |result| {
+            if let Some(error) = library::take_scan_completion_error() {
+                show_attention_dialog(
+                    &window,
+                    &format!("The Incoming scan could not save its catalog.\n\n{error}"),
+                );
+                return;
+            }
             // The scan result counts every diff kind: a re-link
             // (`moved` — the same-name+size recovery) is a success,
             // not "no books found".

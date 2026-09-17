@@ -31,6 +31,7 @@ pub struct Library {
     /// The C# `ComicDatabase.IsDirty` (books mark the container dirty
     /// through events; callers here mark it explicitly).
     dirty: bool,
+    mutation_generation: u64,
     /// The ComicBook queues (`Program.QueueManager`).
     queues: QueueManager,
     /// Live watch over `database.watch_folders` (`Watch = true`).
@@ -54,22 +55,34 @@ impl Library {
     /// watch folders (a watcher failure is silent, like the C#
     /// `FileSystemWatcher`).
     pub fn open(file: &Path) -> Result<(Library, OpenStatus), DbError> {
+        let (mut library, status) = Self::open_without_watcher(file)?;
+        library.rebuild_watcher();
+        Ok((library, status))
+    }
+
+    /// Opens the database but does not start the live watcher.
+    pub fn open_without_watcher(file: &Path) -> Result<(Library, OpenStatus), DbError> {
         let (database, status) = open_with_fallback(file)?;
         crate::trace::trace(format!(
             "library: db open done books={} ({status:?})",
             database.books.len()
         ));
-        let mut lib = Library {
+        let lib = Library {
             database,
             file: file.to_path_buf(),
             dirty: false,
+            mutation_generation: 0,
             queues: QueueManager::new(),
             watcher: None,
             watcher_rx: None,
             watcher_gen: 0,
         };
-        lib.rebuild_watcher();
         Ok((lib, status))
+    }
+
+    /// Starts the live watcher after all startup catalogs are loaded.
+    pub fn start_watcher(&mut self) {
+        self.rebuild_watcher();
     }
 
     /// Opens at the default location (`Paths::new_default` +
@@ -100,6 +113,32 @@ impl Library {
 
     pub fn mark_dirty(&mut self) {
         self.dirty = true;
+        self.mutation_generation = self.mutation_generation.wrapping_add(1);
+        crate::incoming_transaction::advance_database_epoch();
+    }
+
+    pub fn save_snapshot(&self) -> Option<(ComicDatabase, PathBuf, u64)> {
+        self.dirty.then(|| {
+            (
+                self.database.clone(),
+                self.file.clone(),
+                self.mutation_generation,
+            )
+        })
+    }
+
+    pub fn persistence_snapshot(&self) -> (ComicDatabase, PathBuf, u64) {
+        (
+            self.database.clone(),
+            self.file.clone(),
+            self.mutation_generation,
+        )
+    }
+
+    pub fn mark_saved(&mut self, generation: u64) {
+        if self.mutation_generation == generation {
+            self.dirty = false;
+        }
     }
 
     /// The ComicBook queues (dynamic update / export / read-info /
@@ -235,7 +274,7 @@ impl Library {
                 folder: folder.to_string(),
                 watch,
             });
-        self.dirty = true;
+        self.mark_dirty();
         self.rebuild_watcher();
     }
 
@@ -247,7 +286,15 @@ impl Library {
     /// with OK.
     pub fn set_watch_folders(&mut self, folders: Vec<cr_core::database::list_items::WatchFolder>) {
         self.database.watch_folders = folders;
-        self.dirty = true;
+        self.mark_dirty();
+        self.rebuild_watcher();
+    }
+
+    /// Installs database state that a worker already persisted.
+    pub fn install_persisted_database(&mut self, database: ComicDatabase) {
+        self.database = database;
+        self.dirty = false;
+        self.mutation_generation = self.mutation_generation.wrapping_add(1);
         self.rebuild_watcher();
     }
 
@@ -351,7 +398,7 @@ impl Library {
     ) -> crate::path_migration::ApplyReport {
         let report = crate::path_migration::apply(&mut self.database, mappings);
         if report.changed_anything() {
-            self.dirty = true;
+            self.mark_dirty();
             self.rebuild_watcher();
         }
         report
@@ -365,7 +412,7 @@ impl Library {
             || !result.moved.is_empty()
             || !result.removed.is_empty();
         if changed {
-            self.dirty = true;
+            self.mark_dirty();
         }
         result
     }

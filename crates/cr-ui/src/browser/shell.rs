@@ -31,6 +31,341 @@ fn cr_ui_settings() -> std::rc::Rc<std::cell::RefCell<cr_core::settings::Setting
 }
 use crate::reader_shell::ReaderShell;
 
+struct IncomingOrganizerEffects {
+    engine: cr_engine::incoming_transaction::TransactionEngine,
+    transaction: std::sync::Mutex<cr_engine::incoming_transaction::IncomingTransaction>,
+    working: std::sync::Mutex<(
+        cr_core::database::comic_database::ComicDatabase,
+        cr_engine::incoming::IncomingCatalog,
+    )>,
+    previous: std::sync::Mutex<
+        Option<(
+            cr_core::database::comic_database::ComicDatabase,
+            cr_engine::incoming::IncomingCatalog,
+        )>,
+    >,
+    adoption_sources: Option<std::collections::HashSet<String>>,
+    captured_epoch: u64,
+}
+
+impl IncomingOrganizerEffects {
+    fn new(
+        transaction: cr_engine::incoming_transaction::IncomingTransaction,
+        database: cr_core::database::comic_database::ComicDatabase,
+        incoming: cr_engine::incoming::IncomingCatalog,
+        adoption_sources: Option<std::collections::HashSet<String>>,
+        captured_epoch: u64,
+    ) -> Self {
+        Self {
+            engine: cr_engine::incoming_transaction::TransactionEngine::new(
+                &cr_core::paths::Paths::new_default(),
+            ),
+            transaction: std::sync::Mutex::new(transaction),
+            working: std::sync::Mutex::new((database, incoming)),
+            previous: std::sync::Mutex::new(None),
+            adoption_sources,
+            captured_epoch,
+        }
+    }
+
+    fn update_after_images(&self) -> std::io::Result<()> {
+        let working = self.working.lock().unwrap();
+        let mut transaction = self.transaction.lock().unwrap();
+        transaction.files.comic_database.as_mut().unwrap().after =
+            cr_core::database::comic_database::save_bytes(&working.0)
+                .map_err(std::io::Error::other)?;
+        transaction.files.incoming_catalog.as_mut().unwrap().after = working.1.to_bytes()?;
+        Ok(())
+    }
+
+    fn prepare_action(
+        &self,
+        action: cr_engine::incoming_transaction::ExternalFileAction,
+    ) -> std::io::Result<()> {
+        if cr_engine::incoming_transaction::database_epoch() != self.captured_epoch {
+            return Err(std::io::Error::other(
+                "The library changed during the Incoming transaction.",
+            ));
+        }
+        let mut transaction = self.transaction.lock().unwrap();
+        transaction.external_actions.push(action);
+        if self.engine.journal_path().exists() {
+            self.engine.update(&transaction)
+        } else {
+            self.engine.begin(&transaction)
+        }
+        .map_err(std::io::Error::other)
+    }
+
+    fn mark_last(&self, succeeded: bool) -> std::io::Result<()> {
+        if !succeeded {
+            if let Some(previous) = self.previous.lock().unwrap().take() {
+                *self.working.lock().unwrap() = previous;
+                self.update_after_images()?;
+            }
+        } else {
+            self.previous.lock().unwrap().take();
+        }
+        let mut transaction = self.transaction.lock().unwrap();
+        if succeeded {
+            match transaction.external_actions.last_mut() {
+                Some(cr_engine::incoming_transaction::ExternalFileAction::Rename {
+                    status,
+                    ..
+                })
+                | Some(cr_engine::incoming_transaction::ExternalFileAction::Delete {
+                    status,
+                    ..
+                }) => *status = cr_engine::incoming_transaction::ExternalActionStatus::Applied,
+                None => {}
+            }
+        } else {
+            transaction.external_actions.pop();
+        }
+        self.engine
+            .update(&transaction)
+            .map_err(std::io::Error::other)
+    }
+
+    fn finish(
+        &self,
+        guard: &cr_engine::incoming_transaction::MutationGuard,
+        database: &cr_core::database::comic_database::ComicDatabase,
+        incoming: &cr_engine::incoming::IncomingCatalog,
+        auxiliary: Vec<cr_engine::incoming_transaction::FileSnapshot>,
+        config: Option<cr_engine::incoming_transaction::FileSnapshot>,
+    ) -> Result<u64, String> {
+        let mut transaction = self.transaction.lock().unwrap();
+        transaction.files.comic_database.as_mut().unwrap().after =
+            cr_core::database::comic_database::save_bytes(database)
+                .map_err(|error| error.to_string())?;
+        transaction.files.incoming_catalog.as_mut().unwrap().after =
+            incoming.to_bytes().map_err(|error| error.to_string())?;
+        transaction.files.auxiliary = auxiliary;
+        transaction.files.config = config;
+        if !self.engine.journal_path().exists() {
+            self.engine
+                .begin(&transaction)
+                .map_err(|error| error.to_string())?;
+        } else {
+            self.engine
+                .update(&transaction)
+                .map_err(|error| error.to_string())?;
+        }
+        guard
+            .commit_if_epoch(self.captured_epoch, &self.engine, &mut transaction)
+            .inspect_err(|error| {
+                if matches!(
+                    error,
+                    cr_engine::incoming_transaction::TransactionError::EpochChanged
+                ) {
+                    let _ = self.engine.abort_prepared();
+                }
+            })
+            .map_err(|error| error.to_string())
+    }
+}
+
+impl cr_organize::engine::FilesystemEffects for IncomingOrganizerEffects {
+    fn before_rename(&self, source: &str, destination: &str) -> std::io::Result<()> {
+        {
+            let mut working = self.working.lock().unwrap();
+            *self.previous.lock().unwrap() = Some(working.clone());
+            let kind = self.transaction.lock().unwrap().kind;
+            if kind == cr_engine::incoming_transaction::TransactionKind::Adoption {
+                if let Some(index) = working
+                    .1
+                    .books
+                    .iter()
+                    .position(|book| book.file_path == source)
+                {
+                    let mut book = working.1.books.remove(index);
+                    book.file_path = destination.into();
+                    working
+                        .0
+                        .books
+                        .retain(|value| value.id != book.id && value.file_path != destination);
+                    working.0.books.push(book);
+                } else if let Some(index) = working
+                    .0
+                    .books
+                    .iter()
+                    .position(|book| book.file_path == source)
+                {
+                    let mut book = working.0.books.remove(index);
+                    book.file_path = destination.into();
+                    working.1.books.retain(|value| value.id != book.id);
+                    working.1.books.push(book);
+                }
+            } else if kind == cr_engine::incoming_transaction::TransactionKind::Undo
+                && self
+                    .adoption_sources
+                    .as_ref()
+                    .is_some_and(|paths| paths.contains(source))
+            {
+                if let Some(index) = working
+                    .0
+                    .books
+                    .iter()
+                    .position(|book| book.file_path == source)
+                {
+                    let mut book = working.0.books.remove(index);
+                    book.file_path = destination.into();
+                    working
+                        .1
+                        .books
+                        .retain(|value| value.id != book.id && value.file_path != destination);
+                    working.1.books.push(book);
+                }
+            } else if kind == cr_engine::incoming_transaction::TransactionKind::Undo {
+                if let Some(book) = working
+                    .0
+                    .books
+                    .iter_mut()
+                    .find(|book| book.file_path == source)
+                {
+                    book.file_path = destination.into();
+                }
+            }
+        }
+        self.update_after_images()?;
+        self.prepare_action(
+            cr_engine::incoming_transaction::ExternalFileAction::Rename {
+                source: source.into(),
+                destination: destination.into(),
+                status: cr_engine::incoming_transaction::ExternalActionStatus::Pending,
+            },
+        )
+    }
+
+    fn after_rename(
+        &self,
+        _source: &str,
+        _destination: &str,
+        succeeded: bool,
+    ) -> std::io::Result<()> {
+        self.mark_last(succeeded)
+    }
+
+    fn before_delete(&self, path: &str) -> std::io::Result<()> {
+        {
+            let mut working = self.working.lock().unwrap();
+            *self.previous.lock().unwrap() = Some(working.clone());
+            working.0.books.retain(|book| book.file_path != path);
+            working.1.books.retain(|book| book.file_path != path);
+        }
+        self.update_after_images()?;
+        self.prepare_action(
+            cr_engine::incoming_transaction::ExternalFileAction::Delete {
+                source: path.into(),
+                status: cr_engine::incoming_transaction::ExternalActionStatus::Pending,
+            },
+        )
+    }
+
+    fn after_delete(&self, _path: &str, succeeded: bool) -> std::io::Result<()> {
+        self.mark_last(succeeded)
+    }
+}
+
+fn file_snapshot(
+    path: std::path::PathBuf,
+    after: Vec<u8>,
+) -> cr_engine::incoming_transaction::FileSnapshot {
+    cr_engine::incoming_transaction::FileSnapshot {
+        before: std::fs::read(&path).ok(),
+        path,
+        after,
+        remove_after: false,
+    }
+}
+
+fn live_snapshot(
+    path: std::path::PathBuf,
+    bytes: Vec<u8>,
+) -> cr_engine::incoming_transaction::FileSnapshot {
+    cr_engine::incoming_transaction::FileSnapshot {
+        path,
+        before: Some(bytes.clone()),
+        after: bytes,
+        remove_after: false,
+    }
+}
+
+fn apply_organizer_results(
+    database: &mut cr_core::database::comic_database::ComicDatabase,
+    applies: &[cr_organize::engine::Apply],
+) {
+    for apply in applies {
+        match apply {
+            cr_organize::engine::Apply::Update(book) => {
+                if let Some(existing) = database.books.iter_mut().find(|value| value.id == book.id)
+                {
+                    *existing = book.clone();
+                }
+            }
+            cr_organize::engine::Apply::Insert(book) | cr_organize::engine::Apply::Adopt(book) => {
+                database.books.retain(|value| value.id != book.id);
+                database.books.push(book.clone());
+            }
+            cr_organize::engine::Apply::Remove(id) => {
+                database.books.retain(|book| book.id != *id);
+            }
+        }
+    }
+}
+
+fn failed_run_outcome(error: String) -> crate::dialogs::organize::RunOutcome {
+    crate::dialogs::organize::RunOutcome {
+        text: error,
+        failed_or_skipped: true,
+        applies: Vec::new(),
+        residual: None,
+    }
+}
+
+fn prepare_close(sh: &ShellState) {
+    let open_files = sh.reader.open_files();
+    sh.reader.shutdown();
+    let current = *sh.current_list.borrow();
+    sh.store_view_config(current);
+    let size = sh.quick_view.thumb_height() as i32;
+    let previous = cr_ui_settings().borrow().current_workspace.clone();
+    let workspace = sh.collect_workspace(previous.as_ref());
+    cr_ui_settings().borrow_mut().current_workspace = Some(workspace);
+    let settings = cr_ui_settings();
+    let mut settings = settings.borrow_mut();
+    settings.quick_open_thumbnail_size = size;
+    settings.last_open_files = open_files;
+    if let Some(folder) = sh.folders_tree.current_folder() {
+        settings.last_explorer_folder = folder;
+    }
+}
+
+fn save_and_finish_close(
+    window: gtk4::ApplicationWindow,
+    barrier: Rc<RefCell<cr_engine::incoming_transaction::CloseBarrier>>,
+) {
+    library::save_for_close_async(move |result| match result {
+        Ok(true) => {
+            library::save_settings();
+            if barrier.borrow_mut().coordinator_became_idle() {
+                window.close();
+            }
+        }
+        Ok(false) => save_and_finish_close(window, barrier),
+        Err(error) => {
+            eprintln!("library save failed: {error}");
+            barrier.borrow_mut().save_failed();
+            show_failure_dialog(
+                &window,
+                "ComicRust could not close",
+                &format!("The library could not be saved. The window remains open.\n\n{error}"),
+            );
+        }
+    });
+}
+
 use super::columns::{self, default_columns};
 use super::item_view::ItemView;
 use super::layout::ItemViewMode;
@@ -164,6 +499,564 @@ struct ShellState {
 }
 
 impl ShellState {
+    fn is_incoming_view(&self) -> bool {
+        self.current_list
+            .borrow()
+            .as_ref()
+            .is_some_and(|id| super::navigator::IncomingView::from_id(id).is_some())
+    }
+
+    fn selected_incoming_books(&self) -> Vec<ComicBook> {
+        if !self.is_incoming_view() {
+            return Vec::new();
+        }
+        library::incoming_books_by_ids(&self.item_view.selection_ids())
+    }
+
+    fn compare_incoming(self: &Rc<Self>) {
+        let selected = self.selected_incoming_books();
+        if selected.is_empty() {
+            return;
+        }
+        let library_books = library::session().borrow().database().books.clone();
+        let (tx, rx) = std::sync::mpsc::channel();
+        std::thread::Builder::new()
+            .name("Compare Incoming".into())
+            .spawn(move || {
+                let all: Vec<&ComicBook> = selected.iter().chain(&library_books).collect();
+                let groups = cr_engine::matcher::eval::grouped_duplicate_indexes(&all);
+                let mut lines = Vec::new();
+                for (index, incoming) in selected.iter().enumerate() {
+                    let matches: Vec<&ComicBook> = groups
+                        .iter()
+                        .find(|group| group.contains(&index))
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|candidate| candidate.checked_sub(selected.len()))
+                        .filter_map(|candidate| library_books.get(candidate))
+                        .collect();
+                    lines.push(format!(
+                        "Incoming: {}\nSeries: {}\nVolume: {}\nNumber: {}\nPages: {}\nPath: {}",
+                        cr_engine::display_text::caption(incoming),
+                        incoming.info.series,
+                        incoming.info.volume,
+                        incoming.info.number,
+                        incoming.info.page_count,
+                        incoming.file_path
+                    ));
+                    if matches.is_empty() {
+                        lines.push("Matching library duplicate: None".to_string());
+                    } else {
+                        for duplicate in matches {
+                            lines.push(format!(
+                                "Matching library duplicate: {}\nPages: {}\nPath: {}",
+                                cr_engine::display_text::caption(duplicate),
+                                duplicate.info.page_count,
+                                duplicate.file_path
+                            ));
+                        }
+                    }
+                }
+                let _ = tx.send(lines.join("\n\n"));
+            })
+            .expect("spawn Incoming compare worker");
+        let window = self.window.clone();
+        glib::timeout_add_local(std::time::Duration::from_millis(50), move || {
+            match rx.try_recv() {
+                Ok(report) => {
+                    show_report_dialog(&window, "Compare Incoming", &report);
+                    glib::ControlFlow::Break
+                }
+                Err(std::sync::mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    show_failure_dialog(
+                        &window,
+                        "Compare Incoming",
+                        "The compare worker stopped without a result.",
+                    );
+                    glib::ControlFlow::Break
+                }
+            }
+        });
+    }
+
+    fn choose_incoming_profile(self: &Rc<Self>, preview: bool) {
+        let selected = self.selected_incoming_books();
+        if selected.is_empty() {
+            return;
+        }
+        let settings = library::organize_settings();
+        let profiles: Vec<_> = settings
+            .profiles
+            .into_iter()
+            .filter(|profile| profile.mode == cr_organize::profile::MODE_MOVE)
+            .collect();
+        if profiles.is_empty() {
+            show_report_dialog(
+                &self.window,
+                "Incoming Adoption",
+                "Create a Library Organizer profile with mode Move first.",
+            );
+            return;
+        }
+        let names: Vec<String> = profiles
+            .iter()
+            .map(|profile| profile.name.clone())
+            .collect();
+        let last = library::incoming_config().last_organizer_profile;
+        let preselected = if names.contains(&last) {
+            vec![last]
+        } else {
+            Vec::new()
+        };
+        let pending = Rc::new(RefCell::new(Some(selected)));
+        let weak = Rc::downgrade(self);
+        crate::dialogs::organize::show_profile_selector(
+            &self.window,
+            &names,
+            &preselected,
+            move |chosen| {
+                let Some(name) = chosen.and_then(|names| names.into_iter().next()) else {
+                    return;
+                };
+                let Some(profile) = profiles
+                    .iter()
+                    .find(|profile| profile.name == name)
+                    .cloned()
+                else {
+                    return;
+                };
+                let Some(selected) = pending.borrow_mut().take() else {
+                    return;
+                };
+                if let Some(sh) = weak.upgrade() {
+                    sh.run_incoming_adoption(selected, profile, preview);
+                }
+            },
+        );
+    }
+
+    fn run_incoming_adoption(
+        self: &Rc<Self>,
+        incoming: Vec<ComicBook>,
+        mut profile: cr_organize::profile::Profile,
+        preview: bool,
+    ) {
+        if !preview && cr_engine::incoming_transaction::operation_active() {
+            show_failure_dialog(
+                &self.window,
+                "Incoming Adoption",
+                "Another Incoming operation is active. Try again after it finishes.",
+            );
+            return;
+        }
+        let database_snapshot = library::session().borrow().database().clone();
+        let incoming_snapshot = library::incoming_session().borrow().clone();
+        let captured_epoch = cr_engine::incoming_transaction::database_epoch();
+        let library_books = database_snapshot.books.clone();
+        let library_ids: std::collections::HashSet<CrGuid> =
+            library_books.iter().map(|book| book.id).collect();
+        if incoming.iter().any(|book| library_ids.contains(&book.id)) {
+            show_failure_dialog(
+                &self.window,
+                "Incoming Adoption",
+                "A selected Incoming ID already exists in the library.",
+            );
+            return;
+        }
+        let chosen_name = profile.name.clone();
+        if preview {
+            profile.mode = cr_organize::profile::MODE_SIMULATE.to_string();
+        }
+        let selected_ids: std::collections::HashSet<CrGuid> =
+            incoming.iter().map(|book| book.id).collect();
+        let pool = Arc::clone(&self.pool);
+        let catalog_result = Arc::new(std::sync::Mutex::new(None));
+        let worker_result = Arc::clone(&catalog_result);
+        let settings = library::settings().borrow().clone();
+        let weak = Rc::downgrade(self);
+        if !preview && !cr_engine::incoming_transaction::begin_operation() {
+            show_failure_dialog(
+                &self.window,
+                "Incoming Adoption",
+                "Another operation is active. Try again after it finishes.",
+            );
+            return;
+        }
+        crate::dialogs::organize::show_custom_run(
+            &self.window,
+            if preview {
+                "Preview Adoption"
+            } else {
+                "Adopt Incoming"
+            },
+            move |ui, cancel| {
+                let _guard =
+                    (!preview).then(cr_engine::incoming_transaction::acquire_mutation_guard);
+                if !preview && cr_engine::incoming_transaction::database_epoch() != captured_epoch {
+                    return failed_run_outcome(
+                        "The library changed before adoption started. Try again.".into(),
+                    );
+                }
+                let paths = cr_core::paths::Paths::new_default();
+                let database_path = cr_core::paths::database_file(&paths);
+                let mut database = database_snapshot;
+                let mut catalog = incoming_snapshot;
+                let mut books = database.books.clone();
+                let selected_start = books.len();
+                books.extend(catalog.books.iter().cloned());
+                let selected: Vec<usize> = books
+                    .iter()
+                    .enumerate()
+                    .skip(selected_start)
+                    .filter(|(_, book)| selected_ids.contains(&book.id))
+                    .map(|(index, _)| index)
+                    .collect();
+                struct Cover(Arc<ImagePool>);
+                impl cr_organize::engine::CoverSource for Cover {
+                    fn fileless_cover(&self, book: &ComicBook) -> Option<cr_image::Image> {
+                        let key = book.custom_thumbnail_key.as_ref()?;
+                        let bytes = self.0.read_custom_thumbnail(key)?;
+                        cr_image::decode(&bytes).ok()
+                    }
+                    fn duplicate_cover(&self, _book: &ComicBook) -> Option<Vec<u8>> {
+                        None
+                    }
+                }
+                let trash = |path: &str| library::trash_file(path);
+                let profiles = [profile];
+                let incoming_bytes = match catalog.to_bytes() {
+                    Ok(bytes) => bytes,
+                    Err(error) => return failed_run_outcome(error.to_string()),
+                };
+                let database_bytes = match cr_core::database::comic_database::save_bytes(&database)
+                {
+                    Ok(bytes) => bytes,
+                    Err(error) => return failed_run_outcome(error.to_string()),
+                };
+                let initial = cr_engine::incoming_transaction::IncomingTransaction {
+                    kind: cr_engine::incoming_transaction::TransactionKind::Adoption,
+                    stage: cr_engine::incoming_transaction::TransactionStage::Prepared,
+                    files: cr_engine::incoming_transaction::TransactionFiles {
+                        incoming_catalog: Some(live_snapshot(
+                            cr_core::paths::incoming_file(&paths),
+                            incoming_bytes,
+                        )),
+                        comic_database: Some(live_snapshot(database_path, database_bytes)),
+                        ..Default::default()
+                    },
+                    external_actions: Vec::new(),
+                };
+                let effects = IncomingOrganizerEffects::new(
+                    initial,
+                    database.clone(),
+                    catalog.clone(),
+                    None,
+                    captured_epoch,
+                );
+                let context = cr_organize::engine::RunContext {
+                    books: &books,
+                    selected: &selected,
+                    profiles: &profiles,
+                    move_landing: cr_organize::engine::MoveLanding::InsertPreservingId,
+                    trash: &trash,
+                    filesystem_effects: (!preview)
+                        .then_some(&effects as &dyn cr_organize::engine::FilesystemEffects),
+                    cover: &Cover(pool),
+                    undo_path: None,
+                    cancel,
+                };
+                let report = cr_organize::engine::organize(context, ui);
+                if !preview {
+                    let adopted: std::collections::HashSet<CrGuid> = report
+                        .applies
+                        .iter()
+                        .filter_map(|apply| match apply {
+                            cr_organize::engine::Apply::Adopt(book) => Some(book.id),
+                            _ => None,
+                        })
+                        .collect();
+                    catalog.books.retain(|book| !adopted.contains(&book.id));
+                    apply_organizer_results(&mut database, &report.applies);
+                    let undo_path = library::organizer_undo_path();
+                    let manifest_path = cr_organize::engine::adoption_manifest_path(&undo_path);
+                    let manifest = cr_organize::engine::AdoptionManifest::from_adoptions(
+                        &report.undo,
+                        &report.applies,
+                    );
+                    let mut config = library::incoming_config();
+                    config.last_organizer_profile = chosen_name.clone();
+                    let incoming_table = cr_core::settings::unified::serialize_plugin(&config)
+                        .ok_or_else(|| {
+                            "The Incoming configuration could not be serialized.".to_string()
+                        });
+                    let result = incoming_table.and_then(|table| {
+                        let config_path = cr_core::paths::config_file(&paths);
+                        let config_bytes =
+                            cr_core::settings::unified::save_bytes_with_plugin_tables(
+                                &settings,
+                                &[(library::INCOMING_PLUGIN.to_string(), table)],
+                            )
+                            .map_err(|error| error.to_string())?;
+                        let auxiliary = if report.undo.is_empty() {
+                            Vec::new()
+                        } else {
+                            vec![
+                                file_snapshot(
+                                    undo_path,
+                                    report
+                                        .undo
+                                        .to_bytes(false)
+                                        .map_err(|error| error.to_string())?,
+                                ),
+                                file_snapshot(
+                                    manifest_path,
+                                    manifest.to_bytes().map_err(|error| error.to_string())?,
+                                ),
+                            ]
+                        };
+                        let committed_epoch = effects.finish(
+                            _guard.as_ref().unwrap(),
+                            &database,
+                            &catalog,
+                            auxiliary,
+                            Some(file_snapshot(config_path, config_bytes)),
+                        )?;
+                        Ok((database, catalog, config, committed_epoch))
+                    });
+                    *worker_result.lock().unwrap() = Some(result);
+                }
+                crate::dialogs::organize::RunOutcome {
+                    text: report.text,
+                    failed_or_skipped: report.failed_or_skipped,
+                    applies: report.applies,
+                    residual: None,
+                }
+            },
+            move |outcome| {
+                if preview {
+                    if let Some(sh) = weak.upgrade() {
+                        show_report_dialog(&sh.window, "Preview Adoption", &outcome.text);
+                    }
+                    return;
+                }
+                match catalog_result.lock().unwrap().take() {
+                    Some(Ok((database, catalog, config, committed_epoch)))
+                        if cr_engine::incoming_transaction::database_epoch() == committed_epoch =>
+                    {
+                        library::session()
+                            .borrow_mut()
+                            .install_persisted_database(database);
+                        library::replace_incoming_catalog(catalog);
+                        cr_core::settings::unified::set_plugin(library::INCOMING_PLUGIN, &config);
+                    }
+                    Some(Ok(_)) => {
+                        if let Some(sh) = weak.upgrade() {
+                            show_failure_dialog(
+                                &sh.window,
+                                "Incoming Adoption",
+                                "The live library changed after the transaction committed. Restart ComicRust to load the saved catalogs.",
+                            );
+                        }
+                    }
+                    Some(Err(error)) => {
+                        if let Some(sh) = weak.upgrade() {
+                            show_failure_dialog(&sh.window, "Incoming Adoption", &error);
+                        }
+                    }
+                    None => {}
+                }
+                if let Some(sh) = weak.upgrade() {
+                    sh.refresh_view_from_list();
+                    sh.sync_enabled();
+                }
+                cr_engine::incoming_transaction::end_operation();
+            },
+        );
+    }
+
+    fn discard_incoming(self: &Rc<Self>) {
+        let selected = self.selected_incoming_books();
+        if selected.is_empty() {
+            return;
+        }
+        let confirm = gtk4::MessageDialog::builder()
+            .transient_for(&self.window)
+            .modal(true)
+            .title("Discard Incoming Books")
+            .text("Move the selected Incoming files to the trash?")
+            .message_type(gtk4::MessageType::Question)
+            .buttons(gtk4::ButtonsType::OkCancel)
+            .build();
+        let permanent = gtk4::CheckButton::with_label("Delete permanently (do not use the trash)");
+        if let Some(area) = confirm
+            .child()
+            .and_downcast::<gtk4::Box>()
+            .and_then(|vbox| vbox.first_child().and_downcast::<gtk4::Box>())
+        {
+            area.append(&permanent);
+        }
+        let weak = Rc::downgrade(self);
+        confirm.connect_response(move |dialog, response| {
+            let permanent = permanent.is_active();
+            dialog.close();
+            if response != gtk4::ResponseType::Ok {
+                return;
+            }
+            let items: Vec<_> = selected
+                .iter()
+                .map(|book| (book.id, book.file_path.clone()))
+                .collect();
+            let weak_done = weak.clone();
+            library::discard_incoming_async(items, permanent, move |result| {
+                if let Some(sh) = weak_done.upgrade() {
+                    match result {
+                        Ok((catalog, outcome, committed_epoch)) => {
+                            if cr_engine::incoming_transaction::database_epoch()
+                                == committed_epoch
+                            {
+                                library::replace_incoming_catalog(catalog);
+                            } else {
+                                show_failure_dialog(
+                                    &sh.window,
+                                    "Discard Incoming Books",
+                                    "The live library changed after the transaction committed. Restart ComicRust to load the saved catalog.",
+                                );
+                                return;
+                            }
+                            if outcome.failed > 0 {
+                                show_report_dialog(
+                                    &sh.window,
+                                    "Discard Incoming Books",
+                                    &format!("{} file(s) could not be deleted.", outcome.failed),
+                                );
+                            }
+                        }
+                        Err(error) => {
+                            show_failure_dialog(&sh.window, "Discard Incoming Books", &error)
+                        }
+                    }
+                    sh.refresh_view_from_list();
+                    sh.sync_enabled();
+                }
+            });
+        });
+        confirm.present();
+    }
+
+    fn refresh_incoming_from_comic_vine(self: &Rc<Self>) {
+        let selected = self.selected_incoming_books();
+        let linked: Vec<_> = selected
+            .into_iter()
+            .filter(|book| !book.file_path.is_empty())
+            .collect();
+        if linked.is_empty() {
+            show_failure_dialog(
+                &self.window,
+                "Refresh from Comic Vine",
+                "Select one or more linked Incoming books.",
+            );
+            return;
+        }
+        let volume_ids = library::selected_incoming_volume_ids(&linked);
+        if volume_ids.is_empty() {
+            show_failure_dialog(
+                &self.window,
+                "Refresh from Comic Vine",
+                "The selected Incoming series do not name a Comic Vine volume. Scrape a matching book first.",
+            );
+            return;
+        }
+        let config = library::scraper_config();
+        if !config.has_api_key() {
+            show_failure_dialog(
+                &self.window,
+                "Refresh from Comic Vine",
+                "No Comic Vine API key is set. Set it in Preferences ▸ Comic Vine Scraper.",
+            );
+            return;
+        }
+        let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let worker_cancel = Arc::clone(&cancel);
+        let api_key = config.api_key.clone();
+        let budget_config = config.clone();
+        let (_, policy, _) = cr_scrape::cache::policies_from(config.advanced());
+        self.run_cv_job(
+            library::CvJobKind::IncomingRefresh,
+            "Refresh from Comic Vine",
+            cancel,
+            move |progress| {
+                let Some(cache) = library::cv_cache() else {
+                    return Err("The Comic Vine cache file could not be opened.".to_string());
+                };
+                let mut client = cr_scrape::cv::connection::CvClient::new(&api_key);
+                if let Some(budget) = library::cv_budget(
+                    &budget_config,
+                    Arc::clone(&cache),
+                    Arc::clone(&worker_cancel),
+                    Some(wait_reporter(progress.clone())),
+                ) {
+                    client.set_budget(budget);
+                }
+                let mut refreshed = 0usize;
+                let mut requests = 0usize;
+                let mut failures = Vec::new();
+                let total = volume_ids.len();
+                for (index, volume_id) in volume_ids.into_iter().enumerate() {
+                    if worker_cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                        break;
+                    }
+                    let _ = progress.send(CvProgressMsg::Step {
+                        detail: format!("volume {} of {total}", index + 1),
+                        done: index as i64,
+                        total: total as i64,
+                    });
+                    match cr_scrape::cache::freshness::issues_of_volume(
+                        &client,
+                        cache.as_ref(),
+                        volume_id,
+                        &policy,
+                        chrono::Utc::now().timestamp(),
+                    ) {
+                        Ok((_, report)) => {
+                            refreshed += 1;
+                            requests += report.requests;
+                        }
+                        Err(error) => failures.push(format!("Volume {volume_id}: {error}")),
+                    }
+                }
+                Ok((refreshed, requests, failures))
+            },
+            move |window, result| {
+                let (refreshed, requests, failures) = match result {
+                    Ok(result) => result,
+                    Err(error) => {
+                        show_failure_dialog(window, "Refresh from Comic Vine", &error);
+                        return;
+                    }
+                };
+                library::refresh_incoming_external_gaps_async();
+                if failures.is_empty() {
+                    show_report_dialog(
+                        window,
+                        "Refresh from Comic Vine",
+                        &format!("{refreshed} volume(s) refreshed. {requests} request(s) used."),
+                    );
+                } else {
+                    show_failure_dialog(
+                        window,
+                        "Refresh from Comic Vine",
+                        &format!(
+                            "{refreshed} volume(s) refreshed. {} volume(s) failed.\n{}",
+                            failures.len(),
+                            failures.join("\n")
+                        ),
+                    );
+                }
+            },
+        );
+    }
+
     /// Opens a comic into the docked reader and shows it (the C#
     /// `OpenComic`; the reader tab selects and the workspace swaps).
     fn open_comic(&self, path: &Path) {
@@ -391,6 +1284,9 @@ impl ShellState {
         let Some(id) = list else {
             return;
         };
+        if super::navigator::IncomingView::from_id(&id).is_some() {
+            return;
+        }
         let cfg = super::list_view_config::collect(&self.item_view);
         library::set_list_view_config(&id, Some(cfg));
     }
@@ -401,6 +1297,10 @@ impl ShellState {
     /// A list with no `<View>` changes nothing: the browser keeps the
     /// view it shows, which is the C# behavior for a null config.
     fn apply_view_config(&self, list: &CrGuid) {
+        if super::navigator::IncomingView::from_id(list).is_some() {
+            self.view_config_dirty.set(false);
+            return;
+        }
         if let Some(cfg) = library::list_view_config(list) {
             super::list_view_config::apply(&self.item_view, &cfg);
         }
@@ -410,7 +1310,7 @@ impl ShellState {
     fn refresh_view_from_list(&self) {
         let id = *self.current_list.borrow();
         if let Some(id) = id {
-            if let Some((name, books)) = library::evaluate_books(&id) {
+            if let Some((name, books)) = Self::evaluate_source(&id) {
                 crate::trace::trace(format!("refresh: evaluate {} books", books.len()));
                 // The list name feeds the status panel (a rename
                 // shows on the next refresh without a re-select).
@@ -429,6 +1329,33 @@ impl ShellState {
                 crate::trace::trace(format!("refresh: reselect {:?}", t_re.elapsed()));
             }
         }
+    }
+
+    fn evaluate_source(id: &CrGuid) -> Option<(String, Vec<ComicBook>)> {
+        let Some(view) = super::navigator::IncomingView::from_id(id) else {
+            return library::evaluate_books(id);
+        };
+        if view == super::navigator::IncomingView::All {
+            return Some((view.name().to_string(), library::incoming_books_snapshot()));
+        }
+        let snapshot = library::incoming_classification_snapshot();
+        let snapshot = snapshot.unwrap_or_else(|| library::IncomingClassificationSnapshot {
+            books: library::incoming_books_snapshot(),
+            classifications: Vec::new(),
+        });
+        let books = snapshot
+            .classifications
+            .into_iter()
+            .filter(|classification| match view {
+                super::navigator::IncomingView::All => true,
+                super::navigator::IncomingView::GapFills => classification.gap_fill,
+                super::navigator::IncomingView::Duplicates => classification.duplicate,
+                super::navigator::IncomingView::NewSeries => classification.new_series,
+                super::navigator::IncomingView::NeedsReview => classification.needs_review,
+            })
+            .filter_map(|classification| snapshot.books.get(classification.index).cloned())
+            .collect();
+        Some((view.name().to_string(), books))
     }
 
     /// The status-bar panels (`OnUpdateGui`'s strip updates fold
@@ -794,6 +1721,7 @@ impl BrowserShell {
             .refill(&library::comic_lists_snapshot());
         crate::trace::trace(format!("data-change refresh: +navigator {:?}", t.elapsed()));
         self.state.sync_enabled();
+        self.state.report_scan_problems();
         crate::trace::trace(format!("data-change refresh: total {:?}", t.elapsed()));
     }
 
@@ -1249,7 +2177,7 @@ impl BrowserShell {
                             }
                         }
                         let t_eval = std::time::Instant::now();
-                        if let Some((name, books)) = library::evaluate_books(id) {
+                        if let Some((name, books)) = ShellState::evaluate_source(id) {
                             // The list name feeds the status-bar
                             // selection panel (`BookList.Name`).
                             *sh.current_list_name.borrow_mut() = name;
@@ -1264,6 +2192,9 @@ impl BrowserShell {
                                 "nav select: set_books {:?}",
                                 t_set.elapsed()
                             ));
+                        }
+                        if super::navigator::IncomingView::from_id(id).is_some() {
+                            library::refresh_incoming_classification_async();
                         }
                         if changing {
                             sh.apply_view_config(id);
@@ -1330,7 +2261,15 @@ impl BrowserShell {
                 .item_view
                 .connect_activate(move |id| {
                     if let Some(sh) = state.upgrade() {
-                        if let Some(path) = library::book_path(id) {
+                        let path = if sh.is_incoming_view() {
+                            library::incoming_books_by_ids(&[*id])
+                                .into_iter()
+                                .next()
+                                .map(|book| book.file_path)
+                        } else {
+                            library::book_path(id)
+                        };
+                        if let Some(path) = path.filter(|path| !path.is_empty()) {
                             sh.open_comic(Path::new(&path));
                         }
                     }
@@ -1358,7 +2297,13 @@ impl BrowserShell {
                 .expect("state")
                 .item_view
                 .connect_remove(move || {
-                    run_remove_books(&state);
+                    if let Some(sh) = state.upgrade() {
+                        if sh.is_incoming_view() {
+                            sh.discard_incoming();
+                        } else {
+                            run_remove_books(&Rc::downgrade(&sh));
+                        }
+                    }
                 });
         }
 
@@ -1550,47 +2495,37 @@ impl BrowserShell {
         // settings file).
         {
             let state = Rc::downgrade(state);
-            self.window.connect_close_request(move |_| {
-                if let Some(sh) = state.upgrade() {
-                    // `Settings.LastOpenFiles = books.OpenFiles`
-                    // (MainForm.cs:1125) — captured while the books
-                    // are still open (shutdown closes the views).
-                    let open_files = sh.reader.open_files();
-                    sh.reader.shutdown();
-                    // The current list's own view settings land in
-                    // the database before the save (the C#
-                    // `UnregisterBookList` → `StoreWorkspace(null)`
-                    // at exit). A no-op when the list is untouched.
-                    let current = *sh.current_list.borrow();
-                    sh.store_view_config(current);
-                    // `Program.Settings.QuickOpenThumbnailSize = quickOpenView.ThumbnailSize`.
-                    let size = sh.quick_view.thumb_height() as i32;
-                    {
-                        // The workspace snapshot lands BEFORE the
-                        // save (the C# `CleanUp` copy). The reader
-                        // keeps the layout family from the previous
-                        // save — shutdown closed the views.
-                        let prev = cr_ui_settings().borrow().current_workspace.clone();
-                        let ws = sh.collect_workspace(prev.as_ref());
-                        cr_ui_settings().borrow_mut().current_workspace = Some(ws);
-                    }
-                    {
-                        let s = cr_ui_settings();
-                        let mut s = s.borrow_mut();
-                        s.quick_open_thumbnail_size = size;
-                        s.last_open_files = open_files;
-                        // `Settings.LastExplorerFolder` (the Files
-                        // view restores it at boot).
-                        if let Some(f) = sh.folders_tree.current_folder() {
-                            s.last_explorer_folder = f;
-                        }
-                    }
+            let barrier = Rc::new(RefCell::new(
+                cr_engine::incoming_transaction::CloseBarrier::default(),
+            ));
+            self.window.connect_close_request(move |window| {
+                let decision = barrier.borrow_mut().request();
+                if decision == cr_engine::incoming_transaction::CloseDecision::Proceed {
+                    return glib::Propagation::Proceed;
                 }
-                if let Err(err) = library::save() {
-                    eprintln!("library save failed: {err}");
+                if decision == cr_engine::incoming_transaction::CloseDecision::Stop {
+                    return glib::Propagation::Stop;
                 }
-                library::save_settings();
-                glib::Propagation::Proceed
+                library::abort_scan();
+                let state = state.clone();
+                let barrier = Rc::clone(&barrier);
+                let window = window.clone();
+                glib::timeout_add_local(std::time::Duration::from_millis(50), move || {
+                    if cr_engine::incoming_transaction::operation_active() {
+                        return glib::ControlFlow::Continue;
+                    }
+                    let Some(guard) = cr_engine::incoming_transaction::try_acquire_mutation_guard()
+                    else {
+                        return glib::ControlFlow::Continue;
+                    };
+                    if let Some(sh) = state.upgrade() {
+                        prepare_close(&sh);
+                    }
+                    drop(guard);
+                    save_and_finish_close(window.clone(), Rc::clone(&barrier));
+                    glib::ControlFlow::Break
+                });
+                glib::Propagation::Stop
             });
         }
 
@@ -1719,6 +2654,17 @@ impl BrowserShell {
                 }
             }
         })));
+        library::set_incoming_gap_view_hook(Some(Box::new({
+            let state = Rc::downgrade(state);
+            move || {
+                if let Some(sh) = state.upgrade() {
+                    if sh.is_incoming_view() {
+                        sh.refresh_view_from_list();
+                    }
+                }
+            }
+        })));
+        library::refresh_incoming_external_gaps_async();
 
         // The gauge row applier: after the gauge pass writes a list's
         // counters, the row label rebuilds in place. A Weak capture —
@@ -2512,6 +3458,9 @@ impl ShellState {
         let has_book = self.reader.has_current_book();
         let slots = self.reader.tab_count();
         let selected = self.item_view.selection_len();
+        let incoming = self.is_incoming_view();
+        let mutations_enabled = !cr_engine::incoming_transaction::operation_active();
+        let library_selection = selected > 0 && !incoming && mutations_enabled;
         let (can_prev, can_next) = {
             let h = self.list_history.borrow();
             let pos = self.list_history_pos.get();
@@ -2556,7 +3505,14 @@ impl ShellState {
             "rating-5",
             "quick-rating",
         ] {
-            self.set_action_enabled(name, selected > 0);
+            self.set_action_enabled(name, library_selection);
+        }
+        for name in ["scrape-books", "organize-books", "organize-quick"] {
+            self.set_action_enabled(name, library_selection);
+        }
+        self.set_action_enabled("organize-undo", mutations_enabled);
+        for name in ["incoming-adopt", "incoming-discard"] {
+            self.set_action_enabled(name, selected > 0 && incoming && mutations_enabled);
         }
         // Bookmark commands (`CanBookmark`/`CanNavigateBookmark`/
         // the current-page bookmark check).
@@ -3150,8 +4106,18 @@ impl ShellState {
                     ),
                 }
             }
-            let Ok(outcome) = result_rx.try_recv() else {
-                return glib::ControlFlow::Continue;
+            let outcome = match result_rx.try_recv() {
+                Ok(outcome) => outcome,
+                Err(std::sync::mpsc::TryRecvError::Empty) => return glib::ControlFlow::Continue,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    library::end_cv_job();
+                    show_failure_dialog(
+                        &report_window,
+                        heading,
+                        "The Comic Vine worker stopped without a result.",
+                    );
+                    return glib::ControlFlow::Break;
+                }
             };
             library::end_cv_job();
             if let Some(sh) = state.upgrade() {
@@ -3313,6 +4279,7 @@ impl ShellState {
                 let mut client = cr_scrape::cv::connection::CvClient::new(&api_key);
                 if let Some(budget) = library::cv_budget(
                     &budget_config,
+                    std::sync::Arc::clone(&cache),
                     std::sync::Arc::clone(&worker_cancel),
                     Some(wait_reporter(progress.clone())),
                 ) {
@@ -3404,6 +4371,7 @@ impl ShellState {
                 let mut client = cr_scrape::cv::connection::CvClient::new(&api_key);
                 if let Some(budget) = library::cv_budget(
                     &budget_config,
+                    std::sync::Arc::clone(&cache),
                     std::sync::Arc::clone(&worker_cancel),
                     Some(wait_reporter(progress.clone())),
                 ) {
@@ -3530,6 +4498,14 @@ impl ShellState {
     /// Resolves the profiles to run (the ProfileSelector when several
     /// exist) and launches the run window over the selection.
     fn launch_organize(self: &Rc<ShellState>, settings: &cr_organize::profile::PluginSettings) {
+        if cr_engine::incoming_transaction::operation_active() {
+            show_failure_dialog(
+                &self.window,
+                "Library Organizer",
+                "Another operation is active. Try again after it finishes.",
+            );
+            return;
+        }
         let ids = self.item_view.selection_ids();
         if ids.is_empty() {
             return;
@@ -3592,11 +4568,19 @@ impl ShellState {
         selected: Vec<usize>,
         profiles: Vec<cr_organize::profile::Profile>,
     ) {
+        if cr_engine::incoming_transaction::operation_active() {
+            show_failure_dialog(
+                &self.window,
+                "Library Organizer",
+                "Another operation is active. Try again after it finishes.",
+            );
+            return;
+        }
         let undo_path = library::organizer_undo_path();
         let pool = Arc::clone(&self.pool);
         let window = self.window.clone();
         let refresh_state = Rc::downgrade(self);
-        crate::dialogs::organize::show_run_dialog(
+        let started = crate::dialogs::organize::show_run_dialog(
             &window,
             books,
             selected,
@@ -3606,14 +4590,37 @@ impl ShellState {
             move |_report| {
                 if let Some(sh) = refresh_state.upgrade() {
                     sh.refresh_view_from_list();
+                    let weak = Rc::downgrade(&sh);
+                    glib::idle_add_local_once(move || {
+                        if let Some(sh) = weak.upgrade() {
+                            sh.sync_enabled();
+                        }
+                    });
                 }
             },
         );
+        if !started {
+            show_failure_dialog(
+                &self.window,
+                "Library Organizer",
+                "Another operation is active. Try again after it finishes.",
+            );
+        } else {
+            self.sync_enabled();
+        }
     }
 
     /// The undo command (`LibraryOrganizerUndo` hook): the last run's
     /// undo log; a successful undo deletes the log.
     fn run_organize_undo(self: &Rc<ShellState>) {
+        let Some(operation) = cr_engine::incoming_transaction::try_begin_operation() else {
+            show_failure_dialog(
+                &self.window,
+                "Library Organizer - Undo",
+                "Another operation is active. Try again after it finishes.",
+            );
+            return;
+        };
         let undo_path = library::organizer_undo_path();
         if !undo_path.exists() {
             crate::browser::shell::show_report_dialog(
@@ -3640,26 +4647,302 @@ impl ShellState {
             .collect();
         // The undo snapshot: the books whose current paths the log
         // names (the addon's `get_library_books`).
-        let books: Vec<ComicBook> = {
+        let database_snapshot = {
             let lib = library::session();
             let l = lib.borrow();
-            l.database().books.clone()
+            l.database().clone()
         };
+        let books = database_snapshot.books.clone();
+        let incoming_snapshot = library::incoming_session().borrow().clone();
+        let captured_epoch = cr_engine::incoming_transaction::database_epoch();
         let pool = Arc::clone(&self.pool);
         let window = self.window.clone();
         let refresh_state = Rc::downgrade(self);
         let path_for_done = undo_path.clone();
-        crate::dialogs::organize::show_undo_dialog(
+        let manifest_path = cr_organize::engine::adoption_manifest_path(&undo_path);
+        let manifest = if manifest_path.exists() {
+            match cr_organize::engine::AdoptionManifest::load(&manifest_path) {
+                Ok(manifest) if manifest.matches(&collection) => Some(manifest),
+                Ok(_) => {
+                    show_failure_dialog(
+                        &self.window,
+                        "Library Organizer - Undo",
+                        "The adoption manifest does not match undo.dat.",
+                    );
+                    return;
+                }
+                Err(error) => {
+                    show_failure_dialog(
+                        &self.window,
+                        "Library Organizer - Undo",
+                        &format!("The adoption manifest cannot be read: {error}"),
+                    );
+                    return;
+                }
+            }
+        } else {
+            if cr_organize::engine::missing_manifest_is_unsafe(
+                &collection,
+                &library::incoming_config().incoming_folders,
+            ) {
+                show_failure_dialog(
+                    &self.window,
+                    "Library Organizer - Undo",
+                    "The adoption manifest is missing for an Incoming undo entry. No files were changed.",
+                );
+                return;
+            }
+            None
+        };
+        let mut runnable = cr_organize::engine::UndoCollection::default();
+        let mut blocked = cr_organize::engine::UndoCollection::default();
+        let incoming_config = library::incoming_config();
+        for entry in collection.entries() {
+            let target = if manifest
+                .as_ref()
+                .is_some_and(|value| value.entry_for_current(entry.current_path).is_some())
+                && !incoming_config.is_incoming_path(entry.undo_path)
+            {
+                &mut blocked
+            } else {
+                &mut runnable
+            };
+            target.append(entry.undo_path, entry.current_path, entry.profile_name);
+        }
+        if runnable.is_empty() {
+            show_failure_dialog(
+                &self.window,
+                "Library Organizer - Undo",
+                "The original Incoming root is not configured. The undo entry remains available.",
+            );
+            return;
+        }
+        if manifest.is_none() {
+            crate::dialogs::organize::show_undo_dialog_outcome_with_operation(
+                &window,
+                books,
+                runnable,
+                profiles,
+                Some(pool),
+                operation,
+                move |outcome, operation| {
+                    for apply in &outcome.applies {
+                        match apply {
+                            cr_organize::engine::Apply::Update(book) => {
+                                library::apply_edited_from_organizer(book, operation);
+                            }
+                            cr_organize::engine::Apply::Insert(book)
+                            | cr_organize::engine::Apply::Adopt(book) => {
+                                library::insert_new_book_from_organizer(book, operation);
+                            }
+                            cr_organize::engine::Apply::Remove(id) => {
+                                library::remove_book_from_organizer(id, operation);
+                            }
+                        }
+                    }
+                    if let Some(sh) = refresh_state.upgrade() {
+                        sh.refresh_view_from_list();
+                        let weak = Rc::downgrade(&sh);
+                        glib::idle_add_local_once(move || {
+                            if let Some(sh) = weak.upgrade() {
+                                sh.sync_enabled();
+                            }
+                        });
+                    }
+                },
+            );
+            self.sync_enabled();
+            return;
+        }
+        drop(operation);
+        let manifest = manifest.unwrap();
+        let adoption_sources: std::collections::HashSet<String> = manifest
+            .entries
+            .iter()
+            .map(|entry| entry.current_path.clone())
+            .collect();
+        let worker_result = Arc::new(std::sync::Mutex::new(None));
+        let worker_result_out = Arc::clone(&worker_result);
+        let manifest_for_worker = manifest.clone();
+        if !cr_engine::incoming_transaction::begin_operation() {
+            show_failure_dialog(
+                &self.window,
+                "Library Organizer - Undo",
+                "Another operation is active. Try again after it finishes.",
+            );
+            return;
+        }
+        crate::dialogs::organize::show_custom_run(
             &window,
-            books,
-            collection,
-            profiles,
-            Some(pool),
-            move |_report| {
-                let _ = std::fs::remove_file(&path_for_done);
+            "Library Organizer - Undo",
+            move |ui, cancel| {
+                let _guard = cr_engine::incoming_transaction::acquire_mutation_guard();
+                if cr_engine::incoming_transaction::database_epoch() != captured_epoch {
+                    return failed_run_outcome(
+                        "The library changed before undo started. Try again.".into(),
+                    );
+                }
+                let paths = cr_core::paths::Paths::new_default();
+                let database_path = cr_core::paths::database_file(&paths);
+                let mut database = database_snapshot;
+                let mut catalog = incoming_snapshot;
+                let initial = cr_engine::incoming_transaction::IncomingTransaction {
+                    kind: cr_engine::incoming_transaction::TransactionKind::Undo,
+                    stage: cr_engine::incoming_transaction::TransactionStage::Prepared,
+                    files: cr_engine::incoming_transaction::TransactionFiles {
+                        incoming_catalog: Some(live_snapshot(
+                            cr_core::paths::incoming_file(&paths),
+                            match catalog.to_bytes() {
+                                Ok(bytes) => bytes,
+                                Err(error) => return failed_run_outcome(error.to_string()),
+                            },
+                        )),
+                        comic_database: Some(live_snapshot(
+                            database_path,
+                            match cr_core::database::comic_database::save_bytes(&database) {
+                                Ok(bytes) => bytes,
+                                Err(error) => return failed_run_outcome(error.to_string()),
+                            },
+                        )),
+                        ..Default::default()
+                    },
+                    external_actions: Vec::new(),
+                };
+                let effects = IncomingOrganizerEffects::new(
+                    initial,
+                    database.clone(),
+                    catalog.clone(),
+                    Some(adoption_sources),
+                    captured_epoch,
+                );
+                struct Cover(Arc<ImagePool>);
+                impl cr_organize::engine::CoverSource for Cover {
+                    fn fileless_cover(&self, book: &ComicBook) -> Option<cr_image::Image> {
+                        let key = book.custom_thumbnail_key.as_ref()?;
+                        let bytes = self.0.read_custom_thumbnail(key)?;
+                        cr_image::decode(&bytes).ok()
+                    }
+                    fn duplicate_cover(&self, _book: &ComicBook) -> Option<Vec<u8>> {
+                        None
+                    }
+                }
+                let trash = |path: &str| library::trash_file(path);
+                let context = cr_organize::engine::RunContext {
+                    books: &database.books,
+                    selected: &[],
+                    profiles: &[],
+                    move_landing: cr_organize::engine::MoveLanding::UpdateExisting,
+                    trash: &trash,
+                    filesystem_effects: Some(&effects),
+                    cover: &Cover(pool),
+                    undo_path: None,
+                    cancel,
+                };
+                let report = cr_organize::engine::undo(context, &runnable, &profiles, ui);
+                let mut residual = report.residual.clone();
+                for entry in blocked.entries() {
+                    residual.append(entry.undo_path, entry.current_path, entry.profile_name);
+                }
+                let successful: std::collections::HashSet<CrGuid> = manifest_for_worker
+                    .entries
+                    .iter()
+                    .filter(|entry| residual.entry(&entry.current_path).is_none())
+                    .filter_map(|entry| CrGuid::parse(&entry.id).ok())
+                    .collect();
+                for apply in &report.applies {
+                    match apply {
+                        cr_organize::engine::Apply::Update(book)
+                            if successful.contains(&book.id) =>
+                        {
+                            database.books.retain(|value| value.id != book.id);
+                            catalog.books.retain(|value| value.id != book.id);
+                            catalog.books.push(book.clone());
+                        }
+                        _ => apply_organizer_results(&mut database, std::slice::from_ref(apply)),
+                    }
+                }
+                let mut residual_manifest = manifest_for_worker;
+                residual_manifest.retain_undo(&residual);
+                let undo_snapshot = if residual.is_empty() {
+                    cr_engine::incoming_transaction::FileSnapshot {
+                        path: path_for_done.clone(),
+                        before: std::fs::read(&path_for_done).ok(),
+                        after: Vec::new(),
+                        remove_after: true,
+                    }
+                } else {
+                    file_snapshot(
+                        path_for_done.clone(),
+                        match residual.to_bytes(true) {
+                            Ok(bytes) => bytes,
+                            Err(error) => return failed_run_outcome(error.to_string()),
+                        },
+                    )
+                };
+                let manifest_path = cr_organize::engine::adoption_manifest_path(&path_for_done);
+                let manifest_snapshot = if residual_manifest.entries.is_empty() {
+                    cr_engine::incoming_transaction::FileSnapshot {
+                        before: std::fs::read(&manifest_path).ok(),
+                        path: manifest_path,
+                        after: Vec::new(),
+                        remove_after: true,
+                    }
+                } else {
+                    file_snapshot(
+                        manifest_path,
+                        match residual_manifest.to_bytes() {
+                            Ok(bytes) => bytes,
+                            Err(error) => return failed_run_outcome(error.to_string()),
+                        },
+                    )
+                };
+                let result = effects
+                    .finish(
+                        &_guard,
+                        &database,
+                        &catalog,
+                        vec![undo_snapshot, manifest_snapshot],
+                        None,
+                    )
+                    .map(|committed_epoch| (database, catalog, committed_epoch));
+                *worker_result_out.lock().unwrap() = Some(result);
+                crate::dialogs::organize::RunOutcome {
+                    text: report.text,
+                    failed_or_skipped: report.failed_or_skipped,
+                    applies: report.applies,
+                    residual: Some(residual),
+                }
+            },
+            move |outcome| {
                 if let Some(sh) = refresh_state.upgrade() {
+                    match worker_result.lock().unwrap().take() {
+                        Some(Ok((database, catalog, committed_epoch)))
+                            if cr_engine::incoming_transaction::database_epoch()
+                                == committed_epoch =>
+                        {
+                            library::session()
+                                .borrow_mut()
+                                .install_persisted_database(database);
+                            library::replace_incoming_catalog(catalog);
+                        }
+                        Some(Ok(_)) => show_failure_dialog(
+                            &sh.window,
+                            "Library Organizer - Undo",
+                            "The live library changed after the transaction committed. Restart ComicRust to load the saved catalogs.",
+                        ),
+                        Some(Err(error)) => {
+                            show_failure_dialog(&sh.window, "Library Organizer - Undo", &error)
+                        }
+                        None => show_failure_dialog(
+                            &sh.window,
+                            "Library Organizer - Undo",
+                            "The undo worker did not return persistence state.",
+                        ),
+                    }
                     sh.refresh_view_from_list();
                 }
+                let _ = outcome;
+                cr_engine::incoming_transaction::end_operation();
             },
         );
     }
@@ -4235,6 +5518,10 @@ impl ShellState {
                 sh.reader.apply_settings_to_open_views();
                 let size = cr_ui_settings().borrow().quick_open_thumbnail_size as f64;
                 sh.quick_view.configure(|c| c.thumb_height = size);
+                sh.navigator.refill(&library::comic_lists_snapshot());
+                sh.refresh_view_from_list();
+                library::refresh_incoming_classification_async();
+                library::refresh_incoming_external_gaps_async();
                 // Settings may move menu-visible state (the
                 // update-book-files hide rule reads
                 // AutoUpdateComicsFiles) — re-sync now, not on the
@@ -4255,6 +5542,13 @@ impl ShellState {
         // More scans are still queued or running: wait for the last.
         if library::is_scanning() {
             return;
+        }
+        if let Some(error) = library::take_scan_completion_error() {
+            show_failure_dialog(
+                &self.window,
+                "Incoming Scan",
+                &format!("The Incoming catalog could not be saved.\n\n{error}"),
+            );
         }
         let summary = library::take_scan_problem_summary();
         if summary.is_empty() {
@@ -5923,6 +7217,12 @@ fn run_remove_books(state: &std::rc::Weak<ShellState>) {
 }
 
 fn show_context_menu(state: &std::rc::Weak<ShellState>, target: Option<CrGuid>, x: f64, y: f64) {
+    let Some(shell) = state.upgrade() else {
+        return;
+    };
+    if shell.item_view.selection_len() == 0 {
+        return;
+    }
     let popover = gtk4::Popover::new();
     // No pointing arrow (the C# ContextMenuStrip shape).
     popover.set_has_arrow(false);
@@ -5932,10 +7232,9 @@ fn show_context_menu(state: &std::rc::Weak<ShellState>, target: Option<CrGuid>, 
     box_.set_margin_start(4);
     box_.set_margin_end(4);
 
-    let window = state
-        .upgrade()
-        .map(|sh| sh.window.clone())
-        .expect("shell alive while the menu opens");
+    let window = shell.window.clone();
+    let incoming_view = shell.is_incoming_view();
+    let mutations_enabled = !cr_engine::incoming_transaction::operation_active();
     let add_item = |box_: &gtk4::Box, label: &str, action: &'static str| {
         let popover = popover.clone();
         let state = state.clone();
@@ -5947,6 +7246,11 @@ fn show_context_menu(state: &std::rc::Weak<ShellState>, target: Option<CrGuid>, 
                 return;
             };
             match action {
+                "incoming-compare" => sh.compare_incoming(),
+                "incoming-preview" => sh.choose_incoming_profile(true),
+                "incoming-adopt" => sh.choose_incoming_profile(false),
+                "incoming-discard" => sh.discard_incoming(),
+                "incoming-cv-refresh" => sh.refresh_incoming_from_comic_vine(),
                 "open" => {
                     if let Some(id) = target {
                         if let Some(path) = library::book_path(&id) {
@@ -6142,20 +7446,38 @@ fn show_context_menu(state: &std::rc::Weak<ShellState>, target: Option<CrGuid>, 
             }
         });
         box_.append(&button);
+        button
     };
-    add_item(&box_, "Open", "open");
-    add_item(&box_, "Reveal in File Manager", "reveal");
-    add_item(&box_, "Edit…", "edit");
-    add_item(&box_, "Update Book File(s)", "update-file");
-    add_item(&box_, "Rescan Book File(s)", "rescan");
-    add_item(&box_, "Export…", "export");
-    add_item(&box_, "Scrape from Comic Vine…", "scrape");
-    add_item(&box_, "Library Organizer…", "organize");
-    add_item(&box_, "Library Organizer (Quick)", "organize-quick");
-    add_item(&box_, "Fill Missing Issues…", "fill-missing");
-    add_item(&box_, "Select Worst Duplicates", "select-worst-duplicates");
-    add_item(&box_, "Remove from Library", "remove");
-    add_item(&box_, "Properties…", "properties");
+    if incoming_view {
+        add_item(&box_, "Compare", "incoming-compare");
+        let has_move_profile = library::organize_settings()
+            .profiles
+            .iter()
+            .any(|profile| profile.mode == cr_organize::profile::MODE_MOVE);
+        add_item(&box_, "Preview Adoption", "incoming-preview").set_sensitive(has_move_profile);
+        add_item(&box_, "Adopt", "incoming-adopt")
+            .set_sensitive(has_move_profile && mutations_enabled);
+        add_item(&box_, "Discard", "incoming-discard").set_sensitive(mutations_enabled);
+        let selected = shell.selected_incoming_books();
+        let can_refresh = library::scraper_config().has_api_key()
+            && library::selected_incoming_has_volume_id(&selected);
+        add_item(&box_, "Refresh from Comic Vine", "incoming-cv-refresh")
+            .set_sensitive(can_refresh);
+    } else {
+        add_item(&box_, "Open", "open");
+        add_item(&box_, "Reveal in File Manager", "reveal");
+        add_item(&box_, "Edit…", "edit");
+        add_item(&box_, "Update Book File(s)", "update-file");
+        add_item(&box_, "Rescan Book File(s)", "rescan");
+        add_item(&box_, "Export…", "export");
+        add_item(&box_, "Scrape from Comic Vine…", "scrape");
+        add_item(&box_, "Library Organizer…", "organize");
+        add_item(&box_, "Library Organizer (Quick)", "organize-quick");
+        add_item(&box_, "Fill Missing Issues…", "fill-missing");
+        add_item(&box_, "Select Worst Duplicates", "select-worst-duplicates");
+        add_item(&box_, "Remove from Library", "remove");
+        add_item(&box_, "Properties…", "properties");
+    }
     popover.set_child(Some(&box_));
     popover.set_parent(&window);
     popover.connect_closed(|p| p.unparent());
@@ -6304,7 +7626,10 @@ fn show_folder_context_menu(
                                 return;
                             };
                             let deleted = outcome.failed == 0;
-                            if remove_from_library_cb {
+                            if remove_from_library_cb
+                                && !outcome.canceled
+                                && !cr_engine::incoming_transaction::operation_active()
+                            {
                                 // `Program.Database.Books.RemoveRange(books)`
                                 // — the library books at the same paths.
                                 let lib = library::session();

@@ -10,12 +10,14 @@
 use std::collections::HashMap;
 use std::io::Write;
 use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
 
 use cr_core::model::comic_book::ComicBook;
 use cr_core::xml::scalar::CrGuid;
 
 use crate::engine::{
-    Apply, CoverSource, DuplicateAction, DuplicateAsk, DuplicateBookInfo, LogEntry, OrganizeUi,
+    Apply, CoverSource, DuplicateAction, DuplicateAsk, DuplicateBookInfo, FilesystemEffects,
+    LogEntry, OrganizeUi,
 };
 use crate::fields;
 use crate::profile::{Profile, MODE_COPY, MODE_MOVE, MODE_SIMULATE};
@@ -33,6 +35,123 @@ pub struct UndoCollection {
     pub profile_names: Vec<String>,
 }
 
+/// One correlated entry in an [`UndoCollection`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UndoEntry<'a> {
+    pub undo_path: &'a str,
+    pub current_path: &'a str,
+    pub profile_name: &'a str,
+}
+
+/// Adoption state stored beside `undo.dat`. The undo file itself stays unchanged.
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct AdoptionManifest {
+    pub entries: Vec<AdoptionManifestEntry>,
+}
+
+/// One adopted ID and the exact undo entry that owns it.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct AdoptionManifestEntry {
+    pub id: String,
+    pub profile_name: String,
+    pub current_path: String,
+    pub undo_path: String,
+}
+
+/// Returns the companion path without changing the `undo.dat` path.
+pub fn adoption_manifest_path(undo_path: &Path) -> std::path::PathBuf {
+    let mut name = undo_path.as_os_str().to_os_string();
+    name.push(".adoption.json");
+    name.into()
+}
+
+impl AdoptionManifest {
+    pub fn from_adoptions(undo: &UndoCollection, applies: &[Apply]) -> Self {
+        let ids: HashMap<&str, String> = applies
+            .iter()
+            .filter_map(|apply| match apply {
+                Apply::Adopt(book) => Some((book.file_path.as_str(), book.id.to_d_string())),
+                _ => None,
+            })
+            .collect();
+        Self {
+            entries: undo
+                .entries()
+                .filter_map(|entry| {
+                    ids.get(entry.current_path).map(|id| AdoptionManifestEntry {
+                        id: id.clone(),
+                        profile_name: entry.profile_name.to_string(),
+                        current_path: entry.current_path.to_string(),
+                        undo_path: entry.undo_path.to_string(),
+                    })
+                })
+                .collect(),
+        }
+    }
+
+    pub fn load(path: &Path) -> std::io::Result<Self> {
+        let bytes = std::fs::read(path)?;
+        serde_json::from_slice(&bytes)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+    }
+
+    pub fn save(&self, path: &Path) -> std::io::Result<()> {
+        let bytes = self.to_bytes()?;
+        atomic_write(path, &bytes)
+    }
+
+    pub fn to_bytes(&self) -> std::io::Result<Vec<u8>> {
+        serde_json::to_vec_pretty(self)
+            .map_err(|error| std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+    }
+
+    pub fn matches(&self, undo: &UndoCollection) -> bool {
+        if self.entries.len() > undo.len() {
+            return false;
+        }
+        let mut ids = std::collections::HashSet::new();
+        let mut identities = std::collections::HashSet::new();
+        for entry in &self.entries {
+            if CrGuid::parse(&entry.id).is_err()
+                || !ids.insert(entry.id.as_str())
+                || !identities.insert((
+                    entry.profile_name.as_str(),
+                    entry.current_path.as_str(),
+                    entry.undo_path.as_str(),
+                ))
+            {
+                return false;
+            }
+        }
+        for manifest in &self.entries {
+            if !undo.entries().any(|entry| {
+                manifest.profile_name == entry.profile_name
+                    && manifest.current_path == entry.current_path
+                    && manifest.undo_path == entry.undo_path
+            }) {
+                return false;
+            }
+        }
+        true
+    }
+
+    pub fn entry_for_current(&self, current_path: &str) -> Option<&AdoptionManifestEntry> {
+        self.entries
+            .iter()
+            .find(|entry| entry.current_path == current_path)
+    }
+
+    pub fn retain_undo(&mut self, undo: &UndoCollection) {
+        self.entries.retain(|manifest| {
+            undo.entries().any(|entry| {
+                manifest.profile_name == entry.profile_name
+                    && manifest.current_path == entry.current_path
+                    && manifest.undo_path == entry.undo_path
+            })
+        });
+    }
+}
+
 impl UndoCollection {
     pub fn len(&self) -> usize {
         self.current_paths.len()
@@ -40,6 +159,24 @@ impl UndoCollection {
 
     pub fn is_empty(&self) -> bool {
         self.current_paths.is_empty()
+    }
+
+    /// Returns all entries with their three fields kept together.
+    pub fn entries(&self) -> impl ExactSizeIterator<Item = UndoEntry<'_>> {
+        self.undo_paths
+            .iter()
+            .zip(&self.current_paths)
+            .zip(&self.profile_names)
+            .map(|((undo_path, current_path), profile_name)| UndoEntry {
+                undo_path,
+                current_path,
+                profile_name,
+            })
+    }
+
+    /// Returns the entry for its current path.
+    pub fn entry(&self, current: &str) -> Option<UndoEntry<'_>> {
+        self.entries().find(|entry| entry.current_path == current)
     }
 
     pub fn append(&mut self, undo_path: &str, new_path: &str, profile_name: &str) {
@@ -53,30 +190,54 @@ impl UndoCollection {
         }
     }
 
+    fn remove_current(&mut self, current: &str) {
+        if let Some(index) = self.current_paths.iter().position(|path| path == current) {
+            self.undo_paths.remove(index);
+            self.current_paths.remove(index);
+            self.profile_names.remove(index);
+        }
+    }
+
     /// `undo_path(path)`.
     pub fn undo_path(&self, current: &str) -> Option<&str> {
-        self.current_paths
-            .iter()
-            .position(|p| p == current)
-            .map(|i| self.undo_paths[i].as_str())
+        self.entry(current).map(|entry| entry.undo_path)
     }
 
     pub fn profile(&self, current: &str) -> Option<&str> {
-        self.current_paths
-            .iter()
-            .position(|p| p == current)
-            .map(|i| self.profile_names[i].as_str())
+        self.entry(current).map(|entry| entry.profile_name)
     }
 
     /// The `profile|current|undo` line file (undo.dat).
     pub fn save(&self, path: &Path) -> std::io::Result<()> {
-        if let Some(parent) = path.parent() {
-            let _ = std::fs::create_dir_all(parent);
-        }
-        let mut f = std::fs::File::create(path)?;
-        for i in 0..self.current_paths.len() {
+        self.save_ordered(path, false)
+    }
+
+    /// Saves a collection returned by `load` so another load keeps its order.
+    pub fn save_for_retry(&self, path: &Path) -> std::io::Result<()> {
+        self.save_ordered(path, true)
+    }
+
+    pub fn to_bytes(&self, reverse: bool) -> std::io::Result<Vec<u8>> {
+        let mut bytes = Vec::new();
+        self.write_ordered(&mut bytes, reverse)?;
+        Ok(bytes)
+    }
+
+    fn save_ordered(&self, path: &Path, reverse: bool) -> std::io::Result<()> {
+        let mut bytes = Vec::new();
+        self.write_ordered(&mut bytes, reverse)?;
+        atomic_write(path, &bytes)
+    }
+
+    fn write_ordered(&self, bytes: &mut Vec<u8>, reverse: bool) -> std::io::Result<()> {
+        let indexes: Box<dyn Iterator<Item = usize>> = if reverse {
+            Box::new((0..self.current_paths.len()).rev())
+        } else {
+            Box::new(0..self.current_paths.len())
+        };
+        for i in indexes {
             writeln!(
-                f,
+                bytes,
                 "{}|{}|{}",
                 self.profile_names[i], self.current_paths[i], self.undo_paths[i]
             )?;
@@ -106,6 +267,70 @@ impl UndoCollection {
         out.current_paths.reverse();
         out.profile_names.reverse();
         out
+    }
+}
+
+/// Returns true when a missing adoption manifest makes ordinary undo unsafe.
+pub fn missing_manifest_is_unsafe(undo: &UndoCollection, incoming_roots: &[String]) -> bool {
+    undo.entries().any(|entry| {
+        incoming_roots
+            .iter()
+            .any(|root| path_is_below(entry.undo_path, root))
+    })
+}
+
+fn path_is_below(path: &str, root: &str) -> bool {
+    let components = |value: &str| {
+        value
+            .split(['/', '\\'])
+            .filter(|part| !part.is_empty())
+            .map(str::to_ascii_lowercase)
+            .collect::<Vec<_>>()
+    };
+    let path = components(path);
+    let root = components(root);
+    !root.is_empty() && path.len() > root.len() && path.starts_with(&root)
+}
+
+static TEMPORARY_FILE_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+
+fn atomic_write(path: &Path, bytes: &[u8]) -> std::io::Result<()> {
+    let parent = path.parent().unwrap_or_else(|| Path::new("."));
+    std::fs::create_dir_all(parent)?;
+    let file_name = path.file_name().unwrap_or_default().to_string_lossy();
+    loop {
+        let sequence = TEMPORARY_FILE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+        let temporary = parent.join(format!(
+            ".{file_name}.{}.{}.tmp",
+            std::process::id(),
+            sequence
+        ));
+        let mut options = std::fs::OpenOptions::new();
+        options.write(true).create_new(true);
+        match options.open(&temporary) {
+            Ok(mut file) => {
+                let result = (|| {
+                    file.write_all(bytes)?;
+                    file.sync_all()?;
+                    drop(file);
+                    std::fs::rename(&temporary, path)
+                })();
+                if result.is_err() {
+                    let _ = std::fs::remove_file(&temporary);
+                }
+                return result;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+fn remove_if_present(path: &Path) -> std::io::Result<()> {
+    match std::fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
     }
 }
 
@@ -164,6 +389,8 @@ pub struct OrganizeReport {
     pub failed_or_skipped: bool,
     pub applies: Vec<Apply>,
     pub undo: UndoCollection,
+    /// A failure to replace the undo and adoption recovery pair.
+    pub persistence_error: Option<String>,
 }
 
 /// One planned move (`BookToMove`).
@@ -190,8 +417,12 @@ pub struct RunContext<'a> {
     pub selected: &'a [usize],
     /// The profiles to run, in order.
     pub profiles: &'a [Profile],
+    /// How a successful Move enters its destination collection.
+    pub move_landing: MoveLanding,
     /// Recycle-bin delete (`gio trash` on the UI side).
     pub trash: &'a dyn Fn(&str) -> bool,
+    /// Optional durable notifications. Direct organizer runs use `None`.
+    pub filesystem_effects: Option<&'a dyn FilesystemEffects>,
     /// Cover reads for fileless export and the duplicate dialog.
     pub cover: &'a dyn CoverSource,
     /// Where the undo log is written (None = no undo record).
@@ -200,12 +431,36 @@ pub struct RunContext<'a> {
     pub cancel: &'a std::sync::atomic::AtomicBool,
 }
 
+/// The destination-collection operation for a successful Move.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum MoveLanding {
+    #[default]
+    UpdateExisting,
+    InsertPreservingId,
+}
+
 pub fn run(ctx: RunContext, ui: &mut dyn OrganizeUi) -> OrganizeReport {
     let mut mover = Mover::new(ctx, ui);
-    let report = mover.process_books();
-    if !report.undo.is_empty() {
-        if let Some(path) = mover.undo_path {
-            let _ = report.undo.save(&path);
+    let move_landing = mover.move_landing;
+    let mut report = mover.process_books();
+    if let Some(path) = mover.undo_path {
+        if !report.undo.is_empty() {
+            let manifest_path = adoption_manifest_path(&path);
+            let mut errors = Vec::new();
+            if let Err(error) = report.undo.save(&path) {
+                errors.push(format!("undo.dat: {error}"));
+            }
+            if move_landing == MoveLanding::InsertPreservingId {
+                let manifest = AdoptionManifest::from_adoptions(&report.undo, &report.applies);
+                if let Err(error) = manifest.save(&manifest_path) {
+                    errors.push(format!("adoption manifest: {error}"));
+                }
+            } else if let Err(error) = remove_if_present(&manifest_path) {
+                errors.push(format!("adoption manifest: {error}"));
+            }
+            if !errors.is_empty() {
+                report.persistence_error = Some(errors.join("; "));
+            }
         }
     }
     report
@@ -215,8 +470,10 @@ struct Mover<'a> {
     books: &'a [ComicBook],
     selected: &'a [usize],
     profiles: &'a [Profile],
+    move_landing: MoveLanding,
     ui: &'a mut dyn OrganizeUi,
     trash: &'a dyn Fn(&str) -> bool,
+    filesystem_effects: Option<&'a dyn FilesystemEffects>,
     cover: &'a dyn CoverSource,
     undo_path: Option<std::path::PathBuf>,
     cancel: &'a std::sync::atomic::AtomicBool,
@@ -237,13 +494,47 @@ struct Mover<'a> {
 }
 
 impl<'a> Mover<'a> {
+    fn rename(&self, source: &str, destination: &str) -> Result<(), String> {
+        if let Some(effects) = self.filesystem_effects {
+            effects
+                .before_rename(source, destination)
+                .map_err(|error| error.to_string())?;
+        }
+        let result = std::fs::rename(source, destination).map_err(|error| error.to_string());
+        if let Some(effects) = self.filesystem_effects {
+            effects
+                .after_rename(source, destination, result.is_ok())
+                .map_err(|error| error.to_string())?;
+        }
+        result
+    }
+
+    fn delete(&self, path: &str) -> Result<(), String> {
+        if let Some(effects) = self.filesystem_effects {
+            effects
+                .before_delete(path)
+                .map_err(|error| error.to_string())?;
+        }
+        let succeeded = (self.trash)(path);
+        if let Some(effects) = self.filesystem_effects {
+            effects
+                .after_delete(path, succeeded)
+                .map_err(|error| error.to_string())?;
+        }
+        succeeded
+            .then_some(())
+            .ok_or_else(|| format!("Failed to delete {path}."))
+    }
+
     fn new(ctx: RunContext<'a>, ui: &'a mut dyn OrganizeUi) -> Self {
         Mover {
             books: ctx.books,
             selected: ctx.selected,
             profiles: ctx.profiles,
+            move_landing: ctx.move_landing,
             ui,
             trash: ctx.trash,
+            filesystem_effects: ctx.filesystem_effects,
             cover: ctx.cover,
             undo_path: ctx.undo_path,
             cancel: ctx.cancel,
@@ -379,6 +670,7 @@ impl<'a> Mover<'a> {
             failed_or_skipped: self.failed_or_skipped,
             applies: std::mem::take(&mut self.applies),
             undo: std::mem::take(&mut self.undo),
+            persistence_error: None,
         }
     }
 
@@ -640,7 +932,10 @@ impl<'a> Mover<'a> {
             return;
         };
         let new_path = parent.join(file_name);
-        if std::fs::rename(&book.file_path, &new_path).is_ok() {
+        if self
+            .rename(&book.file_path, &new_path.to_string_lossy())
+            .is_ok()
+        {
             let mut updated = book;
             updated.file_path = new_path.to_string_lossy().into_owned();
             self.applies.push(Apply::Update(updated));
@@ -697,7 +992,10 @@ impl<'a> Mover<'a> {
             self.move_book(book_index, &full_path, &profile)
         };
 
-        if profile.remove_empty_folder && profile.mode == MODE_MOVE {
+        if profile.remove_empty_folder
+            && profile.mode == MODE_MOVE
+            && self.filesystem_effects.is_none()
+        {
             if !old_folder.is_empty() {
                 self.remove_empty_folders(Path::new(&old_folder));
             }
@@ -712,6 +1010,35 @@ impl<'a> Mover<'a> {
                 " are"
             };
             let past = ProfileReport::mode_past(&profile.mode);
+            if self.move_landing == MoveLanding::InsertPreservingId && profile.mode == MODE_MOVE {
+                let original = Path::new(&self.books[book_index].file_path);
+                let parent_ready = original
+                    .parent()
+                    .is_none_or(|parent| std::fs::create_dir_all(parent).is_ok());
+                if parent_ready && self.rename(&full_path, &original.to_string_lossy()).is_ok() {
+                    self.applies.retain(|apply| !matches!(apply, Apply::Adopt(book) if book.id == self.books[book_index].id));
+                    self.undo.remove_current(&full_path);
+                    if profile.remove_empty_folder {
+                        if let Some(parent) = Path::new(&full_path).parent() {
+                            self.remove_empty_folders(parent);
+                        }
+                    }
+                    self.log(
+                        None,
+                        "Failed",
+                        &report_name,
+                        &format!("{fields}{verb} empty. The move was rolled back."),
+                    );
+                    return MoveOutcome::Failed;
+                }
+                self.log(
+                    None,
+                    "Warning",
+                    &report_name,
+                    &format!("{fields}{verb} empty. {past} to {full_path}"),
+                );
+                return MoveOutcome::Success;
+            }
             self.log(
                 None,
                 "Failed",
@@ -744,9 +1071,7 @@ impl<'a> Mover<'a> {
                 .map(|_| ())
                 .map_err(|e| e.to_string())
         } else {
-            std::fs::rename(&book.file_path, path)
-                .map(|_| ())
-                .map_err(|e| e.to_string())
+            self.rename(&book.file_path, path)
         };
 
         match result {
@@ -770,7 +1095,10 @@ impl<'a> Mover<'a> {
                 let mut updated = book.clone();
                 updated.file_path = path.to_string();
                 self.undo.append(&book.file_path, path, &profile.name);
-                self.applies.push(Apply::Update(updated));
+                self.applies.push(match self.move_landing {
+                    MoveLanding::UpdateExisting => Apply::Update(updated),
+                    MoveLanding::InsertPreservingId => Apply::Adopt(updated),
+                });
                 MoveOutcome::Success
             }
             Err(e) => {
@@ -988,7 +1316,7 @@ impl<'a> Mover<'a> {
                             self.pending_books.insert(book_index, updated);
                         }
                     }
-                    if !(self.trash)(&full_path) {
+                    if self.delete(&full_path).is_err() {
                         self.log(
                             None,
                             "Failed",
@@ -1024,7 +1352,10 @@ impl<'a> Mover<'a> {
             self.move_book(book_index, &full_path, &profile)
         };
 
-        if profile.remove_empty_folder && profile.mode == MODE_MOVE {
+        if profile.remove_empty_folder
+            && profile.mode == MODE_MOVE
+            && self.filesystem_effects.is_none()
+        {
             if !old_folder.is_empty() {
                 self.remove_empty_folders(Path::new(&old_folder));
             }
@@ -1041,6 +1372,29 @@ impl<'a> Mover<'a> {
                 " are"
             };
             let present = ProfileReport::mode_present(&profile.mode);
+            if self.move_landing == MoveLanding::InsertPreservingId && profile.mode == MODE_MOVE {
+                if self
+                    .rename(&full_path, &self.books[book_index].file_path)
+                    .is_ok()
+                {
+                    self.applies.retain(|apply| !matches!(apply, Apply::Adopt(book) if book.id == self.books[book_index].id));
+                    self.undo.remove_current(&full_path);
+                    self.log(
+                        None,
+                        "Failed",
+                        &report_name,
+                        &format!("{fields}{verb} empty. The move was rolled back."),
+                    );
+                    return MoveOutcome::Failed;
+                }
+                self.log(
+                    None,
+                    "Warning",
+                    &report_name,
+                    &format!("{fields}{verb} empty. {present} to {full_path}"),
+                );
+                return MoveOutcome::Success;
+            }
             self.log(
                 None,
                 "Failed",
@@ -1207,6 +1561,8 @@ pub struct UndoReport {
     pub text: String,
     pub failed_or_skipped: bool,
     pub applies: Vec<Apply>,
+    /// Entries that did not complete and can be retried.
+    pub residual: UndoCollection,
 }
 
 /// Moves the books in the undo collection back (`UndoMover`).
@@ -1226,6 +1582,7 @@ pub fn run_undo(
         failed: 0,
         skipped: 0,
         count: 0,
+        residual: undo.clone(),
     };
     u.process_books()
 }
@@ -1240,9 +1597,42 @@ struct UndoMover<'a> {
     failed: usize,
     skipped: usize,
     count: usize,
+    residual: UndoCollection,
 }
 
 impl<'a> UndoMover<'a> {
+    fn rename(&self, source: &str, destination: &str) -> Result<(), String> {
+        if let Some(effects) = self.ctx.filesystem_effects {
+            effects
+                .before_rename(source, destination)
+                .map_err(|error| error.to_string())?;
+        }
+        let result = std::fs::rename(source, destination).map_err(|error| error.to_string());
+        if let Some(effects) = self.ctx.filesystem_effects {
+            effects
+                .after_rename(source, destination, result.is_ok())
+                .map_err(|error| error.to_string())?;
+        }
+        result
+    }
+
+    fn delete(&self, path: &str) -> Result<(), String> {
+        if let Some(effects) = self.ctx.filesystem_effects {
+            effects
+                .before_delete(path)
+                .map_err(|error| error.to_string())?;
+        }
+        let succeeded = (self.ctx.trash)(path);
+        if let Some(effects) = self.ctx.filesystem_effects {
+            effects
+                .after_delete(path, succeeded)
+                .map_err(|error| error.to_string())?;
+        }
+        succeeded
+            .then_some(())
+            .ok_or_else(|| format!("Failed to delete {path}."))
+    }
+
     fn total(&self) -> usize {
         self.undo.current_paths.len()
     }
@@ -1271,6 +1661,7 @@ impl<'a> UndoMover<'a> {
             ),
             failed_or_skipped: self.failed > 0 || skipped > 0,
             applies: std::mem::take(&mut self.applies),
+            residual: std::mem::take(&mut self.residual),
         }
     }
 
@@ -1321,6 +1712,7 @@ impl<'a> UndoMover<'a> {
             ),
             failed_or_skipped: self.failed > 0 || self.skipped > 0,
             applies: std::mem::take(&mut self.applies),
+            residual: std::mem::take(&mut self.residual),
         }
     }
 
@@ -1392,14 +1784,10 @@ impl<'a> UndoMover<'a> {
                     .map(|p| p.to_string_lossy().into_owned())
                     .unwrap_or_default()
             });
-        let result = match book_index {
-            Some(i) => std::fs::rename(&self.ctx.books[i].file_path, &undo_path)
-                .map(|_| ())
-                .map_err(|e| e.to_string()),
-            None => std::fs::rename(current, &undo_path)
-                .map(|_| ())
-                .map_err(|e| e.to_string()),
-        };
+        let source = book_index
+            .map(|i| self.ctx.books[i].file_path.as_str())
+            .unwrap_or(current);
+        let result = self.rename(source, &undo_path);
         match result {
             Ok(()) => {
                 if let Some(i) = book_index {
@@ -1407,11 +1795,12 @@ impl<'a> UndoMover<'a> {
                     updated.file_path = undo_path.clone();
                     self.applies.push(Apply::Update(updated));
                 }
-                if profile.remove_empty_folder {
+                if profile.remove_empty_folder && self.ctx.filesystem_effects.is_none() {
                     prune_empty(Path::new(&old_folder), &profile);
                     prune_empty(parent, &profile);
                 }
                 self.success += 1;
+                self.remove_residual(current);
             }
             Err(e) => {
                 self.log(
@@ -1462,7 +1851,7 @@ impl<'a> UndoMover<'a> {
             DuplicateAction::Overwrite => {}
         }
 
-        if !(self.ctx.trash)(&held.undo_path) {
+        if self.delete(&held.undo_path).is_err() {
             self.log(
                 &profile.name,
                 "Failed",
@@ -1472,7 +1861,8 @@ impl<'a> UndoMover<'a> {
             self.failed += 1;
             return;
         }
-        if let Some(i) = held.book_index {
+        let mut landing_book = held.book_index.map(|i| self.ctx.books[i].clone());
+        if held.book_index.is_some() {
             if let Some(existing) = self
                 .ctx
                 .books
@@ -1480,9 +1870,9 @@ impl<'a> UndoMover<'a> {
                 .position(|b| b.file_path == held.undo_path)
             {
                 let old_book = self.ctx.books[existing].clone();
-                let mut updated = self.ctx.books[i].clone();
-                updated.last_page_read = old_book.last_page_read;
-                self.applies.push(Apply::Update(updated));
+                if let Some(updated) = &mut landing_book {
+                    updated.last_page_read = old_book.last_page_read;
+                }
                 self.applies.push(Apply::Remove(old_book.id));
             }
         }
@@ -1494,22 +1884,18 @@ impl<'a> UndoMover<'a> {
         if !parent.exists() {
             let _ = std::fs::create_dir_all(&parent);
         }
-        let result = match held.book_index {
-            Some(i) => std::fs::rename(&self.ctx.books[i].file_path, &held.undo_path)
-                .map(|_| ())
-                .map_err(|e| e.to_string()),
-            None => std::fs::rename(&held.current, &held.undo_path)
-                .map(|_| ())
-                .map_err(|e| e.to_string()),
-        };
+        let source = held
+            .book_index
+            .map(|i| self.ctx.books[i].file_path.as_str())
+            .unwrap_or(&held.current);
+        let result = self.rename(source, &held.undo_path);
         match result {
             Ok(()) => {
-                if let Some(i) = held.book_index {
-                    let mut updated = self.ctx.books[i].clone();
+                if let Some(mut updated) = landing_book {
                     updated.file_path = held.undo_path.clone();
                     self.applies.push(Apply::Update(updated));
                 }
-                if profile.remove_empty_folder {
+                if profile.remove_empty_folder && self.ctx.filesystem_effects.is_none() {
                     let old_folder = held
                         .book_index
                         .map(|i| file_directory(&self.ctx.books[i]))
@@ -1523,6 +1909,7 @@ impl<'a> UndoMover<'a> {
                     prune_empty(&parent, &profile);
                 }
                 self.success += 1;
+                self.remove_residual(&held.current);
             }
             Err(e) => {
                 self.log(
@@ -1534,6 +1921,10 @@ impl<'a> UndoMover<'a> {
                 self.failed += 1;
             }
         }
+    }
+
+    fn remove_residual(&mut self, current: &str) {
+        self.residual.remove_current(current);
     }
 }
 
@@ -1561,5 +1952,87 @@ fn prune_empty(directory: &Path, profile: &Profile) {
                 prune_empty(&parent, profile);
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod adoption_manifest_tests {
+    use super::*;
+
+    fn undo() -> UndoCollection {
+        let mut undo = UndoCollection::default();
+        undo.append("/incoming/a.cbz", "/library/a.cbz", "Move");
+        undo.append("/incoming/b.cbz", "/library/b.cbz", "Move");
+        undo
+    }
+
+    #[test]
+    fn manifest_requires_the_exact_undo_identity() {
+        let manifest = AdoptionManifest {
+            entries: vec![
+                AdoptionManifestEntry {
+                    id: "00000000-0000-0000-0000-000000000001".into(),
+                    profile_name: "Move".into(),
+                    current_path: "/library/a.cbz".into(),
+                    undo_path: "/incoming/a.cbz".into(),
+                },
+                AdoptionManifestEntry {
+                    id: "00000000-0000-0000-0000-000000000002".into(),
+                    profile_name: "Move".into(),
+                    current_path: "/library/b.cbz".into(),
+                    undo_path: "/incoming/b.cbz".into(),
+                },
+            ],
+        };
+        assert!(manifest.matches(&undo()));
+
+        let mut changed = undo();
+        changed.profile_names[1] = "Other".into();
+        assert!(!manifest.matches(&changed));
+    }
+
+    #[test]
+    fn residual_manifest_keeps_only_failed_entries() {
+        let mut manifest = AdoptionManifest {
+            entries: vec![
+                AdoptionManifestEntry {
+                    id: "1".into(),
+                    profile_name: "Move".into(),
+                    current_path: "/library/a.cbz".into(),
+                    undo_path: "/incoming/a.cbz".into(),
+                },
+                AdoptionManifestEntry {
+                    id: "2".into(),
+                    profile_name: "Move".into(),
+                    current_path: "/library/b.cbz".into(),
+                    undo_path: "/incoming/b.cbz".into(),
+                },
+            ],
+        };
+        let mut residual = UndoCollection::default();
+        residual.append("/incoming/b.cbz", "/library/b.cbz", "Move");
+
+        manifest.retain_undo(&residual);
+
+        assert_eq!(manifest.entries.len(), 1);
+        assert_eq!(manifest.entries[0].id, "2");
+    }
+
+    #[test]
+    fn missing_manifest_blocks_only_undo_paths_below_incoming_roots() {
+        let mut undo = UndoCollection::default();
+        undo.append("/incoming/series/book.cbz", "/library/book.cbz", "Adopt");
+        assert!(missing_manifest_is_unsafe(
+            &undo,
+            &["/incoming".to_string()]
+        ));
+        assert!(!missing_manifest_is_unsafe(&undo, &["/other".to_string()]));
+
+        let mut ordinary = UndoCollection::default();
+        ordinary.append("/archive/book.cbz", "/library/book.cbz", "Move");
+        assert!(!missing_manifest_is_unsafe(
+            &ordinary,
+            &["/incoming".to_string()]
+        ));
     }
 }

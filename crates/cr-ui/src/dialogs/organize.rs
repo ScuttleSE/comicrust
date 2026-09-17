@@ -41,10 +41,16 @@ enum UiRequest {
 
 /// The run's end state: the report text and the session mutations
 /// (already applied when the pump hands them over).
-struct RunOutcome {
-    text: String,
-    failed_or_skipped: bool,
-    applies: Vec<Apply>,
+pub struct RunOutcome {
+    pub text: String,
+    pub failed_or_skipped: bool,
+    pub applies: Vec<Apply>,
+    pub residual: Option<UndoCollection>,
+}
+
+struct UndoRunOptions {
+    effects: Option<Arc<dyn cr_organize::engine::FilesystemEffects>>,
+    operation: Option<cr_engine::incoming_transaction::ActiveOperation>,
 }
 
 /// The UI's answer to a blocking request.
@@ -147,16 +153,19 @@ fn log_line(entry: &LogEntry) -> String {
 }
 
 /// Applies one session mutation on the main thread.
-fn apply_to_library(apply: &Apply) {
+fn apply_to_library(apply: &Apply, operation: &cr_engine::incoming_transaction::ActiveOperation) {
     match apply {
         Apply::Update(book) => {
-            crate::library::apply_edited(book);
+            crate::library::apply_edited_from_organizer(book, operation);
         }
         Apply::Insert(book) => {
-            crate::library::insert_new_book(book);
+            crate::library::insert_new_book_from_organizer(book, operation);
+        }
+        Apply::Adopt(book) => {
+            crate::library::insert_new_book_from_organizer(book, operation);
         }
         Apply::Remove(id) => {
-            crate::library::remove_book(id);
+            crate::library::remove_book_from_organizer(id, operation);
         }
     }
 }
@@ -172,28 +181,63 @@ pub fn show_run_dialog(
     undo_path: Option<std::path::PathBuf>,
     pool: Option<Arc<cr_engine::image_pool::ImagePool>>,
     on_done: impl Fn(&str) + 'static,
-) {
+) -> bool {
     if books.is_empty() || selected.is_empty() || profiles.is_empty() {
-        return;
+        return false;
     }
+    let Some(operation) = cr_engine::incoming_transaction::try_begin_operation() else {
+        return false;
+    };
     let worker_cover = Arc::new(PoolCover { pool: pool.clone() });
-    let worker_cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let run = move |ui: &mut dyn OrganizeUi| -> (String, bool, Vec<Apply>) {
+    let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let worker_cancel = Arc::clone(&cancel);
+    let run = move |ui: &mut dyn OrganizeUi| -> RunOutcome {
+        let _guard = cr_engine::incoming_transaction::acquire_mutation_guard();
         let trash = |path: &str| trash_file(path);
         let ctx = RunContext {
             books: &books,
             selected: &selected,
             profiles: &profiles,
             trash: &trash,
+            filesystem_effects: None,
             cover: worker_cover.as_ref(),
             undo_path: undo_path.clone(),
             cancel: &worker_cancel,
+            move_landing: cr_organize::engine::MoveLanding::UpdateExisting,
         };
         let report = cr_organize::engine::organize(ctx, ui);
-        (report.text, report.failed_or_skipped, report.applies)
+        let persistence_error = report.persistence_error;
+        RunOutcome {
+            text: match &persistence_error {
+                Some(error) => format!(
+                    "{}\n\nThe undo state could not be saved: {error}",
+                    report.text
+                ),
+                None => report.text,
+            },
+            failed_or_skipped: report.failed_or_skipped || persistence_error.is_some(),
+            applies: report.applies,
+            residual: None,
+        }
     };
-    let done = move |text: &str, _failed: bool| on_done(text);
-    show_window(parent, "Library Organizer", run, done)
+    let done =
+        move |outcome: RunOutcome,
+              operation: Option<&cr_engine::incoming_transaction::ActiveOperation>| {
+            let operation = operation.expect("ordinary organizer operation token");
+            for apply in &outcome.applies {
+                apply_to_library(apply, operation);
+            }
+            on_done(&outcome.text);
+        };
+    show_window(
+        parent,
+        "Library Organizer",
+        cancel,
+        run,
+        done,
+        Some(operation),
+    );
+    true
 }
 
 /// The undo run (`WorkerFormUndo`): the same window shape over
@@ -205,28 +249,154 @@ pub fn show_undo_dialog(
     profiles: std::collections::HashMap<String, Profile>,
     pool: Option<Arc<cr_engine::image_pool::ImagePool>>,
     on_done: impl Fn(&str) + 'static,
+) -> bool {
+    show_undo_dialog_outcome(
+        parent,
+        books,
+        collection,
+        profiles,
+        pool,
+        move |outcome, operation| {
+            let operation = operation.expect("ordinary organizer undo operation token");
+            for apply in &outcome.applies {
+                apply_to_library(apply, operation);
+            }
+            on_done(&outcome.text);
+        },
+    )
+}
+
+/// Opens Undo and returns its complete worker result to a custom landing.
+pub fn show_undo_dialog_outcome(
+    parent: &impl IsA<gtk4::Window>,
+    books: Vec<ComicBook>,
+    collection: UndoCollection,
+    profiles: std::collections::HashMap<String, Profile>,
+    pool: Option<Arc<cr_engine::image_pool::ImagePool>>,
+    on_done: impl FnOnce(RunOutcome, Option<&cr_engine::incoming_transaction::ActiveOperation>)
+        + 'static,
+) -> bool {
+    if collection.is_empty() {
+        return false;
+    }
+    let Some(operation) = cr_engine::incoming_transaction::try_begin_operation() else {
+        return false;
+    };
+    show_custom_undo_dialog_outcome_with_operation(
+        parent,
+        books,
+        collection,
+        profiles,
+        pool,
+        on_done,
+        UndoRunOptions {
+            effects: None,
+            operation: Some(operation),
+        },
+    );
+    true
+}
+
+/// Opens ordinary Undo with an operation that the launch path already owns.
+pub(crate) fn show_undo_dialog_outcome_with_operation(
+    parent: &impl IsA<gtk4::Window>,
+    books: Vec<ComicBook>,
+    collection: UndoCollection,
+    profiles: std::collections::HashMap<String, Profile>,
+    pool: Option<Arc<cr_engine::image_pool::ImagePool>>,
+    operation: cr_engine::incoming_transaction::ActiveOperation,
+    on_done: impl FnOnce(RunOutcome, &cr_engine::incoming_transaction::ActiveOperation) + 'static,
+) {
+    show_custom_undo_dialog_outcome_with_operation(
+        parent,
+        books,
+        collection,
+        profiles,
+        pool,
+        move |outcome, active| {
+            on_done(
+                outcome,
+                active.expect("ordinary organizer undo operation token"),
+            )
+        },
+        UndoRunOptions {
+            effects: None,
+            operation: Some(operation),
+        },
+    );
+}
+
+pub fn show_custom_undo_dialog_outcome(
+    parent: &impl IsA<gtk4::Window>,
+    books: Vec<ComicBook>,
+    collection: UndoCollection,
+    profiles: std::collections::HashMap<String, Profile>,
+    pool: Option<Arc<cr_engine::image_pool::ImagePool>>,
+    effects: Option<Arc<dyn cr_organize::engine::FilesystemEffects>>,
+    on_done: impl FnOnce(RunOutcome) + 'static,
+) {
+    show_custom_undo_dialog_outcome_with_operation(
+        parent,
+        books,
+        collection,
+        profiles,
+        pool,
+        move |outcome, _operation| on_done(outcome),
+        UndoRunOptions {
+            effects,
+            operation: None,
+        },
+    );
+}
+
+fn show_custom_undo_dialog_outcome_with_operation(
+    parent: &impl IsA<gtk4::Window>,
+    books: Vec<ComicBook>,
+    collection: UndoCollection,
+    profiles: std::collections::HashMap<String, Profile>,
+    pool: Option<Arc<cr_engine::image_pool::ImagePool>>,
+    on_done: impl FnOnce(RunOutcome, Option<&cr_engine::incoming_transaction::ActiveOperation>)
+        + 'static,
+    options: UndoRunOptions,
 ) {
     if collection.is_empty() {
         return;
     }
     let worker_cover = Arc::new(PoolCover { pool: pool.clone() });
-    let worker_cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let run = move |ui: &mut dyn OrganizeUi| -> (String, bool, Vec<Apply>) {
+    let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let worker_cancel = Arc::clone(&cancel);
+    let serialize = options.operation.is_some();
+    let effects = options.effects;
+    let run = move |ui: &mut dyn OrganizeUi| -> RunOutcome {
+        let _guard = serialize.then(cr_engine::incoming_transaction::acquire_mutation_guard);
         let trash = |path: &str| trash_file(path);
         let ctx = RunContext {
             books: &books,
             selected: &[],
             profiles: &[],
             trash: &trash,
+            filesystem_effects: effects.as_deref(),
             cover: worker_cover.as_ref(),
             undo_path: None,
             cancel: &worker_cancel,
+            move_landing: cr_organize::engine::MoveLanding::UpdateExisting,
         };
         let report = cr_organize::engine::undo(ctx, &collection, &profiles, ui);
-        (report.text, report.failed_or_skipped, report.applies)
+        RunOutcome {
+            text: report.text,
+            failed_or_skipped: report.failed_or_skipped,
+            applies: report.applies,
+            residual: Some(report.residual),
+        }
     };
-    let done = move |text: &str, _failed: bool| on_done(text);
-    show_window(parent, "Library Organizer — Undo", run, done)
+    show_window(
+        parent,
+        "Library Organizer - Undo",
+        cancel,
+        run,
+        on_done,
+        options.operation,
+    )
 }
 
 /// Loads the undo log (the `undo.dat` line file).
@@ -239,8 +409,11 @@ pub fn load_undo_collection(path: &std::path::Path) -> UndoCollection {
 fn show_window(
     parent: &impl IsA<gtk4::Window>,
     title: &str,
-    run: impl FnOnce(&mut dyn OrganizeUi) -> (String, bool, Vec<Apply>) + Send + 'static,
-    on_done: impl Fn(&str, bool) + 'static,
+    stop: Arc<std::sync::atomic::AtomicBool>,
+    run: impl FnOnce(&mut dyn OrganizeUi) -> RunOutcome + Send + 'static,
+    on_done: impl FnOnce(RunOutcome, Option<&cr_engine::incoming_transaction::ActiveOperation>)
+        + 'static,
+    operation: Option<cr_engine::incoming_transaction::ActiveOperation>,
 ) {
     let window = gtk4::Window::builder()
         .title(title)
@@ -278,7 +451,6 @@ fn show_window(
     // A GTK4 window is invisible until present() (the Phase 15 trap).
     window.present();
 
-    let stop = Arc::new(std::sync::atomic::AtomicBool::new(false));
     {
         let stop = Arc::clone(&stop);
         cancel.connect_clicked(move |_| {
@@ -301,12 +473,8 @@ fn show_window(
         .spawn(move || {
             let done_tx = tx.clone();
             let mut ui = ChannelUi { tx, answer_rx };
-            let (text, failed_or_skipped, applies) = run(&mut ui);
-            let _ = done_tx.send(UiRequest::Done(Box::new(RunOutcome {
-                text,
-                failed_or_skipped,
-                applies,
-            })));
+            let outcome = run(&mut ui);
+            let _ = done_tx.send(UiRequest::Done(Box::new(outcome)));
         })
         .expect("spawn the organizer worker");
 
@@ -315,9 +483,19 @@ fn show_window(
     let progress_pump = progress_label;
     let answer_tx_pump = answer_tx;
     let parent_pump = parent.upcast_ref::<gtk4::Window>().clone();
-    let on_done_pump = on_done;
+    let mut on_done_pump = Some(on_done);
+    let mut operation = operation;
     glib::timeout_add_local(Duration::from_millis(50), move || {
-        while let Ok(request) = rx.try_recv() {
+        loop {
+            let request = match rx.try_recv() {
+                Ok(request) => request,
+                Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    window_pump.close();
+                    operation.take();
+                    return ControlFlow::Break;
+                }
+            };
             match request {
                 UiRequest::Log(entry) => {
                     let buffer = log_pump.buffer();
@@ -342,19 +520,41 @@ fn show_window(
                     ask_multi_value(&parent_pump, *ask, &answer_tx_pump);
                 }
                 UiRequest::Done(outcome) => {
-                    for apply in &outcome.applies {
-                        apply_to_library(apply);
-                    }
-                    let text = outcome.text.clone();
-                    let failed_or_skipped = outcome.failed_or_skipped;
                     window_pump.close();
-                    on_done_pump(&text, failed_or_skipped);
+                    if let Some(active) = operation.take() {
+                        active.finish(|active| {
+                            if let Some(on_done) = on_done_pump.take() {
+                                on_done(*outcome, Some(active));
+                            }
+                        });
+                    } else if let Some(on_done) = on_done_pump.take() {
+                        on_done(*outcome, None);
+                    }
                     return ControlFlow::Break;
                 }
             }
         }
         ControlFlow::Continue
     });
+}
+
+/// Opens the shared organizer window for a caller-defined worker and landing.
+pub fn show_custom_run(
+    parent: &impl IsA<gtk4::Window>,
+    title: &str,
+    run: impl FnOnce(&mut dyn OrganizeUi, &std::sync::atomic::AtomicBool) -> RunOutcome + Send + 'static,
+    on_done: impl FnOnce(RunOutcome) + 'static,
+) {
+    let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let worker_cancel = Arc::clone(&cancel);
+    show_window(
+        parent,
+        title,
+        cancel,
+        move |ui| run(ui, &worker_cancel),
+        move |outcome, _operation| on_done(outcome),
+        None,
+    );
 }
 
 /// One pane of the duplicate dialog: the book's display lines.

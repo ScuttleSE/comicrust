@@ -372,6 +372,7 @@ dependencies = [
  "fancy-regex",
  "notify",
  "serde",
+ "serde_json",
  "tar",
  "toml 0.9.12+spec-1.1.0",
  "zip",
@@ -417,6 +418,7 @@ dependencies = [
  "quick-xml",
  "regex",
  "serde",
+ "serde_json",
  "thiserror",
  "toml 0.9.12+spec-1.1.0",
 ]
