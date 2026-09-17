@@ -43,11 +43,14 @@ these changes. User tests on real data remain open.
 
 `MEASURED`: The first real replacement user test moved the Incoming file and
 removed its Incoming record. A later Incoming scan reported a stale database
-epoch. `UNKNOWN`: The run-time cause and the reported 30-second interval.
-`CODE-READ`: `CR_TRACE` now records scan admission, watcher delivery,
-mutation-guard waits, operation ownership, replacement stages, and epoch changes
-with source call sites. Repeat the replacement once with `CR_TRACE=1` to collect
-the deciding measurement.
+epoch. A second trace recorded `discard_incoming_async`, not replacement. It
+held the operation for 49.480 seconds while it changed a 73,050-book Incoming
+catalog. That trace ended before a later scan or popup. `UNKNOWN`: Why the user
+selected replacement but the action dispatched discard. `UNKNOWN`: Which part
+of discard used 49.480 seconds. `CODE-READ`: `CR_TRACE` now also records the
+clicked pane, match source, selected action, catalog serialization, trash
+command, journal writes, catalog installation, and transaction stages. Repeat
+the action once and continue the trace through any popup.
 
 ## Open user tests
 
@@ -101,15 +104,16 @@ licenses` is not a CI gate.
 
 ## Latest verification
 
-Incoming replacement and rescan instrumentation passed local verification on
-2026-09-17.
+Incoming Compare and transaction timing instrumentation passed local
+verification on 2026-09-17.
 
 - `cargo fmt --all`: passed.
 - `cargo clippy --workspace --all-targets -- -D warnings`: passed.
 - `cargo test --workspace`: passed.
 - The `cr-ui` suite passed 182 tests. Compare tests cover Keep-button action
   mapping, pair revalidation, comparison order, self-exclusion, ranking
-  recommendations, and ties. A selection test confirms displayed-book order.
+  recommendations, and ties. A focused run confirms source-specific Keep-button
+  mapping. A selection test confirms displayed-book order.
 - The `cr-engine` suite passed 149 tests. Incoming-list tests cover separate
   persistence, stable IDs, bases, invalid graphs, duplicate matching, and series
   statistics.
@@ -122,7 +126,8 @@ Incoming replacement and rescan instrumentation passed local verification on
   discard, conversion, adoption, undo, stale epochs, and close behavior. The
   new test confirms that a replacement epoch invalidates a rescan that waits
   for the mutation guard. A `CR_TRACE=1` focused run contains the epoch
-  transition, guard acquisition, and source call sites.
+  transition, guard acquisition, source call sites, journal stages, and catalog
+  installation stages.
 
 ## Environment notes
 

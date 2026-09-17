@@ -2265,14 +2265,28 @@ fn delete_path(path: &str, permanent: bool) -> bool {
     if !path.is_file() {
         return !path.exists();
     }
-    if permanent {
+    let started = std::time::Instant::now();
+    crate::trace::trace(format!(
+        "file delete start permanent={permanent} path='{}'",
+        path.display()
+    ));
+    let command_status = if permanent {
         let _ = std::fs::remove_file(path);
+        None
     } else {
-        let _ = std::process::Command::new("gio")
+        std::process::Command::new("gio")
             .args(["trash", &path.to_string_lossy()])
-            .status();
-    }
-    !path.exists()
+            .status()
+            .ok()
+            .and_then(|status| status.code())
+    };
+    let removed = !path.exists();
+    crate::trace::trace(format!(
+        "file delete finish permanent={permanent} removed={removed} command_status={command_status:?} elapsed_ms={} path='{}'",
+        started.elapsed().as_millis(),
+        path.display()
+    ));
+    removed
 }
 
 pub fn trash_file(path: &str) -> bool {
@@ -2293,8 +2307,15 @@ pub fn discard_incoming_async(
             >,
         ) + 'static,
 ) {
+    let request_started = std::time::Instant::now();
     let mut catalog = incoming_session().borrow().clone();
     let captured_epoch = cr_engine::incoming_transaction::database_epoch();
+    crate::trace::trace(format!(
+        "discard requested items={} permanent={permanent} catalog_books={} epoch={captured_epoch}",
+        items.len(),
+        catalog.books.len()
+    ));
+    let serialize_started = std::time::Instant::now();
     let before = match catalog.to_bytes() {
         Ok(bytes) => bytes,
         Err(error) => {
@@ -2302,6 +2323,12 @@ pub fn discard_incoming_async(
             return;
         }
     };
+    crate::trace::trace(format!(
+        "discard initial catalog serialization bytes={} elapsed_ms={} request_elapsed_ms={}",
+        before.len(),
+        serialize_started.elapsed().as_millis(),
+        request_started.elapsed().as_millis()
+    ));
     let (tx, rx) = std::sync::mpsc::channel();
     if !cr_engine::incoming_transaction::begin_operation() {
         done(Err("Another operation is active.".into()));
@@ -2311,6 +2338,7 @@ pub fn discard_incoming_async(
         .name("Discard Incoming".into())
         .spawn(move || {
             let result = (|| -> Result<_, String> {
+                let worker_started = std::time::Instant::now();
                 let _guard = cr_engine::incoming_transaction::acquire_mutation_guard();
                 if cr_engine::incoming_transaction::database_epoch() != captured_epoch {
                     return Err("The library changed before the discard started. Try again.".into());
@@ -2318,13 +2346,20 @@ pub fn discard_incoming_async(
                 let paths = cr_core::paths::Paths::new_default();
                 let catalog_path = cr_core::paths::incoming_file(&paths);
                 let engine = cr_engine::incoming_transaction::TransactionEngine::new(&paths);
+                let serialize_started = std::time::Instant::now();
+                let initial_after = catalog.to_bytes().map_err(|error| error.to_string())?;
+                crate::trace::trace(format!(
+                    "discard worker initial serialization bytes={} elapsed_ms={}",
+                    initial_after.len(),
+                    serialize_started.elapsed().as_millis()
+                ));
                 let mut transaction = cr_engine::incoming_transaction::IncomingTransaction {
                     kind: cr_engine::incoming_transaction::TransactionKind::Discard,
                     stage: cr_engine::incoming_transaction::TransactionStage::Prepared,
                     files: cr_engine::incoming_transaction::TransactionFiles {
                         incoming_catalog: Some(cr_engine::incoming_transaction::FileSnapshot {
                             before: Some(before),
-                            after: catalog.to_bytes().map_err(|error| error.to_string())?,
+                            after: initial_after,
                             path: catalog_path,
                             remove_after: false,
                         }),
@@ -2335,6 +2370,10 @@ pub fn discard_incoming_async(
                 engine
                     .begin(&transaction)
                     .map_err(|error| error.to_string())?;
+                crate::trace::trace(format!(
+                    "discard journal prepared elapsed_ms={}",
+                    worker_started.elapsed().as_millis()
+                ));
                 let mut outcome = RemoveBooksOutcome::default();
                 for (id, path) in items {
                     transaction.external_actions.push(
@@ -2346,6 +2385,11 @@ pub fn discard_incoming_async(
                     engine
                         .update(&transaction)
                         .map_err(|error| error.to_string())?;
+                    crate::trace::trace(format!(
+                        "discard delete prepared id={} worker_elapsed_ms={}",
+                        id.to_d_string(),
+                        worker_started.elapsed().as_millis()
+                    ));
                     if delete_path(&path, permanent) {
                         if let Some(cr_engine::incoming_transaction::ExternalFileAction::Delete {
                             status,
@@ -2356,8 +2400,15 @@ pub fn discard_incoming_async(
                                 cr_engine::incoming_transaction::ExternalActionStatus::Applied;
                         }
                         catalog.books.retain(|book| book.id != id);
+                        let serialize_started = std::time::Instant::now();
                         transaction.files.incoming_catalog.as_mut().unwrap().after =
                             catalog.to_bytes().map_err(|error| error.to_string())?;
+                        crate::trace::trace(format!(
+                            "discard final catalog serialization books={} bytes={} elapsed_ms={}",
+                            catalog.books.len(),
+                            transaction.files.incoming_catalog.as_ref().unwrap().after.len(),
+                            serialize_started.elapsed().as_millis()
+                        ));
                         outcome.removed += 1;
                         outcome.removed_ids.push(id);
                     } else {
@@ -2371,6 +2422,10 @@ pub fn discard_incoming_async(
                 let committed_epoch = _guard
                     .commit_if_epoch(captured_epoch, &engine, &mut transaction)
                     .map_err(|error| error.to_string())?;
+                crate::trace::trace(format!(
+                    "discard commit complete committed_epoch={committed_epoch} worker_elapsed_ms={}",
+                    worker_started.elapsed().as_millis()
+                ));
                 Ok((catalog, outcome, committed_epoch))
             })();
             let _ = tx.send(result);

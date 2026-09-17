@@ -539,6 +539,13 @@ fn start_keep_action(
     let selected = comparisons[book_index].selected.clone();
     drop(comparisons);
     let action = keep_action(duplicate.source, side);
+    crate::trace::trace(format!(
+        "compare Keep clicked side={side:?} match_source={:?} action={action:?} selected_id={} matched_id={} scanning={}",
+        duplicate.source,
+        selected.id.to_d_string(),
+        duplicate.book.id.to_d_string(),
+        crate::library::is_scanning()
+    ));
     let ids = CrGuidPair {
         selected: selected.id,
         matched: duplicate.book.id,
@@ -580,6 +587,12 @@ fn validate_and_execute(
     ids: CrGuidPair,
     cover_tx: &std::sync::mpsc::Sender<CoverResult>,
 ) {
+    crate::trace::trace(format!(
+        "compare action validating source={:?} action={action:?} selected_id={} matched_id={}",
+        duplicate.source,
+        ids.selected.to_d_string(),
+        ids.matched.to_d_string()
+    ));
     let incoming = crate::library::incoming_books_snapshot();
     let library = crate::library::session().borrow().database().books.clone();
     if let Err(error) = revalidate_pair(&selected, &duplicate, &incoming, &library) {
@@ -588,6 +601,10 @@ fn validate_and_execute(
         update_dialog_sensitivity(state);
         return;
     }
+    crate::trace::trace(format!(
+        "compare action dispatch source={:?} action={action:?} selected_path='{}' matched_path='{}'",
+        duplicate.source, selected.file_path, duplicate.book.file_path
+    ));
     state.status.set_text("Applying action...");
     let weak = Rc::downgrade(state);
     let cover_tx = cover_tx.clone();

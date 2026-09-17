@@ -452,9 +452,30 @@ impl TransactionEngine {
             ));
         }
         validate(transaction)?;
+        let started = std::time::Instant::now();
+        crate::trace::trace(format!(
+            "incoming transaction commit start kind={:?} stage={:?} actions={}",
+            transaction.kind,
+            transaction.stage,
+            transaction.external_actions.len()
+        ));
         self.write_journal(transaction)?;
+        crate::trace::trace(format!(
+            "incoming transaction commit journal written elapsed_ms={}",
+            started.elapsed().as_millis()
+        ));
         self.apply_external_actions(transaction)?;
-        self.install_after_images(transaction)
+        crate::trace::trace(format!(
+            "incoming transaction external actions complete elapsed_ms={}",
+            started.elapsed().as_millis()
+        ));
+        let result = self.install_after_images(transaction);
+        crate::trace::trace(format!(
+            "incoming transaction commit finish success={} elapsed_ms={}",
+            result.is_ok(),
+            started.elapsed().as_millis()
+        ));
+        result
     }
 
     /// Copies, validates, installs, and removes the source in durable steps.
@@ -549,13 +570,35 @@ impl TransactionEngine {
         let destination = destination.cloned();
         let source = source.cloned();
         if let Some(snapshot) = destination {
+            crate::trace::trace(format!(
+                "incoming transaction destination install start bytes={} path='{}'",
+                snapshot.after.len(),
+                snapshot.path.display()
+            ));
+            let started = std::time::Instant::now();
             install_snapshot(&snapshot)?;
+            crate::trace::trace(format!(
+                "incoming transaction destination install finish elapsed_ms={} path='{}'",
+                started.elapsed().as_millis(),
+                snapshot.path.display()
+            ));
         }
         transaction.stage = TransactionStage::DestinationSaved;
         self.write_journal(transaction)?;
 
         if let Some(snapshot) = source {
+            crate::trace::trace(format!(
+                "incoming transaction source install start bytes={} path='{}'",
+                snapshot.after.len(),
+                snapshot.path.display()
+            ));
+            let started = std::time::Instant::now();
             install_snapshot(&snapshot)?;
+            crate::trace::trace(format!(
+                "incoming transaction source install finish elapsed_ms={} path='{}'",
+                started.elapsed().as_millis(),
+                snapshot.path.display()
+            ));
         }
         transaction.stage = TransactionStage::SourceSaved;
         self.write_journal(transaction)?;
@@ -576,8 +619,17 @@ impl TransactionEngine {
     }
 
     fn write_journal(&self, transaction: &IncomingTransaction) -> Result<(), TransactionError> {
+        let started = std::time::Instant::now();
         let bytes = serde_json::to_vec_pretty(transaction)?;
+        let serialized_ms = started.elapsed().as_millis();
         durable_replace(&self.journal_path, &bytes)?;
+        crate::trace::trace(format!(
+            "incoming journal write kind={:?} stage={:?} bytes={} serialize_ms={serialized_ms} elapsed_ms={}",
+            transaction.kind,
+            transaction.stage,
+            bytes.len(),
+            started.elapsed().as_millis()
+        ));
         Ok(())
     }
 

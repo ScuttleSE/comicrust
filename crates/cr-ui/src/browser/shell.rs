@@ -565,6 +565,11 @@ impl ShellState {
                     let weak = weak_shell.clone();
                     let executor: crate::dialogs::incoming_compare::ActionExecutor = Rc::new(
                         move |action, ids, complete| {
+                            crate::trace::trace(format!(
+                                "compare executor received action={action:?} selected_id={} matched_id={}",
+                                ids.selected.to_d_string(),
+                                ids.matched.to_d_string()
+                            ));
                             let Some(sh) = weak.upgrade() else {
                                 complete(Err(
                                     "The browser closed before the action started.".into()
@@ -573,6 +578,7 @@ impl ShellState {
                             };
                             match action {
                                 crate::dialogs::incoming_compare::CompareAction::ReplaceLibraryCopy => {
+                                    crate::trace::trace("compare executor dispatching replacement");
                                     let weak = Rc::downgrade(&sh);
                                     library::replace_library_copy_async(ids.selected, ids.matched, move |result| {
                                         let Some(sh) = weak.upgrade() else {
@@ -599,6 +605,10 @@ impl ShellState {
                                         complete(Err("The Incoming copy is no longer available.".into()));
                                         return;
                                     };
+                                    crate::trace::trace(format!(
+                                        "compare executor dispatching discard action={action:?} id={} path='{}'",
+                                        id.to_d_string(), book.file_path
+                                    ));
                                     let weak = Rc::downgrade(&sh);
                                     library::discard_incoming_async(vec![(id, book.file_path)], false, move |result| {
                                         let Some(sh) = weak.upgrade() else {
