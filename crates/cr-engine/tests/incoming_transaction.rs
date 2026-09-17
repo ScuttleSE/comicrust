@@ -2,10 +2,11 @@ use std::path::{Path, PathBuf};
 
 use cr_core::durable::durable_replace;
 use cr_engine::incoming_transaction::{
-    acquire_mutation_guard, database_epoch, operation_active, try_acquire_mutation_guard,
-    try_begin_operation, CloseBarrier, CloseDecision, ExternalActionStatus, ExternalFileAction,
-    FileSnapshot, IncomingTransaction, RecoveryResult, ReplacementStage, ReplacementTransaction,
-    TransactionEngine, TransactionError, TransactionFiles, TransactionKind, TransactionStage,
+    acquire_mutation_guard, commit_database_epoch, database_epoch, operation_active,
+    try_acquire_mutation_guard, try_begin_operation, CloseBarrier, CloseDecision,
+    ExternalActionStatus, ExternalFileAction, FileSnapshot, IncomingTransaction, RecoveryResult,
+    ReplacementStage, ReplacementTransaction, TransactionEngine, TransactionError,
+    TransactionFiles, TransactionKind, TransactionStage,
 };
 
 struct TestDir(PathBuf);
@@ -483,6 +484,27 @@ fn epoch_compare_and_commit_excludes_mutation_until_commit_finishes() {
     assert!(try_acquire_mutation_guard().is_none());
     drop(guard);
     assert!(try_acquire_mutation_guard().is_some());
+}
+
+#[test]
+fn replacement_epoch_invalidates_a_rescan_waiting_for_the_mutation_guard() {
+    let replacement_guard = acquire_mutation_guard();
+    let scan_epoch = database_epoch();
+    let (waiting_tx, waiting_rx) = std::sync::mpsc::channel();
+    let scan = std::thread::spawn(move || {
+        waiting_tx.send(()).unwrap();
+        let _scan_guard = acquire_mutation_guard();
+        database_epoch()
+    });
+
+    waiting_rx.recv().unwrap();
+    let replacement_epoch = commit_database_epoch();
+    drop(replacement_guard);
+    let scan_start_epoch = scan.join().unwrap();
+
+    assert_ne!(replacement_epoch, scan_epoch);
+    assert_eq!(scan_start_epoch, replacement_epoch);
+    assert_ne!(scan_start_epoch, scan_epoch);
 }
 
 #[test]

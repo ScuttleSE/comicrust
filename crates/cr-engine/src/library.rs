@@ -111,9 +111,17 @@ impl Library {
         self.dirty
     }
 
+    #[track_caller]
     pub fn mark_dirty(&mut self) {
+        let caller = std::panic::Location::caller();
         self.dirty = true;
         self.mutation_generation = self.mutation_generation.wrapping_add(1);
+        crate::trace::trace(format!(
+            "library marked dirty generation={} caller={}:{}",
+            self.mutation_generation,
+            caller.file(),
+            caller.line()
+        ));
         crate::incoming_transaction::advance_database_epoch();
     }
 

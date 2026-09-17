@@ -22,26 +22,57 @@ pub fn database_epoch() -> u64 {
     DATABASE_EPOCH.load(Ordering::Acquire)
 }
 
+#[track_caller]
 pub fn advance_database_epoch() {
-    DATABASE_EPOCH.fetch_add(1, Ordering::AcqRel);
+    let caller = std::panic::Location::caller();
+    let previous = DATABASE_EPOCH.fetch_add(1, Ordering::AcqRel);
+    crate::trace::trace(format!(
+        "incoming epoch advanced {} -> {} caller={}:{}",
+        previous,
+        previous.wrapping_add(1),
+        caller.file(),
+        caller.line()
+    ));
 }
 
 /// Advances the epoch and returns the value that identifies the new state.
+#[track_caller]
 pub fn commit_database_epoch() -> u64 {
-    DATABASE_EPOCH
+    let caller = std::panic::Location::caller();
+    let previous = DATABASE_EPOCH
         .fetch_add(1, Ordering::AcqRel)
-        .wrapping_add(1)
+        .wrapping_add(1);
+    crate::trace::trace(format!(
+        "incoming epoch committed {} -> {previous} caller={}:{}",
+        previous.wrapping_sub(1),
+        caller.file(),
+        caller.line()
+    ));
+    previous
 }
 
+#[track_caller]
 pub fn begin_operation() -> bool {
-    ACTIVE_OPERATIONS
+    let caller = std::panic::Location::caller();
+    let started = ACTIVE_OPERATIONS
         .compare_exchange(0, 1, Ordering::AcqRel, Ordering::Acquire)
-        .is_ok()
+        .is_ok();
+    crate::trace::trace(format!(
+        "incoming operation begin started={started} active={} caller={}:{}",
+        ACTIVE_OPERATIONS.load(Ordering::Acquire),
+        caller.file(),
+        caller.line()
+    ));
+    started
 }
 
 pub fn end_operation() {
     let previous = ACTIVE_OPERATIONS.fetch_sub(1, Ordering::AcqRel);
     debug_assert!(previous > 0);
+    crate::trace::trace(format!(
+        "incoming operation end active={}",
+        previous.saturating_sub(1)
+    ));
 }
 
 pub fn operation_active() -> bool {
@@ -73,12 +104,23 @@ pub fn try_begin_operation() -> Option<ActiveOperation> {
 pub struct MutationGuard(MutexGuard<'static, ()>);
 
 /// Waits until this process has no other active Incoming mutation.
+#[track_caller]
 pub fn acquire_mutation_guard() -> MutationGuard {
-    MutationGuard(
+    let caller = std::panic::Location::caller();
+    let started = std::time::Instant::now();
+    let guard = MutationGuard(
         MUTATION_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner),
-    )
+    );
+    crate::trace::trace(format!(
+        "incoming mutation guard acquired wait_ms={} epoch={} caller={}:{}",
+        started.elapsed().as_millis(),
+        database_epoch(),
+        caller.file(),
+        caller.line()
+    ));
+    guard
 }
 
 /// Tries to acquire the process-local Incoming mutation guard.

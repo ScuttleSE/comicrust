@@ -41,6 +41,14 @@ scan before it rechecks and runs the selected action. Incoming Duplicates also
 has the selection-only Select Worst Duplicates context command. ADR-054 records
 these changes. User tests on real data remain open.
 
+`MEASURED`: The first real replacement user test moved the Incoming file and
+removed its Incoming record. A later Incoming scan reported a stale database
+epoch. `UNKNOWN`: The run-time cause and the reported 30-second interval.
+`CODE-READ`: `CR_TRACE` now records scan admission, watcher delivery,
+mutation-guard waits, operation ownership, replacement stages, and epoch changes
+with source call sites. Repeat the replacement once with `CR_TRACE=1` to collect
+the deciding measurement.
+
 ## Open user tests
 
 The steps are in `docs/open-user-tests.md`.
@@ -93,7 +101,8 @@ licenses` is not a CI gate.
 
 ## Latest verification
 
-The simplified Compare workflow passed local verification on 2026-09-17.
+Incoming replacement and rescan instrumentation passed local verification on
+2026-09-17.
 
 - `cargo fmt --all`: passed.
 - `cargo clippy --workspace --all-targets -- -D warnings`: passed.
@@ -108,9 +117,12 @@ The simplified Compare workflow passed local verification on 2026-09-17.
   E3, and E4. E2A confirms Keep controls and recommendation highlighting. E4
   confirms Select Worst Duplicates in Incoming Duplicates. The other gates
   confirm replacement, navigation, covers, smart lists, and catalog isolation.
-- The transaction integration suite passed 30 tests. It covers replacement at
+- The transaction integration suite passes 31 tests. It covers replacement at
   every durable stage, collisions, copy and trash failures, invalid files,
-  discard, conversion, adoption, undo, stale epochs, and close behavior.
+  discard, conversion, adoption, undo, stale epochs, and close behavior. The
+  new test confirms that a replacement epoch invalidates a rescan that waits
+  for the mutation guard. A `CR_TRACE=1` focused run contains the epoch
+  transition, guard acquisition, and source call sites.
 
 ## Environment notes
 

@@ -1224,6 +1224,11 @@ pub fn incoming_books_by_ids(ids: &[CrGuid]) -> Vec<ComicBook> {
 
 /// Lands a worker-saved Incoming catalog in the main-thread session.
 pub fn replace_incoming_catalog(catalog: cr_engine::incoming::IncomingCatalog) {
+    crate::trace::trace(format!(
+        "incoming catalog landing books={} epoch_before={}",
+        catalog.books.len(),
+        cr_engine::incoming_transaction::database_epoch()
+    ));
     INCOMING_CLASSIFICATION.with(|snapshot| *snapshot.borrow_mut() = None);
     *incoming_session().borrow_mut() = catalog;
     cr_engine::incoming_transaction::advance_database_epoch();
@@ -1813,6 +1818,13 @@ fn scan_async(location: String, target: ScanTarget, done: impl FnOnce(ScanResult
 /// C# scan queue: requests arriving mid-scan wait, one at a time).
 fn queue_scan(q: QueuedScan) {
     let in_flight = SCAN_IN_FLIGHT.with(|cell| *cell.borrow());
+    crate::trace::trace(format!(
+        "scan request target={:?} location='{}' in_flight={in_flight} operation_active={} epoch={}",
+        q.target,
+        q.label,
+        cr_engine::incoming_transaction::operation_active(),
+        cr_engine::incoming_transaction::database_epoch()
+    ));
     if in_flight {
         SCAN_QUEUE.with(|queue| queue.borrow_mut().push(q));
         return;
@@ -1868,6 +1880,12 @@ fn start_scan_worker(q: QueuedScan) {
         ScanTarget::Incoming => incoming.borrow().books.clone(),
     };
     let scan_epoch = cr_engine::incoming_transaction::database_epoch();
+    crate::trace::trace(format!(
+        "scan worker admitted target={:?} location='{}' epoch={scan_epoch} operation_active={}",
+        q.target,
+        q.label,
+        cr_engine::incoming_transaction::operation_active()
+    ));
     if q.target == ScanTarget::Incoming && !cr_engine::incoming_transaction::begin_operation() {
         SCAN_IN_FLIGHT.with(|cell| *cell.borrow_mut() = false);
         SCAN_LOCATION.with(|cell| cell.borrow_mut().clear());
@@ -1895,8 +1913,15 @@ fn start_scan_worker(q: QueuedScan) {
     std::thread::Builder::new()
         .name("Book Scanner".into())
         .spawn(move || {
+            crate::trace::trace(format!(
+                "scan worker waiting for mutation guard target={target:?} location='{location}' epoch={scan_epoch}"
+            ));
             let _mutation_guard = cr_engine::incoming_transaction::acquire_mutation_guard();
-            if cr_engine::incoming_transaction::database_epoch() != scan_epoch {
+            let current_epoch = cr_engine::incoming_transaction::database_epoch();
+            if current_epoch != scan_epoch {
+                crate::trace::trace(format!(
+                    "scan worker rejected before start target={target:?} location='{location}' captured_epoch={scan_epoch} current_epoch={current_epoch}"
+                ));
                 let _ = tx.send(ScanWorkerMsg::Failed(
                     "The library changed before the scan started. Run the scan again.".into(),
                 ));
@@ -2189,7 +2214,16 @@ pub fn take_watch_folder_rescans() -> Vec<String> {
     if is_scanning() {
         return Vec::new();
     }
-    session().borrow_mut().take_watch_folder_rescans()
+    let roots = session().borrow_mut().take_watch_folder_rescans();
+    if !roots.is_empty() {
+        crate::trace::trace(format!(
+            "watcher delivered rescans count={} roots={roots:?} operation_active={} epoch={}",
+            roots.len(),
+            cr_engine::incoming_transaction::operation_active(),
+            cr_engine::incoming_transaction::database_epoch()
+        ));
+    }
+    roots
 }
 
 /// The collapsed Windows-path roots (the migration dialog rows; the
@@ -2381,6 +2415,11 @@ pub fn replace_library_copy_async(
     let database_snapshot = session().borrow().database().clone();
     let incoming_snapshot = incoming_session().borrow().clone();
     let captured_epoch = cr_engine::incoming_transaction::database_epoch();
+    crate::trace::trace(format!(
+        "replacement requested incoming_id={} library_id={} epoch={captured_epoch}",
+        incoming_id.to_d_string(),
+        library_id.to_d_string()
+    ));
     let Some(operation) = cr_engine::incoming_transaction::try_begin_operation() else {
         done(Err("Another operation is active.".into()));
         return;
@@ -2390,6 +2429,9 @@ pub fn replace_library_copy_async(
         .name("Replace Library Copy".into())
         .spawn(move || {
             let result = (|| -> Result<_, String> {
+                crate::trace::trace(format!(
+                    "replacement waiting for mutation guard epoch={captured_epoch}"
+                ));
                 let guard = cr_engine::incoming_transaction::acquire_mutation_guard();
                 if cr_engine::incoming_transaction::database_epoch() != captured_epoch {
                     return Err("The library changed before the replacement started. Try again.".into());
@@ -2464,12 +2506,20 @@ pub fn replace_library_copy_async(
                 engine
                     .begin_replacement(&transaction)
                     .map_err(|error| error.to_string())?;
+                crate::trace::trace(format!(
+                    "replacement journal prepared epoch={captured_epoch} source='{}' destination='{}'",
+                    transaction.source.display(),
+                    transaction.destination.display()
+                ));
                 if cr_engine::incoming_transaction::database_epoch() != captured_epoch {
                     return Err("The library changed before the replacement committed. Restart ComicRust to recover the pending transaction.".into());
                 }
                 engine
                     .commit_replacement(&mut transaction)
                     .map_err(|error| error.to_string())?;
+                crate::trace::trace(format!(
+                    "replacement durable commit complete epoch_before_commit={captured_epoch}"
+                ));
                 let committed_epoch = cr_engine::incoming_transaction::commit_database_epoch();
                 drop(guard);
                 Ok((database, catalog, committed_epoch))
@@ -2481,6 +2531,11 @@ pub fn replace_library_copy_async(
     glib::timeout_add_local(std::time::Duration::from_millis(50), move || {
         match rx.try_recv() {
             Ok((operation, result)) => {
+                crate::trace::trace(format!(
+                    "replacement worker landed success={} epoch={}",
+                    result.is_ok(),
+                    cr_engine::incoming_transaction::database_epoch()
+                ));
                 operation.finish(|_| {
                     if let Some(done) = done.take() {
                         done(result);
