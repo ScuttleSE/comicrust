@@ -356,37 +356,9 @@ fn main() {
                 if !(cbr.is_active() && smaller.is_active() && fewer.is_active()) {
                     fail("F the rows do not read the (all-on) settings");
                 }
-                // The incoming-path entry (ADR-046): it reads the
-                // empty setting, and the typed path commits with the
-                // checkboxes.
-                let find_entry = || -> gtk4::Entry {
-                    let mut found = None;
-                    let mut walk = vec![dialog.child().unwrap()];
-                    while let Some(w) = walk.pop() {
-                        if let Ok(e) = w.clone().downcast::<gtk4::Entry>() {
-                            if e.placeholder_text()
-                                .map(|p| p == "/data/incoming")
-                                .unwrap_or(false)
-                            {
-                                found = Some(e);
-                                break;
-                            }
-                        }
-                        let mut child = w.first_child();
-                        while let Some(ch) = child {
-                            walk.push(ch.clone());
-                            child = ch.next_sibling();
-                        }
-                    }
-                    found.unwrap_or_else(|| panic!("F the incoming-path entry is missing"))
-                };
-                let path_entry = find_entry();
-                if !path_entry.text().is_empty() {
-                    fail("F the incoming-path entry does not read the empty setting");
-                }
+                // The four rule checkboxes commit with OK.
                 cbr.set_active(false);
                 smaller.set_active(false);
-                path_entry.set_text("/data/incoming");
                 dialog
                     .clone()
                     .downcast::<Dialog>()
@@ -396,24 +368,14 @@ fn main() {
                 if s.duplicates_cbr_worse_than_cbz || s.duplicates_smaller_file_worse {
                     fail("F the OK commit did not land in the session settings");
                 }
-                if s.duplicates_incoming_path != "/data/incoming" {
-                    fail("F the incoming path did not land in the session settings");
-                }
                 // The commit is on disk too (the whole-file rewrite).
                 let cfg = cr_core::paths::config_file(&cr_core::paths::Paths::new_default());
                 let text = std::fs::read_to_string(&cfg).unwrap_or_default();
                 if !text.contains("DuplicatesCbrWorseThanCbz = false") {
                     fail("F the config file did not record the commit");
                 }
-                if !text.contains("DuplicatesIncomingPath = \"/data/incoming\"") {
-                    fail("F the config file did not record the incoming path");
-                }
                 println!("F rows read + commit OK (session + file)");
                 set_rule(true, true, true, true);
-                {
-                    let s = cr_ui::library::settings();
-                    s.borrow_mut().duplicates_incoming_path = String::new();
-                }
                 cr_ui::library::save_settings();
                 println!("PROBE COMPLETE");
                 app.quit();

@@ -34,6 +34,13 @@ Incoming has source-specific duplicate views, persistent custom smart lists,
 and side-by-side duplicate resolution. ADR-050 through ADR-055 record these
 changes.
 
+Library-duplicate batch handling changed on 2026-09-17. Compare now ranks each
+shown pair and marks the preferred pane green and the worse pane red. A Keep
+click runs in the background through a serial queue and Compare moves to the
+next selected book at once. Accepted actions finish even after the window
+closes. The old `DuplicatesIncomingPath` duplicate rule is removed. ADR-056 and
+ADR-057 record these changes. The user tests are open (open user test 4 and 18).
+
 `MEASURED`: A real replacement originally took 65.73 seconds. Ten durable
 stages each rewrote a 3.34 GB JSON journal. The comic copy took only 152 ms.
 ADR-055 replaced the embedded catalog arrays with two one-time sidecar files
@@ -55,7 +62,7 @@ The steps are in `docs/open-user-tests.md`.
 1. Library-tree gauge badges.
 2. Library-tree drag and drop.
 3. Library-tree folder sort.
-4. Select Worst Duplicates and the Incoming path rule.
+4. Select Worst Duplicates.
 5. Keyboard navigation and visibility.
 6. Watch-folder removal.
 7. Permanent delete in the browser.
@@ -108,12 +115,23 @@ verification on 2026-09-17.
 - `cargo fmt --all`: passed.
 - `cargo clippy --workspace --all-targets -- -D warnings`: passed.
 - `cargo test --workspace`: passed.
-- The `cr-ui` suite passed 183 tests. Compare tests cover Keep-button action
+- The release `incoming_probe` passed Gates A-I, A2, E2, E2A, E3, and E4 on
+  2026-09-17. E2A now confirms the automatic green/red pane borders and one
+  highlighted Keep button without a click.
+- `MEASURED` (reported finding): The release `duplicates_probe` gate F fails on
+  this machine on both the current work and the unmodified `main` revision. Gate
+  F reads session settings synchronously right after the Preferences OK
+  response, but the Preferences commit runs on a worker and lands on a later
+  main-loop tick. The read is stale. This is a pre-existing probe or environment
+  problem, not a code regression. It needs a probe change or a user
+  observation; do not tweak it to pass.
+- The `cr-ui` suite passed 187 tests. Compare tests cover Keep-button action
   mapping, pair revalidation, comparison order, self-exclusion, ranking
-  recommendations, and ties. A focused run confirms source-specific Keep-button
-  mapping. A selection test confirms displayed-book order. The new watcher test
-  confirms that rescan events stay pending during scans and Incoming operations.
-- The `cr-engine` suite passed 150 tests. Incoming-list tests cover separate
+  recommendations, ties, recommendation side, and the batch model transforms
+  (advancing to the next selected book and pruning resolved records). A
+  selection test confirms displayed-book order. The new watcher test confirms
+  that rescan events stay pending during scans and Incoming operations.
+- The `cr-engine` suite passed 144 tests. Incoming-list tests cover separate
   persistence, stable IDs, bases, invalid graphs, duplicate matching, and series
   statistics.
 - Three isolated release `incoming_probe` runs passed Gates A-I, A2, E2, E2A,

@@ -196,7 +196,7 @@ fn cmd_lists(file: &str) -> Result<ExitCode> {
     Ok(ExitCode::SUCCESS)
 }
 
-/// The duplicate rules for the `duplicates` command: the five
+/// The duplicate rules for the `duplicates` command: the four
 /// `Duplicates*` keys of the `[settings]` table of a comicrust.toml,
 /// read WITHOUT the unified loader (the loader can rewrite the file;
 /// the diagnostic must not). A missing or corrupt file means the
@@ -221,12 +221,11 @@ fn cmd_duplicates(file: &str, path_filter: Option<&str>, config: Option<&str>) -
     let db = load(Path::new(file)).with_context(|| format!("loading {file} (read-only)"))?;
     let rules = rules_from_config(config);
     println!(
-        "rules: cbr={} smaller={} pages={} older={} incoming={:?}",
+        "rules: cbr={} smaller={} pages={} older={}",
         rules.cbr_worse_than_cbz,
         rules.smaller_file_worse,
         rules.fewer_pages_worse,
         rules.older_file_worse,
-        rules.incoming_path
     );
 
     let filter = path_filter.map(|p| p.to_ascii_lowercase());

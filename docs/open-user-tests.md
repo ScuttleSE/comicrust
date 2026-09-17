@@ -31,14 +31,13 @@ Right-click a folder. Confirm that Sort is between Rename and Delete. Select
 Sort. Confirm that folders come first and lists follow in name order. Confirm
 that a list has no Sort command. Restart and confirm that the order persists.
 
-## 4. Select Worst Duplicates and Incoming path
+## 4. Select Worst Duplicates
 
 Create duplicate pairs with different formats, sizes, page counts, and
 timestamps. Confirm that Show Duplicates limits the list. Run Select Worst
 Duplicates with all rules enabled, with the CBR rule disabled, and with all
 rules disabled. Confirm the ADR-048 tie-break. Identical copies must remain
-unselected. Set `DuplicatesIncomingPath`. Confirm that the copy under that
-path is selected when a copy outside it exists. Remove the selection.
+unselected.
 
 ## 5. Keyboard navigation and visibility
 
@@ -140,23 +139,28 @@ The remaining steps below are open.
 
 Select an Incoming-only duplicate and a duplicate that has a Library copy.
 Confirm that Compare shows two books side by side with both covers and details.
-Use the book controls to move through the selected books. Use the match controls
-to move through all Incoming and Library matches. Confirm that a missing cover
-shows a placeholder and that the window stays responsive while covers load.
-For a Library match, use Select Worst Duplicates and confirm that it highlights
-one Keep This Copy button without running it. Keep the Incoming copy. Confirm
-the Library ID and descriptive metadata stay unchanged, the file-derived fields
-refresh, and the old file enters trash. Keep the Library copy in another pair
-and confirm that the Incoming file enters trash. Confirm that the dialog
-continues and a destination collision changes nothing. Start a background scan,
-select Keep This Copy, and confirm that Compare stops the scan, shows status,
-rechecks the pair, and then runs the action. In Incoming Duplicates, confirm that
-the context menu has Select Worst Duplicates and that it changes selection only.
-Run Preview Adoption and confirm that no file or catalog changes. Run Adopt with
-a Move profile. Confirm the destination, preserved metadata, and removal from
-Incoming. Test Cancel, Rename, and Replace for a destination conflict. Run
-Library Organizer - Revert Last Move. Confirm that the same record and ID return
-to Incoming at the original path.
+Confirm that Compare marks the preferred copy with a green border and the worse
+copy with a red border, and that a tie shows no border. Use the book controls to
+move through the selected books. Use the match controls to move through all
+Incoming and Library matches. Confirm that a missing cover shows a placeholder
+and that the window stays responsive while covers load. Use Select Worst
+Duplicates and confirm that it re-applies the recommendation without running it.
+Select a large batch of Library-match books. Keep the Incoming copy on the first
+pair. Confirm that Compare moves to the next selected book at once and does not
+freeze. Confirm that the status line counts the running, queued, done, and
+failed actions. Confirm the Library ID and descriptive metadata stay unchanged,
+the file-derived fields refresh, and the old file enters trash. Keep the Library
+copy in another pair and confirm that the Incoming file enters trash. Confirm
+that a destination collision changes nothing and the batch continues. Close
+Compare while actions are queued and confirm that the accepted actions still
+finish. Start a background scan, select Keep This Copy, and confirm that Compare
+stops the scan, rechecks the pair, and then runs the action. In Incoming
+Duplicates, confirm that the context menu has Select Worst Duplicates and that it
+changes selection only. Run Preview Adoption and confirm that no file or catalog
+changes. Run Adopt with a Move profile. Confirm the destination, preserved
+metadata, and removal from Incoming. Test Cancel, Rename, and Replace for a
+destination conflict. Run Library Organizer - Revert Last Move. Confirm that the
+same record and ID return to Incoming at the original path.
 
 ## 19. Incoming discard and Comic Vine refresh
 

@@ -60,14 +60,6 @@ pub struct DuplicateRules {
     /// newer file stamp; the stale copy ranks worst. Unknown stamps
     /// (the `DateTime.MinValue` default) tie and take no side.
     pub older_file_worse: bool,
-    /// The incoming-path rule (PORT ADDITION, no C# counterpart —
-    /// ADR-046). A copy under this path is worse than a copy outside
-    /// it, but only when the group also holds a copy outside the
-    /// path. The rule carries a weight that outweighs the four
-    /// quality rules combined, so in a mixed group every copy under
-    /// the path loses — even one that wins on format, size, pages,
-    /// and stamp. Empty means the rule is off.
-    pub incoming_path: String,
 }
 
 impl Default for DuplicateRules {
@@ -77,7 +69,6 @@ impl Default for DuplicateRules {
             smaller_file_worse: true,
             fewer_pages_worse: true,
             older_file_worse: true,
-            incoming_path: String::new(),
         }
     }
 }
@@ -90,7 +81,6 @@ impl DuplicateRules {
             smaller_file_worse: s.duplicates_smaller_file_worse,
             fewer_pages_worse: s.duplicates_fewer_pages_worse,
             older_file_worse: s.duplicates_older_file_worse,
-            incoming_path: s.duplicates_incoming_path.clone(),
         }
     }
 
@@ -102,18 +92,6 @@ impl DuplicateRules {
             + self.smaller_file_worse as i32
             + self.fewer_pages_worse as i32
             + self.older_file_worse as i32
-    }
-
-    /// The incoming-path rule is on when a path is configured.
-    fn path_rule_enabled(&self) -> bool {
-        !self.incoming_path.is_empty()
-    }
-
-    /// The weight of the incoming-path rule: it outweighs every
-    /// quality rule combined, so a copy that loses it loses against
-    /// any copy that does not (ADR-046).
-    fn heavy_weight(&self) -> i32 {
-        self.enabled_count() + 1
     }
 }
 
@@ -224,16 +202,11 @@ pub fn duplicate_report(books: &[&ComicBook], rules: &DuplicateRules) -> Vec<Gro
 }
 
 /// The rule penalties of one copy against its group. A fileless copy
-/// loses every enabled rule — the quality rules and, when the
-/// incoming-path rule is on, the path rule at its full weight
-/// (ADR-046: an empty record ranks worst wherever it sits).
+/// loses every enabled rule (ADR-044: an empty record ranks worst
+/// wherever it sits).
 fn penalty(book: &ComicBook, members: &[&ComicBook], rules: &DuplicateRules) -> i32 {
     if !book_view::is_linked(book) {
-        let mut p = rules.enabled_count();
-        if rules.path_rule_enabled() {
-            p += rules.heavy_weight();
-        }
-        return p;
+        return rules.enabled_count();
     }
     let mut p = 0;
     if rules.cbr_worse_than_cbz && format_worse(book, members) {
@@ -248,23 +221,22 @@ fn penalty(book: &ComicBook, members: &[&ComicBook], rules: &DuplicateRules) -> 
     if rules.older_file_worse && modified_secs(book) < modified_max(members) {
         p += 1;
     }
-    if rules.path_rule_enabled()
-        && under_incoming_path(book, rules)
-        && members
-            .iter()
-            .any(|m| !book_view::is_linked(m) || !under_incoming_path(m, rules))
-    {
-        p += rules.heavy_weight();
-    }
     p
 }
 
-/// The incoming-path rule: the copy's file sits under the configured
-/// path. The match is a case-insensitive component prefix; `/` and
-/// `\` both separate, so a configured Windows path matches its
-/// lower-cased book paths the same way.
-fn under_incoming_path(book: &ComicBook, rules: &DuplicateRules) -> bool {
-    under_path(&book.file_path, &rules.incoming_path)
+/// The format rule: the copy is a CBR and the group also holds a CBZ.
+/// The physical format comes from the file path extension (`cr-io`
+/// `source_format` — the `ActualFileFormat` source), not from the
+/// metadata `Format` string.
+fn format_worse(book: &ComicBook, members: &[&ComicBook]) -> bool {
+    if file_format(book) != Some(ids::CBR) {
+        return false;
+    }
+    members.iter().any(|m| file_format(m) == Some(ids::CBZ))
+}
+
+fn file_format(book: &ComicBook) -> Option<i32> {
+    formats::source_format(std::path::Path::new(&book.file_path)).map(|f| f.id)
 }
 
 /// Is `path` inside the `root` directory? Component-wise prefix
@@ -283,21 +255,6 @@ pub(crate) fn under_path(path: &str, root: &str) -> bool {
     }
     let path_comps = comps(path);
     path_comps.len() > root_comps.len() && path_comps.starts_with(&root_comps)
-}
-
-/// The format rule: the copy is a CBR and the group also holds a CBZ.
-/// The physical format comes from the file path extension (`cr-io`
-/// `source_format` — the `ActualFileFormat` source), not from the
-/// metadata `Format` string.
-fn format_worse(book: &ComicBook, members: &[&ComicBook]) -> bool {
-    if file_format(book) != Some(ids::CBR) {
-        return false;
-    }
-    members.iter().any(|m| file_format(m) == Some(ids::CBZ))
-}
-
-fn file_format(book: &ComicBook) -> Option<i32> {
-    formats::source_format(std::path::Path::new(&book.file_path)).map(|f| f.id)
 }
 
 fn max_size(members: &[&ComicBook]) -> i64 {
@@ -444,7 +401,6 @@ mod tests {
             smaller_file_worse: false,
             fewer_pages_worse: false,
             older_file_worse: false,
-            incoming_path: String::new(),
         };
         assert_eq!(worst(&books, &rules), ["/c/alpha.cbr"]);
     }
@@ -474,7 +430,6 @@ mod tests {
             smaller_file_worse: false,
             fewer_pages_worse: false,
             older_file_worse: false,
-            incoming_path: String::new(),
         };
         let sizes = vec![
             book("Scale", "1", "/c/scale-a.cbz", 2000, 20),
@@ -554,7 +509,6 @@ mod tests {
         s.duplicates_smaller_file_worse = false;
         s.duplicates_fewer_pages_worse = false;
         s.duplicates_older_file_worse = false;
-        s.duplicates_incoming_path = "/x".into();
         assert_eq!(
             DuplicateRules::from_settings(&s),
             DuplicateRules {
@@ -562,134 +516,7 @@ mod tests {
                 smaller_file_worse: false,
                 fewer_pages_worse: false,
                 older_file_worse: false,
-                incoming_path: "/x".into(),
             }
-        );
-    }
-
-    fn incoming_rules(path: &str) -> DuplicateRules {
-        DuplicateRules {
-            incoming_path: path.into(),
-            ..DuplicateRules::default()
-        }
-    }
-
-    #[test]
-    fn the_incoming_copy_loses_even_when_it_is_the_better_file() {
-        // ADR-046: the Library copy wins over cbr, larger, and more
-        // pages — the heavy path-rule penalty outweighs the quality
-        // rules. Without the path the rules keep the CBZ (the same
-        // case the ADR-044 tests cover).
-        let books = vec![
-            book("Example", "1", "/data/library/example.cbr", 500, 20),
-            book("Example", "1", "/data/incoming/example.cbz", 2000, 30),
-        ];
-        assert_eq!(
-            worst(&books, &incoming_rules("/data/incoming")),
-            ["/data/incoming/example.cbz"]
-        );
-        // Without the path the quality rules keep the CBZ — the
-        // Library CBR is the copy the command marks (the behavior
-        // the rule exists to fix).
-        assert_eq!(
-            worst(&books, &DuplicateRules::default()),
-            ["/data/library/example.cbr"]
-        );
-    }
-
-    #[test]
-    fn an_empty_comic_beats_the_incoming_path_rule() {
-        // ADR-046: the fileless record loses every enabled rule —
-        // the quality rules AND the path rule at its full weight —
-        // so an empty Library record marks even against a real file
-        // under the incoming path (the fileless book counts as the
-        // outside copy that arms the rule).
-        let mut empty = book("Empty", "1", "", -1, 0);
-        empty.file_path = String::new();
-        let real = book("Empty", "1", "/data/incoming/empty.cbr", 1000, 20);
-        let refs: Vec<&ComicBook> = vec![&empty, &real];
-        let ids = worst_duplicate_ids(&refs, &incoming_rules("/data/incoming"));
-        assert_eq!(ids, vec![empty.id]);
-    }
-
-    #[test]
-    fn a_former_tie_resolves_to_the_incoming_copy() {
-        // The ADR-044 conflict pair (each copy loses one rule) now
-        // breaks by size without the path (ADR-048): the smaller
-        // Library CBZ marks. With the path the Incoming copy loses
-        // the extra weight and marks instead.
-        let books = vec![
-            book("Conflict", "1", "/data/library/conflict.cbz", 500, 30),
-            book("Conflict", "1", "/data/incoming/conflict.cbr", 900, 30),
-        ];
-        assert_eq!(
-            worst(&books, &DuplicateRules::default()),
-            ["/data/library/conflict.cbz"]
-        );
-        assert_eq!(
-            worst(&books, &incoming_rules("/data/incoming")),
-            ["/data/incoming/conflict.cbr"]
-        );
-    }
-
-    #[test]
-    fn a_group_on_one_side_of_the_path_ranks_normally() {
-        // Both copies under the path: the rule takes no side (no
-        // outside copy arms it). Both outside: unchanged. The CBR
-        // copy is the loser in both pairs.
-        let both_under = vec![
-            book("Under", "1", "/data/incoming/under-a.cbz", 2000, 20),
-            book("Under", "1", "/data/incoming/under-b.cbr", 1000, 10),
-        ];
-        assert_eq!(
-            worst(&both_under, &incoming_rules("/data/incoming")),
-            ["/data/incoming/under-b.cbr"]
-        );
-        let both_outside = vec![
-            book("Outside", "1", "/data/library/outside-a.cbr", 1000, 10),
-            book("Outside", "1", "/data/library/outside-b.cbz", 2000, 20),
-        ];
-        assert_eq!(
-            worst(&both_outside, &incoming_rules("/data/incoming")),
-            ["/data/library/outside-a.cbr"]
-        );
-    }
-
-    #[test]
-    fn every_incoming_copy_marks_in_a_mixed_group() {
-        // One Library copy, two Incoming copies: both Incoming
-        // copies sit above the group minimum.
-        let books = vec![
-            book("Mixed", "1", "/data/library/mixed.cbz", 2000, 20),
-            book("Mixed", "1", "/data/incoming/mixed-a.cbz", 2000, 20),
-            book("Mixed", "1", "/data/incoming/mixed-b.cbz", 2000, 20),
-        ];
-        assert_eq!(
-            worst(&books, &incoming_rules("/data/incoming")),
-            ["/data/incoming/mixed-a.cbz", "/data/incoming/mixed-b.cbz",]
-        );
-    }
-
-    #[test]
-    fn the_path_match_tolerates_case_and_separators() {
-        // A trailing separator and letter case on the configured path
-        // do not matter; the same holds for a Windows-styled root
-        // against a forward-slashed book path.
-        let books = vec![
-            book("Case", "1", "/data/library/case.cbz", 2000, 20),
-            book("Case", "1", "/data/incoming/case.cbr", 1000, 10),
-        ];
-        assert_eq!(
-            worst(&books, &incoming_rules("/data/Incoming/")),
-            ["/data/incoming/case.cbr"]
-        );
-        let win = vec![
-            book("Win", "1", "C:/Comics/Library/win.cbz", 2000, 20),
-            book("Win", "1", "c:/comics/incoming/win.cbr", 1000, 10),
-        ];
-        assert_eq!(
-            worst(&win, &incoming_rules("C:\\Comics\\Incoming")),
-            ["c:/comics/incoming/win.cbr"]
         );
     }
 }

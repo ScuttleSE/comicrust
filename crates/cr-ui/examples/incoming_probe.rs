@@ -392,7 +392,6 @@ fn gate_compare_actions(work: &Path) {
         smaller_file_worse: true,
         fewer_pages_worse: false,
         older_file_worse: false,
-        incoming_path: String::new(),
     };
     if recommended_action(&incoming, &duplicate, &rules) != Some(CompareAction::ReplaceLibraryCopy)
     {
@@ -739,12 +738,38 @@ fn wait_for_compare_covers(
         return;
     }
     println!("GATE E2 OK: Compare navigates books and matches and loads both covers");
-    button(&window, "Select Worst Duplicates").emit_clicked();
+    // The recommendation is automatic: without any click, one Keep
+    // button is highlighted and the panes carry the green/red borders.
     let keep = buttons(&window, "Keep This Copy");
     if keep.len() != 2 {
         eprintln!("GATE E2 FAILED: Compare did not show two Keep This Copy buttons");
         std::process::exit(1);
     }
+    let auto_highlighted = keep
+        .iter()
+        .filter(|button| button.has_css_class("suggested-action"))
+        .count();
+    if auto_highlighted != 1 || !keep[0].has_css_class("suggested-action") {
+        eprintln!("GATE E2 FAILED: automatic recommendation did not highlight one Keep button");
+        std::process::exit(1);
+    }
+    let preferred = widgets(&window)
+        .into_iter()
+        .filter(|w| w.has_css_class("compare-pane-preferred"))
+        .count();
+    let worse = widgets(&window)
+        .into_iter()
+        .filter(|w| w.has_css_class("compare-pane-worse"))
+        .count();
+    if preferred != 1 || worse != 1 {
+        eprintln!(
+            "GATE E2 FAILED: automatic borders wrong preferred={preferred} worse={worse} (want 1/1)"
+        );
+        std::process::exit(1);
+    }
+    // The button re-applies the same recommendation.
+    button(&window, "Select Worst Duplicates").emit_clicked();
+    let keep = buttons(&window, "Keep This Copy");
     let highlighted = keep
         .iter()
         .filter(|button| button.has_css_class("suggested-action"))
@@ -757,7 +782,7 @@ fn wait_for_compare_covers(
         eprintln!("GATE E2 FAILED: obsolete action control is visible");
         std::process::exit(1);
     }
-    println!("GATE E2A OK: Compare recommendation highlights a real Keep control");
+    println!("GATE E2A OK: Compare recommends automatically with green/red borders");
     window.close();
     gate_f_to_i(paths, work);
     println!("INCOMING PROBE DONE");

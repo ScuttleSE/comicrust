@@ -96,6 +96,23 @@ pub const CSS: &str = r#"
     padding: 0 2px;
     min-height: 0;
 }
+
+/* The Compare (duplicate resolution) panes: the preferred copy gets
+   a green border, the worse copy a red border. A tie or a missing
+   match uses neither class, so the pane keeps the plain surface. */
+.compare-pane {
+    border: 2px solid transparent;
+    border-radius: 4px;
+    padding: 4px;
+}
+
+.compare-pane-preferred {
+    border-color: #2ec27e;
+}
+
+.compare-pane-worse {
+    border-color: #e01b24;
+}
 "#;
 
 /// Loads the CSS into the default display. Idempotent enough for the

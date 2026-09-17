@@ -60,6 +60,25 @@ pub enum KeepSide {
     Right,
 }
 
+/// One accepted Keep action that waits for serial execution.
+struct QueuedAction {
+    selected: ComicBook,
+    duplicate: DuplicateMatch,
+    action: CompareAction,
+    ids: CrGuidPair,
+}
+
+/// The serial action queue. The transaction layer permits one active
+/// operation, so the dialog starts one queued action at a time and
+/// continues review while an action runs in the background.
+#[derive(Default)]
+struct ActionQueue {
+    pending: std::collections::VecDeque<QueuedAction>,
+    running: bool,
+    completed: usize,
+    failures: Vec<String>,
+}
+
 pub fn keep_action(source: MatchSource, side: KeepSide) -> CompareAction {
     match (source, side) {
         (MatchSource::Library, KeepSide::Left) => CompareAction::ReplaceLibraryCopy,
@@ -168,6 +187,7 @@ pub fn build_comparisons(
 }
 
 struct Pane {
+    container: gtk4::Box,
     heading: gtk4::Label,
     cover_stack: gtk4::Stack,
     picture: gtk4::Picture,
@@ -194,6 +214,7 @@ struct DialogState {
     status: gtk4::Label,
     rules: DuplicateRules,
     executor: ActionExecutor,
+    queue: RefCell<ActionQueue>,
     window: glib::WeakRef<gtk4::Window>,
 }
 
@@ -239,8 +260,8 @@ pub fn show(
         .column_homogeneous(true)
         .hexpand(true)
         .build();
-    grid.attach(&pane_widget(&left), 0, 0, 1, 1);
-    grid.attach(&pane_widget(&right), 1, 0, 1, 1);
+    grid.attach(pane_widget(&left), 0, 0, 1, 1);
+    grid.attach(pane_widget(&right), 1, 0, 1, 1);
 
     let previous_match = gtk4::Button::with_label("Previous Match");
     let next_match = gtk4::Button::with_label("Next Match");
@@ -292,6 +313,7 @@ pub fn show(
         status,
         rules,
         executor,
+        queue: RefCell::new(ActionQueue::default()),
         window: window.downgrade(),
     });
     update_dialog(&state, &cover_tx);
@@ -366,7 +388,15 @@ fn comparison_pane(heading: &str) -> Pane {
     details.set_selectable(true);
     let keep = gtk4::Button::with_label("Keep This Copy");
     keep.set_hexpand(true);
+    let container = gtk4::Box::new(gtk4::Orientation::Vertical, 8);
+    container.set_hexpand(true);
+    container.add_css_class("compare-pane");
+    container.append(&heading);
+    container.append(&cover_stack);
+    container.append(&details);
+    container.append(&keep);
     Pane {
+        container,
         heading,
         cover_stack,
         picture,
@@ -376,14 +406,8 @@ fn comparison_pane(heading: &str) -> Pane {
     }
 }
 
-fn pane_widget(pane: &Pane) -> gtk4::Box {
-    let box_ = gtk4::Box::new(gtk4::Orientation::Vertical, 8);
-    box_.set_hexpand(true);
-    box_.append(&pane.heading);
-    box_.append(&pane.cover_stack);
-    box_.append(&pane.details);
-    box_.append(&pane.keep);
-    box_
+fn pane_widget(pane: &Pane) -> &gtk4::Box {
+    &pane.container
 }
 
 fn connect_navigation(state: &Rc<DialogState>, cover_tx: &std::sync::mpsc::Sender<CoverResult>) {
@@ -456,29 +480,13 @@ fn connect_actions(state: &Rc<DialogState>, cover_tx: &std::sync::mpsc::Sender<C
         let state = Rc::downgrade(state);
         button.connect_clicked(move |_| {
             let Some(state) = state.upgrade() else { return };
-            clear_recommendation(&state);
-            let book_index = state.book_index.get();
-            let match_index = state.match_indexes.borrow()[book_index];
-            let comparisons = state.comparisons.borrow();
-            let Some(duplicate) = comparisons[book_index].matches.get(match_index) else {
-                return;
-            };
-            if let Some(action) =
-                recommended_action(&comparisons[book_index].selected, duplicate, &state.rules)
-            {
-                let side = recommended_keep_side(action);
-                let button = keep_button(&state, side);
-                button.add_css_class("suggested-action");
-                button.grab_focus();
-                state.status.set_text(match side {
-                    KeepSide::Left => "Recommendation: keep the left copy.",
-                    KeepSide::Right => "Recommendation: keep the right copy.",
-                });
-            } else {
-                state
-                    .status
-                    .set_text("The copies tie. Choose the copy to keep.");
+            // The recommendation already shows on the panes and the
+            // status line. The button re-applies it and re-focuses
+            // the recommended Keep button.
+            if let Some(side) = apply_recommendation(&state) {
+                keep_button(&state, side).grab_focus();
             }
+            update_status(&state);
         });
     }
     for (button, side) in [
@@ -489,7 +497,7 @@ fn connect_actions(state: &Rc<DialogState>, cover_tx: &std::sync::mpsc::Sender<C
         let cover_tx = cover_tx.clone();
         button.connect_clicked(move |_| {
             let Some(state) = state.upgrade() else { return };
-            start_keep_action(&state, side, &cover_tx);
+            enqueue_keep_action(&state, side, &cover_tx);
         });
     }
 }
@@ -513,19 +521,44 @@ fn keep_button(state: &DialogState, side: KeepSide) -> &gtk4::Button {
 fn clear_recommendation(state: &DialogState) {
     state.left.keep.remove_css_class("suggested-action");
     state.right.keep.remove_css_class("suggested-action");
+    state
+        .left
+        .container
+        .remove_css_class("compare-pane-preferred");
+    state.left.container.remove_css_class("compare-pane-worse");
+    state
+        .right
+        .container
+        .remove_css_class("compare-pane-preferred");
+    state.right.container.remove_css_class("compare-pane-worse");
 }
 
-fn set_action_sensitive(state: &DialogState, sensitive: bool) {
-    state.left.keep.set_sensitive(sensitive);
-    state.right.keep.set_sensitive(sensitive);
-    state.previous_book.set_sensitive(sensitive);
-    state.next_book.set_sensitive(sensitive);
-    state.previous_match.set_sensitive(sensitive);
-    state.next_match.set_sensitive(sensitive);
-    state.select_worst.set_sensitive(sensitive);
+/// Ranks the displayed pair with the duplicate rules and marks the
+/// preferred pane green and the worse pane red. A tie or a missing
+/// match leaves both panes plain. Returns the recommended keep side,
+/// when the rules choose one.
+fn apply_recommendation(state: &DialogState) -> Option<KeepSide> {
+    clear_recommendation(state);
+    let book_index = state.book_index.get();
+    let match_index = state.match_indexes.borrow()[book_index];
+    let comparisons = state.comparisons.borrow();
+    let duplicate = comparisons[book_index].matches.get(match_index)?;
+    let action = recommended_action(&comparisons[book_index].selected, duplicate, &state.rules)?;
+    let side = recommended_keep_side(action);
+    let (preferred, worse) = match side {
+        KeepSide::Left => (&state.left, &state.right),
+        KeepSide::Right => (&state.right, &state.left),
+    };
+    preferred.container.add_css_class("compare-pane-preferred");
+    worse.container.add_css_class("compare-pane-worse");
+    keep_button(state, side).add_css_class("suggested-action");
+    Some(side)
 }
 
-fn start_keep_action(
+/// Accepts a Keep action for the displayed pair, then moves to the
+/// next selected book at once. The action runs in the background
+/// through the serial queue. The dialog does not wait.
+fn enqueue_keep_action(
     state: &Rc<DialogState>,
     side: KeepSide,
     cover_tx: &std::sync::mpsc::Sender<CoverResult>,
@@ -539,105 +572,233 @@ fn start_keep_action(
     let selected = comparisons[book_index].selected.clone();
     drop(comparisons);
     let action = keep_action(duplicate.source, side);
-    crate::trace::trace(format!(
-        "compare Keep clicked side={side:?} match_source={:?} action={action:?} selected_id={} matched_id={} scanning={}",
-        duplicate.source,
-        selected.id.to_d_string(),
-        duplicate.book.id.to_d_string(),
-        crate::library::is_scanning()
-    ));
     let ids = CrGuidPair {
         selected: selected.id,
         matched: duplicate.book.id,
     };
-    clear_recommendation(state);
-    set_action_sensitive(state, false);
+    crate::trace::trace(format!(
+        "compare Keep queued side={side:?} match_source={:?} action={action:?} selected_id={} matched_id={}",
+        duplicate.source,
+        selected.id.to_d_string(),
+        duplicate.book.id.to_d_string(),
+    ));
+    // Mark this selected book as accepted so it leaves the review
+    // sequence at once, and move to the next selected book.
+    mark_book_accepted(state, book_index);
+    state.queue.borrow_mut().pending.push_back(QueuedAction {
+        selected,
+        duplicate,
+        action,
+        ids,
+    });
+    process_queue(state, cover_tx);
+    refresh_after_model_change(state, cover_tx);
+}
+
+/// Removes the accepted selected book from the review sequence and
+/// advances to the next book in browser order.
+fn mark_book_accepted(state: &DialogState, book_index: usize) {
+    let removed_id = {
+        let comparisons = state.comparisons.borrow();
+        comparisons[book_index].selected.id
+    };
+    remove_selected(state, removed_id);
+}
+
+/// Removes every comparison whose selected book matches `id`, keeps
+/// the match indexes aligned, and clamps the visible index.
+fn remove_selected(state: &DialogState, id: cr_core::xml::scalar::CrGuid) {
+    let mut comparisons = state.comparisons.borrow_mut();
+    let mut book_index = state.book_index.get();
+    let mut indexes = state.match_indexes.borrow_mut();
+    drop_selected_book(&mut comparisons, &mut indexes, &mut book_index, id);
+    drop(indexes);
+    drop(comparisons);
+    state.book_index.set(book_index);
+}
+
+/// Pure model transform for [`remove_selected`]: drops every
+/// comparison whose selected book is `id`, keeps the visible index on
+/// the same surviving book, and rebuilds the match-index vector.
+fn drop_selected_book(
+    comparisons: &mut Vec<BookComparison>,
+    indexes: &mut Vec<usize>,
+    book_index: &mut usize,
+    id: cr_core::xml::scalar::CrGuid,
+) {
+    let removed_before = comparisons
+        .iter()
+        .take(*book_index)
+        .filter(|c| c.selected.id == id)
+        .count();
+    comparisons.retain(|comparison| comparison.selected.id != id);
+    let new_len = comparisons.len();
+    *book_index = book_index
+        .saturating_sub(removed_before)
+        .min(new_len.saturating_sub(1));
+    indexes.clear();
+    indexes.resize(new_len, 0);
+}
+
+/// Starts the next queued action when none runs. Runs one action at a
+/// time because the transaction layer permits one active operation.
+fn process_queue(state: &Rc<DialogState>, cover_tx: &std::sync::mpsc::Sender<CoverResult>) {
+    {
+        let queue = state.queue.borrow();
+        if queue.running || queue.pending.is_empty() {
+            return;
+        }
+    }
+    let job = state.queue.borrow_mut().pending.pop_front();
+    let Some(job) = job else { return };
+    state.queue.borrow_mut().running = true;
+    // A strong clone keeps the queue alive until every accepted action
+    // finishes, even after the window closes.
+    let owner = Rc::clone(state);
+    let cover_tx = cover_tx.clone();
     if crate::library::is_scanning() {
         crate::library::abort_scan();
-        state.status.set_text("Stopping background scan...");
-        let state = Rc::downgrade(state);
-        let cover_tx = cover_tx.clone();
+        update_status(&owner);
+        let cover_tx2 = cover_tx.clone();
         glib::timeout_add_local(std::time::Duration::from_millis(50), move || {
-            let Some(state) = state.upgrade() else {
-                return glib::ControlFlow::Break;
-            };
             if crate::library::is_scanning() {
                 return glib::ControlFlow::Continue;
             }
-            validate_and_execute(
-                &state,
-                selected.clone(),
-                duplicate.clone(),
-                action,
-                ids,
-                &cover_tx,
-            );
+            run_job(&owner, job_clone(&job), &cover_tx2);
             glib::ControlFlow::Break
         });
     } else {
-        validate_and_execute(state, selected, duplicate, action, ids, cover_tx);
+        run_job(&owner, job, &cover_tx);
     }
 }
 
-fn validate_and_execute(
-    state: &Rc<DialogState>,
-    selected: ComicBook,
-    duplicate: DuplicateMatch,
-    action: CompareAction,
-    ids: CrGuidPair,
+fn job_clone(job: &QueuedAction) -> QueuedAction {
+    QueuedAction {
+        selected: job.selected.clone(),
+        duplicate: job.duplicate.clone(),
+        action: job.action,
+        ids: job.ids,
+    }
+}
+
+/// Revalidates the pair, then dispatches the durable action. On
+/// completion it records the result and starts the next queued action.
+fn run_job(
+    owner: &Rc<DialogState>,
+    job: QueuedAction,
     cover_tx: &std::sync::mpsc::Sender<CoverResult>,
 ) {
-    crate::trace::trace(format!(
-        "compare action validating source={:?} action={action:?} selected_id={} matched_id={}",
-        duplicate.source,
-        ids.selected.to_d_string(),
-        ids.matched.to_d_string()
-    ));
     let incoming = crate::library::incoming_books_snapshot();
     let library = crate::library::session().borrow().database().books.clone();
-    if let Err(error) = revalidate_pair(&selected, &duplicate, &incoming, &library) {
-        state.status.set_text(&error);
-        set_action_sensitive(state, true);
-        update_dialog_sensitivity(state);
+    if let Err(error) = revalidate_pair(&job.selected, &job.duplicate, &incoming, &library) {
+        finish_job(owner, &job, Err(error), cover_tx);
         return;
     }
     crate::trace::trace(format!(
-        "compare action dispatch source={:?} action={action:?} selected_path='{}' matched_path='{}'",
-        duplicate.source, selected.file_path, duplicate.book.file_path
+        "compare action dispatch source={:?} action={:?} selected_path='{}' matched_path='{}'",
+        job.duplicate.source, job.action, job.selected.file_path, job.duplicate.book.file_path
     ));
-    state.status.set_text("Applying action...");
-    let weak = Rc::downgrade(state);
+    let owner_weak = Rc::downgrade(owner);
+    let strong = Rc::clone(owner);
     let cover_tx = cover_tx.clone();
-    (state.executor)(
+    let action = job.action;
+    let ids = job.ids;
+    let job_for_result = job_clone(&job);
+    (owner.executor)(
         action,
         ids,
         Box::new(move |result| {
-            let Some(state) = weak.upgrade() else { return };
-            match result {
-                Ok(()) => {
-                    remove_resolved(&state, action, ids);
-                    if state.comparisons.borrow().is_empty() {
-                        if let Some(window) = state.window.upgrade() {
-                            window.close();
-                        }
-                    } else {
-                        set_action_sensitive(&state, true);
-                        update_dialog(&state, &cover_tx);
-                        state.status.set_text("Action completed.");
-                    }
-                }
-                Err(error) => {
-                    state.status.set_text(&error);
-                    set_action_sensitive(&state, true);
-                    update_dialog_sensitivity(&state);
-                }
-            }
+            // Keep the queue alive through completion.
+            let _ = &owner_weak;
+            finish_job(&strong, &job_for_result, result, &cover_tx);
         }),
     );
 }
 
+fn finish_job(
+    owner: &Rc<DialogState>,
+    job: &QueuedAction,
+    result: Result<(), String>,
+    cover_tx: &std::sync::mpsc::Sender<CoverResult>,
+) {
+    {
+        let mut queue = owner.queue.borrow_mut();
+        queue.running = false;
+        match &result {
+            Ok(()) => queue.completed += 1,
+            Err(error) => queue.failures.push(format!(
+                "{}: {error}",
+                cr_engine::display_text::caption(&job.selected)
+            )),
+        }
+    }
+    if result.is_ok() {
+        remove_resolved(owner, job.action, job.ids);
+    }
+    process_queue(owner, cover_tx);
+    refresh_after_model_change(owner, cover_tx);
+}
+
+/// Refreshes the view after the model changes. Closes the window only
+/// when nothing remains to review and no action is pending.
+fn refresh_after_model_change(
+    state: &Rc<DialogState>,
+    cover_tx: &std::sync::mpsc::Sender<CoverResult>,
+) {
+    // The queue can outlive the window. Skip every UI touch once the
+    // window is gone; the queue still finishes its accepted actions.
+    let window_open = state
+        .window
+        .upgrade()
+        .map(|w| w.is_visible())
+        .unwrap_or(false);
+    if !window_open {
+        return;
+    }
+    let empty_model = state.comparisons.borrow().is_empty();
+    let idle = {
+        let queue = state.queue.borrow();
+        !queue.running && queue.pending.is_empty()
+    };
+    if empty_model {
+        if idle {
+            if let Some(window) = state.window.upgrade() {
+                window.close();
+            }
+        } else {
+            // Nothing to show yet, but actions still run.
+            state
+                .status
+                .set_text(&format!("Working...{}", batch_suffix(state)));
+        }
+        return;
+    }
+    update_dialog(state, cover_tx);
+}
+
+/// Removes the resolved records from the comparison model without
+/// moving the visible book. The batch flow already advanced the view.
 fn remove_resolved(state: &DialogState, action: CompareAction, ids: CrGuidPair) {
     let mut comparisons = state.comparisons.borrow_mut();
+    let mut book_index = state.book_index.get();
+    let mut indexes = state.match_indexes.borrow_mut();
+    drop_resolved_records(&mut comparisons, &mut indexes, &mut book_index, action, ids);
+    drop(indexes);
+    drop(comparisons);
+    state.book_index.set(book_index);
+}
+
+/// Pure model transform for [`remove_resolved`]: removes the records
+/// the completed `action` resolved, keeps the visible index on the
+/// same surviving book when possible, and aligns the match indexes.
+fn drop_resolved_records(
+    comparisons: &mut Vec<BookComparison>,
+    indexes: &mut Vec<usize>,
+    book_index: &mut usize,
+    action: CompareAction,
+    ids: CrGuidPair,
+) {
+    let visible_id = comparisons.get(*book_index).map(|c| c.selected.id);
     match action {
         CompareAction::ReplaceLibraryCopy | CompareAction::DeleteSelectedIncomingCopy => {
             comparisons.retain(|comparison| comparison.selected.id != ids.selected);
@@ -653,13 +814,18 @@ fn remove_resolved(state: &DialogState, action: CompareAction, ids: CrGuidPair) 
             });
         }
     }
-    let last = comparisons.len().saturating_sub(1);
-    state.book_index.set(state.book_index.get().min(last));
-    drop(comparisons);
-    let mut indexes = state.match_indexes.borrow_mut();
-    indexes.resize(state.comparisons.borrow().len(), 0);
+    let new_len = comparisons.len();
+    *book_index = visible_id
+        .and_then(|id| comparisons.iter().position(|c| c.selected.id == id))
+        .unwrap_or_else(|| (*book_index).min(new_len.saturating_sub(1)));
+    if indexes.len() != new_len {
+        indexes.clear();
+        indexes.resize(new_len, 0);
+    }
     for index in indexes.iter_mut() {
-        *index = 0;
+        if *index >= new_len {
+            *index = 0;
+        }
     }
 }
 
@@ -675,7 +841,6 @@ fn update_dialog(state: &Rc<DialogState>, cover_tx: &std::sync::mpsc::Sender<Cov
         .book_position
         .set_text(&format!("Book {} of {}", book_index + 1, comparisons.len()));
     clear_recommendation(state);
-    state.status.set_text("Ready");
     state.left.heading.set_text("Selected Incoming book");
     set_book(&state.left, &comparison.selected);
     queue_cover(
@@ -718,6 +883,57 @@ fn update_dialog(state: &Rc<DialogState>, cover_tx: &std::sync::mpsc::Sender<Cov
     }
     drop(comparisons);
     update_dialog_sensitivity(state);
+    let has_match = apply_recommendation(state).is_some();
+    let _ = has_match;
+    update_status(state);
+}
+
+/// Shows the batch status line: the recommendation or tie hint for the
+/// current pair, plus any pending, completed, or failed counts.
+fn update_status(state: &DialogState) {
+    let book_index = state.book_index.get();
+    let match_index = state.match_indexes.borrow()[book_index];
+    let comparisons = state.comparisons.borrow();
+    let base = match comparisons.get(book_index).and_then(|c| {
+        c.matches
+            .get(match_index)
+            .map(|d| recommended_action(&c.selected, d, &state.rules))
+    }) {
+        Some(Some(action)) => match recommended_keep_side(action) {
+            KeepSide::Left => "Recommendation: keep the left copy.".to_string(),
+            KeepSide::Right => "Recommendation: keep the right copy.".to_string(),
+        },
+        Some(None) => "The copies tie. Choose the copy to keep.".to_string(),
+        None => "No matching duplicate.".to_string(),
+    };
+    drop(comparisons);
+    state
+        .status
+        .set_text(&format!("{base}{}", batch_suffix(state)));
+}
+
+/// The queue progress suffix. Empty when nothing is pending, running,
+/// done, or failed.
+fn batch_suffix(state: &DialogState) -> String {
+    let queue = state.queue.borrow();
+    let mut parts = Vec::new();
+    if queue.running {
+        parts.push("1 running".to_string());
+    }
+    if !queue.pending.is_empty() {
+        parts.push(format!("{} queued", queue.pending.len()));
+    }
+    if queue.completed > 0 {
+        parts.push(format!("{} done", queue.completed));
+    }
+    if !queue.failures.is_empty() {
+        parts.push(format!("{} failed", queue.failures.len()));
+    }
+    if parts.is_empty() {
+        String::new()
+    } else {
+        format!("  [{}]", parts.join(", "))
+    }
 }
 
 fn update_dialog_sensitivity(state: &DialogState) {
@@ -881,7 +1097,6 @@ mod tests {
             smaller_file_worse: true,
             fewer_pages_worse: true,
             older_file_worse: false,
-            incoming_path: String::new(),
         };
         let duplicate = DuplicateMatch {
             source: MatchSource::Incoming,
@@ -910,7 +1125,6 @@ mod tests {
             smaller_file_worse: true,
             fewer_pages_worse: false,
             older_file_worse: false,
-            incoming_path: String::new(),
         };
         let duplicate = DuplicateMatch {
             source: MatchSource::Library,
@@ -982,5 +1196,128 @@ mod tests {
 
     fn fixed(id: u8) -> CrGuid {
         CrGuid::parse(&format!("00000000-0000-0000-0000-{id:012}")).unwrap()
+    }
+
+    fn ids(selected: u8, matched: u8) -> CrGuidPair {
+        CrGuidPair {
+            selected: fixed(selected),
+            matched: fixed(matched),
+        }
+    }
+
+    #[test]
+    fn dropping_the_accepted_book_advances_to_the_next_selected_book() {
+        // Three selected books, the first visible. Accepting the first
+        // removes it and keeps index 0 on what is now the second book.
+        let a = book(1, "A", "1", "/incoming/a.cbz");
+        let b = book(2, "B", "1", "/incoming/b.cbz");
+        let c = book(3, "C", "1", "/incoming/c.cbz");
+        let mut comparisons = vec![
+            BookComparison {
+                selected: a.clone(),
+                matches: vec![],
+            },
+            BookComparison {
+                selected: b.clone(),
+                matches: vec![],
+            },
+            BookComparison {
+                selected: c.clone(),
+                matches: vec![],
+            },
+        ];
+        let mut indexes = vec![0, 0, 0];
+        let mut index = 0;
+        drop_selected_book(&mut comparisons, &mut indexes, &mut index, fixed(1));
+        assert_eq!(comparisons.len(), 2);
+        assert_eq!(comparisons[0].selected.id, fixed(2));
+        assert_eq!(index, 0);
+        assert_eq!(indexes.len(), 2);
+    }
+
+    #[test]
+    fn dropping_an_earlier_book_keeps_the_visible_book() {
+        // The second book is visible. Removing the first keeps the
+        // view on the same (now first) book.
+        let a = book(1, "A", "1", "/incoming/a.cbz");
+        let b = book(2, "B", "1", "/incoming/b.cbz");
+        let mut comparisons = vec![
+            BookComparison {
+                selected: a,
+                matches: vec![],
+            },
+            BookComparison {
+                selected: b.clone(),
+                matches: vec![],
+            },
+        ];
+        let mut indexes = vec![0, 0];
+        let mut index = 1;
+        drop_selected_book(&mut comparisons, &mut indexes, &mut index, fixed(1));
+        assert_eq!(comparisons.len(), 1);
+        assert_eq!(comparisons[0].selected.id, fixed(2));
+        assert_eq!(index, 0);
+    }
+
+    #[test]
+    fn resolving_a_matching_incoming_copy_prunes_other_books() {
+        // Book 1 keeps its copy; the matched incoming copy (id 2) is
+        // also selected book 2, so book 2 leaves review, and the same
+        // copy drops from book 3's matches.
+        let one = book(1, "S", "1", "/incoming/1.cbz");
+        let two = book(2, "S", "1", "/incoming/2.cbz");
+        let three = book(3, "S", "1", "/incoming/3.cbz");
+        let mut comparisons = vec![
+            BookComparison {
+                selected: one.clone(),
+                matches: vec![DuplicateMatch {
+                    source: MatchSource::Incoming,
+                    book: two.clone(),
+                }],
+            },
+            BookComparison {
+                selected: two.clone(),
+                matches: vec![DuplicateMatch {
+                    source: MatchSource::Incoming,
+                    book: one.clone(),
+                }],
+            },
+            BookComparison {
+                selected: three.clone(),
+                matches: vec![DuplicateMatch {
+                    source: MatchSource::Incoming,
+                    book: two.clone(),
+                }],
+            },
+        ];
+        let mut indexes = vec![0, 0, 0];
+        let mut index = 0;
+        drop_resolved_records(
+            &mut comparisons,
+            &mut indexes,
+            &mut index,
+            CompareAction::DeleteMatchingIncomingCopy,
+            ids(1, 2),
+        );
+        // Book 2 (selected == matched) is gone. Book 1 and book 3
+        // each lose their only match (id 2) and drop out too.
+        assert_eq!(comparisons.len(), 0);
+        assert_eq!(index, 0);
+    }
+
+    #[test]
+    fn recommendation_side_maps_from_action() {
+        assert_eq!(
+            recommended_keep_side(CompareAction::ReplaceLibraryCopy),
+            KeepSide::Left
+        );
+        assert_eq!(
+            recommended_keep_side(CompareAction::DeleteMatchingIncomingCopy),
+            KeepSide::Left
+        );
+        assert_eq!(
+            recommended_keep_side(CompareAction::DeleteSelectedIncomingCopy),
+            KeepSide::Right
+        );
     }
 }

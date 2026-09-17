@@ -82,6 +82,10 @@ side by side. Both panes show the cover and book details. **Previous Book** and
 **Next Book** move through the selected books. **Previous Match** and **Next
 Match** move through the current book's Incoming and Library matches.
 
+`CODE-READ`: Compare ranks each shown pair with the duplicate rules. It marks
+the preferred copy with a green border and the worse copy with a red border. If
+the copies tie, Compare shows no border.
+
 `CODE-READ`: Covers load in the background. A missing cover shows a placeholder.
 
 For a Library match:
@@ -90,6 +94,11 @@ For a Library match:
    file with the Incoming file.
 2. Or select **Keep This Copy** below the Library book to move the Incoming
    file to trash.
+
+`CODE-READ`: A **Keep This Copy** click runs in the background. Compare moves to
+the next selected book at once. It does not wait. The status line shows the
+queued, running, completed, and failed counts. A failed action does not stop
+the batch. If you close Compare, the accepted actions still finish.
 
 `CODE-READ`: Replacement keeps the Library ID and descriptive metadata. It
 keeps the Library base filename and uses the Incoming extension. It refreshes
@@ -100,9 +109,9 @@ For an Incoming match, select **Keep This Copy** below the copy that you want.
 ComicRust moves the other Incoming file to trash.
 
 Select **Select Worst Duplicates** to apply the configured duplicate rules to
-the displayed pair. Compare highlights the recommended **Keep This Copy**
-button. It does not run the action. If the copies tie, Compare highlights no
-button.
+the displayed pair. Compare re-applies the recommendation and focuses the
+recommended **Keep This Copy** button. It does not run the action. If the copies
+tie, Compare highlights no button.
 
 `CODE-READ`: If a background scan is active, a Keep button requests scan
 cancellation. Compare waits for the scan to finish, rechecks both copies, and
