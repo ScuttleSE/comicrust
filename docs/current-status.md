@@ -52,8 +52,14 @@ rejected its result and produced an incorrectly labeled Incoming error.
 `CODE-READ`: Watcher rescans now stay pending while an Incoming operation is
 active. Scan errors now keep their Library or Incoming target. Replacement
 traces now record every durable stage. `UNKNOWN`: Which replacement stage used
-most of the measured 66.762 seconds. Repeat the replacement once to verify the
-race fix and measure each stage.
+most of the measured 73.622 seconds. The latest trace measured 60.129 seconds
+in durable roll-forward. Each stage added 6 to 9 seconds, including stages with
+little file work. It also confirmed that no scan started before replacement
+ended. `UNKNOWN`: The time split inside each stage. `UNKNOWN`: Whether all
+post-replacement watcher events came from the transaction. `CODE-READ`:
+`CR_TRACE` now measures each journal write, SHA-1 validation, copy, sync, trash,
+catalog install, link, and removal. It also prints each watcher event path and
+its mapped root. Repeat replacement once to collect these measurements.
 
 ## Open user tests
 

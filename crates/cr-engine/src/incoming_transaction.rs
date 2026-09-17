@@ -637,8 +637,16 @@ impl TransactionEngine {
         &self,
         transaction: &ReplacementTransaction,
     ) -> Result<(), TransactionError> {
+        let started = std::time::Instant::now();
         let bytes = serde_json::to_vec_pretty(transaction)?;
+        let serialized_ms = started.elapsed().as_millis();
         durable_replace(&self.journal_path, &bytes)?;
+        crate::trace::trace(format!(
+            "replacement journal write stage={:?} bytes={} serialize_ms={serialized_ms} elapsed_ms={}",
+            transaction.stage,
+            bytes.len(),
+            started.elapsed().as_millis()
+        ));
         Ok(())
     }
 
@@ -734,6 +742,7 @@ impl TransactionEngine {
                         transaction.expected_len,
                         &transaction.sha1,
                     )?;
+                    let install_started = std::time::Instant::now();
                     if let Err(error) =
                         std::fs::hard_link(&transaction.staging, &transaction.destination)
                     {
@@ -744,6 +753,11 @@ impl TransactionEngine {
                     }
                     sync_parent(&transaction.destination)?;
                     durable_remove(&transaction.staging)?;
+                    crate::trace::trace(format!(
+                        "replacement file install elapsed_ms={} destination='{}'",
+                        install_started.elapsed().as_millis(),
+                        transaction.destination.display()
+                    ));
                 }
                 (false, true) => validate_file(
                     &transaction.destination,
@@ -780,7 +794,7 @@ impl TransactionEngine {
                 transaction.expected_len,
                 &transaction.sha1,
             )?;
-            install_snapshot(&transaction.comic_database)?;
+            trace_install_snapshot("ComicDb", &transaction.comic_database)?;
             transaction.stage = ReplacementStage::DatabaseSaved;
             self.write_replacement_journal(transaction)?;
             trace_replacement_stage(transaction.stage, started);
@@ -793,7 +807,7 @@ impl TransactionEngine {
                 transaction.expected_len,
                 &transaction.sha1,
             )?;
-            install_snapshot(&transaction.incoming_catalog)?;
+            trace_install_snapshot("IncomingDb", &transaction.incoming_catalog)?;
             transaction.stage = ReplacementStage::IncomingSaved;
             self.write_replacement_journal(transaction)?;
             trace_replacement_stage(transaction.stage, started);
@@ -812,7 +826,13 @@ impl TransactionEngine {
                     transaction.expected_len,
                     &transaction.sha1,
                 )?;
+                let remove_started = std::time::Instant::now();
                 durable_remove(&transaction.source)?;
+                crate::trace::trace(format!(
+                    "replacement source remove elapsed_ms={} path='{}'",
+                    remove_started.elapsed().as_millis(),
+                    transaction.source.display()
+                ));
             }
             transaction.stage = ReplacementStage::SourceRemoved;
             self.write_replacement_journal(transaction)?;
@@ -898,6 +918,7 @@ impl TransactionEngine {
 }
 
 fn copy_to_staging(transaction: &ReplacementTransaction) -> Result<(), TransactionError> {
+    let started = std::time::Instant::now();
     if (transaction.destination != transaction.old_library && transaction.destination.exists())
         || transaction.staging.exists()
     {
@@ -918,9 +939,20 @@ fn copy_to_staging(transaction: &ReplacementTransaction) -> Result<(), Transacti
         .create_new(true)
         .open(&transaction.staging)?;
     let result = (|| {
+        let copy_started = std::time::Instant::now();
         std::io::copy(&mut source, &mut staging)?;
+        crate::trace::trace(format!(
+            "replacement staging copy bytes={} elapsed_ms={}",
+            transaction.expected_len,
+            copy_started.elapsed().as_millis()
+        ));
+        let sync_started = std::time::Instant::now();
         staging.flush()?;
         staging.sync_all()?;
+        crate::trace::trace(format!(
+            "replacement staging sync elapsed_ms={}",
+            sync_started.elapsed().as_millis()
+        ));
         drop(staging);
         validate_file(
             &transaction.staging,
@@ -928,6 +960,10 @@ fn copy_to_staging(transaction: &ReplacementTransaction) -> Result<(), Transacti
             &transaction.sha1,
         )?;
         File::open(parent)?.sync_all()?;
+        crate::trace::trace(format!(
+            "replacement copy-to-staging finish elapsed_ms={}",
+            started.elapsed().as_millis()
+        ));
         Ok::<(), TransactionError>(())
     })();
     if result.is_err() {
@@ -999,7 +1035,13 @@ fn reject_replacement_collisions(
 }
 
 fn trash_to_desktop(path: &Path) -> std::io::Result<()> {
+    let started = std::time::Instant::now();
     let status = Command::new("gio").arg("trash").arg(path).status()?;
+    crate::trace::trace(format!(
+        "replacement trash status={status} elapsed_ms={} path='{}'",
+        started.elapsed().as_millis(),
+        path.display()
+    ));
     if status.success() {
         Ok(())
     } else {
@@ -1035,7 +1077,13 @@ fn validate_file(
     expected_len: u64,
     expected_sha1: &str,
 ) -> Result<(), TransactionError> {
+    let started = std::time::Instant::now();
     let (actual_len, actual_sha1) = file_identity(path)?;
+    crate::trace::trace(format!(
+        "replacement validate bytes={actual_len} elapsed_ms={} path='{}'",
+        started.elapsed().as_millis(),
+        path.display()
+    ));
     if actual_len != expected_len || actual_sha1 != expected_sha1 {
         return Err(TransactionError::Conflict(format!(
             "replacement file validation failed: {}",
@@ -1079,6 +1127,18 @@ fn install_snapshot(snapshot: &FileSnapshot) -> Result<(), TransactionError> {
     } else {
         durable_replace(&snapshot.path, &snapshot.after)?;
     }
+    Ok(())
+}
+
+fn trace_install_snapshot(label: &str, snapshot: &FileSnapshot) -> Result<(), TransactionError> {
+    let started = std::time::Instant::now();
+    install_snapshot(snapshot)?;
+    crate::trace::trace(format!(
+        "replacement catalog install label={label} bytes={} elapsed_ms={} path='{}'",
+        snapshot.after.len(),
+        started.elapsed().as_millis(),
+        snapshot.path.display()
+    ));
     Ok(())
 }
 

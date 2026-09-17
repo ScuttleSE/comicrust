@@ -257,12 +257,22 @@ impl Library {
         if events.is_empty() {
             return Vec::new();
         }
-        self.database
+        crate::trace::trace(format!(
+            "library watcher pending events count={} paths={events:?}",
+            events.len()
+        ));
+        let roots: Vec<String> = self
+            .database
             .watch_folders
             .iter()
             .filter(|wf| events.iter().any(|ev| ev.starts_with(&wf.folder)))
             .map(|wf| wf.folder.clone())
-            .collect()
+            .collect();
+        crate::trace::trace(format!(
+            "library watcher mapped roots count={} roots={roots:?}",
+            roots.len()
+        ));
+        roots
     }
 
     /// Adds a watch folder to the database (`watch` mirrors the C#
