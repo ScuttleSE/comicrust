@@ -518,46 +518,14 @@ impl ShellState {
         if selected.is_empty() {
             return;
         }
+        let incoming_books = library::incoming_books_snapshot();
         let library_books = library::session().borrow().database().books.clone();
         let (tx, rx) = std::sync::mpsc::channel();
         std::thread::Builder::new()
             .name("Compare Incoming".into())
             .spawn(move || {
-                let all: Vec<&ComicBook> = selected.iter().chain(&library_books).collect();
-                let groups = cr_engine::matcher::eval::grouped_duplicate_indexes(&all);
-                let mut lines = Vec::new();
-                for (index, incoming) in selected.iter().enumerate() {
-                    let matches: Vec<&ComicBook> = groups
-                        .iter()
-                        .find(|group| group.contains(&index))
-                        .into_iter()
-                        .flatten()
-                        .filter_map(|candidate| candidate.checked_sub(selected.len()))
-                        .filter_map(|candidate| library_books.get(candidate))
-                        .collect();
-                    lines.push(format!(
-                        "Incoming: {}\nSeries: {}\nVolume: {}\nNumber: {}\nPages: {}\nPath: {}",
-                        cr_engine::display_text::caption(incoming),
-                        incoming.info.series,
-                        incoming.info.volume,
-                        incoming.info.number,
-                        incoming.info.page_count,
-                        incoming.file_path
-                    ));
-                    if matches.is_empty() {
-                        lines.push("Matching library duplicate: None".to_string());
-                    } else {
-                        for duplicate in matches {
-                            lines.push(format!(
-                                "Matching library duplicate: {}\nPages: {}\nPath: {}",
-                                cr_engine::display_text::caption(duplicate),
-                                duplicate.info.page_count,
-                                duplicate.file_path
-                            ));
-                        }
-                    }
-                }
-                let _ = tx.send(lines.join("\n\n"));
+                let report = incoming_compare_report(&selected, &incoming_books, &library_books);
+                let _ = tx.send(report);
             })
             .expect("spawn Incoming compare worker");
         let window = self.window.clone();
@@ -8203,6 +8171,63 @@ fn message_dialog(
     dialog.present();
 }
 
+fn incoming_compare_report(
+    selected: &[ComicBook],
+    incoming_books: &[ComicBook],
+    library_books: &[ComicBook],
+) -> String {
+    let all: Vec<&ComicBook> = incoming_books.iter().chain(library_books).collect();
+    let groups = cr_engine::matcher::eval::grouped_duplicate_indexes(&all);
+    let incoming_count = incoming_books.len();
+    let mut lines = Vec::new();
+    for incoming in selected {
+        lines.push(format!(
+            "Incoming: {}\nSeries: {}\nVolume: {}\nNumber: {}\nPages: {}\nPath: {}",
+            cr_engine::display_text::caption(incoming),
+            incoming.info.series,
+            incoming.info.volume,
+            incoming.info.number,
+            incoming.info.page_count,
+            incoming.file_path
+        ));
+        let group = incoming_books
+            .iter()
+            .position(|candidate| candidate.id == incoming.id)
+            .and_then(|index| groups.iter().find(|group| group.contains(&index)));
+        let incoming_matches: Vec<&ComicBook> = group
+            .into_iter()
+            .flatten()
+            .filter(|index| **index < incoming_count)
+            .filter_map(|index| incoming_books.get(*index))
+            .filter(|candidate| candidate.id != incoming.id)
+            .collect();
+        let library_matches: Vec<&ComicBook> = group
+            .into_iter()
+            .flatten()
+            .filter_map(|index| index.checked_sub(incoming_count))
+            .filter_map(|index| library_books.get(index))
+            .collect();
+        append_incoming_compare_matches(&mut lines, "Incoming", &incoming_matches);
+        append_incoming_compare_matches(&mut lines, "Library", &library_matches);
+    }
+    lines.join("\n\n")
+}
+
+fn append_incoming_compare_matches(lines: &mut Vec<String>, source: &str, matches: &[&ComicBook]) {
+    if matches.is_empty() {
+        lines.push(format!("Matching {source} duplicate: None"));
+        return;
+    }
+    for duplicate in matches {
+        lines.push(format!(
+            "Matching {source} duplicate: {}\nPages: {}\nPath: {}",
+            cr_engine::display_text::caption(duplicate),
+            duplicate.info.page_count,
+            duplicate.file_path
+        ));
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -8320,5 +8345,62 @@ mod tests {
             false,
         );
         assert!(eval(m.as_ref().unwrap(), &books).is_empty());
+    }
+
+    fn duplicate_book(series: &str, number: &str, path: &str) -> ComicBook {
+        let mut book = book(series, "", 0.0, path);
+        book.info.number = number.into();
+        book.info.year = 2026;
+        book
+    }
+
+    #[test]
+    fn incoming_compare_reports_incoming_only_duplicates() {
+        let selected = duplicate_book("Alpha", "1", "/incoming/a.cbz");
+        let incoming_match = duplicate_book("Alpha", "1", "/incoming/b.cbz");
+
+        let report = incoming_compare_report(
+            std::slice::from_ref(&selected),
+            &[selected.clone(), incoming_match],
+            &[],
+        );
+
+        assert!(report.contains("Matching Incoming duplicate:"));
+        assert!(report.contains("Path: /incoming/b.cbz"));
+        assert!(report.contains("Matching Library duplicate: None"));
+    }
+
+    #[test]
+    fn incoming_compare_reports_library_only_duplicates() {
+        let selected = duplicate_book("Alpha", "1", "/incoming/a.cbz");
+        let library_match = duplicate_book("Alpha", "1", "/library/a.cbz");
+
+        let report = incoming_compare_report(
+            std::slice::from_ref(&selected),
+            std::slice::from_ref(&selected),
+            &[library_match],
+        );
+
+        assert!(report.contains("Matching Incoming duplicate: None"));
+        assert!(report.contains("Matching Library duplicate:"));
+        assert!(report.contains("Path: /library/a.cbz"));
+    }
+
+    #[test]
+    fn incoming_compare_reports_mixed_duplicates() {
+        let selected = duplicate_book("Alpha", "1", "/incoming/a.cbz");
+        let incoming_match = duplicate_book("Alpha", "1", "/incoming/b.cbz");
+        let library_match = duplicate_book("Alpha", "1", "/library/a.cbz");
+
+        let report = incoming_compare_report(
+            std::slice::from_ref(&selected),
+            &[selected.clone(), incoming_match],
+            &[library_match],
+        );
+
+        assert!(report.contains("Matching Incoming duplicate:"));
+        assert!(report.contains("Path: /incoming/b.cbz"));
+        assert!(report.contains("Matching Library duplicate:"));
+        assert!(report.contains("Path: /library/a.cbz"));
     }
 }

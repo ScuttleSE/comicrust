@@ -131,12 +131,13 @@ Duplicates, New Series, and Needs Review. Restart and confirm the same state.
 
 ## 18. Incoming adoption, comparison, and undo
 
-Select Incoming books. Confirm that Compare shows the matching library copy.
-Run Preview Adoption and confirm that no file or catalog changes. Run Adopt
-with a Move profile. Confirm the destination, preserved metadata, and removal
-from Incoming. Test Cancel, Rename, and Replace for a destination conflict.
-Run Library Organizer - Revert Last Move. Confirm that the same record and ID
-return to Incoming at the original path.
+Select an Incoming-only duplicate and a duplicate that has a Library copy.
+Confirm that Compare shows the matching Incoming and Library copies in separate
+sections. Run Preview Adoption and confirm that no file or catalog changes. Run
+Adopt with a Move profile. Confirm the destination, preserved metadata, and
+removal from Incoming. Test Cancel, Rename, and Replace for a destination
+conflict. Run Library Organizer - Revert Last Move. Confirm that the same record
+and ID return to Incoming at the original path.
 
 ## 19. Incoming discard and Comic Vine refresh
 

@@ -29,6 +29,10 @@ The user confirmed these four tests as passed on 2026-09-16:
 - Cold startup shows the window before the watch-folder worker completes.
   The watcher installs later and detects a new file.
 
+The Incoming Compare report now shows matching Incoming and Library copies in
+separate sections. The automated report tests pass. The GTK user test remains
+open.
+
 ## Open user tests
 
 The steps are in `docs/open-user-tests.md`.
@@ -80,11 +84,13 @@ licenses` is not a CI gate.
 
 ## Latest verification
 
-The Incoming-folder implementation passed local verification on 2026-09-17.
+The Incoming Compare correction passed local verification on 2026-09-17.
 
 - `cargo fmt --all`: passed.
 - `cargo clippy --workspace --all-targets -- -D warnings`: passed.
 - `cargo test --workspace`: passed.
+- The `cr-ui` suite passed 177 tests. Three Compare report tests cover
+  Incoming-only, Library-only, and mixed duplicate groups.
 - The release `incoming_probe` passed Gates A-I. It confirms isolated storage,
   navigator structure, configuration, scan isolation, review classification,
   transactional conversion, ID-preserving adoption, simulation immutability,
