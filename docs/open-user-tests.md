@@ -133,6 +133,11 @@ the same state.
 
 ## 18. Incoming adoption, comparison, and undo
 
+`MEASURED` on 2026-09-17: Keeping an Incoming copy for a Library match replaced
+the file and catalogs without the stale-scan popup. The operation completed in
+5.36 seconds after dispatch. The earlier implementation took 65.73 seconds.
+The remaining steps below are open.
+
 Select an Incoming-only duplicate and a duplicate that has a Library copy.
 Confirm that Compare shows two books side by side with both covers and details.
 Use the book controls to move through the selected books. Use the match controls

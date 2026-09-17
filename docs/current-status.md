@@ -30,38 +30,23 @@ The user confirmed these four tests as passed on 2026-09-16:
 - Cold startup shows the window before the watch-folder worker completes.
   The watcher installs later and detects a new file.
 
-Incoming has source-specific duplicate views and persistent custom smart lists.
-Compare shows covers and details side by side. It can resolve Library and
-Incoming duplicates. A durable transaction supports cross-filesystem Library
-replacement. ADR-050 through ADR-053 record these changes. User tests on real
-data remain open.
+Incoming has source-specific duplicate views, persistent custom smart lists,
+and side-by-side duplicate resolution. ADR-050 through ADR-055 record these
+changes.
 
-Compare now has one Keep This Copy button below each pane. It stops an active
-scan before it rechecks and runs the selected action. Incoming Duplicates also
-has the selection-only Select Worst Duplicates context command. ADR-054 records
-these changes. User tests on real data remain open.
+`MEASURED`: A real replacement originally took 65.73 seconds. Ten durable
+stages each rewrote a 3.34 GB JSON journal. The comic copy took only 152 ms.
+ADR-055 replaced the embedded catalog arrays with two one-time sidecar files
+and a compact journal. The final real-data test completed replacement in 5.36
+seconds. Its 38.4 MB comic copy took 157 ms, and each compact journal update
+took 9-11 ms. The replacement moved the selected Incoming file, updated both
+catalogs, and produced no stale-scan popup. The user confirmed that the workflow
+works much better on 2026-09-17.
 
-`MEASURED`: The first real replacement user test moved the Incoming file and
-removed its Incoming record. A later Incoming scan reported a stale database
-epoch. A second trace recorded `discard_incoming_async`, not replacement. It
-held the operation for 49.480 seconds while it changed a 73,050-book Incoming
-catalog. A third trace confirmed the correct left-pane replacement. A Library
-watcher rescan started during replacement at epoch 32. It waited 52.976 seconds
-for the transaction guard, then replacement committed epoch 33. The stale scan
-rejected its result and produced an incorrectly labeled Incoming error.
-`CODE-READ`: Watcher rescans now stay pending while an Incoming operation is
-active. Scan errors now keep their Library or Incoming target. Replacement
-traces now record every durable stage. `UNKNOWN`: Which replacement stage used
-most of the measured 73.622 seconds. The latest trace measured 60.129 seconds
-in durable roll-forward. Each stage added 6 to 9 seconds, including stages with
-little file work. The final trace measured the cause. Each stage rewrote a
-3,341,135,538-byte JSON journal that embedded both catalogs as decimal byte
-arrays. Ten writes produced approximately 33.4 GB. The 40,151,248-byte comic
-copy took 152 ms. All six post-replacement watcher events came from the
-transaction paths. `CODE-READ`: ADR-055 replaces embedded arrays with two
-one-time durable catalog sidecars and a compact journal. Successful replacement
-also filters exact transaction paths from watcher events. Unrelated events stay
-pending. The real-data replacement speed and scan suppression need a user test.
+`CODE-READ`: Watcher events for exact replacement paths are filtered after a
+successful transaction. Unrelated events stay pending. `UNKNOWN`: The supplied
+final trace ended before one complete watcher interval, so it does not prove
+that no later automatic scan started.
 
 ## Open user tests
 
@@ -92,6 +77,8 @@ The steps are in `docs/open-user-tests.md`.
 ## Open work
 
 - Phase 18 implementation is complete. Its five user tests remain open.
+- The real-data replacement speed and stale-scan-popup checks passed. The other
+  steps in Incoming user test 18 remain open.
 - Phase 16 has eight planned Comic Vine scraper tasks. Start with T1 in
   `docs/phases/phase-16.md`.
 - The Library Organizer startup auto-run is deferred in `docs/backlog.md`.

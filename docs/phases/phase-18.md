@@ -4,7 +4,7 @@
 
 IMPLEMENTED, USER TEST PENDING. The user approved the behavior on 2026-09-16.
 Implementation and automated gates completed on 2026-09-17. ADR-049 through
-ADR-054 record the decisions.
+ADR-055 record the decisions.
 
 ## Goal
 
@@ -57,6 +57,9 @@ Add persistent Incoming folders for books that wait for review. Incoming books s
   folder cannot lose its role.
 - Ordinary Library Organizer runs and Incoming transactions share one operation
   lifecycle. Their file and database landings cannot overlap.
+- Replacement stores catalog after-images once in durable sidecar files. Its
+  compact journal stores only paths and transaction state. Successful
+  replacement filters its exact file paths from watcher events.
 
 ## Automated gates
 
@@ -69,6 +72,9 @@ Add persistent Incoming folders for books that wait for review. Incoming books s
 - The transaction suite covers adoption and undo recovery stages, overwrite,
   discard, conversion, stale-epoch rejection, close barriers, and corrupt or
   ambiguous journals.
+- The real-data replacement test completed in 5.36 seconds after dispatch. The
+  previous embedded-catalog journal completed in 65.73 seconds. No stale-scan
+  popup occurred.
 
 ## Verification
 
