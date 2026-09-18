@@ -470,6 +470,13 @@ struct ShellState {
     /// own stays inheriting.
     view_config_dirty: Cell<bool>,
     incoming_list_eval_gen: Rc<Cell<u64>>,
+    /// A scroll offset to restore after an in-place refresh rebuilds
+    /// the list. A refresh (unlike a list switch) keeps the view
+    /// where it was. `set_books` reconfigures the vadjustment and
+    /// collapses the value to 0; this holds the pre-refresh offset
+    /// across the possible empty-then-populated async refresh pair
+    /// and restores it when the populated set lands.
+    pending_scroll_restore: Cell<Option<f64>>,
     /// The `win.` action group members by name (the enable-state
     /// sync reaches them here). A RefCell: the map fills while the
     /// state itself already lives in its Rc.
@@ -1419,11 +1426,20 @@ impl ShellState {
                 // The list name feeds the status panel (a rename
                 // shows on the next refresh without a re-select).
                 *self.current_list_name.borrow_mut() = name;
+                // Hold the pre-refresh scroll offset. A classification
+                // change lands as an empty pass then a populated pass;
+                // capture once (the first pass), restore when a
+                // non-empty set lands.
+                if self.pending_scroll_restore.get().is_none() {
+                    self.pending_scroll_restore
+                        .set(Some(self.item_view.scroll_value()));
+                }
                 // The C# refresh updates the items in place — the
                 // selection survives (the My Rating check reads the
                 // selection right after the rating commit).
                 let selected = self.item_view.selection_ids();
                 let t_set = std::time::Instant::now();
+                let empty = books.is_empty();
                 self.item_view.set_books(books);
                 crate::trace::trace(format!("refresh: set_books {:?}", t_set.elapsed()));
                 let t_re = std::time::Instant::now();
@@ -1431,6 +1447,11 @@ impl ShellState {
                     self.item_view.reselect(&selected);
                 }
                 crate::trace::trace(format!("refresh: reselect {:?}", t_re.elapsed()));
+                if !empty {
+                    if let Some(offset) = self.pending_scroll_restore.take() {
+                        self.item_view.set_scroll_value(offset);
+                    }
+                }
             }
         }
     }
@@ -1803,6 +1824,7 @@ impl BrowserShell {
             current_list_name: RefCell::new(String::new()),
             view_config_dirty: Cell::new(false),
             incoming_list_eval_gen: Rc::new(Cell::new(0)),
+            pending_scroll_restore: Cell::new(None),
             actions: RefCell::new(HashMap::new()),
             list_history: RefCell::new(Vec::new()),
             list_history_pos: Cell::new(0),
@@ -2301,6 +2323,11 @@ impl BrowserShell {
                             sh.store_view_config(prev);
                         }
                         *sh.current_list.borrow_mut() = Some(*id);
+                        if changing {
+                            // A list switch resets the view to the top;
+                            // drop any held in-place-refresh offset.
+                            sh.pending_scroll_restore.set(None);
+                        }
                         // The list history (`BrowsePrevious` chain): a
                         // history walk lands on the entry at the walk
                         // position and does not append; a new

@@ -2322,22 +2322,9 @@ pub fn discard_incoming_async(
     let mut catalog = incoming_session().borrow().clone();
     let captured_epoch = cr_engine::incoming_transaction::database_epoch();
     crate::trace::trace(format!(
-        "discard requested items={} permanent={permanent} catalog_books={} epoch={captured_epoch}",
+        "discard requested items={} permanent={permanent} catalog_books={} epoch={captured_epoch} request_elapsed_ms={}",
         items.len(),
-        catalog.books.len()
-    ));
-    let serialize_started = std::time::Instant::now();
-    let before = match catalog.to_bytes() {
-        Ok(bytes) => bytes,
-        Err(error) => {
-            done(Err(error.to_string()));
-            return;
-        }
-    };
-    crate::trace::trace(format!(
-        "discard initial catalog serialization bytes={} elapsed_ms={} request_elapsed_ms={}",
-        before.len(),
-        serialize_started.elapsed().as_millis(),
+        catalog.books.len(),
         request_started.elapsed().as_millis()
     ));
     let (tx, rx) = std::sync::mpsc::channel();
@@ -2358,10 +2345,12 @@ pub fn discard_incoming_async(
                 let catalog_path = cr_core::paths::incoming_file(&paths);
                 let engine = cr_engine::incoming_transaction::TransactionEngine::new(&paths);
                 let serialize_started = std::time::Instant::now();
-                let initial_after = catalog.to_bytes().map_err(|error| error.to_string())?;
+                // One serialization: the unchanged catalog is both the
+                // `before` snapshot and the initial `after` image.
+                let before = catalog.to_bytes().map_err(|error| error.to_string())?;
                 crate::trace::trace(format!(
                     "discard worker initial serialization bytes={} elapsed_ms={}",
-                    initial_after.len(),
+                    before.len(),
                     serialize_started.elapsed().as_millis()
                 ));
                 let mut transaction = cr_engine::incoming_transaction::IncomingTransaction {
@@ -2369,8 +2358,8 @@ pub fn discard_incoming_async(
                     stage: cr_engine::incoming_transaction::TransactionStage::Prepared,
                     files: cr_engine::incoming_transaction::TransactionFiles {
                         incoming_catalog: Some(cr_engine::incoming_transaction::FileSnapshot {
+                            after: before.clone(),
                             before: Some(before),
-                            after: initial_after,
                             path: catalog_path,
                             remove_after: false,
                         }),

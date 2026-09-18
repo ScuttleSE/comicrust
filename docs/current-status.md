@@ -70,6 +70,17 @@ test confirms the journal stays below 4 KiB and every sidecar is removed after
 commit. `UNKNOWN`: The real-data discard speed and clean close need a user
 observation on the CIFS library.
 
+`MEASURED`: A four-file discard trace confirmed the fix: each journal write was
+458-1138 bytes and no scan ran after commit. Worker time was about 4.7 seconds,
+against about 82 seconds before. The trace showed two more items, now addressed.
+The discard serialized the 110 MB catalog on the main thread and again in the
+worker; the main-thread serialization is removed and the worker serializes the
+unchanged catalog once for both the `before` and the initial `after`. An
+in-place refresh reset the view to the top because it restored the selection but
+not the scroll offset; the refresh now holds and restores the pre-refresh scroll
+offset across the async classification pass, and a list switch still resets to
+the top. `UNKNOWN`: Both behaviors need a user observation in the real UI.
+
 ## Open user tests
 
 The steps are in `docs/open-user-tests.md`.
