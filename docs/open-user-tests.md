@@ -13,6 +13,10 @@ changes the library.
 
 ## 1. Library-tree gauge badges
 
+`FAIL` on 2026-09-18 (user): Only the red (New) and green (Total) badges
+appear. The orange (Unread) badge never renders. The red and green badges
+always show the same number. See Outstanding issue in `docs/current-status.md`.
+
 Open lists, folders, and the Library root. Confirm that green Total, orange
 Unread, and red New badges match known counts. A zero count must be hidden.
 Read a book to 100%, then delete one book. Confirm that the badges update.
@@ -32,6 +36,10 @@ Sort. Confirm that folders come first and lists follow in name order. Confirm
 that a list has no Sort command. Restart and confirm that the order persists.
 
 ## 4. Select Worst Duplicates
+
+`PASSABLE` on 2026-09-18 (user): Works but needs some improvement. The
+specific improvement is not yet named. See Outstanding issue in
+`docs/current-status.md`.
 
 Create duplicate pairs with different formats, sizes, page counts, and
 timestamps. Confirm that Show Duplicates limits the list. Run Select Worst
@@ -69,6 +77,9 @@ in the library and that the failure message appears. Repeat the failure in
 the browser flow.
 
 ## 9. Library Organizer simulation
+
+`FAIL` on 2026-09-18 (user): Simulate ran but no report appeared. See
+Outstanding issue in `docs/current-status.md`.
 
 Open Library Organizer for a book. Confirm the Default profile and templates.
 Select Simulate and a scratch base folder. Run it. Confirm that the report
@@ -115,12 +126,20 @@ in an ellipsis and does not paint over the next column.
 
 ## 16. Per-list view settings
 
+`FAIL for smart lists` on 2026-09-18 (user): Changing the view mode on one
+smart list makes another smart list adopt the same view mode. The settings
+are not isolated per smart list. See Outstanding issue in
+`docs/current-status.md`.
+
 Give two lists different view modes and sizes. Switch between them and
 confirm that each setting returns. Create a list and confirm that it inherits
 the current view. Reset one list's view settings. Restart and confirm that
 the saved and reset states persist.
 
 ## 17. Incoming folder setup and review views
+
+`PARTIAL PASS` on 2026-09-18 (user): "So far so good." No failure reported,
+but the full checklist is not yet confirmed complete.
 
 In Preferences, change a scratch Library folder to Incoming. Confirm the count
 before conversion. Cancel once and confirm that nothing changes. Repeat and
