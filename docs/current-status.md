@@ -103,8 +103,8 @@ The steps are in `docs/open-user-tests.md`. The user ran a full pass on
 13. macOS archive-junk recovery. OK.
 14. Smart-list dialog responsiveness. OK.
 15. Detail-column text overflow. OK.
-16. Per-list view settings. **FAIL for smart lists**: changing the view mode
-    on one smart list makes another smart list adopt the same view mode.
+16. Per-list view settings. **PASS**: two smart lists keep separate view
+    modes when the user switches between them.
 17. Incoming folder setup and review views. **PARTIAL PASS** ("so far so
     good"); full checklist not yet confirmed.
 18. Incoming adoption, comparison, and undo. OK.
@@ -150,18 +150,11 @@ not tweak a gate to pass.
    step is to read the Simulate action path and where its report is meant to
    present.
 
-3. **Smart-list view settings are not per-list (user test 16, FAIL).**
-   `MEASURED` (user, 2026-09-18): Changing the view mode on one smart list makes
-   another smart list adopt the same view mode. The per-list isolation that
-   works for normal lists does not apply to smart lists. The next step is to
-   read the smart-list view-config load and save path and compare it with the
-   normal-list path.
-
-4. **Select Worst Duplicates needs improvement (user test 4, PASSABLE).**
+3. **Select Worst Duplicates needs improvement (user test 4, PASSABLE).**
    `UNKNOWN`: The user reports it works but needs improvement. The specific
    improvement is not named. The next step is to ask the user what to improve.
 
-5. **Confirm the Incoming discard fixes on real data (user test).** `UNKNOWN`:
+4. **Confirm the Incoming discard fixes on real data (user test).** `UNKNOWN`:
    The discard speed, the clean close, and the scroll restore are proven only by
    local traces and unit tests, not by the CIFS library. Ask the user to: (a)
    discard several Incoming files and confirm the app stays responsive and exits
@@ -170,32 +163,32 @@ not tweak a gate to pass.
    (c) confirm a list switch still starts at the top. See ADR-058 and open user
    test 19.
 
-6. **`duplicates_probe` gate F is a stale-read (reported finding, do not tweak).**
+5. **`duplicates_probe` gate F is a stale-read (reported finding, do not tweak).**
    `MEASURED`: Gate F fails on this machine on both the work and the unmodified
    `main`. It reads session settings synchronously right after the Preferences
    OK response, but the Preferences commit lands on a later main-loop tick. Fix
    the probe to wait for the commit, or replace it with a user observation. Do
    not change the expected value to pass.
 
-7. **DirectoryMatcher gauge evaluation runs on the GTK thread.** `MEASURED`:
+6. **DirectoryMatcher gauge evaluation runs on the GTK thread.** `MEASURED`:
    About 2.6 seconds over 53,618 books on the main thread (a Rule 9 violation).
    No fix exists. The next step is to measure where the time sits, then move the
    evaluation to a worker with the ADR-019 pump pattern in
    `docs/guides/gtk-and-ui.md`.
 
-8. **`ShowOnlyDuplicates` does not restore per list in the UI.** `CODE-READ`:
+7. **`ShowOnlyDuplicates` does not restore per list in the UI.** `CODE-READ`:
    The value is written to ComicDb.xml but the per-list UI state is not restored
    on load. The next step is to read the per-list view-config load path and the
    `ShowOnlyDuplicates` field wiring.
 
-9. **Packaging has no local `.deb` content test.** This machine has no
+8. **Packaging has no local `.deb` content test.** This machine has no
    `dpkg-deb`, so the packaging workflow is untested locally. The next step is a
    CI or user run of the packaging workflow and a check of the package contents.
 
-10. **AppStream metadata has no screenshots.** No hosted image URLs exist. The
+9. **AppStream metadata has no screenshots.** No hosted image URLs exist. The
     next step is to host screenshots and add their URLs to the metadata.
 
-11. **License incompatibility risk is unresolved (see Open risk below).**
+10. **License incompatibility risk is unresolved (see Open risk below).**
     Apache-2.0 code (`ring`, `webpki-roots`, the scraper port) against
     GPL-2.0-only under ADR-041. `cargo deny check licenses` is not a CI gate. The
     next step is a licensing decision, not a code change.

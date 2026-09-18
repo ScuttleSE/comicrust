@@ -50,10 +50,8 @@ shows the planned operations and that no file moves.
 
 ## 16. Per-list view settings
 
-`FAIL for smart lists` on 2026-09-18 (user): Changing the view mode on one
-smart list makes another smart list adopt the same view mode. The settings
-are not isolated per smart list. See Outstanding issue in
-`docs/current-status.md`.
+`PASS` on 2026-09-18 (user): Two smart lists keep separate view modes when the
+user switches between them. Per-list isolation works for smart lists.
 
 Give two lists different view modes and sizes. Switch between them and
 confirm that each setting returns. Create a list and confirm that it inherits
