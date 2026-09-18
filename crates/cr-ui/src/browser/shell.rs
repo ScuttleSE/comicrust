@@ -626,6 +626,7 @@ impl ShellState {
                                             if cr_engine::incoming_transaction::database_epoch() != committed_epoch {
                                                 return Err("The live library changed after the transaction committed. Restart ComicRust to load the saved catalog.".into());
                                             }
+                                            library::session().borrow_mut().suppress_watch_paths(outcome.deleted_paths.clone());
                                             library::replace_incoming_catalog(catalog);
                                             sh.refresh_view_from_list();
                                             sh.sync_enabled();
@@ -994,6 +995,12 @@ impl ShellState {
                             if cr_engine::incoming_transaction::database_epoch()
                                 == committed_epoch
                             {
+                                {
+                                    let session = library::session();
+                                    session
+                                        .borrow_mut()
+                                        .suppress_watch_paths(outcome.deleted_paths.clone());
+                                }
                                 library::replace_incoming_catalog(catalog);
                             } else {
                                 show_failure_dialog(

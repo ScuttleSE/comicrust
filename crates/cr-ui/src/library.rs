@@ -2255,6 +2255,10 @@ pub struct RemoveBooksOutcome {
     pub failed: usize,
     pub canceled: bool,
     pub removed_ids: Vec<CrGuid>,
+    /// The Incoming file paths this job deleted. The UI suppresses the
+    /// watcher events for these paths so a discard does not trigger a
+    /// full self-scan of the Incoming root.
+    pub deleted_paths: Vec<std::path::PathBuf>,
 }
 
 /// Worker → pump messages: landing batches of (id, file-deletion-ok)
@@ -2418,6 +2422,7 @@ pub fn discard_incoming_async(
                         ));
                         outcome.removed += 1;
                         outcome.removed_ids.push(id);
+                        outcome.deleted_paths.push(path.clone().into());
                     } else {
                         transaction.external_actions.pop();
                         outcome.failed += 1;
@@ -2865,6 +2870,7 @@ fn remove_items_async(
                 failed: failed_total,
                 canceled,
                 removed_ids: std::mem::take(&mut removed_ids),
+                deleted_paths: Vec::new(),
             });
         }
         ControlFlow::Break

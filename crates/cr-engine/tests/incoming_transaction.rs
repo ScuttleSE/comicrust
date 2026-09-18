@@ -281,6 +281,61 @@ fn ambiguous_rename_paths_keep_the_journal() {
 }
 
 #[test]
+fn discard_keeps_the_journal_compact_and_removes_sidecars() {
+    let root = TestDir::new("compact-discard");
+    let journal = root.path("current.json");
+    let engine = TransactionEngine::from_journal_path(journal.clone());
+    let big_before = vec![b'b'; 4 * 1024 * 1024];
+    let big_after = vec![b'a'; 4 * 1024 * 1024];
+    let deleted = root.path("discarded.cbz");
+    let mut transaction = IncomingTransaction {
+        kind: TransactionKind::Discard,
+        stage: TransactionStage::Prepared,
+        files: TransactionFiles {
+            incoming_catalog: Some(FileSnapshot {
+                path: root.path("IncomingDb.xml"),
+                before: Some(big_before),
+                after: big_after,
+                remove_after: false,
+            }),
+            ..Default::default()
+        },
+        external_actions: vec![ExternalFileAction::Delete {
+            source: deleted,
+            status: ExternalActionStatus::Pending,
+        }],
+    };
+    engine.begin(&transaction).unwrap();
+
+    let journal_len = std::fs::metadata(&journal).unwrap().len();
+    assert!(
+        journal_len < 4 * 1024,
+        "compact journal grew to {journal_len} bytes"
+    );
+    let sidecars = |dir: &Path| {
+        std::fs::read_dir(dir)
+            .unwrap()
+            .filter_map(Result::ok)
+            .filter(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .contains("current.json.snap.")
+            })
+            .count()
+    };
+    assert!(sidecars(&root.0) >= 1, "no content sidecars were written");
+
+    engine.commit(&mut transaction).unwrap();
+    assert!(!journal.exists());
+    assert_eq!(sidecars(&root.0), 0, "sidecars remained after commit");
+    assert_eq!(
+        std::fs::read(root.path("IncomingDb.xml")).unwrap(),
+        vec![b'a'; 4 * 1024 * 1024]
+    );
+}
+
+#[test]
 fn corrupt_journal_changes_no_files() {
     let root = TestDir::new("corrupt");
     let journal = root.path("current.json");

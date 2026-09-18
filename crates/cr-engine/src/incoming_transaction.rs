@@ -261,6 +261,44 @@ pub struct IncomingTransaction {
     pub external_actions: Vec<ExternalFileAction>,
 }
 
+/// The on-disk form of one snapshot: metadata plus content-addressed
+/// sidecar references. The large `before`/`after` byte arrays live in
+/// sidecar files, not inside the journal, so a stage transition that
+/// does not change the content rewrites only a small journal.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct SnapshotJournal {
+    path: PathBuf,
+    before: Option<String>,
+    after: String,
+    #[serde(default)]
+    remove_after: bool,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+struct FilesJournal {
+    incoming_catalog: Option<SnapshotJournal>,
+    comic_database: Option<SnapshotJournal>,
+    config: Option<SnapshotJournal>,
+    #[serde(default)]
+    auxiliary: Vec<SnapshotJournal>,
+}
+
+#[derive(Clone, Copy, Debug, Serialize, Deserialize)]
+enum IncomingJournalFormat {
+    SidecarSnapshotsV1,
+}
+
+/// The compact on-disk journal for an `IncomingTransaction`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+struct IncomingJournal {
+    journal_format: IncomingJournalFormat,
+    kind: TransactionKind,
+    stage: TransactionStage,
+    files: FilesJournal,
+    #[serde(default)]
+    external_actions: Vec<ExternalFileAction>,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ReplacementKind {
     CrossFilesystemReplacement,
@@ -421,6 +459,171 @@ impl TransactionEngine {
         &self.journal_path
     }
 
+    /// The directory that holds the journal and its content sidecars.
+    fn journal_dir(&self) -> &Path {
+        self.journal_path.parent().unwrap_or_else(|| Path::new("."))
+    }
+
+    fn journal_prefix(&self) -> String {
+        self.journal_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("current.json")
+            .to_string()
+    }
+
+    /// The content-addressed sidecar path for one blob.
+    fn snapshot_sidecar(&self, digest: &str) -> PathBuf {
+        self.journal_dir()
+            .join(format!("{}.snap.{digest}", self.journal_prefix()))
+    }
+
+    /// Writes a blob to its content-addressed sidecar and returns the digest.
+    /// A sidecar that already holds this content is not rewritten.
+    fn store_blob(&self, bytes: &[u8]) -> Result<String, TransactionError> {
+        let mut digest = Sha1::new();
+        digest.update(bytes);
+        let digest = format!("{:x}", digest.finalize());
+        let path = self.snapshot_sidecar(&digest);
+        if !path.exists() {
+            durable_replace(&path, bytes)?;
+        }
+        Ok(digest)
+    }
+
+    fn load_blob(&self, digest: &str) -> Result<Vec<u8>, TransactionError> {
+        Ok(std::fs::read(self.snapshot_sidecar(digest))?)
+    }
+
+    fn store_snapshot(&self, snapshot: &FileSnapshot) -> Result<SnapshotJournal, TransactionError> {
+        let before = match &snapshot.before {
+            Some(bytes) => Some(self.store_blob(bytes)?),
+            None => None,
+        };
+        Ok(SnapshotJournal {
+            path: snapshot.path.clone(),
+            before,
+            after: self.store_blob(&snapshot.after)?,
+            remove_after: snapshot.remove_after,
+        })
+    }
+
+    fn load_snapshot(&self, journal: &SnapshotJournal) -> Result<FileSnapshot, TransactionError> {
+        let before = match &journal.before {
+            Some(digest) => Some(self.load_blob(digest)?),
+            None => None,
+        };
+        Ok(FileSnapshot {
+            path: journal.path.clone(),
+            before,
+            after: self.load_blob(&journal.after)?,
+            remove_after: journal.remove_after,
+        })
+    }
+
+    fn store_files(&self, files: &TransactionFiles) -> Result<FilesJournal, TransactionError> {
+        Ok(FilesJournal {
+            incoming_catalog: files
+                .incoming_catalog
+                .as_ref()
+                .map(|snapshot| self.store_snapshot(snapshot))
+                .transpose()?,
+            comic_database: files
+                .comic_database
+                .as_ref()
+                .map(|snapshot| self.store_snapshot(snapshot))
+                .transpose()?,
+            config: files
+                .config
+                .as_ref()
+                .map(|snapshot| self.store_snapshot(snapshot))
+                .transpose()?,
+            auxiliary: files
+                .auxiliary
+                .iter()
+                .map(|snapshot| self.store_snapshot(snapshot))
+                .collect::<Result<Vec<_>, _>>()?,
+        })
+    }
+
+    fn load_files(&self, journal: &FilesJournal) -> Result<TransactionFiles, TransactionError> {
+        Ok(TransactionFiles {
+            incoming_catalog: journal
+                .incoming_catalog
+                .as_ref()
+                .map(|snapshot| self.load_snapshot(snapshot))
+                .transpose()?,
+            comic_database: journal
+                .comic_database
+                .as_ref()
+                .map(|snapshot| self.load_snapshot(snapshot))
+                .transpose()?,
+            config: journal
+                .config
+                .as_ref()
+                .map(|snapshot| self.load_snapshot(snapshot))
+                .transpose()?,
+            auxiliary: journal
+                .auxiliary
+                .iter()
+                .map(|snapshot| self.load_snapshot(snapshot))
+                .collect::<Result<Vec<_>, _>>()?,
+        })
+    }
+
+    /// The sidecar digests the current journal references, if any.
+    fn referenced_snapshot_digests(&self) -> Vec<String> {
+        let Ok(bytes) = std::fs::read(&self.journal_path) else {
+            return Vec::new();
+        };
+        let Ok(journal) = serde_json::from_slice::<IncomingJournal>(&bytes) else {
+            return Vec::new();
+        };
+        let mut digests = Vec::new();
+        let mut collect = |snapshot: &SnapshotJournal| {
+            if let Some(before) = &snapshot.before {
+                digests.push(before.clone());
+            }
+            digests.push(snapshot.after.clone());
+        };
+        if let Some(snapshot) = &journal.files.incoming_catalog {
+            collect(snapshot);
+        }
+        if let Some(snapshot) = &journal.files.comic_database {
+            collect(snapshot);
+        }
+        if let Some(snapshot) = &journal.files.config {
+            collect(snapshot);
+        }
+        for snapshot in &journal.files.auxiliary {
+            collect(snapshot);
+        }
+        digests
+    }
+
+    /// Removes the journal and every content sidecar it referenced.
+    fn remove_journal_and_sidecars(&self) -> Result<(), TransactionError> {
+        let digests = self.referenced_snapshot_digests();
+        durable_remove(&self.journal_path)?;
+        for digest in digests {
+            durable_remove(&self.snapshot_sidecar(&digest))?;
+        }
+        Ok(())
+    }
+
+    /// Reads the current journal back into an in-memory transaction.
+    fn read_transaction(&self, bytes: &[u8]) -> Result<IncomingTransaction, TransactionError> {
+        if let Ok(journal) = serde_json::from_slice::<IncomingJournal>(bytes) {
+            return Ok(IncomingTransaction {
+                kind: journal.kind,
+                stage: journal.stage,
+                files: self.load_files(&journal.files)?,
+                external_actions: journal.external_actions.clone(),
+            });
+        }
+        Ok(serde_json::from_slice::<IncomingTransaction>(bytes)?)
+    }
+
     /// Creates the durable journal before the caller performs external work.
     pub fn begin(&self, transaction: &IncomingTransaction) -> Result<(), TransactionError> {
         validate(transaction)?;
@@ -469,7 +672,7 @@ impl TransactionEngine {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
             Err(error) => return Err(error.into()),
         };
-        let transaction: IncomingTransaction = serde_json::from_slice(&bytes)?;
+        let transaction: IncomingTransaction = self.read_transaction(&bytes)?;
         if transaction.stage != TransactionStage::Prepared
             || !transaction.external_actions.is_empty()
         {
@@ -477,7 +680,7 @@ impl TransactionEngine {
                 "only an untouched Prepared journal can be aborted".into(),
             ));
         }
-        durable_remove(&self.journal_path)?;
+        self.remove_journal_and_sidecars()?;
         Ok(())
     }
 
@@ -549,10 +752,10 @@ impl TransactionEngine {
             self.roll_replacement_forward(&mut replacement, &copy_to_staging, &trash_to_desktop)?;
             return Ok(RecoveryResult::Recovered);
         }
-        let mut transaction: IncomingTransaction = serde_json::from_slice(&bytes)?;
+        let mut transaction: IncomingTransaction = self.read_transaction(&bytes)?;
         validate(&transaction)?;
         if transaction.stage == TransactionStage::Committed {
-            durable_remove(&self.journal_path)?;
+            self.remove_journal_and_sidecars()?;
             return Ok(RecoveryResult::Recovered);
         }
         reconcile_external_actions(&mut transaction)?;
@@ -656,15 +859,31 @@ impl TransactionEngine {
 
         transaction.stage = TransactionStage::Committed;
         self.write_journal(transaction)?;
-        durable_remove(&self.journal_path)?;
+        self.remove_journal_and_sidecars()?;
         Ok(())
     }
 
     fn write_journal(&self, transaction: &IncomingTransaction) -> Result<(), TransactionError> {
         let started = std::time::Instant::now();
-        let bytes = serde_json::to_vec_pretty(transaction)?;
+        let previous_digests = self.referenced_snapshot_digests();
+        let files = self.store_files(&transaction.files)?;
+        let journal = IncomingJournal {
+            journal_format: IncomingJournalFormat::SidecarSnapshotsV1,
+            kind: transaction.kind,
+            stage: transaction.stage,
+            files,
+            external_actions: transaction.external_actions.clone(),
+        };
+        let bytes = serde_json::to_vec_pretty(&journal)?;
         let serialized_ms = started.elapsed().as_millis();
         durable_replace(&self.journal_path, &bytes)?;
+        let current: std::collections::HashSet<String> =
+            self.referenced_snapshot_digests().into_iter().collect();
+        for digest in previous_digests {
+            if !current.contains(&digest) {
+                durable_remove(&self.snapshot_sidecar(&digest))?;
+            }
+        }
         crate::trace::trace(format!(
             "incoming journal write kind={:?} stage={:?} bytes={} serialize_ms={serialized_ms} elapsed_ms={}",
             transaction.kind,

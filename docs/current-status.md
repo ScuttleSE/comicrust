@@ -55,6 +55,21 @@ successful transaction. Unrelated events stay pending. `UNKNOWN`: The supplied
 final trace ended before one complete watcher interval, so it does not prove
 that no later automatic scan started.
 
+`MEASURED`: A real discard of three Incoming files took about 82 seconds and
+used a lot of CPU. The trace showed each `IncomingTransaction` stage rewrote a
+2.7 GB JSON journal, because discard still embedded the catalog byte arrays that
+ADR-055 removed for replacement. After commit, the app's own three deletes drove
+a full Incoming scan of about 4,555 files that held the operation flag and the
+mutation guard, so the close request waited and the user killed the process.
+ADR-058 gives the `IncomingTransaction` kinds (discard, adoption, undo, scan,
+folder conversion) the ADR-055 sidecar journal, so a stage transition writes a
+journal under 4 KiB, and it adds discard's deleted paths to the exact-path
+watcher suppression set, so a discard does not start a self-scan.
+`MEASURED`: The new `discard_keeps_the_journal_compact_and_removes_sidecars`
+test confirms the journal stays below 4 KiB and every sidecar is removed after
+commit. `UNKNOWN`: The real-data discard speed and clean close need a user
+observation on the CIFS library.
+
 ## Open user tests
 
 The steps are in `docs/open-user-tests.md`.
