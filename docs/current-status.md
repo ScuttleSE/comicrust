@@ -41,6 +41,19 @@ next selected book at once. Accepted actions finish even after the window
 closes. The old `DuplicatesIncomingPath` duplicate rule is removed. ADR-056 and
 ADR-057 record these changes. The user tests are open (open user test 4 and 18).
 
+`MEASURED`: On 2026-09-18 the app used 100% of one core while idle after
+startup. `perf` and `gdb` located the cost in the "Incoming Comic Vine Gaps"
+worker (`project_incoming_external_gaps` -> `incoming_volume_ids_for`), not the
+GTK main thread. `incoming_volume_ids_for` recomputed `incoming_identity` (which
+runs `proposed_cached`, `normalize_series`, and a SipHash) for every book once
+per requested identity, an O(identities x books) pass over 21,599 library books
+that did not complete in practical time. The fix computes each book's identity
+and series key once in a single O(books) pass, then groups the series keys by
+identity. The user confirmed idle CPU returns to zero on the real library on
+2026-09-18. The `gauges::invalidate`, gap-refresh call/done, and mark-dirty
+trace lines stay for future debugging; they fire per event, not in any inner
+loop, and are gated by `CR_TRACE`.
+
 `MEASURED`: A real replacement originally took 65.73 seconds. Ten durable
 stages each rewrote a 3.34 GB JSON journal. The comic copy took only 152 ms.
 ADR-055 replaced the embedded catalog arrays with two one-time sidecar files
@@ -168,6 +181,17 @@ not claim that the present combination is permissible. `cargo deny check
 licenses` is not a CI gate.
 
 ## Latest verification
+
+The idle-CPU fix (single-pass `incoming_volume_ids_for`) passed local
+verification on 2026-09-18.
+
+- `cargo fmt --all`: passed.
+- `cargo clippy --workspace --all-targets -- -D warnings`: passed.
+- `cargo test --workspace`: passed.
+- `MEASURED`: The user confirmed idle CPU returns to zero on the real library
+  after the fix. Before the fix, `perf` showed ~99% of cycles in the Incoming
+  Comic Vine gap worker; after the fix the gap pass completes and no thread
+  stays hot.
 
 The Incoming-transaction compact journal (all kinds), the discard watcher
 suppression, the single worker-side catalog serialization, and the refresh

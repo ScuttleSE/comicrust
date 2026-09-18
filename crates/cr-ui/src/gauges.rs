@@ -78,7 +78,14 @@ pub fn passes() -> u64 {
 /// only bumps the epoch and sets the rebuild flag — the model walk
 /// defers to the timer (the C# invalidation is equally decoupled from
 /// the commit).
+#[track_caller]
 pub fn invalidate() {
+    let caller = std::panic::Location::caller();
+    crate::trace::trace(format!(
+        "gauges: invalidate caller={}:{}",
+        caller.file(),
+        caller.line()
+    ));
     EPOCH.with(|e| e.set(e.get().wrapping_add(1)));
     STALE.with(|s| s.set(true));
     schedule(DEBOUNCE_MS);

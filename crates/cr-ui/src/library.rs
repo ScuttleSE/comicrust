@@ -1469,17 +1469,28 @@ fn incoming_volume_ids_for(
     library: &[ComicBook],
     config: &cr_scrape::config::Configuration,
 ) -> HashMap<cr_engine::incoming::IncomingIdentity, i64> {
-    identities
-        .iter()
-        .filter_map(|identity| {
-            let keys = incoming
-                .iter()
-                .chain(library)
-                .filter(|book| {
-                    cr_engine::incoming::incoming_identity(book).as_ref() == Some(identity)
-                })
-                .map(|book| cr_scrape::bookdata::BookData::from_book(book, config).series_key);
-            cr_scrape::cache::missing::volume_id_of(keys).map(|id| (identity.clone(), id))
+    // Compute each book's identity and series key once, grouping the
+    // series keys by identity. The earlier code recomputed
+    // `incoming_identity` for every book once per requested identity,
+    // which is O(identities x books) and pinned a core on large
+    // libraries. One pass over the books is O(books).
+    let mut series_keys_by_identity: HashMap<cr_engine::incoming::IncomingIdentity, Vec<String>> =
+        HashMap::new();
+    for book in incoming.iter().chain(library) {
+        if let Some(identity) = cr_engine::incoming::incoming_identity(book) {
+            if identities.contains(&identity) {
+                let series_key = cr_scrape::bookdata::BookData::from_book(book, config).series_key;
+                series_keys_by_identity
+                    .entry(identity)
+                    .or_default()
+                    .push(series_key);
+            }
+        }
+    }
+    series_keys_by_identity
+        .into_iter()
+        .filter_map(|(identity, keys)| {
+            cr_scrape::cache::missing::volume_id_of(keys).map(|id| (identity, id))
         })
         .collect()
 }
@@ -1547,7 +1558,9 @@ fn project_incoming_external_gaps(
 }
 
 /// Refreshes the offline Incoming gap projection without blocking GTK.
+#[track_caller]
 pub fn refresh_incoming_external_gaps_async() {
+    let caller = std::panic::Location::caller();
     let generation = INCOMING_GAP_GENERATION.with(|cell| {
         let next = cell.get().wrapping_add(1);
         cell.set(next);
@@ -1560,6 +1573,11 @@ pub fn refresh_incoming_external_gaps_async() {
         }
         active
     });
+    crate::trace::trace(format!(
+        "gap refresh call generation={generation} active_before={active} caller={}:{}",
+        caller.file(),
+        caller.line()
+    ));
     if active {
         return;
     }
@@ -1583,6 +1601,10 @@ pub fn refresh_incoming_external_gaps_async() {
             Ok((completed, gaps)) => {
                 let current = INCOMING_GAP_GENERATION.with(Cell::get);
                 INCOMING_GAP_REFRESH_ACTIVE.with(|cell| cell.set(false));
+                crate::trace::trace(format!(
+                    "gap refresh done completed={completed} current={current} respawn={}",
+                    completed != current
+                ));
                 if completed == current {
                     INCOMING_EXTERNAL_GAPS.with(|cache| *cache.borrow_mut() = gaps);
                     refresh_incoming_classification_async();
