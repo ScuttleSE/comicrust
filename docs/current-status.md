@@ -55,31 +55,19 @@ successful transaction. Unrelated events stay pending. `UNKNOWN`: The supplied
 final trace ended before one complete watcher interval, so it does not prove
 that no later automatic scan started.
 
-`MEASURED`: A real discard of three Incoming files took about 82 seconds and
-used a lot of CPU. The trace showed each `IncomingTransaction` stage rewrote a
-2.7 GB JSON journal, because discard still embedded the catalog byte arrays that
-ADR-055 removed for replacement. After commit, the app's own three deletes drove
-a full Incoming scan of about 4,555 files that held the operation flag and the
-mutation guard, so the close request waited and the user killed the process.
-ADR-058 gives the `IncomingTransaction` kinds (discard, adoption, undo, scan,
-folder conversion) the ADR-055 sidecar journal, so a stage transition writes a
-journal under 4 KiB, and it adds discard's deleted paths to the exact-path
-watcher suppression set, so a discard does not start a self-scan.
-`MEASURED`: The new `discard_keeps_the_journal_compact_and_removes_sidecars`
-test confirms the journal stays below 4 KiB and every sidecar is removed after
-commit. `UNKNOWN`: The real-data discard speed and clean close need a user
-observation on the CIFS library.
-
-`MEASURED`: A four-file discard trace confirmed the fix: each journal write was
-458-1138 bytes and no scan ran after commit. Worker time was about 4.7 seconds,
-against about 82 seconds before. The trace showed two more items, now addressed.
-The discard serialized the 110 MB catalog on the main thread and again in the
-worker; the main-thread serialization is removed and the worker serializes the
-unchanged catalog once for both the `before` and the initial `after`. An
-in-place refresh reset the view to the top because it restored the selection but
-not the scroll offset; the refresh now holds and restores the pre-refresh scroll
-offset across the async classification pass, and a list switch still resets to
-the top. `UNKNOWN`: Both behaviors need a user observation in the real UI.
+`MEASURED`: A real discard of three Incoming files first took about 82 seconds
+and used a lot of CPU, because each `IncomingTransaction` stage rewrote a 2.7 GB
+JSON journal (discard still embedded the catalog arrays that ADR-055 removed for
+replacement), and the app's own deletes then drove a full Incoming self-scan
+that held the mutation guard and blocked close. ADR-058 gives every
+`IncomingTransaction` kind (discard, adoption, undo, scan, folder conversion) the
+sidecar journal, adds discard's deleted paths to the exact-path watcher
+suppression set, moves the catalog serialization off the main thread to a single
+worker-side pass, and restores the pre-refresh scroll offset in
+`refresh_view_from_list`. A later four-file discard trace measured about 4.7
+seconds of worker time, journal writes of 458-1138 bytes, and no post-commit
+scan. `UNKNOWN`: The real-data discard speed, the clean close, and the scroll
+restore need a user observation on the CIFS library.
 
 ## Open user tests
 
@@ -126,6 +114,52 @@ The steps are in `docs/open-user-tests.md`.
 - Other deferred features are in `docs/backlog.md`. Do not copy that list
   into this file.
 
+## Outstanding issues for a new context
+
+This is the actionable to-do list. Each item names the evidence tag, the file,
+and the next step, so a fresh session can start without re-deriving the state.
+Follow the hard rules in `AGENTS.md`: measure before you name a cause, and do
+not tweak a gate to pass.
+
+1. **Confirm the Incoming discard fixes on real data (user test).** `UNKNOWN`:
+   The discard speed, the clean close, and the scroll restore are proven only by
+   local traces and unit tests, not by the CIFS library. Ask the user to: (a)
+   discard several Incoming files and confirm the app stays responsive and exits
+   normally without `kill -9`; (b) discard from far down a list and confirm the
+   view stays put, with no `SCROLL JUMP ... -> 0` line for the in-place refresh;
+   (c) confirm a list switch still starts at the top. See ADR-058 and open user
+   test 19.
+
+2. **`duplicates_probe` gate F is a stale-read (reported finding, do not tweak).**
+   `MEASURED`: Gate F fails on this machine on both the work and the unmodified
+   `main`. It reads session settings synchronously right after the Preferences
+   OK response, but the Preferences commit lands on a later main-loop tick. Fix
+   the probe to wait for the commit, or replace it with a user observation. Do
+   not change the expected value to pass.
+
+3. **DirectoryMatcher gauge evaluation runs on the GTK thread.** `MEASURED`:
+   About 2.6 seconds over 53,618 books on the main thread (a Rule 9 violation).
+   No fix exists. The next step is to measure where the time sits, then move the
+   evaluation to a worker with the ADR-019 pump pattern in
+   `docs/guides/gtk-and-ui.md`.
+
+4. **`ShowOnlyDuplicates` does not restore per list in the UI.** `CODE-READ`:
+   The value is written to ComicDb.xml but the per-list UI state is not restored
+   on load. The next step is to read the per-list view-config load path and the
+   `ShowOnlyDuplicates` field wiring.
+
+5. **Packaging has no local `.deb` content test.** This machine has no
+   `dpkg-deb`, so the packaging workflow is untested locally. The next step is a
+   CI or user run of the packaging workflow and a check of the package contents.
+
+6. **AppStream metadata has no screenshots.** No hosted image URLs exist. The
+   next step is to host screenshots and add their URLs to the metadata.
+
+7. **License incompatibility risk is unresolved (see Open risk below).**
+   Apache-2.0 code (`ring`, `webpki-roots`, the scraper port) against
+   GPL-2.0-only under ADR-041. `cargo deny check licenses` is not a CI gate. The
+   next step is a licensing decision, not a code change.
+
 ## Open risk
 
 Apache-2.0 is incompatible with GPL-2.0-only. The Apache-2.0 scraper port,
@@ -135,48 +169,29 @@ licenses` is not a CI gate.
 
 ## Latest verification
 
-The compact replacement journal and watcher suppression passed local
-verification on 2026-09-17.
+The Incoming-transaction compact journal (all kinds), the discard watcher
+suppression, the single worker-side catalog serialization, and the refresh
+scroll restore passed local verification on 2026-09-18.
 
 - `cargo fmt --all`: passed.
 - `cargo clippy --workspace --all-targets -- -D warnings`: passed.
 - `cargo test --workspace`: passed.
-- The release `incoming_probe` passed Gates A-I, A2, E2, E2A, E3, and E4 on
-  2026-09-17. E2A now confirms the automatic green/red pane borders and one
-  highlighted Keep button without a click.
+- The transaction integration suite passes 33 tests. It covers replacement and
+  the `IncomingTransaction` kinds at every durable stage, collisions, copy and
+  trash failures, invalid files, discard, conversion, adoption, undo, stale
+  epochs, and close behavior. The new
+  `discard_keeps_the_journal_compact_and_removes_sidecars` test confirms that a
+  discard keeps `current.json` below 4 KiB, writes at least one content sidecar,
+  and removes every sidecar after commit.
+- `UNKNOWN`: The discard speed, clean close, and scroll restore are not yet
+  confirmed on the real CIFS library. See Outstanding issue 1.
 - `MEASURED` (reported finding): The release `duplicates_probe` gate F fails on
   this machine on both the current work and the unmodified `main` revision. Gate
   F reads session settings synchronously right after the Preferences OK
   response, but the Preferences commit runs on a worker and lands on a later
   main-loop tick. The read is stale. This is a pre-existing probe or environment
   problem, not a code regression. It needs a probe change or a user
-  observation; do not tweak it to pass.
-- The `cr-ui` suite passed 187 tests. Compare tests cover Keep-button action
-  mapping, pair revalidation, comparison order, self-exclusion, ranking
-  recommendations, ties, recommendation side, and the batch model transforms
-  (advancing to the next selected book and pruning resolved records). A
-  selection test confirms displayed-book order. The new watcher test confirms
-  that rescan events stay pending during scans and Incoming operations.
-- The `cr-engine` suite passed 144 tests. Incoming-list tests cover separate
-  persistence, stable IDs, bases, invalid graphs, duplicate matching, and series
-  statistics.
-- Three isolated release `incoming_probe` runs passed Gates A-I, A2, E2, E2A,
-  E3, and E4. E2A confirms Keep controls and recommendation highlighting. E4
-  confirms Select Worst Duplicates in Incoming Duplicates. The other gates
-  confirm replacement, navigation, covers, smart lists, and catalog isolation.
-- The transaction integration suite passes 32 tests. It covers replacement at
-  every durable stage, collisions, copy and trash failures, invalid files,
-  discard, conversion, adoption, undo, stale epochs, and close behavior. The
-  new test confirms that a replacement epoch invalidates a rescan that waits
-  for the mutation guard. A `CR_TRACE=1` focused run contains the epoch
-  transition, guard acquisition, source call sites, journal stages, and catalog
-  installation stages.
-- The compact-journal test confirms that replacement stores two one-time
-  after-images, keeps `current.json` below 4 KiB for the test transaction, and
-  removes all three files after commit. A watcher test confirms that exact
-  transaction paths are filtered while unrelated events remain.
-- An isolated release `incoming_probe` run passed Gates A-I, A2, E2, E2A, E3,
-  and E4 with the compact journal.
+  observation; do not tweak it to pass. See Outstanding issue 2.
 
 ## Environment notes
 
