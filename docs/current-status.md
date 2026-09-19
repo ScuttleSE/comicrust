@@ -22,35 +22,30 @@ save. `UNKNOWN`: neither API update mode has run against the live API.
 
 ## Latest user finding
 
-`MEASURED` (user, 2026-09-19): **Link Series from Cache** required one command
-for each series when a selection contained books from many series.
+`MEASURED` (user, 2026-09-19): Missing Issues scoped to a 2,484-book 2000 AD
+smart list reports 2,559 missing rows. It groups 59 rows under `2000 AD` and
+2,500 rows under `Unspecified`. At least one reported row has the same visible
+Series, Number, and Comic Vine issue ID as an owned book.
 
-ADR-066 changes the command to process all selected series groups in display
-order. Each group contains selected books with the same case-insensitive Series
-and exact Volume. Books outside the selection do not change. A canceled volume
-selection stops the remaining batch. One summary reports the completed batch.
-`MEASURED`: the grouping test covers first-seen order, case-insensitive names,
-and separate Volume values. `UNKNOWN`: the GTK batch flow needs a user test.
+`CODE-READ`: The gap pass compares normalized Number inside a stored
+case-insensitive `(Series, Volume)` key. It does not use the Comic Vine issue ID
+for ownership. The view hides Volume and Comic Vine volume ID. It can show
+proposed values in place of empty stored values.
+
+`UNKNOWN`: The stored field or hidden key that separates the owned book from
+the gap row. `CR_TRACE` now reports each gap key, scope counts, blank Number
+counts, volume votes, cache counts, and linked-issue conflicts without paths or
+book IDs.
 
 ## Current task for the next context
 
-Connect normal **Scrape from Comic Vine** to the persistent cache.
+Collect the Missing Issues trace from the reported 2000 AD scope. Use the
+measured key mismatch to design the fix and its regression test. Do not design
+the fix before this measurement.
 
-`CODE-READ`: `Cv::query_issue_refs`, `Cv::query_issue`, and the volume-details
-path write reusable data to SQLite but do not read it before network requests.
-A fully cached and linked book can therefore still request issue and volume
-details.
-
-The next context must first define the cache-use and forced-refresh rules. Then
-it can make normal scraping read:
-
-- cached issue-number maps before `/issues`;
-- cached issue-detail JSON before `/issue/4000-<id>/`;
-- cached volume JSON before `/volume/4050-<id>/`.
-
-Add mock-server request-count tests. Keep explicit API refresh commands as the
-way to bypass cached data. Do not infer freshness behavior without recording a
-decision.
+After this defect is resolved, resume the deferred task: connect normal
+**Scrape from Comic Vine** to persistent-cache reads. Define cache-use and
+forced-refresh rules before that implementation.
 
 ## Open user tests
 
@@ -96,13 +91,14 @@ licenses` is not a CI gate.
 
 ## Latest verification
 
-The Link Series from Cache batch change passed on 2026-09-19.
+The Missing Issues diagnostic trace change passed on 2026-09-19.
 
 - `cargo fmt --all`: passed.
 - `cargo clippy --workspace --all-targets -- -D warnings`: passed.
 - `cargo test --workspace`: passed.
-- `MEASURED`: the batch grouping test passes.
-- `UNKNOWN`: the GTK batch sequence has not had a user test.
+- `MEASURED`: a `CR_TRACE=1` unit-test run printed the expected aggregate group
+  fields.
+- `UNKNOWN`: the real 2000 AD trace has not run.
 
 ## Environment notes
 

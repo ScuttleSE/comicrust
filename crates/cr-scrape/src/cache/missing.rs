@@ -155,10 +155,40 @@ pub fn missing_issues_of_library(
         }
     }
 
+    let tracing = cr_core::trace::enabled();
+    if tracing {
+        cr_core::trace::trace(format!(
+            "missing issues start scope_books={} library_books={}",
+            scope_books.len(),
+            library_books.len()
+        ));
+    }
+
     let mut owned: HashMap<GapSeriesKey, Vec<String>> = HashMap::new();
     let mut display_name: HashMap<GapSeriesKey, String> = HashMap::new();
+    // Trace-only indexes contain metadata values but never paths or book IDs.
+    // They explain when an issue link exists under a different Series/Volume
+    // key from the gap row that reports it as missing.
+    let mut scope_stats: HashMap<GapSeriesKey, (usize, usize, usize, usize)> = HashMap::new();
+    let mut scope_issue_links: HashMap<i64, Vec<(GapSeriesKey, String)>> = HashMap::new();
     for book in scope_books {
         let key = key_of(book);
+        if tracing {
+            let stats = scope_stats.entry(key.clone()).or_default();
+            stats.0 += 1;
+            stats.1 += usize::from(book.info.number.trim().is_empty());
+            stats.2 += usize::from(book.enable_proposed);
+            let issue_link = crate::bookdata::get_custom_value(book, "comicvine_issue");
+            if let Ok(issue_id) = issue_link.trim().parse::<i64>() {
+                if issue_id > 0 {
+                    stats.3 += 1;
+                    scope_issue_links
+                        .entry(issue_id)
+                        .or_default()
+                        .push((key.clone(), book.info.number.clone()));
+                }
+            }
+        }
         owned
             .entry(key.clone())
             .or_default()
@@ -179,13 +209,99 @@ pub fn missing_issues_of_library(
     let mut results = Vec::new();
     for (key, numbers) in owned {
         let votes = volume_votes.remove(&key).unwrap_or_default();
+        let mut vote_counts = BTreeMap::new();
+        if tracing {
+            for vote in &votes {
+                if let Ok(id) = vote.trim().parse::<i64>() {
+                    if id > 0 {
+                        *vote_counts.entry(id).or_insert(0usize) += 1;
+                    }
+                }
+            }
+        }
+        let shown_series = display_name.get(&key).cloned().unwrap_or_default();
+        let stats = scope_stats.get(&key).copied().unwrap_or_default();
         let Some(volume_id) = volume_id_of(votes) else {
+            if tracing {
+                cr_core::trace::trace(format!(
+                    "missing issues group stored_series={:?} volume={} display_series={:?} scope_books={} blank_stored_numbers={} proposed_enabled={} linked_issue_ids={} volume_votes={vote_counts:?} result=no_volume_vote",
+                    key.series,
+                    key.volume,
+                    shown_series,
+                    stats.0,
+                    stats.1,
+                    stats.2,
+                    stats.3
+                ));
+            }
             continue;
         };
-        let Ok(issues) = cache.issues_of_volume(volume_id) else {
-            continue;
+        let issues = match cache.issues_of_volume(volume_id) {
+            Ok(issues) => issues,
+            Err(error) => {
+                if tracing {
+                    cr_core::trace::trace(format!(
+                        "missing issues group stored_series={:?} volume={} display_series={:?} scope_books={} blank_stored_numbers={} proposed_enabled={} linked_issue_ids={} volume_votes={vote_counts:?} chosen_volume_id={} result=cache_error error={error}",
+                        key.series,
+                        key.volume,
+                        shown_series,
+                        stats.0,
+                        stats.1,
+                        stats.2,
+                        stats.3,
+                        volume_id
+                    ));
+                }
+                continue;
+            }
         };
         let missing = missing_issues(&issues, &numbers);
+
+        if tracing {
+            let mut linked_sources: BTreeMap<String, usize> = BTreeMap::new();
+            let mut examples = Vec::new();
+            let mut missing_with_scoped_issue_link = 0usize;
+            for issue in &missing {
+                let Some(sources) = scope_issue_links.get(&issue.issue_id) else {
+                    continue;
+                };
+                missing_with_scoped_issue_link += 1;
+                for (source_key, source_number) in sources {
+                    let source = format!(
+                        "stored_series={:?},volume={}",
+                        source_key.series, source_key.volume
+                    );
+                    *linked_sources.entry(source).or_default() += 1;
+                    if examples.len() < 5 {
+                        examples.push(format!(
+                            "issue_id={},cached_number={:?},source_series={:?},source_volume={},source_stored_number={:?}",
+                            issue.issue_id,
+                            issue.issue_number,
+                            source_key.series,
+                            source_key.volume,
+                            source_number
+                        ));
+                    }
+                }
+            }
+            cr_core::trace::trace(format!(
+                "missing issues group stored_series={:?} volume={} display_series={:?} scope_books={} blank_stored_numbers={} proposed_enabled={} linked_issue_ids={} volume_votes={vote_counts:?} chosen_volume_id={} cached_issues={} missing={} missing_with_scoped_issue_link={} linked_sources={linked_sources:?}",
+                key.series,
+                key.volume,
+                shown_series,
+                stats.0,
+                stats.1,
+                stats.2,
+                stats.3,
+                volume_id,
+                issues.len(),
+                missing.len(),
+                missing_with_scoped_issue_link
+            ));
+            for example in examples {
+                cr_core::trace::trace(format!("missing issues linked example {example}"));
+            }
+        }
         if missing.is_empty() {
             continue;
         }
@@ -195,6 +311,13 @@ pub fn missing_issues_of_library(
             volume_id,
             missing,
         });
+    }
+    if tracing {
+        cr_core::trace::trace(format!(
+            "missing issues finish series_groups={} missing_rows={}",
+            results.len(),
+            results.iter().map(|gap| gap.missing.len()).sum::<usize>()
+        ));
     }
     results
 }

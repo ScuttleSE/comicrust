@@ -85,6 +85,26 @@ Refresh. Confirm it reports the series' real gaps, not "0 missing" — the
 Comic Vine volume link must resolve from the whole library even when the
 scoped smart list itself holds no linked copy.
 
+**Diagnostic log for an incorrect group or count:** Start the app from the
+repository with this command:
+
+```sh
+CR_TRACE=1 cargo run -p cr-app --release 2> /tmp/comicrust-missing.log
+```
+
+Select **Missing Issues**. Select the affected scope and click **Refresh**.
+Close the app after the refresh finishes. Extract the relevant lines:
+
+```sh
+grep 'missing issues' /tmp/comicrust-missing.log
+```
+
+The group lines show stored Series, Volume, scope counts, blank Number counts,
+Comic Vine volume votes, cached issue counts, and missing counts. The linked
+example lines show an issue that the report marks missing although a scoped
+book has the same Comic Vine issue ID. These lines do not contain file paths
+or book IDs.
+
 ## 23. Link Series from Cache
 
 Not yet run. See ADR-060. Built in response to a real case found while
