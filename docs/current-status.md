@@ -71,6 +71,17 @@ them to right-click one unlinked issue, confirm exactly one Comic Vine
 request fires, pick the volume, and confirm the visible copies get linked and
 the Missing Issues report then shows real gaps.
 
+**Follow-up, 2026-09-19: cached series metadata propagation (ADR-063).** Normal
+Comic Vine searches and volume queries now retain shared volume metadata.
+Complete issue-list queries retain their issue map. A full scrape of a
+previously unlinked issue starts a worker that fills blank Publisher, Imprint,
+volume year, and Comic Vine links across the matching library series. **Link
+Series from Cache** fills the same blank fields in its current-view scope.
+Existing values remain unchanged. `MEASURED`: unit tests cover blank-only
+updates, existing-value preservation, unmatched issues, and query-to-cache
+writes. The required workspace verification passes. `UNKNOWN`: user test 25
+has not run on the real library.
+
 **New feature, 2026-09-19: "Find in Incoming" (ADR-061).** The Missing Issues
 context menu can match one or more selected gaps against Incoming by normalized
 Series, Volume, and Number. The command uses a dedicated Library Organizer Move

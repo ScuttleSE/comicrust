@@ -12,14 +12,94 @@ use std::collections::HashMap;
 use cr_core::model::comic_book::ComicBook;
 use cr_core::xml::scalar::CrGuid;
 
-use super::IssueSkeleton;
-use crate::bookdata::get_custom_value;
+use super::{IssueSkeleton, VolumeRow};
+use crate::bookdata::{get_custom_value, set_custom_value};
+use crate::config::Configuration;
 
 /// One book matched to the cached issue it corresponds to.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct LinkedBook {
     pub book_id: CrGuid,
     pub issue_id: i64,
+}
+
+/// The result of filling links and shared series metadata from cache.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct EnrichmentReport {
+    pub books: Vec<ComicBook>,
+    pub linked: usize,
+    pub metadata_filled: usize,
+    pub unmatched: usize,
+}
+
+/// Fills blank links and blank series-level metadata from one cached
+/// Comic Vine volume. Existing values are never replaced.
+pub fn enrich_series_from_cache(
+    candidates: &[ComicBook],
+    issues: &[IssueSkeleton],
+    volume: &VolumeRow,
+    config: &Configuration,
+) -> EnrichmentReport {
+    let mut by_number: HashMap<String, i64> = HashMap::new();
+    for issue in issues {
+        let key = super::missing::normalize_number(&issue.issue_number);
+        by_number.entry(key).or_insert(issue.issue_id);
+    }
+
+    let (publisher, imprint) = volume
+        .publisher
+        .as_deref()
+        .map(|raw| crate::bookdata::convert_volume_publisher(raw, config))
+        .unwrap_or_default();
+    let mut report = EnrichmentReport::default();
+
+    for candidate in candidates {
+        let mut book = candidate.clone();
+        let mut changed = false;
+        let mut metadata_changed = false;
+
+        if get_custom_value(&book, "comicvine_volume").is_empty() {
+            set_custom_value(&mut book, "comicvine_volume", &volume.volume_id.to_string());
+            changed = true;
+        }
+
+        if book.info.publisher.trim().is_empty() && !publisher.is_empty() {
+            book.info.publisher = publisher.clone();
+            changed = true;
+            metadata_changed = true;
+        }
+        if book.info.imprint.trim().is_empty() && !imprint.is_empty() {
+            book.info.imprint = imprint.clone();
+            changed = true;
+            metadata_changed = true;
+        }
+        if book.info.volume == -1 {
+            if let Some(year) = volume.start_year.filter(|year| *year > 0) {
+                book.info.volume = year;
+                changed = true;
+                metadata_changed = true;
+            }
+        }
+
+        if get_custom_value(&book, "comicvine_issue").is_empty() {
+            let key = super::missing::normalize_number(&book.info.number);
+            if let Some(issue_id) = by_number.get(&key) {
+                set_custom_value(&mut book, "comicvine_issue", &issue_id.to_string());
+                report.linked += 1;
+                changed = true;
+            } else {
+                report.unmatched += 1;
+            }
+        }
+
+        if metadata_changed {
+            report.metadata_filled += 1;
+        }
+        if changed {
+            report.books.push(book);
+        }
+    }
+    report
 }
 
 /// Matches each candidate's issue number against the cached issue list
@@ -140,5 +220,87 @@ mod tests {
                 issue_id: 1
             }]
         );
+    }
+
+    #[test]
+    fn enrichment_fills_only_blank_series_fields_and_links() {
+        let mut first = book("1", None);
+        first.info.publisher = "My Publisher".to_string();
+        let second = book("2", None);
+        let volume = VolumeRow {
+            volume_id: 100,
+            publisher: Some("Vertigo".to_string()),
+            start_year: Some(2000),
+            ..Default::default()
+        };
+        let report = enrich_series_from_cache(
+            &[first, second],
+            &[issue(1, "1"), issue(2, "2")],
+            &volume,
+            &Configuration::default(),
+        );
+
+        assert_eq!(report.linked, 2);
+        assert_eq!(report.metadata_filled, 2);
+        assert_eq!(report.unmatched, 0);
+        assert_eq!(report.books[0].info.publisher, "My Publisher");
+        assert_eq!(report.books[1].info.publisher, "DC Comics");
+        assert_eq!(report.books[0].info.imprint, "Vertigo");
+        assert_eq!(report.books[1].info.imprint, "Vertigo");
+        assert_eq!(report.books[0].info.volume, 2000);
+        assert_eq!(get_custom_value(&report.books[0], "comicvine_issue"), "1");
+    }
+
+    #[test]
+    fn enrichment_preserves_existing_links_and_metadata() {
+        let mut candidate = book("1", Some("999"));
+        set_custom_value(&mut candidate, "comicvine_volume", "888");
+        candidate.info.publisher = "Local Publisher".to_string();
+        candidate.info.imprint = "Local Imprint".to_string();
+        candidate.info.volume = 1999;
+        let volume = VolumeRow {
+            volume_id: 100,
+            publisher: Some("DC Comics".to_string()),
+            start_year: Some(2000),
+            ..Default::default()
+        };
+        let report = enrich_series_from_cache(
+            &[candidate],
+            &[issue(1, "1")],
+            &volume,
+            &Configuration::default(),
+        );
+
+        assert!(report.books.is_empty());
+        assert_eq!(report.linked, 0);
+        assert_eq!(report.metadata_filled, 0);
+        assert_eq!(report.unmatched, 0);
+    }
+
+    #[test]
+    fn enrichment_fills_common_metadata_when_the_issue_is_not_cached() {
+        let candidate = book("99", None);
+        let volume = VolumeRow {
+            volume_id: 100,
+            publisher: Some("DC Comics".to_string()),
+            start_year: Some(2000),
+            ..Default::default()
+        };
+        let report = enrich_series_from_cache(
+            &[candidate],
+            &[issue(1, "1")],
+            &volume,
+            &Configuration::default(),
+        );
+
+        assert_eq!(report.books.len(), 1);
+        assert_eq!(report.linked, 0);
+        assert_eq!(report.metadata_filled, 1);
+        assert_eq!(report.unmatched, 1);
+        assert_eq!(
+            get_custom_value(&report.books[0], "comicvine_volume"),
+            "100"
+        );
+        assert!(get_custom_value(&report.books[0], "comicvine_issue").is_empty());
     }
 }

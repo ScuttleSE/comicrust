@@ -720,7 +720,8 @@ pub fn show_scrape_dialog(
     // The per-resource request budget over the shared cache. It uses
     // the window's own stop flag, so Cancel also frees a request that
     // waits for its window to open.
-    let budget = cache.filter(|_| config.advanced().cache_enabled).map(|c| {
+    let enabled_cache = cache.filter(|_| config.advanced().cache_enabled);
+    let budget = enabled_cache.clone().map(|c| {
         let (policy, _, _) = cr_scrape::cache::policies_from(config.advanced());
         Arc::new(
             cr_scrape::cache::budget::Budget::new(c, policy)
@@ -780,6 +781,9 @@ pub fn show_scrape_dialog(
             };
             if let Some(budget) = budget {
                 client.set_budget(budget);
+            }
+            if let Some(cache) = enabled_cache {
+                client.set_cache(cache);
             }
             let mut cv = Cv::new(client);
             let mut engine = ScrapeEngine::new(worker_config, worker_stop, prior);

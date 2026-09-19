@@ -55,6 +55,9 @@ pub struct CvClient {
     /// passes it. `None` counts nothing, which is what the older
     /// mock-server gates expect.
     budget: Option<Arc<crate::cache::budget::Budget>>,
+    /// The persistent cache that receives reusable response data.
+    /// Cache write failures are logged and never stop a scrape.
+    cache: Option<Arc<dyn crate::cache::CvCache>>,
 }
 
 impl CvClient {
@@ -92,6 +95,7 @@ impl CvClient {
                 .build(),
             series_details_cache: Mutex::new(HashMap::new()),
             budget: None,
+            cache: None,
         }
     }
 
@@ -99,6 +103,38 @@ impl CvClient {
     /// waits for its resource to have room, and records itself.
     pub fn set_budget(&mut self, budget: Arc<crate::cache::budget::Budget>) {
         self.budget = Some(budget);
+    }
+
+    /// Installs the persistent Comic Vine cache used by normal scrapes.
+    pub fn set_cache(&mut self, cache: Arc<dyn crate::cache::CvCache>) {
+        self.cache = Some(cache);
+    }
+
+    /// Saves volume metadata without making a cache failure fail the scrape.
+    pub(crate) fn cache_volume(&self, row: &crate::cache::VolumeRow) {
+        self.cache_volumes(std::slice::from_ref(row));
+    }
+
+    /// Saves volume metadata without making a cache failure fail the scrape.
+    pub(crate) fn cache_volumes(&self, rows: &[crate::cache::VolumeRow]) {
+        let Some(cache) = &self.cache else {
+            return;
+        };
+        if let Err(error) = cache.put_volumes(rows) {
+            crate::log::debug(&format!(
+                "could not cache Comic Vine volume metadata: {error}"
+            ));
+        }
+    }
+
+    /// Saves an issue-number map without making a cache failure fail the scrape.
+    pub(crate) fn cache_issues(&self, issues: &[crate::cache::IssueSkeleton]) {
+        let Some(cache) = &self.cache else {
+            return;
+        };
+        if let Err(error) = cache.put_issues(issues) {
+            crate::log::debug(&format!("could not cache Comic Vine issue links: {error}"));
+        }
     }
 
     /// The requests left for one API path in the current window, or

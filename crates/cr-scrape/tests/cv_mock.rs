@@ -4,8 +4,10 @@
 //! numbers, the series-details cache, the magic cvinfo file).
 
 use std::io::{Read, Write};
+use std::sync::Arc;
 use std::thread::JoinHandle;
 
+use cr_scrape::cache::{CvCache, SqliteCache};
 use cr_scrape::cv::connection::CvClient;
 use cr_scrape::cv::models::{IssueRef, SeriesRef};
 use cr_scrape::cv::queries::Cv;
@@ -129,12 +131,17 @@ fn search_series_returns_refs_with_pagination() {
     }];
     let (base, _guard) = serve(CANNED);
     let mut cv = client_for(&base);
+    let cache = Arc::new(SqliteCache::in_memory().unwrap());
+    cv.client.set_cache(Arc::clone(&cache) as Arc<dyn CvCache>);
     let refs = cv
         .query_series_refs("batman", &[], 100, &mut no_cancel_series)
         .unwrap();
     assert_eq!(refs.len(), 2);
     let batman = refs.iter().find(|r| r.series_key == 40501).unwrap();
     assert_eq!(batman.series_name(), "Batman");
+    let cached = cache.volume(40501).unwrap().unwrap();
+    assert_eq!(cached.name.as_deref(), Some("Batman"));
+    assert_eq!(cached.publisher.as_deref(), Some("DC Comics"));
     assert_eq!(batman.publisher, "DC Comics");
     assert_eq!(batman.volume_year, 1940);
     assert_eq!(batman.issue_count, 900);
@@ -308,9 +315,28 @@ fn series_details_cache_and_imprint_resolution() {
             status: 200,
             body: VOLUME_DETAILS,
         },
+        Canned {
+            path: "/issues/",
+            status: 200,
+            body: r#"{
+              "error": "OK", "number_of_total_results": 2,
+              "number_of_page_results": 2, "status_code": 1,
+              "results": [
+                {"id": 400011, "issue_number": "1", "name": "One", "image": {}},
+                {"id": 400012, "issue_number": "2", "name": "Two", "image": {}}
+              ]
+            }"#,
+        },
     ];
     let (base, _guard) = serve(CANNED);
-    let cv = client_for(&base);
+    let mut cv = client_for(&base);
+    let cache = Arc::new(SqliteCache::in_memory().unwrap());
+    cv.client.set_cache(Arc::clone(&cache) as Arc<dyn CvCache>);
+    let series = SeriesRef::new(40501, "Batman", 1940, "Vertigo", 900, None).unwrap();
+    assert_eq!(
+        cv.query_issue_refs(&series, &mut |_| false).unwrap().len(),
+        2
+    );
     let issue_ref = IssueRef::new("½", 400011, "", None);
     let issue = cv.query_issue(&issue_ref, false).unwrap();
     // Vertigo is an imprint: parent publisher wins, imprint recorded
@@ -318,6 +344,12 @@ fn series_details_cache_and_imprint_resolution() {
     assert_eq!(issue.imprint, "Vertigo");
     assert_eq!(issue.volume_year, 1940);
     assert_eq!(issue.series_key, "40501");
+    let cached = cache.volume(40501).unwrap().unwrap();
+    assert_eq!(cached.name.as_deref(), Some("Batman"));
+    assert_eq!(cached.publisher.as_deref(), Some("Vertigo"));
+    assert_eq!(cached.start_year, Some(1940));
+    assert_eq!(cached.count_of_issues, Some(900));
+    assert_eq!(cache.issue_count(40501).unwrap(), 2);
 
     // a second query for the same series hits the cache (no volume
     // query needed even without start_year in the issue dom — here

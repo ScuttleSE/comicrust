@@ -157,6 +157,21 @@ impl Cv {
             return Ok(cached);
         }
         let refs = self.uncached_series_refs(&terms, max_results, progress)?;
+        let now = unix_now();
+        let cached: Vec<crate::cache::VolumeRow> = refs
+            .iter()
+            .map(|series| crate::cache::VolumeRow {
+                volume_id: series.series_key,
+                name: Some(series.series_name().to_string()),
+                publisher: (!series.publisher.is_empty()).then(|| series.publisher.clone()),
+                start_year: (series.volume_year > 0).then_some(series.volume_year),
+                count_of_issues: (series.issue_count > 0).then_some(series.issue_count),
+                date_last_updated: None,
+                last_cover_date: None,
+                fetched_at: now,
+            })
+            .collect();
+        self.client.cache_volumes(&cached);
         self.caches.put_series(terms, refs.clone());
         Ok(refs)
     }
@@ -264,6 +279,17 @@ impl Cv {
             }
         }
         let refs = self.uncached_issue_refs(series_ref, progress)?;
+        let cached: Vec<crate::cache::IssueSkeleton> = refs
+            .iter()
+            .map(|issue| crate::cache::IssueSkeleton {
+                issue_id: issue.issue_key,
+                volume_id: series_ref.series_key,
+                issue_number: issue.issue_num.clone(),
+                cover_date: None,
+                name: (!issue.title.is_empty()).then(|| issue.title.clone()),
+            })
+            .collect();
+        self.client.cache_issues(&cached);
         self.caches.issue_refs = Some((series_ref.series_key, refs.clone()));
         Ok(refs)
     }
@@ -706,12 +732,36 @@ fn series_details(
     {
         publisher = p.to_string();
     }
+    let now = unix_now();
+    client.cache_volume(&crate::cache::VolumeRow {
+        volume_id: series_id,
+        name: dom
+            .pointer("/results/name")
+            .and_then(Value::as_str)
+            .map(str::to_string),
+        publisher: (!publisher.is_empty()).then(|| publisher.clone()),
+        start_year: (volume_year > 0).then_some(volume_year),
+        count_of_issues: dom
+            .pointer("/results/count_of_issues")
+            .and_then(Value::as_i64)
+            .map(|count| count as i32),
+        date_last_updated: None,
+        last_cover_date: None,
+        fetched_at: now,
+    });
     client
         .series_details_cache
         .lock()
         .unwrap()
         .insert(series_id, (volume_year, publisher.clone()));
     Ok((volume_year, publisher))
+}
+
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or(0)
 }
 /// `__issue_parse_story_credits`: story arcs (crossovers), characters,
 /// teams, locations — each a list of `{name}` objects.

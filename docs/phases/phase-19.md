@@ -300,3 +300,19 @@ window instead of leaving its main area empty on successful operations.
 Fills preview, no profile selector, no preview mutation, the dedicated-profile
 Adopt confirmation, and the existing Find in Incoming adoption. `UNKNOWN`: the
 progress rows need a user observation during a real-library operation.
+
+## Cached series metadata extension
+
+Implemented 2026-09-19 under ADR-063. Normal Comic Vine searches and volume
+queries now retain reusable volume metadata in SQLite. Complete issue-list
+queries also retain their issue number and ID map. After a newly linked issue
+finishes a full scrape, a worker fills blank Publisher, Imprint, volume year,
+and Comic Vine links across the matching library series. **Link Series from
+Cache** fills the same blank fields within its existing current-view scope.
+Existing values remain unchanged. The worker result lands through one bulk
+library update.
+
+`MEASURED`: Unit tests confirm blank-only enrichment, preservation of existing
+values, unmatched issue handling, and cache writes from series and volume
+queries. The required workspace verification passes. `UNKNOWN`: the GTK flow
+has not run against the user's real library. See open user test 25.

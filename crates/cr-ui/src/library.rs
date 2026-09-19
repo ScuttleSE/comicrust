@@ -242,6 +242,7 @@ pub enum CvJobKind {
     IncomingRefresh,
     MissingIssuesGap,
     LinkSeriesSearch,
+    SeriesMetadataPropagation,
 }
 
 impl CvJobKind {
@@ -254,6 +255,7 @@ impl CvJobKind {
             CvJobKind::IncomingRefresh => "Refreshing Incoming from Comic Vine",
             CvJobKind::MissingIssuesGap => "Computing the Missing Issues report",
             CvJobKind::LinkSeriesSearch => "Searching Comic Vine for a series",
+            CvJobKind::SeriesMetadataPropagation => "Applying cached series metadata",
         }
     }
 }
@@ -4037,6 +4039,43 @@ pub fn apply_edited(edited: &ComicBook) -> bool {
         return false;
     }
     apply_edited_inner(edited)
+}
+
+/// Applies a group of edited books in one database pass. This is the
+/// bulk form of [`apply_edited`]. It invalidates derived views once and
+/// schedules one file update for each changed book.
+pub fn apply_edited_many(edited: Vec<ComicBook>) -> usize {
+    if edited.is_empty() || cr_engine::incoming_transaction::operation_active() {
+        return 0;
+    }
+
+    let mut by_id: HashMap<CrGuid, ComicBook> =
+        edited.into_iter().map(|book| (book.id, book)).collect();
+    let lib = session();
+    let mut l = lib.borrow_mut();
+    let mut changed = Vec::new();
+    for slot in &mut l.database_mut().books {
+        let Some(mut replacement) = by_id.remove(&slot.id) else {
+            continue;
+        };
+        replacement.comic_info_is_dirty = true;
+        changed.push(replacement.id);
+        *slot = replacement;
+    }
+    if !changed.is_empty() {
+        l.mark_dirty();
+    }
+    drop(l);
+
+    for id in &changed {
+        record_scan_touch(id);
+        schedule_book_file_update(id);
+    }
+    if !changed.is_empty() {
+        crate::gauges::invalidate();
+        refresh_incoming_external_gaps_async();
+    }
+    changed.len()
 }
 
 /// Applies an organizer result while its exclusive operation is still active.

@@ -48,6 +48,27 @@ struct IncomingOrganizerEffects {
     captured_epoch: u64,
 }
 
+#[derive(Clone)]
+struct ScrapePropagationOrigin {
+    book_id: CrGuid,
+    series: String,
+    volume: i32,
+}
+
+#[derive(Clone)]
+struct SeriesPropagationTarget {
+    groups: Vec<(String, i32)>,
+    comicvine_volume: i64,
+}
+
+#[derive(Default)]
+struct SeriesPropagationReport {
+    books: Vec<ComicBook>,
+    linked: usize,
+    metadata_filled: usize,
+    unmatched: usize,
+}
+
 impl IncomingOrganizerEffects {
     fn new(
         transaction: cr_engine::incoming_transaction::IncomingTransaction,
@@ -4553,6 +4574,7 @@ impl ShellState {
                     ) {
                         client.set_budget(budget);
                     }
+                    client.set_cache(cache as Arc<dyn cr_scrape::cache::CvCache>);
                 }
                 let mut cv = cr_scrape::cv::queries::Cv::new(client);
                 cv.query_series_refs(&search_terms, &[], 25, &mut |_done, _total| {
@@ -4593,12 +4615,10 @@ impl ShellState {
     }
 
     /// The apply step of "Link Series from Cache": a single cache-only
-    /// read (`CvCache::issues_of_volume`, never the network) plus a
-    /// pure local match (`cr_scrape::cache::link::match_series_to_volume`),
-    /// then one `library::apply_edited` per matched book — the only
-    /// persist primitive that exists (no batch variant), the same shape
-    /// the bulk editor's commit loop already uses.
-    fn link_series_apply(self: &Rc<ShellState>, mut candidates: Vec<ComicBook>, volume_id: i64) {
+    /// reads (`CvCache::issues_of_volume` and `CvCache::volume`, never
+    /// the network) plus a pure local match and blank-field fill. The
+    /// cache read runs on a worker. The result lands in one bulk update.
+    fn link_series_apply(self: &Rc<ShellState>, candidates: Vec<ComicBook>, volume_id: i64) {
         let Some(cache) = library::cv_cache() else {
             show_failure_dialog(
                 &self.window,
@@ -4607,36 +4627,179 @@ impl ShellState {
             );
             return;
         };
-        let issues = match cache.issues_of_volume(volume_id) {
-            Ok(issues) => issues,
-            Err(error) => {
-                show_failure_dialog(&self.window, "Link Series from Cache", &error.to_string());
-                return;
-            }
-        };
-        let (linked, unmatched) =
-            cr_scrape::cache::link::match_series_to_volume(&candidates, &issues);
-        let issue_by_book: HashMap<CrGuid, i64> =
-            linked.iter().map(|l| (l.book_id, l.issue_id)).collect();
         let total = candidates.len();
-        let mut linked_count = 0;
-        for book in &mut candidates {
-            let Some(&issue_id) = issue_by_book.get(&book.id) else {
+        let config = library::scraper_config();
+        let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let state = Rc::downgrade(self);
+        self.run_cv_job(
+            library::CvJobKind::SeriesMetadataPropagation,
+            "Link Series from Cache",
+            cancel,
+            move |_progress| -> Result<cr_scrape::cache::link::EnrichmentReport, String> {
+                let issues = cache
+                    .issues_of_volume(volume_id)
+                    .map_err(|error| error.to_string())?;
+                let volume = cache
+                    .volume(volume_id)
+                    .map_err(|error| error.to_string())?
+                    .unwrap_or(cr_scrape::cache::VolumeRow {
+                        volume_id,
+                        ..Default::default()
+                    });
+                Ok(cr_scrape::cache::link::enrich_series_from_cache(
+                    &candidates,
+                    &issues,
+                    &volume,
+                    &config,
+                ))
+            },
+            move |window, result| match result {
+                Ok(report) => {
+                    let updated = library::apply_edited_many(report.books);
+                    if let Some(sh) = state.upgrade() {
+                        sh.refresh_view_from_list();
+                    }
+                    show_report_dialog(
+                        window,
+                        "Link Series from Cache",
+                        &format!(
+                            "{} of {total} book(s) linked. {} book(s) received blank shared \
+                             metadata. {updated} book(s) changed. {} had no matching issue number \
+                             in the cache.",
+                            report.linked, report.metadata_filled, report.unmatched
+                        ),
+                    );
+                }
+                Err(error) => show_failure_dialog(window, "Link Series from Cache", &error),
+            },
+        );
+    }
+
+    /// After a newly linked book finishes a full scrape, fills blank
+    /// shared metadata and issue links across the same library series.
+    fn propagate_after_scrape(self: &Rc<ShellState>, origins: Vec<ScrapePropagationOrigin>) {
+        let ids: Vec<CrGuid> = origins.iter().map(|origin| origin.book_id).collect();
+        let current: HashMap<CrGuid, ComicBook> = Self::books_by_ids(&ids)
+            .into_iter()
+            .map(|book| (book.id, book))
+            .collect();
+        let mut targets: Vec<SeriesPropagationTarget> = Vec::new();
+        for origin in origins {
+            let Some(book) = current.get(&origin.book_id) else {
                 continue;
             };
-            cr_scrape::bookdata::set_custom_value(book, "comicvine_volume", &volume_id.to_string());
-            cr_scrape::bookdata::set_custom_value(book, "comicvine_issue", &issue_id.to_string());
-            library::apply_edited(book);
-            linked_count += 1;
+            if cr_scrape::bookdata::issue_key_of(book).is_empty() {
+                continue;
+            }
+            let volume_id = cr_scrape::bookdata::series_key_of(book).parse::<i64>().ok();
+            let Some(volume_id) = volume_id else {
+                continue;
+            };
+            let group = (origin.series, origin.volume);
+            if let Some(target) = targets
+                .iter_mut()
+                .find(|target| target.comicvine_volume == volume_id)
+            {
+                if !target.groups.contains(&group) {
+                    target.groups.push(group);
+                }
+            } else {
+                targets.push(SeriesPropagationTarget {
+                    groups: vec![group],
+                    comicvine_volume: volume_id,
+                });
+            }
         }
-        self.refresh_view_from_list();
-        show_report_dialog(
-            &self.window,
-            "Link Series from Cache",
-            &format!(
-                "{linked_count} of {total} book(s) linked. {unmatched} had no matching issue \
-                 number in the cache."
-            ),
+        if targets.is_empty() {
+            return;
+        }
+        let Some(cache) = library::cv_cache() else {
+            show_failure_dialog(
+                &self.window,
+                "Apply Cached Series Metadata",
+                "The Comic Vine cache file could not be opened.",
+            );
+            return;
+        };
+        let books = library::session().borrow().database().books.clone();
+        let config = library::scraper_config();
+        let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let worker_cancel = Arc::clone(&cancel);
+        let state = Rc::downgrade(self);
+        self.run_cv_job(
+            library::CvJobKind::SeriesMetadataPropagation,
+            "Apply Cached Series Metadata",
+            cancel,
+            move |progress| -> Result<SeriesPropagationReport, String> {
+                let total = targets.len() as i64;
+                let mut combined = SeriesPropagationReport::default();
+                let mut changed_ids = std::collections::HashSet::new();
+                for (index, target) in targets.iter().enumerate() {
+                    if worker_cancel.load(std::sync::atomic::Ordering::Relaxed) {
+                        break;
+                    }
+                    let _ = progress.send(CvProgressMsg::Step {
+                        detail: target.groups[0].0.clone(),
+                        done: index as i64,
+                        total,
+                    });
+                    let volume_key = target.comicvine_volume.to_string();
+                    let candidates: Vec<ComicBook> = books
+                        .iter()
+                        .filter(|book| {
+                            target.groups.iter().any(|(series, volume)| {
+                                book.info.series.eq_ignore_ascii_case(series)
+                                    && book.info.volume == *volume
+                            }) || cr_scrape::bookdata::series_key_of(book) == volume_key
+                        })
+                        .cloned()
+                        .collect();
+                    let issues = cache
+                        .issues_of_volume(target.comicvine_volume)
+                        .map_err(|error| error.to_string())?;
+                    let volume = cache
+                        .volume(target.comicvine_volume)
+                        .map_err(|error| error.to_string())?
+                        .unwrap_or(cr_scrape::cache::VolumeRow {
+                            volume_id: target.comicvine_volume,
+                            ..Default::default()
+                        });
+                    let report = cr_scrape::cache::link::enrich_series_from_cache(
+                        &candidates,
+                        &issues,
+                        &volume,
+                        &config,
+                    );
+                    combined.linked += report.linked;
+                    combined.metadata_filled += report.metadata_filled;
+                    combined.unmatched += report.unmatched;
+                    for book in report.books {
+                        if changed_ids.insert(book.id) {
+                            combined.books.push(book);
+                        }
+                    }
+                }
+                Ok(combined)
+            },
+            move |window, result| match result {
+                Ok(report) => {
+                    let updated = library::apply_edited_many(report.books);
+                    if let Some(sh) = state.upgrade() {
+                        sh.refresh_view_from_list();
+                    }
+                    show_report_dialog(
+                        window,
+                        "Apply Cached Series Metadata",
+                        &format!(
+                            "{} book(s) linked. {} book(s) received blank shared metadata. \
+                             {updated} book(s) changed. {} had no matching issue number in the \
+                             cache.",
+                            report.linked, report.metadata_filled, report.unmatched
+                        ),
+                    );
+                }
+                Err(error) => show_failure_dialog(window, "Apply Cached Series Metadata", &error),
+            },
         );
     }
 
@@ -5571,6 +5734,15 @@ impl ShellState {
         if books.is_empty() {
             return;
         }
+        let propagation_origins: Vec<ScrapePropagationOrigin> = books
+            .iter()
+            .filter(|book| cr_scrape::bookdata::issue_key_of(book).is_empty())
+            .map(|book| ScrapePropagationOrigin {
+                book_id: book.id,
+                series: book.info.series.clone(),
+                volume: book.info.volume,
+            })
+            .collect();
         let config = library::scraper_config();
         if !config.has_api_key() {
             let window = self.window.clone();
@@ -5596,6 +5768,7 @@ impl ShellState {
             move |_summary| {
                 if let Some(sh) = state.upgrade() {
                     sh.refresh_view_from_list();
+                    sh.propagate_after_scrape(propagation_origins.clone());
                 }
             },
             move || {

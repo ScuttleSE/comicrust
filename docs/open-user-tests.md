@@ -149,3 +149,22 @@ still show the general profile selector.
 During Preview, Adopt, or another Library Organizer run, confirm that the main
 progress area shows preparation, current source and destination, and completed
 rows. Confirm that the bottom progress count continues to update.
+
+## 25. Cached series metadata propagation
+
+Not yet run. See ADR-063.
+
+Choose a series that has several owned issues with blank Publisher, Imprint,
+and volume year. Keep nonblank test values on at least one other issue. Fully
+scrape one previously unlinked issue from that series. Confirm that the cache
+task appears after the scrape. Confirm that all matching books in the library
+receive the blank shared fields. Confirm that matching issue numbers also
+receive Comic Vine volume and issue IDs. Confirm that the nonblank test values
+do not change.
+
+Clear a blank shared field and the Comic Vine IDs on one issue. Narrow the
+current view so that it contains this issue but excludes another unlinked issue.
+Run **Link Series from Cache**. Confirm that the visible issue receives the
+blank shared field and both IDs. Confirm that the excluded issue does not
+change. Confirm that the summary reports linked, metadata-filled, changed, and
+unmatched counts.

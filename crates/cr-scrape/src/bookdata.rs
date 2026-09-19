@@ -118,6 +118,12 @@ pub fn series_key_of(book: &ComicBook) -> String {
     get_custom_value(book, SERIES_KEY_CUSTOM)
 }
 
+/// Returns the Comic Vine issue ID stored on the book.
+/// Returns an empty string when the book has no link.
+pub fn issue_key_of(book: &ComicBook) -> String {
+    get_custom_value(book, ISSUE_KEY_CUSTOM)
+}
+
 /// Writes the custom value (empty values delete the key).
 pub fn set_custom_value(book: &mut ComicBook, key: &str, value: &str) {
     let mut pairs = values_store::decode(&book.custom_values_store);
@@ -706,6 +712,21 @@ fn convert_publishers(issue: &Issue, config: &Configuration) -> (String, String)
         imprint = String::new();
     }
     (publisher, imprint)
+}
+
+/// Converts the raw publisher stored on a Comic Vine volume into the
+/// Publisher and Imprint values used by books. This uses the same
+/// conversion rules as a full issue scrape.
+pub fn convert_volume_publisher(publisher: &str, config: &Configuration) -> (String, String) {
+    let parent = crate::cv::imprints::find_parent_publisher(publisher);
+    let mut issue = Issue::new(0);
+    if parent != publisher {
+        issue.publisher = parent;
+        issue.imprint = publisher.to_string();
+    } else {
+        issue.publisher = publisher.to_string();
+    }
+    convert_publishers(&issue, config)
 }
 
 /// `__massage_new_string`: returns the new value only when
