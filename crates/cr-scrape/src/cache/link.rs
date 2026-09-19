@@ -45,6 +45,13 @@ pub fn enrich_series_from_cache(
         let key = super::missing::normalize_number(&issue.issue_number);
         by_number.entry(key).or_insert(issue.issue_id);
     }
+    cr_core::trace::trace(format!(
+        "series enrichment index volume_id={} candidates={} cached_issues={} normalized_keys={}",
+        volume.volume_id,
+        candidates.len(),
+        issues.len(),
+        by_number.len()
+    ));
 
     let (publisher, imprint) = volume
         .publisher
@@ -57,8 +64,10 @@ pub fn enrich_series_from_cache(
         let mut book = candidate.clone();
         let mut changed = false;
         let mut metadata_changed = false;
+        let existing_volume = get_custom_value(&book, "comicvine_volume");
+        let existing_issue = get_custom_value(&book, "comicvine_issue");
 
-        if get_custom_value(&book, "comicvine_volume").is_empty() {
+        if existing_volume.is_empty() {
             set_custom_value(&mut book, "comicvine_volume", &volume.volume_id.to_string());
             changed = true;
         }
@@ -81,15 +90,29 @@ pub fn enrich_series_from_cache(
             }
         }
 
-        if get_custom_value(&book, "comicvine_issue").is_empty() {
+        if existing_issue.is_empty() {
             let key = super::missing::normalize_number(&book.info.number);
-            if let Some(issue_id) = by_number.get(&key) {
+            let matched_issue = by_number.get(&key).copied();
+            cr_core::trace::trace(format!(
+                "series enrichment candidate book_id={:?} raw_number={:?} normalized_number={:?} existing_volume={:?} existing_issue={:?} matched_issue={matched_issue:?}",
+                book.id,
+                book.info.number,
+                key,
+                existing_volume,
+                existing_issue
+            ));
+            if let Some(issue_id) = matched_issue {
                 set_custom_value(&mut book, "comicvine_issue", &issue_id.to_string());
                 report.linked += 1;
                 changed = true;
             } else {
                 report.unmatched += 1;
             }
+        } else {
+            cr_core::trace::trace(format!(
+                "series enrichment candidate book_id={:?} raw_number={:?} existing_volume={:?} existing_issue={:?} action=skip_existing_issue",
+                book.id, book.info.number, existing_volume, existing_issue
+            ));
         }
 
         if metadata_changed {
@@ -99,6 +122,14 @@ pub fn enrich_series_from_cache(
             report.books.push(book);
         }
     }
+    cr_core::trace::trace(format!(
+        "series enrichment result volume_id={} linked={} unmatched={} metadata_filled={} changed_books={}",
+        volume.volume_id,
+        report.linked,
+        report.unmatched,
+        report.metadata_filled,
+        report.books.len()
+    ));
     report
 }
 

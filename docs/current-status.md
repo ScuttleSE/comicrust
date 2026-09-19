@@ -18,6 +18,15 @@ The release GTK probe passed search, issue display, and manual metadata save.
 The required workspace verification passes. `UNKNOWN`: user test 26 has not
 run against the live Comic Vine API.
 
+`MEASURED` (user, 2026-09-19): cached volume 19752 contains issue ID 1135136
+with issue number `2451`, and the corresponding book Number is also `2451`,
+but cached series propagation did not add the issue link and reported 46
+unmatched books. `CODE-READ`: these values normalize to the same key, so the
+static matcher does not explain the result. `UNKNOWN`: the exact cache and
+candidate values seen by the worker during the failed run. `CR_TRACE` now logs
+the cache path, target counts, each candidate's raw and normalized number,
+existing links, lookup result, worker totals, and landing total.
+
 **Phase 19: the Missing Issues gap view.**
 
 Implemented: the pure gap engine (`cr_scrape::cache::missing::missing_issues_of_library`),

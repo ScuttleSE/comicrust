@@ -4734,6 +4734,10 @@ impl ShellState {
                 let total = targets.len() as i64;
                 let mut combined = SeriesPropagationReport::default();
                 let mut changed_ids = std::collections::HashSet::new();
+                crate::trace::trace(format!(
+                    "series propagation cache_path={}",
+                    cr_scrape::cache::default_cache_path().display()
+                ));
                 for (index, target) in targets.iter().enumerate() {
                     if worker_cancel.load(std::sync::atomic::Ordering::Relaxed) {
                         break;
@@ -4757,6 +4761,13 @@ impl ShellState {
                     let issues = cache
                         .issues_of_volume(target.comicvine_volume)
                         .map_err(|error| error.to_string())?;
+                    crate::trace::trace(format!(
+                        "series propagation target volume_id={} groups={:?} candidates={} cached_issues={}",
+                        target.comicvine_volume,
+                        target.groups,
+                        candidates.len(),
+                        issues.len()
+                    ));
                     let volume = cache
                         .volume(target.comicvine_volume)
                         .map_err(|error| error.to_string())?
@@ -4770,6 +4781,14 @@ impl ShellState {
                         &volume,
                         &config,
                     );
+                    crate::trace::trace(format!(
+                        "series propagation target result volume_id={} linked={} unmatched={} metadata_filled={} changed_books={}",
+                        target.comicvine_volume,
+                        report.linked,
+                        report.unmatched,
+                        report.metadata_filled,
+                        report.books.len()
+                    ));
                     combined.linked += report.linked;
                     combined.metadata_filled += report.metadata_filled;
                     combined.unmatched += report.unmatched;
@@ -4784,6 +4803,10 @@ impl ShellState {
             move |window, result| match result {
                 Ok(report) => {
                     let updated = library::apply_edited_many(report.books);
+                    crate::trace::trace(format!(
+                        "series propagation landing linked={} unmatched={} metadata_filled={} database_updated={updated}",
+                        report.linked, report.unmatched, report.metadata_filled
+                    ));
                     if let Some(sh) = state.upgrade() {
                         sh.refresh_view_from_list();
                     }
