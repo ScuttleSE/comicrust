@@ -272,8 +272,17 @@ see ADR-059's follow-up and `docs/current-status.md`. A new regression test
 covers it; `cargo fmt`/`clippy`/`test`, the synthetic timing gate, and the
 UI probe were all re-run clean after the fix.
 
-Still open: the user test (test 22 in `docs/open-user-tests.md`, including
-its new scoped-series regression check), and the real-library pass timing.
+**Bug found and fixed, 2026-09-19 (second user test):** a 2,484-book 2000 AD
+scope produced a 2,500-row `Unspecified` group and 59 more rows under 2000 AD.
+A `CR_TRACE` run found 43 books with empty stored Series and Number values.
+Their enabled filename proposals supplied the values that the browser showed.
+The gap pass now uses these proposed values when stored values are empty, as
+ADR-067 specifies. The regression test combines stored and proposed metadata
+in one group.
+
+Still open: the corrected result needs the user test in
+`docs/open-user-tests.md`. `MEASURED` (user): the defective real-library pass
+took 26.37 ms for 2,484 scoped books and 16,851 library books.
 
 ## Find in Incoming extension
 

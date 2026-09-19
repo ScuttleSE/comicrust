@@ -27,21 +27,22 @@ smart list reports 2,559 missing rows. It groups 59 rows under `2000 AD` and
 2,500 rows under `Unspecified`. At least one reported row has the same visible
 Series, Number, and Comic Vine issue ID as an owned book.
 
-`CODE-READ`: The gap pass compares normalized Number inside a stored
-case-insensitive `(Series, Volume)` key. It does not use the Comic Vine issue ID
-for ownership. The view hides Volume and Comic Vine volume ID. It can show
-proposed values in place of empty stored values.
+`MEASURED`: `CR_TRACE` found 2,441 books with stored Series and Number values.
+It found 43 books with both values empty and proposed metadata enabled. Both
+groups use stored Volume 1977 and Comic Vine volume 19752. The old gap pass
+made an empty-Series group for the 43 books and reported all 2,500 cached
+issues in that group. Of these cached issues, 2,483 already had a linked book
+in the scope.
 
-`UNKNOWN`: The stored field or hidden key that separates the owned book from
-the gap row. `CR_TRACE` now reports each gap key, scope counts, blank Number
-counts, volume votes, cache counts, and linked-issue conflicts without paths or
-book IDs.
+ADR-067 makes Missing Issues use enabled Proposed Series and Number values when
+the stored values are empty. `MEASURED`: the regression test combines stored
+and proposed metadata into one group and reports only the absent issue.
+`UNKNOWN`: the corrected count needs a real-library user test.
 
 ## Current task for the next context
 
-Collect the Missing Issues trace from the reported 2000 AD scope. Use the
-measured key mismatch to design the fix and its regression test. Do not design
-the fix before this measurement.
+Retest Missing Issues with the reported 2000 AD scope. Confirm that the
+`Unspecified` group is absent and that the report contains only real gaps.
 
 After this defect is resolved, resume the deferred task: connect normal
 **Scrape from Comic Vine** to persistent-cache reads. Define cache-use and
@@ -91,14 +92,13 @@ licenses` is not a CI gate.
 
 ## Latest verification
 
-The Missing Issues diagnostic trace change passed on 2026-09-19.
+The Missing Issues proposed-value fix passed on 2026-09-19.
 
 - `cargo fmt --all`: passed.
 - `cargo clippy --workspace --all-targets -- -D warnings`: passed.
 - `cargo test --workspace`: passed.
-- `MEASURED`: a `CR_TRACE=1` unit-test run printed the expected aggregate group
-  fields.
-- `UNKNOWN`: the real 2000 AD trace has not run.
+- `MEASURED`: the proposed-Series and proposed-Number regression test passes.
+- `UNKNOWN`: the corrected real 2000 AD result needs a user test.
 
 ## Environment notes
 

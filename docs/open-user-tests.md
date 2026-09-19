@@ -99,11 +99,11 @@ Close the app after the refresh finishes. Extract the relevant lines:
 grep 'missing issues' /tmp/comicrust-missing.log
 ```
 
-The group lines show stored Series, Volume, scope counts, blank Number counts,
-Comic Vine volume votes, cached issue counts, and missing counts. The linked
-example lines show an issue that the report marks missing although a scoped
-book has the same Comic Vine issue ID. These lines do not contain file paths
-or book IDs.
+The group lines show matched Series, stored Volume, scope counts, blank stored
+Series and Number counts, Comic Vine volume votes, cached issue counts, and
+missing counts. The linked example lines show an issue that the report marks
+missing although a scoped book has the same Comic Vine issue ID. These lines do
+not contain file paths or book IDs.
 
 ## 23. Link Series from Cache
 

@@ -70,6 +70,7 @@ This index is navigation only. The entry below each ADR is the decision.
 | ADR-064 | The cache manager has summary and complete API updates | accepted | — |
 | ADR-065 | Cached issue linking uses the enabled Proposed Number fallback | accepted | ADR-060 |
 | ADR-066 | Link Series from Cache processes all selected series as one batch | accepted | ADR-060 |
+| ADR-067 | Missing Issues uses enabled Proposed Series and Number values | accepted | ADR-059 |
 
 ADR-029 is reserved for the deferred Phase 9 (SQLite) decision. It is not written yet.
 
@@ -634,3 +635,25 @@ v0.1.0 and every rolling build after it, and one manual reinstall clears it.
   most one Comic Vine search for each selected series group. Cache reads remain
   on worker threads. The main thread applies each completed group in one
   database pass.
+
+## ADR-067: Missing Issues uses enabled Proposed Series and Number values
+
+- **Status:** accepted (2026-09-19, user decision). Extends ADR-059 and
+  ADR-065.
+- **Context:** A real Missing Issues trace covered a smart list with 2,484
+  books for Comic Vine volume 19752. Of these books, 2,441 had stored Series
+  and Number values. The other 43 had empty stored Series and Number values,
+  enabled proposed metadata, and valid Comic Vine issue links. The browser
+  showed all books as 2000 AD issues. The gap pass used only stored fields. It
+  made a separate empty-Series group and reported all 2,500 cached issues in
+  that group as missing. It also reported 42 linked issues as missing in the
+  stored-Series group.
+- **Decision:** The Missing Issues identity uses the stored Series and Number
+  when each value is not empty. When a value is empty and proposed metadata is
+  enabled, the identity uses that value from the filename proposal. The Volume
+  remains the stored Volume. This rule applies to scoped ownership and to the
+  whole-library Comic Vine volume vote.
+- **Consequences:** Books that the browser shows in one series now contribute
+  their visible issue numbers to one gap calculation. Disabled proposed
+  metadata does not supply fallback values. The report remains read-only and
+  cache-only.

@@ -93,13 +93,22 @@ pub fn volume_id_of(series_keys: impl IntoIterator<Item = String>) -> Option<i64
         .map(|(id, _)| id)
 }
 
-/// The gap-pass grouping key: case-folded series name + volume. Library
-/// books already carry a real series name, so this needs no
-/// shadow/proposed-name fallback (unlike Incoming's `incoming_identity`).
+/// The gap-pass grouping key: case-folded visible series name + stored volume.
+/// The series uses the enabled filename proposal when its stored value is
+/// empty, as the browser does (ADR-067).
 #[derive(Clone, PartialEq, Eq, Hash, Debug)]
 struct GapSeriesKey {
     series: String,
     volume: i32,
+}
+
+#[derive(Clone, Copy, Debug, Default)]
+struct GapScopeTrace {
+    books: usize,
+    blank_stored_series: usize,
+    blank_stored_numbers: usize,
+    proposed_enabled: usize,
+    linked_issue_ids: usize,
 }
 
 /// One series' gap report: the volume it was matched to and the issues
@@ -133,6 +142,10 @@ pub struct SeriesGap {
 /// always read back "0 missing" for it — the linked copies elsewhere
 /// in the library were invisible to the vote.)
 ///
+/// Series and Number use their enabled filename proposals when their stored
+/// values are empty. This keeps the identity equal to the values that the
+/// browser and cache-linking command use (ADR-065 and ADR-067).
+///
 /// Builds the owned-numbers-by-series map in ONE pass over
 /// `scope_books` and the volume-vote map in a SEPARATE single pass
 /// over `library_books`, then reads the cache once per distinct scoped
@@ -148,11 +161,35 @@ pub fn missing_issues_of_library(
     scope_books: &[ComicBook],
     library_books: &[ComicBook],
 ) -> Vec<SeriesGap> {
-    fn key_of(book: &ComicBook) -> GapSeriesKey {
-        GapSeriesKey {
-            series: book.info.series.trim().to_ascii_lowercase(),
-            volume: book.info.volume,
-        }
+    fn identity_of(book: &ComicBook) -> (GapSeriesKey, String, String) {
+        let use_proposed_series = book.enable_proposed && book.info.series.is_empty();
+        let use_proposed_number = book.enable_proposed && book.info.number.trim().is_empty();
+        let proposed = (use_proposed_series || use_proposed_number)
+            .then(|| cr_core::model::comic_name_info::from_file_path(&book.file_path));
+        let series = if use_proposed_series {
+            proposed
+                .as_ref()
+                .map(|info| info.series.clone())
+                .unwrap_or_default()
+        } else {
+            book.info.series.clone()
+        };
+        let number = if use_proposed_number {
+            proposed
+                .as_ref()
+                .map(|info| info.number.clone())
+                .unwrap_or_default()
+        } else {
+            book.info.number.clone()
+        };
+        (
+            GapSeriesKey {
+                series: series.trim().to_ascii_lowercase(),
+                volume: book.info.volume,
+            },
+            series,
+            number,
+        )
     }
 
     let tracing = cr_core::trace::enabled();
@@ -169,39 +206,36 @@ pub fn missing_issues_of_library(
     // Trace-only indexes contain metadata values but never paths or book IDs.
     // They explain when an issue link exists under a different Series/Volume
     // key from the gap row that reports it as missing.
-    let mut scope_stats: HashMap<GapSeriesKey, (usize, usize, usize, usize)> = HashMap::new();
+    let mut scope_stats: HashMap<GapSeriesKey, GapScopeTrace> = HashMap::new();
     let mut scope_issue_links: HashMap<i64, Vec<(GapSeriesKey, String)>> = HashMap::new();
     for book in scope_books {
-        let key = key_of(book);
+        let (key, series, number) = identity_of(book);
         if tracing {
             let stats = scope_stats.entry(key.clone()).or_default();
-            stats.0 += 1;
-            stats.1 += usize::from(book.info.number.trim().is_empty());
-            stats.2 += usize::from(book.enable_proposed);
+            stats.books += 1;
+            stats.blank_stored_series += usize::from(book.info.series.is_empty());
+            stats.blank_stored_numbers += usize::from(book.info.number.trim().is_empty());
+            stats.proposed_enabled += usize::from(book.enable_proposed);
             let issue_link = crate::bookdata::get_custom_value(book, "comicvine_issue");
             if let Ok(issue_id) = issue_link.trim().parse::<i64>() {
                 if issue_id > 0 {
-                    stats.3 += 1;
+                    stats.linked_issue_ids += 1;
                     scope_issue_links
                         .entry(issue_id)
                         .or_default()
-                        .push((key.clone(), book.info.number.clone()));
+                        .push((key.clone(), number.clone()));
                 }
             }
         }
-        owned
-            .entry(key.clone())
-            .or_default()
-            .push(book.info.number.clone());
-        display_name
-            .entry(key)
-            .or_insert_with(|| book.info.series.clone());
+        owned.entry(key.clone()).or_default().push(number);
+        display_name.entry(key).or_insert(series);
     }
 
     let mut volume_votes: HashMap<GapSeriesKey, Vec<String>> = HashMap::new();
     for book in library_books {
+        let (key, _, _) = identity_of(book);
         volume_votes
-            .entry(key_of(book))
+            .entry(key)
             .or_default()
             .push(crate::bookdata::get_custom_value(book, "comicvine_volume"));
     }
@@ -224,14 +258,15 @@ pub fn missing_issues_of_library(
         let Some(volume_id) = volume_id_of(votes) else {
             if tracing {
                 cr_core::trace::trace(format!(
-                    "missing issues group stored_series={:?} volume={} display_series={:?} scope_books={} blank_stored_numbers={} proposed_enabled={} linked_issue_ids={} volume_votes={vote_counts:?} result=no_volume_vote",
+                    "missing issues group match_series={:?} volume={} display_series={:?} scope_books={} blank_stored_series={} blank_stored_numbers={} proposed_enabled={} linked_issue_ids={} volume_votes={vote_counts:?} result=no_volume_vote",
                     key.series,
                     key.volume,
                     shown_series,
-                    stats.0,
-                    stats.1,
-                    stats.2,
-                    stats.3
+                    stats.books,
+                    stats.blank_stored_series,
+                    stats.blank_stored_numbers,
+                    stats.proposed_enabled,
+                    stats.linked_issue_ids
                 ));
             }
             continue;
@@ -241,14 +276,15 @@ pub fn missing_issues_of_library(
             Err(error) => {
                 if tracing {
                     cr_core::trace::trace(format!(
-                        "missing issues group stored_series={:?} volume={} display_series={:?} scope_books={} blank_stored_numbers={} proposed_enabled={} linked_issue_ids={} volume_votes={vote_counts:?} chosen_volume_id={} result=cache_error error={error}",
+                        "missing issues group match_series={:?} volume={} display_series={:?} scope_books={} blank_stored_series={} blank_stored_numbers={} proposed_enabled={} linked_issue_ids={} volume_votes={vote_counts:?} chosen_volume_id={} result=cache_error error={error}",
                         key.series,
                         key.volume,
                         shown_series,
-                        stats.0,
-                        stats.1,
-                        stats.2,
-                        stats.3,
+                        stats.books,
+                        stats.blank_stored_series,
+                        stats.blank_stored_numbers,
+                        stats.proposed_enabled,
+                        stats.linked_issue_ids,
                         volume_id
                     ));
                 }
@@ -268,13 +304,13 @@ pub fn missing_issues_of_library(
                 missing_with_scoped_issue_link += 1;
                 for (source_key, source_number) in sources {
                     let source = format!(
-                        "stored_series={:?},volume={}",
+                        "match_series={:?},volume={}",
                         source_key.series, source_key.volume
                     );
                     *linked_sources.entry(source).or_default() += 1;
                     if examples.len() < 5 {
                         examples.push(format!(
-                            "issue_id={},cached_number={:?},source_series={:?},source_volume={},source_stored_number={:?}",
+                            "issue_id={},cached_number={:?},source_series={:?},source_volume={},source_match_number={:?}",
                             issue.issue_id,
                             issue.issue_number,
                             source_key.series,
@@ -285,14 +321,15 @@ pub fn missing_issues_of_library(
                 }
             }
             cr_core::trace::trace(format!(
-                "missing issues group stored_series={:?} volume={} display_series={:?} scope_books={} blank_stored_numbers={} proposed_enabled={} linked_issue_ids={} volume_votes={vote_counts:?} chosen_volume_id={} cached_issues={} missing={} missing_with_scoped_issue_link={} linked_sources={linked_sources:?}",
+                "missing issues group match_series={:?} volume={} display_series={:?} scope_books={} blank_stored_series={} blank_stored_numbers={} proposed_enabled={} linked_issue_ids={} volume_votes={vote_counts:?} chosen_volume_id={} cached_issues={} missing={} missing_with_scoped_issue_link={} linked_sources={linked_sources:?}",
                 key.series,
                 key.volume,
                 shown_series,
-                stats.0,
-                stats.1,
-                stats.2,
-                stats.3,
+                stats.books,
+                stats.blank_stored_series,
+                stats.blank_stored_numbers,
+                stats.proposed_enabled,
+                stats.linked_issue_ids,
                 volume_id,
                 issues.len(),
                 missing.len(),
@@ -585,6 +622,51 @@ mod tests {
         assert_eq!(gaps.len(), 1);
         assert_eq!(gaps[0].series, "Alpha");
         assert_eq!(numbers_of(&gaps[0]), vec!["2"]);
+    }
+
+    #[test]
+    fn proposed_series_and_number_join_the_stored_series_gap() {
+        let cache = cache();
+        cache
+            .put_issues(&[
+                IssueSkeleton {
+                    issue_id: 1,
+                    volume_id: 19_752,
+                    issue_number: "1".into(),
+                    ..Default::default()
+                },
+                IssueSkeleton {
+                    issue_id: 2,
+                    volume_id: 19_752,
+                    issue_number: "2".into(),
+                    ..Default::default()
+                },
+                IssueSkeleton {
+                    issue_id: 3,
+                    volume_id: 19_752,
+                    issue_number: "3".into(),
+                    ..Default::default()
+                },
+            ])
+            .expect("seed issues");
+
+        let mut stored = series_book("Alpha", 1977, "1", Some(19_752));
+        crate::bookdata::set_custom_value(&mut stored, "comicvine_issue", "1");
+        let mut proposed = ComicBook {
+            file_path: "/library/Alpha 2.cbz".into(),
+            ..Default::default()
+        };
+        proposed.info.volume = 1977;
+        crate::bookdata::set_custom_value(&mut proposed, "comicvine_volume", "19752");
+        crate::bookdata::set_custom_value(&mut proposed, "comicvine_issue", "2");
+        let books = vec![stored, proposed];
+
+        let gaps = missing_issues_of_library(&cache, &books, &books);
+
+        assert_eq!(gaps.len(), 1);
+        assert_eq!(gaps[0].series, "Alpha");
+        assert_eq!(gaps[0].volume, 1977);
+        assert_eq!(numbers_of(&gaps[0]), vec!["3"]);
     }
 
     #[test]
