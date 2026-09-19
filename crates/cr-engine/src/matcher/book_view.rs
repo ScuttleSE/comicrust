@@ -17,6 +17,72 @@ use cr_core::xml::scalar::CrDateTime;
 
 use super::text_number::parse_comic_number;
 
+#[derive(Clone, Copy, Debug, Default)]
+pub struct ProposedCacheTraceSnapshot {
+    skipped: u64,
+    hits: u64,
+    misses: u64,
+    clears: u64,
+    lock_wait_ns: u64,
+    lock_hold_ns: u64,
+    parse_ns: u64,
+}
+
+thread_local! {
+    static PROPOSED_CACHE_TRACE: std::cell::Cell<ProposedCacheTraceSnapshot> =
+        const { std::cell::Cell::new(ProposedCacheTraceSnapshot {
+            skipped: 0,
+            hits: 0,
+            misses: 0,
+            clears: 0,
+            lock_wait_ns: 0,
+            lock_hold_ns: 0,
+            parse_ns: 0,
+        }) };
+}
+
+static PROPOSED_CACHE_ENTRIES: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+fn duration_ns(duration: std::time::Duration) -> u64 {
+    duration.as_nanos().min(u128::from(u64::MAX)) as u64
+}
+
+fn update_proposed_cache_trace(f: impl FnOnce(&mut ProposedCacheTraceSnapshot)) {
+    if !super::eval::trace_accum::enabled() {
+        return;
+    }
+    PROPOSED_CACHE_TRACE.with(|trace| {
+        let mut value = trace.get();
+        f(&mut value);
+        trace.set(value);
+    });
+}
+
+pub fn proposed_cache_trace_snapshot() -> ProposedCacheTraceSnapshot {
+    PROPOSED_CACHE_TRACE.with(std::cell::Cell::get)
+}
+
+pub fn trace_proposed_cache_delta(label: &str, start: ProposedCacheTraceSnapshot) {
+    if !super::eval::trace_accum::enabled() {
+        return;
+    }
+    let end = proposed_cache_trace_snapshot();
+    let elapsed_ms = |end: u64, start: u64| end.saturating_sub(start) as f64 / 1_000_000.0;
+    cr_core::trace::trace(format!(
+        "{label} proposed-cache thread={} skipped={} hits={} misses={} clears={} entries={} lock-wait={:.1}ms lock-hold={:.1}ms parse={:.1}ms",
+        cr_core::trace::thread_label(),
+        end.skipped.saturating_sub(start.skipped),
+        end.hits.saturating_sub(start.hits),
+        end.misses.saturating_sub(start.misses),
+        end.clears.saturating_sub(start.clears),
+        PROPOSED_CACHE_ENTRIES.load(std::sync::atomic::Ordering::Relaxed),
+        elapsed_ms(end.lock_wait_ns, start.lock_wait_ns),
+        elapsed_ms(end.lock_hold_ns, start.lock_hold_ns),
+        elapsed_ms(end.parse_ns, start.parse_ns),
+    ));
+}
+
 /// `ComicBook.ReadPercentage`: 0 when nothing read; `((LastPageRead + 1)
 /// * 100 / PageCount).Clamp(1, 100)` otherwise.
 pub fn read_percentage(book: &ComicBook) -> i32 {
@@ -77,20 +143,51 @@ pub fn proposed_cached(book: &ComicBook) -> ComicNameInfo {
     static CACHE: std::sync::Mutex<Option<HashMap<String, ComicNameInfo>>> =
         std::sync::Mutex::new(None);
     if !needs_prop(book) {
+        update_proposed_cache_trace(|trace| trace.skipped += 1);
         return ComicNameInfo::new();
     }
+    let lock_started = super::eval::trace_accum::enabled().then(std::time::Instant::now);
     let mut slot = CACHE
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let lock_wait_ns = lock_started.map_or(0, |started| duration_ns(started.elapsed()));
+    let hold_started = super::eval::trace_accum::enabled().then(std::time::Instant::now);
     let cache = slot.get_or_insert_with(HashMap::new);
     if let Some(info) = cache.get(&book.file_path) {
-        return info.clone();
+        let info = info.clone();
+        let lock_hold_ns = hold_started.map_or(0, |started| duration_ns(started.elapsed()));
+        drop(slot);
+        update_proposed_cache_trace(|trace| {
+            trace.hits += 1;
+            trace.lock_wait_ns += lock_wait_ns;
+            trace.lock_hold_ns += lock_hold_ns;
+        });
+        return info;
     }
+    let parse_started = super::eval::trace_accum::enabled().then(std::time::Instant::now);
     let info = super::eval::trace_accum::time_prop(|| proposed(book));
+    let parse_ns = parse_started.map_or(0, |started| duration_ns(started.elapsed()));
+    let mut cleared = false;
     if cache.len() >= 100_000 {
+        cr_core::trace::trace(format!(
+            "proposed-cache clear thread={} entries_before={}",
+            cr_core::trace::thread_label(),
+            cache.len()
+        ));
         cache.clear();
+        cleared = true;
     }
     cache.insert(book.file_path.clone(), info.clone());
+    PROPOSED_CACHE_ENTRIES.store(cache.len(), std::sync::atomic::Ordering::Relaxed);
+    let lock_hold_ns = hold_started.map_or(0, |started| duration_ns(started.elapsed()));
+    drop(slot);
+    update_proposed_cache_trace(|trace| {
+        trace.misses += 1;
+        trace.clears += u64::from(cleared);
+        trace.lock_wait_ns += lock_wait_ns;
+        trace.lock_hold_ns += lock_hold_ns;
+        trace.parse_ns += parse_ns;
+    });
     info
 }
 

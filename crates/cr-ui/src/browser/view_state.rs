@@ -433,6 +433,8 @@ impl ViewState {
 
         let t_bsort = t_bsort.elapsed();
         let t_isort = std::time::Instant::now();
+        let cache_trace_start = book_view::proposed_cache_trace_snapshot();
+        let mut item_comparisons = 0_u64;
 
         // Sort inside each bucket (the chained comparer), then
         // append to the display order. Collapsed groups keep their
@@ -443,6 +445,7 @@ impl ViewState {
         for bucket in buckets {
             let mut items = bucket.items;
             items.sort_by(|&x, &y| {
+                item_comparisons += 1;
                 // The prop resolve stays lazy: an empty chain reads
                 // nothing (compare would early-out, but the resolve
                 // args would parse first — keep the guard here).
@@ -479,10 +482,12 @@ impl ViewState {
                 self.display_order.extend(items);
             }
         }
+        let t_isort = t_isort.elapsed();
+        book_view::trace_proposed_cache_delta("item-sort", cache_trace_start);
         crate::trace::trace(format!(
-            "rebuild: books {} filter {t_filter:?} bucket {t_bucket:?} bucket-sort {t_bsort:?} item-sort {:?} (total {:?})",
+            "rebuild: thread={} books {} filter {t_filter:?} bucket {t_bucket:?} bucket-sort {t_bsort:?} item-sort {t_isort:?} item-comparisons={item_comparisons} (total {:?})",
+            cr_core::trace::thread_label(),
             self.books.len(),
-            t_isort.elapsed(),
             t_rebuild.elapsed()
         ));
     }

@@ -2091,6 +2091,7 @@ fn draw_frame(ctx: &cairo::Context, state: &Rc<RefCell<ItemViewState>>, window: 
     // Env-gated frame evidence (`CR_TRACE=1`): the culling window, the
     // drawn item count, the thumb load backlog, and the frame cost.
     let t0 = crate::trace::enabled().then(std::time::Instant::now);
+    let cache_trace_start = crate::trace::enabled().then(book_view::proposed_cache_trace_snapshot);
     let mut s = state.borrow_mut();
     s.config.view_height = window.h;
     // The per-frame draw record resets here (the badge count is the
@@ -2226,15 +2227,19 @@ fn draw_frame(ctx: &cairo::Context, state: &Rc<RefCell<ItemViewState>>, window: 
     // The "Series:" stat columns need the per-series aggregates —
     // build once per book set (the C# `ComicBooknistics.Create` over
     // the library books, built on the first stats access).
+    let mut series_stats_elapsed = std::time::Duration::ZERO;
     if s.config.mode == ItemViewMode::Detail
         && s.series_stats.is_none()
         && s.detail_columns
             .iter()
             .any(|c| c.visible && c.property.starts_with("SeriesStat"))
     {
+        let started = std::time::Instant::now();
         let books: Vec<&ComicBook> = s.view.books().iter().collect();
         s.series_stats = Some(series::create(&books, &|b| book_view::proposed_cached(b)));
+        series_stats_elapsed = started.elapsed();
     }
+    let item_draw_started = std::time::Instant::now();
     for item in &visible {
         let book = s.view.book(item.display);
         let selected = s.view.is_selected(&book.id);
@@ -2285,6 +2290,7 @@ fn draw_frame(ctx: &cairo::Context, state: &Rc<RefCell<ItemViewState>>, window: 
             ctx.stroke().ok();
         }
     }
+    let item_draw_elapsed = item_draw_started.elapsed();
 
     // The rubber band (translucent highlight, inflated −2).
     if let Some(band) = s.band {
@@ -2307,15 +2313,21 @@ fn draw_frame(ctx: &cairo::Context, state: &Rc<RefCell<ItemViewState>>, window: 
 
     if let Some(t0) = t0 {
         crate::trace::trace(format!(
-            "draw_frame win=({:.0},{:.0} {:.0}x{:.0}) items={} thumbs_pending={} {:.1} ms",
+            "draw_frame thread={} win=({:.0},{:.0} {:.0}x{:.0}) items={} thumbs_pending={} series-stats={:.1}ms item-draw={:.1}ms {:.1} ms",
+            cr_core::trace::thread_label(),
             window.x,
             window.y,
             window.w,
             window.h,
             visible.len(),
             s.pending_thumbs,
+            series_stats_elapsed.as_secs_f64() * 1e3,
+            item_draw_elapsed.as_secs_f64() * 1e3,
             t0.elapsed().as_secs_f64() * 1e3
         ));
+    }
+    if let Some(start) = cache_trace_start {
+        book_view::trace_proposed_cache_delta("draw-frame", start);
     }
 
     queued_thumbs

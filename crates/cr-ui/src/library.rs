@@ -1547,23 +1547,42 @@ fn project_incoming_external_gaps(
     incoming: &[ComicBook],
     library: &[ComicBook],
 ) -> cr_engine::incoming::ExternalGapCache {
+    let phase_started = std::time::Instant::now();
+    let cache_trace_started = cr_engine::matcher::book_view::proposed_cache_trace_snapshot();
     let identities: HashSet<_> = incoming
         .iter()
         .filter_map(cr_engine::incoming::incoming_identity)
         .collect();
+    crate::trace::trace(format!(
+        "gap refresh thread={} phase=identities elapsed={:?} identities={}",
+        cr_core::trace::thread_label(),
+        phase_started.elapsed(),
+        identities.len()
+    ));
+    cr_engine::matcher::book_view::trace_proposed_cache_delta(
+        "gap-refresh identities",
+        cache_trace_started,
+    );
     let phase_started = std::time::Instant::now();
+    let cache_trace_started = cr_engine::matcher::book_view::proposed_cache_trace_snapshot();
     let volume_ids = incoming_volume_ids_for(&identities, incoming, library);
     crate::trace::trace(format!(
-        "gap refresh phase=volume_ids elapsed={:?} identities={} volumes={}",
+        "gap refresh thread={} phase=volume_ids elapsed={:?} identities={} volumes={}",
+        cr_core::trace::thread_label(),
         phase_started.elapsed(),
         identities.len(),
         volume_ids.len()
     ));
+    cr_engine::matcher::book_view::trace_proposed_cache_delta(
+        "gap-refresh volume-ids",
+        cache_trace_started,
+    );
     // One pass over `library`, grouping owned issue numbers by identity,
     // instead of rescanning the whole library once per identity below
     // (the same O(identities x books) shape `incoming_volume_ids_for`
     // fixes just above).
     let phase_started = std::time::Instant::now();
+    let cache_trace_started = cr_engine::matcher::book_view::proposed_cache_trace_snapshot();
     let mut owned_by_identity: HashMap<cr_engine::incoming::IncomingIdentity, Vec<String>> =
         HashMap::new();
     for book in library {
@@ -1575,11 +1594,17 @@ fn project_incoming_external_gaps(
         }
     }
     crate::trace::trace(format!(
-        "gap refresh phase=owned_by_identity elapsed={:?} identities={}",
+        "gap refresh thread={} phase=owned_by_identity elapsed={:?} identities={}",
+        cr_core::trace::thread_label(),
         phase_started.elapsed(),
         owned_by_identity.len()
     ));
+    cr_engine::matcher::book_view::trace_proposed_cache_delta(
+        "gap-refresh owned-by-identity",
+        cache_trace_started,
+    );
     let phase_started = std::time::Instant::now();
+    let cache_trace_started = cr_engine::matcher::book_view::proposed_cache_trace_snapshot();
     let mut result = cr_engine::incoming::ExternalGapCache::new();
     for (identity, volume_id) in volume_ids {
         let Ok(issues) = cache.issues_of_volume(volume_id) else {
@@ -1598,10 +1623,15 @@ fn project_incoming_external_gaps(
         }
     }
     crate::trace::trace(format!(
-        "gap refresh phase=cache_and_missing elapsed={:?} gap_identities={}",
+        "gap refresh thread={} phase=cache_and_missing elapsed={:?} gap_identities={}",
+        cr_core::trace::thread_label(),
         phase_started.elapsed(),
         result.len()
     ));
+    cr_engine::matcher::book_view::trace_proposed_cache_delta(
+        "gap-refresh cache-and-missing",
+        cache_trace_started,
+    );
     result
 }
 

@@ -36,10 +36,18 @@ pub(crate) mod trace_accum {
         pub regex_ms: f64,
         pub prop_parses: u64,
         pub prop_ms: f64,
+        pub prop_access_calls: u64,
+        pub prop_access_ms: f64,
+        pub property_extract_calls: u64,
+        pub property_extract_ms: f64,
+        pub string_compare_calls: u64,
+        pub string_compare_ms: f64,
     }
 
     thread_local! {
         static ACCUM: RefCell<Option<Accum>> = const { RefCell::new(None) };
+        static PROPOSED_CACHE_START: RefCell<Option<super::book_view::ProposedCacheTraceSnapshot>> =
+            const { RefCell::new(None) };
     }
 
     pub fn enabled() -> bool {
@@ -65,6 +73,9 @@ pub(crate) mod trace_accum {
             return;
         }
         ACCUM.with(|slot| *slot.borrow_mut() = None);
+        PROPOSED_CACHE_START.with(|slot| {
+            *slot.borrow_mut() = Some(super::book_view::proposed_cache_trace_snapshot())
+        });
     }
 
     /// Times `f` into the proposed-parse counter.
@@ -88,7 +99,10 @@ pub(crate) mod trace_accum {
             return;
         }
         let ms = total.elapsed().as_secs_f64() * 1000.0;
-        eprintln!("[trace] {label}: books_in={books_in} books_out={books_out} total={ms:.1}ms");
+        eprintln!(
+            "[trace] {label}: thread={} books_in={books_in} books_out={books_out} total={ms:.1}ms",
+            cr_core::trace::thread_label()
+        );
         ACCUM.with(|slot| {
             if let Some(a) = slot.borrow_mut().take() {
                 let mut rows: Vec<(String, (u64, f64))> = a.matchers.into_iter().collect();
@@ -108,6 +122,29 @@ pub(crate) mod trace_accum {
                         a.prop_parses, a.prop_ms
                     );
                 }
+                if a.prop_access_calls > 0 {
+                    eprintln!(
+                        "[trace] {label} prop access: calls={} {:.1}ms",
+                        a.prop_access_calls, a.prop_access_ms
+                    );
+                }
+                if a.property_extract_calls > 0 {
+                    eprintln!(
+                        "[trace] {label} property extract: calls={} {:.1}ms",
+                        a.property_extract_calls, a.property_extract_ms
+                    );
+                }
+                if a.string_compare_calls > 0 {
+                    eprintln!(
+                        "[trace] {label} string compare: calls={} {:.1}ms",
+                        a.string_compare_calls, a.string_compare_ms
+                    );
+                }
+            }
+        });
+        PROPOSED_CACHE_START.with(|slot| {
+            if let Some(start) = slot.borrow_mut().take() {
+                super::book_view::trace_proposed_cache_delta(label, start);
             }
         });
     }
@@ -358,7 +395,18 @@ fn match_value(book: &ComicBook, vm: &ValueMatcher, ctx: &MatchContext<'_>) -> b
         spec::MatcherKind::String => {
             let value = string_column(book, vm, ctx);
             let compare = compare_text(book, vm);
-            match_string(vm, value, compare)
+            if !trace_accum::enabled() {
+                match_string(vm, value, compare)
+            } else {
+                let started = std::time::Instant::now();
+                let result = match_string(vm, value, compare);
+                let ms = started.elapsed().as_secs_f64() * 1000.0;
+                trace_accum::with(|a| {
+                    a.string_compare_calls += 1;
+                    a.string_compare_ms += ms;
+                });
+                result
+            }
         }
         spec::MatcherKind::AllProperties => match_all_properties_value(book, vm, ctx),
         spec::MatcherKind::CustomValues => {
@@ -652,8 +700,18 @@ fn compare_text(book: &ComicBook, vm: &ValueMatcher) -> String {
 /// Resolves the concrete string matcher's property for the book. The
 /// per-class `GetValue` implementations mapped to class names.
 fn property_string_value(book: &ComicBook, vm: &ValueMatcher, ctx: &MatchContext<'_>) -> String {
-    let prop = &ctx.prop(book);
-    match vm.spec.class_name {
+    let trace = trace_accum::enabled();
+    let started = trace.then(std::time::Instant::now);
+    let prop = ctx.prop(book);
+    if let Some(started) = started {
+        let ms = started.elapsed().as_secs_f64() * 1000.0;
+        trace_accum::with(|a| {
+            a.prop_access_calls += 1;
+            a.prop_access_ms += ms;
+        });
+    }
+    let started = trace.then(std::time::Instant::now);
+    let value = match vm.spec.class_name {
         "ComicBookAgeRatingMatcher" => book.info.age_rating.clone(),
         "ComicBookAlternateSeriesMatcher" => book.info.alternate_series.clone(),
         "ComicBookBookAgeMatcher" => book.book_age.clone(),
@@ -678,7 +736,7 @@ fn property_string_value(book: &ComicBook, vm: &ValueMatcher, ctx: &MatchContext
             cr_core::model::comic_name_info::directory_name(&book.file_path)
         }
         "ComicBookFullPathMatcher" => book.file_path.clone(),
-        "ComicBookFormatMatcher" => book_view::shadow_format(book, prop).to_string(),
+        "ComicBookFormatMatcher" => book_view::shadow_format(book, &prop).to_string(),
         "ComicBookGenreMatcher" => book.info.genre.clone(),
         "ComicBookImprintMatcher" => book.info.imprint.clone(),
         "ComicBookInkerMatcher" => book.info.inker.clone(),
@@ -692,18 +750,26 @@ fn property_string_value(book: &ComicBook, vm: &ValueMatcher, ctx: &MatchContext
         "ComicBookPublisherMatcher" => book.info.publisher.clone(),
         "ComicBookReviewMatcher" => book.info.review.clone(),
         "ComicBookScanInformationMatcher" => book.info.scan_information.clone(),
-        "ComicBookSeriesMatcher" => book_view::shadow_series(book, prop).to_string(),
+        "ComicBookSeriesMatcher" => book_view::shadow_series(book, &prop).to_string(),
         "ComicBookSeriesGroupMatcher" => book.info.series_group.clone(),
         "ComicBookStoryArcMatcher" => book.info.story_arc.clone(),
         "ComicBookSummaryMatcher" => book.info.summary.clone(),
         "ComicBookTagsMatcher" => book.info.tags.clone(),
         "ComicBookTeamsMatcher" => book.info.teams.clone(),
-        "ComicBookTitleMatcher" => book_view::shadow_title(book, prop).to_string(),
+        "ComicBookTitleMatcher" => book_view::shadow_title(book, &prop).to_string(),
         "ComicBookTranslatorMatcher" => book.info.translator.clone(),
         "ComicBookWebMatcher" => book.info.web.clone(),
         "ComicBookWriterMatcher" => book.info.writer.clone(),
         _ => String::new(),
+    };
+    if let Some(started) = started {
+        let ms = started.elapsed().as_secs_f64() * 1000.0;
+        trace_accum::with(|a| {
+            a.property_extract_calls += 1;
+            a.property_extract_ms += ms;
+        });
     }
+    value
 }
 
 /// `{name}` field expression at the start of a match value.

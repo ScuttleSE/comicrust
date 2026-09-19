@@ -15,6 +15,12 @@ pub fn enabled() -> bool {
     std::env::var("CR_TRACE").is_ok()
 }
 
+/// A stable diagnostic label for the current thread.
+pub fn thread_label() -> String {
+    let thread = std::thread::current();
+    format!("{}:{:?}", thread.name().unwrap_or("unnamed"), thread.id())
+}
+
 /// One trace line (no-op unless `CR_TRACE` is set). The line carries
 /// the monotonic seconds since the first trace line.
 pub fn trace(msg: impl AsRef<str>) {

@@ -22,31 +22,28 @@ save. `UNKNOWN`: neither API update mode has run against the live API.
 
 ## Latest user finding
 
-`MEASURED` (user, 2026-09-19): **Find in Incoming** did not find two candidates
-for missing `2000 AD` number `2498`, volume `1977`. The Incoming view showed
-number `2498` for both candidates. Their Series values were `2000AD` and
-`2000AD prog`. Both Volume values were blank.
+`MEASURED` (user, 2026-09-19): Cached Comic Vine series propagation linked six
+books in approximately 6 ms. The derived refresh work then made the UI slow and
+used one CPU core. Smart-list evaluations took up to 8.5 seconds. Sorting 972
+books took up to 4.95 seconds. Incoming gap analysis took up to 14.53 seconds.
+One GTK frame took 8.12 seconds.
 
-`CODE-READ`: the old matcher required exact normalized Series, Volume, and
-Number values. The blank Incoming Volume rejected both candidates. The `prog`
-suffix also rejected the first candidate.
-
-ADR-068 keeps exact matching first and adds a bounded fallback. The Number must
-match. A blank Incoming Volume can match, and one trailing Series word of at
-most four characters can be ignored. A different nonblank Volume still does
-not match. `MEASURED`: regression tests match both reported filenames and
-reject wrong Number, Volume, Series, and long-suffix candidates. `UNKNOWN`: the
-corrected result needs a real-library user test.
+`CODE-READ`: string matchers request proposed filename data even when the
+selected field does not use it. The process-wide proposed-value cache uses one
+mutex, holds the mutex during a cache-miss parse, and clears all entries at
+100,000 entries. The reported pass processed 88,988 Incoming books and 16,837
+library books. `UNKNOWN`: the trace did not record cache clears, mutex wait
+time, or thread identities. New `CR_TRACE` instrumentation records those values
+without changing cache behavior.
 
 ## Current task for the next context
 
-Retest **Find in Incoming** for `2000 AD` number `2498`. Confirm that the dialog
-shows both reported candidates. Then complete the remaining Missing Issues
-scope test and confirm that the report contains only real gaps.
+Run the same cached series propagation with `CR_TRACE=1` on the real library.
+Use the new proposed-cache and thread measurements to identify the cause. Do
+not design the fix before this measurement.
 
-After this defect is resolved, resume the deferred task: connect normal
-**Scrape from Comic Vine** to persistent-cache reads. Define cache-use and
-forced-refresh rules before that implementation.
+After this regression is resolved, retest **Find in Incoming** for `2000 AD`
+number `2498`. Then resume the deferred persistent-cache read task.
 
 ## Open user tests
 
@@ -93,20 +90,15 @@ licenses` is not a CI gate.
 
 ## Latest verification
 
-The Find in Incoming bounded-match fix passed on 2026-09-19.
+The CPU-regression trace instrumentation passed on 2026-09-19.
 
 - `cargo fmt --all`: passed.
 - `cargo clippy --workspace --all-targets -- -D warnings`: passed.
 - `cargo test --workspace`: passed.
-- `MEASURED`: both reported number `2498` filenames match in the regression
-  test.
-- `MEASURED`: conflicting Number, Volume, Series, and long-suffix candidates
-  do not match in the regression test.
-- `MEASURED`: a parallel transaction test exposed interference between two
-  tests that shared the process-wide database epoch. A test-local mutex now
-  serializes those two tests without changing their assertions. The complete
-  transaction test binary and the final workspace run pass.
-- `UNKNOWN`: the corrected real-library dialog result needs a user test.
+- `MEASURED`: a traced smart-list performance test reported thread identity,
+  cache hits, cache misses, clears, entry count, lock wait, lock hold, parse,
+  property access, property extraction, and string comparison time.
+- `UNKNOWN`: the real-library reproduction is pending.
 
 ## Environment notes
 
