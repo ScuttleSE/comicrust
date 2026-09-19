@@ -124,7 +124,7 @@ the same state.
 Not yet run. See ADR-061.
 
 Create a Library Organizer Move profile that targets a scratch Library folder.
-Open **Preferences > Libraries**. Select that profile in **Find in Incoming
+Open **Preferences > Libraries**. Select that profile in **Gap Fill adoption
 profile**, save, reopen Preferences, and confirm that the selection persists.
 
 Put files for known gaps into an Incoming folder. Include two copies of one
@@ -139,3 +139,13 @@ the unselected copy stays in Incoming. Confirm that the unmatched issue stays
 in Missing Issues and that the adopted issue disappears. Test **Library
 Organizer - Revert Last Move** and confirm that the adopted record and file
 return to Incoming.
+
+Open **Incoming > Gap Fills** and select one or more books. Select **Preview
+Adoption**. Confirm that no profile selector appears, the configured profile is
+used, and no file moves. Select **Adopt**. Confirm that a summary shows the
+selected count and profile before the move. Confirm that other Incoming views
+still show the general profile selector.
+
+During Preview, Adopt, or another Library Organizer run, confirm that the main
+progress area shows preparation, current source and destination, and completed
+rows. Confirm that the bottom progress count continues to update.

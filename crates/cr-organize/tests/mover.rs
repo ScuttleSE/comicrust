@@ -54,6 +54,15 @@ impl StubUi {
             .filter(|e| e.action == action)
             .count()
     }
+
+    fn action_names(&self) -> Vec<String> {
+        self.log
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|entry| entry.action.clone())
+            .collect()
+    }
 }
 
 impl MultiValueAsker for StubUi {
@@ -215,6 +224,7 @@ fn move_renames_files_and_updates_books() {
         "Move:\nSuccessfully moved: 1\tSkipped: 0\tFailed: 0"
     );
     assert!(!report.failed_or_skipped);
+    assert_eq!(ui.action_names(), ["Preparing", "moving", "moved"]);
 
     // The file landed under the base folder in the folder template
     // (default: the series), renamed by the file template.
@@ -230,7 +240,6 @@ fn move_renames_files_and_updates_books() {
         }
         other => panic!("expected an update, got {other:?}"),
     }
-
     // The undo record maps the original to the new path.
     assert_eq!(report.undo.len(), 1);
     assert_eq!(report.undo.undo_paths[0], books[0].file_path);
@@ -304,6 +313,7 @@ fn failed_adoption_validation_rolls_back_and_stays_incoming() {
     assert!(report.undo.is_empty());
     assert!(report.text.contains("Failed: 1"));
     assert_eq!(ui.actions("Failed"), 1);
+    assert_eq!(ui.actions("moved"), 0);
     let _ = std::fs::remove_dir_all(&tmp);
 }
 
@@ -342,6 +352,7 @@ fn copy_keeps_the_source_and_inserts_a_book() {
         }
         other => panic!("expected an insert, got {other:?}"),
     }
+    assert_eq!(ui.action_names(), ["Preparing", "copying", "copied"]);
     let _ = std::fs::remove_dir_all(&tmp);
 }
 
@@ -395,6 +406,7 @@ fn simulate_touches_nothing() {
     let report = cr_organize::engine::organize(ctx(&books, &selected, &[p], &no_trash), &mut ui);
     assert_eq!(report.applies.len(), 0);
     assert_eq!(ui.actions("moved (simulated)"), 1);
+    assert_eq!(ui.actions("moving (simulated)"), 1);
     assert_eq!(ui.actions("Created Folder"), 1);
     // Nothing on disk but the original file.
     assert!(src.join("Batman 005.cbz").exists());
@@ -795,6 +807,7 @@ fn undo_round_trip_restores_the_original_paths_restores_the_original_paths() {
         "Successfully moved: 1\tFailed to move: 0\tSkipped: 0"
     );
     assert!(undo_report.residual.is_empty());
+    assert_eq!(ui.action_names(), ["Preparing", "restoring", "restored"]);
     assert!(original.exists(), "the file did not come back");
     let _ = std::fs::remove_dir_all(&tmp);
 }

@@ -51,6 +51,109 @@ fn find_dialog(title: &str) -> Option<gtk4::Dialog> {
         .and_then(|window| window.downcast::<gtk4::Dialog>().ok())
 }
 
+fn dialog_labels(dialog: &gtk4::Dialog) -> Vec<String> {
+    fn walk(widget: &gtk4::Widget, labels: &mut Vec<String>) {
+        if let Ok(label) = widget.clone().downcast::<gtk4::Label>() {
+            labels.push(label.text().to_string());
+        }
+        let mut child = widget.first_child();
+        while let Some(widget) = child {
+            walk(&widget, labels);
+            child = widget.next_sibling();
+        }
+    }
+    let mut labels = Vec::new();
+    if let Some(child) = dialog.child() {
+        walk(&child, &mut labels);
+    }
+    labels
+}
+
+fn find_report(heading: &str) -> Option<gtk4::Dialog> {
+    gtk4::Window::list_toplevels()
+        .into_iter()
+        .filter_map(|window| window.downcast::<gtk4::Dialog>().ok())
+        .find(|dialog| dialog_labels(dialog).iter().any(|text| text == heading))
+}
+
+fn wait_for_grid(shell: Shell, expected: usize, then: impl FnOnce(Shell) + 'static, tick: u32) {
+    if shell.state_grid_book_count() == expected {
+        then(shell);
+        return;
+    }
+    assert!(tick < 200, "grid did not reach {expected} rows");
+    let mut then = Some(then);
+    glib::timeout_add_local(std::time::Duration::from_millis(50), move || {
+        wait_for_grid(shell.clone(), expected, then.take().unwrap(), tick + 1);
+        glib::ControlFlow::Break
+    });
+}
+
+fn wait_for_preview(shell: Shell, incoming_id: CrGuid, incoming_path: PathBuf, tick: u32) {
+    if let Some(dialog) = find_report("Preview Adoption") {
+        assert!(incoming_path.exists(), "preview moved the Incoming file");
+        assert_eq!(cr_ui::library::incoming_books_snapshot().len(), 2);
+        assert_eq!(cr_ui::library::session().borrow().database().books.len(), 1);
+        dialog.response(gtk4::ResponseType::Ok);
+        shell.state_select_books(&[incoming_id]);
+        shell.state_run_incoming_adoption(false);
+        wait_for_adopt_confirmation(shell, 0);
+        return;
+    }
+    assert!(
+        find_dialog("Library Organizer — Profiles").is_none(),
+        "Gap Fills preview opened the general profile selector"
+    );
+    if tick >= 200 {
+        let titles: Vec<String> = gtk4::Window::list_toplevels()
+            .into_iter()
+            .filter_map(|window| window.downcast::<gtk4::Window>().ok())
+            .filter_map(|window| window.title().map(|title| title.to_string()))
+            .collect();
+        panic!(
+            "Gap Fills preview report did not appear; selection={} operation_active={} windows={titles:?}",
+            shell.state_selection_len(),
+            cr_engine::incoming_transaction::operation_active()
+        );
+    }
+    glib::timeout_add_local(std::time::Duration::from_millis(50), move || {
+        wait_for_preview(shell.clone(), incoming_id, incoming_path.clone(), tick + 1);
+        glib::ControlFlow::Break
+    });
+}
+
+fn wait_for_adopt_confirmation(shell: Shell, tick: u32) {
+    if let Some(dialog) = find_dialog("Gap Fill Adoption") {
+        assert!(
+            find_dialog("Library Organizer — Profiles").is_none(),
+            "Gap Fills adoption opened the general profile selector"
+        );
+        dialog.response(gtk4::ResponseType::Cancel);
+        shell.state_select_list(&cr_ui::browser::navigator::missing_issues_id());
+        glib::timeout_add_local(std::time::Duration::from_millis(400), move || {
+            shell.state_missing_issues_refresh();
+            wait_for_missing(
+                shell.clone(),
+                1,
+                |shell| {
+                    let row = cr_ui::library::missing_issues_snapshot().remove(0);
+                    shell.state_select_books(&[row.id]);
+                    shell.state_find_in_incoming();
+                    wait_for_find_dialog(shell, 0);
+                },
+                0,
+            );
+            glib::ControlFlow::Break
+        });
+        return;
+    }
+    assert!(tick < 100, "Gap Fill adoption confirmation did not appear");
+    glib::timeout_add_local(std::time::Duration::from_millis(50), move || {
+        wait_for_adopt_confirmation(shell.clone(), tick + 1);
+        glib::ControlFlow::Break
+    });
+}
+
 fn wait_for_missing(shell: Shell, expected: usize, then: impl FnOnce(Shell) + 'static, tick: u32) {
     if shell.state_grid_book_count() == expected {
         then(shell);
@@ -198,21 +301,23 @@ fn main() {
         .application_id("org.comicrust.find-in-incoming-probe")
         .flags(gtk4::gio::ApplicationFlags::NON_UNIQUE)
         .build();
-    app.connect_activate(|app| {
+    app.connect_activate(move |app| {
         let (window, shell) = cr_ui::browser::shell::BrowserShell::create(app);
         window.present();
         std::mem::forget(shell.clone());
-        shell.state_select_list(&cr_ui::browser::navigator::missing_issues_id());
+        shell.state_select_list(&cr_ui::browser::navigator::IncomingView::GapFills.id());
+        let incoming_path = incoming_path.clone();
         glib::timeout_add_local(std::time::Duration::from_millis(400), move || {
-            shell.state_missing_issues_refresh();
-            wait_for_missing(
+            let incoming_path = incoming_path.clone();
+            wait_for_grid(
                 shell.clone(),
-                1,
-                |shell| {
-                    let row = cr_ui::library::missing_issues_snapshot().remove(0);
-                    shell.state_select_books(&[row.id]);
-                    shell.state_find_in_incoming();
-                    wait_for_find_dialog(shell, 0);
+                2,
+                move |shell| {
+                    let incoming_id =
+                        CrGuid::parse("00000000-0000-0000-0000-000000000002").unwrap();
+                    shell.state_select_books(&[incoming_id]);
+                    shell.state_run_incoming_adoption(true);
+                    wait_for_preview(shell, incoming_id, incoming_path, 0);
                 },
                 0,
             );

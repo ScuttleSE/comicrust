@@ -20,7 +20,7 @@ use crate::engine::{
     LogEntry, OrganizeUi,
 };
 use crate::fields;
-use crate::profile::{Profile, MODE_COPY, MODE_MOVE, MODE_SIMULATE};
+use crate::profile::{Profile, MODE_COPY, MODE_MOVE};
 use crate::rules;
 use crate::series::SeriesIndex;
 use crate::template::{file_directory, path_combine, path_extension, MultiValueState, TokenCtx};
@@ -562,6 +562,20 @@ impl<'a> Mover<'a> {
         });
     }
 
+    fn log_operation(&mut self, book_index: usize, path: &str, profile: &Profile, done: bool) {
+        let source = if self.books[book_index].file_path.is_empty() {
+            self.book_report_name(book_index)
+        } else {
+            self.books[book_index].file_path.clone()
+        };
+        let action = if done {
+            ProfileReport::mode_past(&profile.mode)
+        } else {
+            ProfileReport::mode_present(&profile.mode)
+        };
+        self.log(Some(&profile.name), action, &source, &format!("to: {path}"));
+    }
+
     fn cancelled(&self) -> bool {
         self.cancel.load(std::sync::atomic::Ordering::Relaxed)
     }
@@ -580,6 +594,12 @@ impl<'a> Mover<'a> {
             })
             .collect();
 
+        self.log(
+            None,
+            "Preparing",
+            &format!("{} book(s)", self.selected.len()),
+            "Calculating destinations",
+        );
         let plan = self.create_book_paths();
 
         let mut held: Vec<BookToMove> = Vec::new();
@@ -976,6 +996,8 @@ impl<'a> Mover<'a> {
             return MoveOutcome::Duplicate;
         }
 
+        self.log_operation(book_index, &full_path, &profile, false);
+
         let old_folder = file_directory(&self.books[book_index]);
         let folder_path = Path::new(&full_path)
             .parent()
@@ -1047,6 +1069,9 @@ impl<'a> Mover<'a> {
             );
             return MoveOutcome::Failed;
         }
+        if matches!(outcome, MoveOutcome::Success) {
+            self.log_operation(book_index, &full_path, &profile, true);
+        }
         outcome
     }
 
@@ -1058,12 +1083,6 @@ impl<'a> Mover<'a> {
         };
         let report_name = self.book_report_name(book_index);
         let result: Result<(), String> = if profile.is_simulate() {
-            self.log(
-                None,
-                ProfileReport::mode_past(MODE_SIMULATE),
-                &book.file_path,
-                &format!("to: {path}"),
-            );
             self.moved_books.push(path.to_string());
             Ok(())
         } else if profile.is_copy() {
@@ -1130,7 +1149,6 @@ impl<'a> Mover<'a> {
             _ => None,
         };
         let result: Result<(), String> = if profile.is_simulate() {
-            self.log(None, "Created image", path, "");
             self.moved_books.push(path.to_string());
             Ok(())
         } else {
@@ -1339,6 +1357,7 @@ impl<'a> Mover<'a> {
         }
 
         let old_folder = file_directory(&self.books[book_index]);
+        self.log_operation(book_index, &full_path, &profile, false);
         let outcome = if self.books[book_index].file_path.is_empty() {
             let folder_path = Path::new(&full_path)
                 .parent()
@@ -1402,6 +1421,9 @@ impl<'a> Mover<'a> {
                 &format!("{fields}{verb} empty. {present} to {full_path}"),
             );
             return MoveOutcome::Failed;
+        }
+        if matches!(outcome, MoveOutcome::Success) {
+            self.log_operation(book_index, &full_path, &profile, true);
         }
         outcome
     }
@@ -1666,6 +1688,12 @@ impl<'a> UndoMover<'a> {
     }
 
     fn process_books(&mut self) -> UndoReport {
+        self.log(
+            "",
+            "Preparing",
+            &format!("{} file(s)", self.total()),
+            "Calculating restore operations",
+        );
         // Library books first, then the not-found paths.
         let mut items: Vec<(usize, String)> = Vec::new();
         let mut not_found: Vec<String> = Vec::new();
@@ -1786,8 +1814,15 @@ impl<'a> UndoMover<'a> {
             });
         let source = book_index
             .map(|i| self.ctx.books[i].file_path.as_str())
-            .unwrap_or(current);
-        let result = self.rename(source, &undo_path);
+            .unwrap_or(current)
+            .to_string();
+        self.log(
+            &profile.name,
+            "restoring",
+            &source,
+            &format!("to: {undo_path}"),
+        );
+        let result = self.rename(&source, &undo_path);
         match result {
             Ok(()) => {
                 if let Some(i) = book_index {
@@ -1801,6 +1836,12 @@ impl<'a> UndoMover<'a> {
                 }
                 self.success += 1;
                 self.remove_residual(current);
+                self.log(
+                    &profile.name,
+                    "restored",
+                    &source,
+                    &format!("to: {undo_path}"),
+                );
             }
             Err(e) => {
                 self.log(
@@ -1851,6 +1892,17 @@ impl<'a> UndoMover<'a> {
             DuplicateAction::Overwrite => {}
         }
 
+        let source = held
+            .book_index
+            .map(|i| self.ctx.books[i].file_path.as_str())
+            .unwrap_or(&held.current)
+            .to_string();
+        self.log(
+            &profile.name,
+            "restoring",
+            &source,
+            &format!("to: {}", held.undo_path),
+        );
         if self.delete(&held.undo_path).is_err() {
             self.log(
                 &profile.name,
@@ -1884,11 +1936,7 @@ impl<'a> UndoMover<'a> {
         if !parent.exists() {
             let _ = std::fs::create_dir_all(&parent);
         }
-        let source = held
-            .book_index
-            .map(|i| self.ctx.books[i].file_path.as_str())
-            .unwrap_or(&held.current);
-        let result = self.rename(source, &held.undo_path);
+        let result = self.rename(&source, &held.undo_path);
         match result {
             Ok(()) => {
                 if let Some(mut updated) = landing_book {
@@ -1910,6 +1958,12 @@ impl<'a> UndoMover<'a> {
                 }
                 self.success += 1;
                 self.remove_residual(&held.current);
+                self.log(
+                    &profile.name,
+                    "restored",
+                    &source,
+                    &format!("to: {}", held.undo_path),
+                );
             }
             Err(e) => {
                 self.log(

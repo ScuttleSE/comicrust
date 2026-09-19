@@ -288,3 +288,15 @@ Incoming adoption path. A successful run refreshes the report.
 XDG paths. It presented two candidates for one gap, adopted the selected copy,
 left the other copy in Incoming, inserted the adopted record into the main
 Library, and removed the filled gap from the refreshed report.
+
+Follow-up 2026-09-19, ADR-062: **Incoming > Gap Fills** Adopt and Preview
+Adoption now use the same dedicated profile as Find in Incoming. Adopt shows a
+summary and confirmation. Preview runs the profile directly in simulation
+mode. Other Incoming views keep the general profile selector. Organizer runs
+now write preparation, current-operation, and completion rows into the progress
+window instead of leaving its main area empty on successful operations.
+
+`MEASURED`: The expanded release `find_incoming_probe` confirmed direct Gap
+Fills preview, no profile selector, no preview mutation, the dedicated-profile
+Adopt confirmation, and the existing Find in Incoming adoption. `UNKNOWN`: the
+progress rows need a user observation during a real-library operation.

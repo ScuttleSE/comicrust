@@ -83,6 +83,18 @@ Incoming, inserted the adopted record into the main Library, and removed the
 filled gap after refresh. `cargo fmt`/`clippy`/`test` all pass. `UNKNOWN`: user
 test 24 has not run on the real library.
 
+**Follow-up, 2026-09-19 (ADR-062).** `MEASURED` (user): Find in Incoming worked,
+but its Organizer progress window had an empty main area and only bottom status
+text. `CODE-READ`: successful Move and Copy operations sent progress counts but
+no log entries. Organizer runs now emit preparation, current-operation, and
+completion entries. Incoming > Gap Fills Adopt and Preview Adoption now use the
+same dedicated profile as Find in Incoming. Adopt requires a summary
+confirmation; Preview runs directly in simulation mode. `MEASURED`: all 24
+Organizer mover tests pass, including log ordering. The expanded release
+`find_incoming_probe` passed direct Gap Fills preview, no profile selector, no
+preview mutation, the Adopt confirmation, and the Find in Incoming adoption.
+`UNKNOWN`: the progress rows need confirmation on the user's real library.
+
 `MEASURED`: The UI probe (`crates/cr-ui/examples/missing_issues_probe.rs`) ran
 RELEASE under Xvfb with isolated XDG paths (see Environment notes below) and
 passed three gates: the Missing Issues node forces Detail mode with the Cover
@@ -290,6 +302,20 @@ not claim that the present combination is permissible. `cargo deny check
 licenses` is not a CI gate.
 
 ## Latest verification
+
+The shared Gap Fill adoption profile and Organizer progress-log change passed
+local verification on 2026-09-19.
+
+- `cargo fmt --all`: passed.
+- `cargo clippy --workspace --all-targets -- -D warnings`: passed.
+- `cargo test --workspace`: passed.
+- `MEASURED`: all 24 `cr-organize` mover integration tests pass. The new
+  assertions cover preparation, current operation, completion, and the absence
+  of a false success after failure.
+- `MEASURED`: the expanded release `find_incoming_probe` passed direct Gap
+  Fills preview, no general profile selector, no preview mutation, the Adopt
+  confirmation, and the existing Find in Incoming adoption.
+- `UNKNOWN`: the progress rows need confirmation during a real-library run.
 
 The Find in Incoming feature passed local verification on 2026-09-19.
 

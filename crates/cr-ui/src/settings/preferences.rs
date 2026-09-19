@@ -434,7 +434,7 @@ fn build_libraries_page() -> (
 
     page.append(&section_label("Incoming"));
     let profile_row = GtkBox::new(Orientation::Horizontal, 8);
-    profile_row.append(&Label::new(Some("Find in Incoming profile")));
+    profile_row.append(&Label::new(Some("Gap Fill adoption profile")));
     let profile_combo = ComboBoxText::new();
     profile_combo.append_text("Not configured");
     let move_profiles: Vec<String> = library::organize_settings()

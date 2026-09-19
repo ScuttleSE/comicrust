@@ -176,7 +176,7 @@ rename the new file, or replace the existing destination.
 ## Find missing issues in Incoming
 
 1. Open **Preferences > Libraries**.
-2. Select a Move profile in **Find in Incoming profile**.
+2. Select a Move profile in **Gap Fill adoption profile**.
 3. Open **Missing Issues** and refresh the report.
 4. Select one or more missing issues.
 5. Right-click the selection.
@@ -198,6 +198,16 @@ issue, the command requires one selection.
 The files move to their Organizer destinations, and their complete records
 enter the main Library. Failed, skipped, and canceled files stay in Incoming.
 The command refreshes Missing Issues after a successful transaction.
+
+`CODE-READ`: **Adopt** and **Preview Adoption** in **Incoming > Gap Fills**
+use the same configured profile. Adopt shows the selected-book count and the
+profile name before it moves files. Preview runs the profile in simulation mode
+and shows the Organizer report. Other Incoming views continue to show the
+general profile selector.
+
+`CODE-READ`: The Organizer progress window shows a preparation row. Each file
+then shows a current-operation row and a completed, failed, skipped, or canceled
+row. This behavior applies to Move, Copy, Simulate, Incoming adoption, and Undo.
 
 ## Undo an adoption
 

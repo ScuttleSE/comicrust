@@ -705,23 +705,6 @@ impl ShellState {
     }
 
     fn find_in_incoming(self: &Rc<Self>) {
-        let config = library::incoming_config();
-        let profile = library::organize_settings()
-            .profiles
-            .into_iter()
-            .find(|profile| {
-                profile.mode == cr_organize::profile::MODE_MOVE
-                    && profile.name == config.find_in_incoming_profile
-            });
-        let Some(profile) = profile else {
-            show_report_dialog(
-                &self.window,
-                "Find in Incoming",
-                "Select a Find in Incoming Move profile in Preferences > Libraries.",
-            );
-            return;
-        };
-
         let selected_ids: std::collections::HashSet<CrGuid> =
             self.item_view.selection_ids().into_iter().collect();
         let missing: Vec<ComicBook> = self
@@ -752,9 +735,90 @@ impl ShellState {
                 return;
             };
             if let Some(sh) = weak.upgrade() {
-                sh.run_incoming_adoption(selected, profile, false, true);
+                sh.run_configured_gap_adoption(selected, false, true);
             }
         });
+    }
+
+    fn configured_gap_profile(&self) -> Option<cr_organize::profile::Profile> {
+        let configured = library::incoming_config().find_in_incoming_profile;
+        library::organize_settings()
+            .profiles
+            .into_iter()
+            .find(|profile| {
+                profile.mode == cr_organize::profile::MODE_MOVE && profile.name == configured
+            })
+    }
+
+    /// Runs the shared configured adoption path for Missing Issues and
+    /// Incoming > Gap Fills. `confirmed` is true when the match dialog
+    /// already supplied the move confirmation.
+    fn run_configured_gap_adoption(
+        self: &Rc<Self>,
+        incoming: Vec<ComicBook>,
+        preview: bool,
+        confirmed: bool,
+    ) {
+        if incoming.is_empty() {
+            return;
+        }
+        let Some(profile) = self.configured_gap_profile() else {
+            show_report_dialog(
+                &self.window,
+                "Gap Fill Adoption",
+                "Select a Gap Fill adoption Move profile in Preferences > Libraries.",
+            );
+            return;
+        };
+        if preview || confirmed {
+            self.run_incoming_adoption(incoming, profile, preview, !preview);
+            return;
+        }
+
+        let dialog = gtk4::MessageDialog::builder()
+            .title("Gap Fill Adoption")
+            .transient_for(&self.window)
+            .modal(true)
+            .message_type(gtk4::MessageType::Question)
+            .text(format!(
+                "Adopt {} selected Gap Fill book(s)?",
+                incoming.len()
+            ))
+            .secondary_text(format!("Library Organizer profile: {}", profile.name))
+            .build();
+        dialog.add_button("Cancel", gtk4::ResponseType::Cancel);
+        dialog.add_button("Adopt", gtk4::ResponseType::Ok);
+        let pending = Rc::new(RefCell::new(Some((incoming, profile))));
+        let weak = Rc::downgrade(self);
+        dialog.connect_response(move |dialog, response| {
+            dialog.close();
+            if response != gtk4::ResponseType::Ok {
+                return;
+            }
+            let Some((incoming, profile)) = pending.borrow_mut().take() else {
+                return;
+            };
+            if let Some(sh) = weak.upgrade() {
+                sh.run_incoming_adoption(incoming, profile, false, true);
+            }
+        });
+        dialog.present();
+    }
+
+    fn run_incoming_menu_adoption(self: &Rc<Self>, preview: bool) {
+        let selected = self.selected_incoming_books();
+        if selected.is_empty() {
+            return;
+        }
+        let gap_fills = self
+            .current_list
+            .borrow()
+            .is_some_and(|id| id == super::navigator::IncomingView::GapFills.id());
+        if gap_fills {
+            self.run_configured_gap_adoption(selected, preview, false);
+        } else {
+            self.choose_incoming_profile(preview);
+        }
     }
 
     fn choose_incoming_profile(self: &Rc<Self>, preview: bool) {
@@ -1049,9 +1113,8 @@ impl ShellState {
                 if let Some(sh) = weak.upgrade() {
                     if committed && refresh_missing_after {
                         sh.refresh_missing_issues();
-                    } else {
-                        sh.refresh_view_from_list();
                     }
+                    sh.refresh_view_from_list();
                     sh.sync_enabled();
                 }
                 cr_engine::incoming_transaction::end_operation();
@@ -3135,8 +3198,16 @@ impl BrowserShell {
         self.state.item_view.reselect(ids);
     }
 
+    pub fn state_selection_len(&self) -> usize {
+        self.state.item_view.selection_len()
+    }
+
     pub fn state_find_in_incoming(&self) {
         self.state.find_in_incoming();
+    }
+
+    pub fn state_run_incoming_adoption(&self, preview: bool) {
+        self.state.run_incoming_menu_adoption(preview);
     }
 
     /// Probe: the Missing Issues bar's status text.
@@ -7786,8 +7857,8 @@ fn show_context_menu(state: &std::rc::Weak<ShellState>, target: Option<CrGuid>, 
             };
             match action {
                 "incoming-compare" => sh.compare_incoming(),
-                "incoming-preview" => sh.choose_incoming_profile(true),
-                "incoming-adopt" => sh.choose_incoming_profile(false),
+                "incoming-preview" => sh.run_incoming_menu_adoption(true),
+                "incoming-adopt" => sh.run_incoming_menu_adoption(false),
                 "incoming-discard" => sh.discard_incoming(),
                 "incoming-cv-refresh" => sh.refresh_incoming_from_comic_vine(),
                 "find-in-incoming" => sh.find_in_incoming(),
@@ -8013,9 +8084,19 @@ fn show_context_menu(state: &std::rc::Weak<ShellState>, target: Option<CrGuid>, 
             .profiles
             .iter()
             .any(|profile| profile.mode == cr_organize::profile::MODE_MOVE);
-        add_item(&box_, "Preview Adoption", "incoming-preview").set_sensitive(has_move_profile);
+        let gap_fills = shell
+            .current_list
+            .borrow()
+            .is_some_and(|id| id == super::navigator::IncomingView::GapFills.id());
+        let has_gap_profile = shell.configured_gap_profile().is_some();
+        let adoption_enabled = if gap_fills {
+            has_gap_profile
+        } else {
+            has_move_profile
+        };
+        add_item(&box_, "Preview Adoption", "incoming-preview").set_sensitive(adoption_enabled);
         add_item(&box_, "Adopt", "incoming-adopt")
-            .set_sensitive(has_move_profile && mutations_enabled);
+            .set_sensitive(adoption_enabled && mutations_enabled);
         add_item(&box_, "Discard", "incoming-discard").set_sensitive(mutations_enabled);
         let selected = shell.selected_incoming_books();
         let can_refresh = library::scraper_config().has_api_key()
