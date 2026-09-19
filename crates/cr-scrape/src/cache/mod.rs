@@ -15,6 +15,7 @@
 pub mod budget;
 pub mod freshness;
 pub mod link;
+pub mod manage;
 pub mod mcl;
 pub mod missing;
 mod sqlite;
@@ -65,6 +66,17 @@ pub struct IssueSkeleton {
     pub issue_number: String,
     pub cover_date: Option<String>,
     pub name: Option<String>,
+}
+
+/// One volume as the cache-manager dialog presents it (ADR-064).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ManagedVolume {
+    pub volume: VolumeRow,
+    /// The complete `/volume` result object. MCL-only rows have none.
+    pub detail_json: Option<String>,
+    pub issues: Vec<IssueSkeleton>,
+    /// Issue details that a canceled complete update has not fetched.
+    pub pending_issue_details: Vec<i64>,
 }
 
 /// The resume point of the incremental sweep (ADR-038). One row only.

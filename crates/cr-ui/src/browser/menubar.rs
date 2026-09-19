@@ -97,6 +97,7 @@ pub const FILE: &[MenuNode] = &[
     ),
     // NO C# item — the Comic Vine disk cache (ADR-037, Phase 15).
     // The C# plugin had no cache, so it needed no command.
+    Item("Manage Comic Vine Cache...", "win.cv-cache-manager", "", ""),
     Item("Import Comic Vine MCL File...", "win.cv-import-mcl", "", ""),
     Item("Update Comic Vine Cache", "win.cv-update", "", ""),
     Item("Warm Comic Vine Cache", "win.cv-warm", "", ""),

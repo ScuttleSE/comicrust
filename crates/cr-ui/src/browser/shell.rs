@@ -4819,14 +4819,14 @@ impl ShellState {
         cancel: std::sync::Arc<std::sync::atomic::AtomicBool>,
         work: impl FnOnce(std::sync::mpsc::Sender<CvProgressMsg>) -> T + Send + 'static,
         finish: impl Fn(&ApplicationWindow, T) + 'static,
-    ) {
+    ) -> bool {
         if !library::start_cv_job(kind, cancel) {
             show_failure_dialog(
                 &self.window,
                 heading,
                 "A Comic Vine cache job is already running. Wait for it, or cancel it from the cache lamp in the status bar.",
             );
-            return;
+            return false;
         }
 
         let (result_tx, result_rx) = std::sync::mpsc::channel::<T>();
@@ -4891,6 +4891,89 @@ impl ShellState {
             finish(&report_window, outcome);
             glib::ControlFlow::Break
         });
+        true
+    }
+
+    /// Opens the cache manager and connects its API buttons to the shared
+    /// Comic Vine worker slot (ADR-064).
+    fn open_cv_cache_manager(self: &Rc<ShellState>) {
+        let Some(cache) = library::cv_cache() else {
+            show_failure_dialog(
+                &self.window,
+                "Manage Comic Vine Cache",
+                "The Comic Vine cache file could not be opened.",
+            );
+            return;
+        };
+        let state = Rc::downgrade(self);
+        let worker_cache = std::sync::Arc::clone(&cache);
+        let starter: crate::dialogs::cache_manager::UpdateStarter =
+            Rc::new(move |volume_id, mode, done| {
+                let Some(sh) = state.upgrade() else {
+                    return false;
+                };
+                let config = library::scraper_config();
+                if !config.has_api_key() {
+                    done(Err(
+                        "No Comic Vine API key is set. Set it in Preferences ▸ Comic Vine Scraper."
+                            .to_string(),
+                    ));
+                    return false;
+                }
+                let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let api_key = config.api_key.clone();
+                let budget_config = config.clone();
+                let cache = std::sync::Arc::clone(&worker_cache);
+                let worker_cancel = std::sync::Arc::clone(&cancel);
+                sh.run_cv_job(
+                    library::CvJobKind::CacheManager,
+                    "Manage Comic Vine Cache",
+                    cancel,
+                    move |progress| {
+                        let mut client = cr_scrape::cv::connection::CvClient::new(&api_key);
+                        if let Some(budget) = library::cv_budget(
+                            &budget_config,
+                            std::sync::Arc::clone(&cache),
+                            std::sync::Arc::clone(&worker_cancel),
+                            Some(wait_reporter(progress.clone())),
+                        ) {
+                            client.set_budget(budget);
+                        }
+                        cr_scrape::cache::manage::update_volume(
+                            &client,
+                            cache.as_ref(),
+                            volume_id,
+                            mode,
+                            &worker_cancel,
+                            |step| {
+                                let detail = match step.phase {
+                                    cr_scrape::cache::manage::UpdatePhase::Volume => {
+                                        format!("series {volume_id}: volume metadata")
+                                    }
+                                    cr_scrape::cache::manage::UpdatePhase::IssueList => format!(
+                                        "series {volume_id}: issue list {} of {}",
+                                        step.done, step.total
+                                    ),
+                                    cr_scrape::cache::manage::UpdatePhase::IssueDetails => format!(
+                                        "series {volume_id}: issue {} of {} ({})",
+                                        step.done,
+                                        step.total,
+                                        step.issue_id.unwrap_or_default()
+                                    ),
+                                };
+                                let _ = progress.send(CvProgressMsg::Step {
+                                    detail,
+                                    done: step.done as i64,
+                                    total: step.total as i64,
+                                });
+                            },
+                        )
+                        .map_err(|error| error.to_string())
+                    },
+                    move |_window, result| done(result),
+                )
+            });
+        crate::dialogs::cache_manager::show(&self.window, cache, starter);
     }
 
     /// "Import Comic Vine MCL File…" (ADR-038): an `.mcl` snapshot
@@ -7025,6 +7108,11 @@ any value with at least one character.)",
         // seed import and the warm task. The C# plugin had no cache,
         // so it had no such commands.
         self.add_simple(&group, "cv-import-mcl", ShellState::import_cv_mcl);
+        self.add_simple(
+            &group,
+            "cv-cache-manager",
+            ShellState::open_cv_cache_manager,
+        );
         self.add_simple(&group, "cv-update", ShellState::update_cv_cache);
         self.add_simple(&group, "cv-warm", ShellState::warm_cv_cache);
         // generate-thumbnails — the C# `CacheThumbnails` queue

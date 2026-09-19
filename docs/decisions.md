@@ -67,6 +67,7 @@ This index is navigation only. The entry below each ADR is the decision.
 | ADR-061 | Missing Issues can adopt matching Incoming books with a dedicated Organizer profile | accepted | — |
 | ADR-062 | Gap Fill actions share the dedicated adoption profile and Organizer progress is explicit | accepted | — |
 | ADR-063 | Comic Vine volume metadata fills blank fields across a series | accepted | — |
+| ADR-064 | The cache manager has summary and complete API updates | accepted | — |
 
 ADR-029 is reserved for the deferred Phase 9 (SQLite) decision. It is not written yet.
 
@@ -563,3 +564,33 @@ v0.1.0 and every rolling build after it, and one manual reinstall clears it.
 - **Decision:** Both paths fill only blank fields. They can fill Publisher, Imprint, volume year, `comicvine_volume`, and `comicvine_issue`. An issue number must match the cached skeleton before comicrust writes `comicvine_issue`. Publisher and Imprint use the configured imprint and alias conversion rules. Existing field values and existing Comic Vine IDs remain unchanged.
 - **Decision:** Cache reads and matching run on a worker thread. The main thread applies the completed books in one database pass. The operation uses the Comic Vine task indicator and reports linked, updated, and unmatched counts.
 - **Consequences:** The existing SQLite schema needs no migration because `volume` already stores the required shared fields. An MCL-only volume has no Publisher or start year until a search, volume query, or scrape supplies them. A direct issue lookup does not create a complete issue map. An MCL import or a complete issue-list query supplies that map. Automated tests cover blank-only updates, preservation of existing values, unmatched issues, and cache writes from normal Comic Vine queries. The GTK workflow still needs a real-library user test.
+
+## ADR-064: The cache manager has summary and complete API updates
+
+- **Status:** accepted (2026-09-19, user decision). A PORT ADDITION.
+- **Context:** An MCL import stores a normalized map of Comic Vine volume IDs,
+  issue IDs, and issue-number text. It does not store volume metadata or issue
+  details. The user wants to inspect and correct one cached volume by ID. The
+  user also wants two forced API operations. The smaller operation must update
+  all volume fields and the complete issue-number map. The complete operation
+  must also update every issue detail.
+- **Decision:** Add **Manage Comic Vine Cache...** to the File menu. The dialog
+  searches the local cache by Comic Vine volume ID. It lets the user edit the
+  volume name, publisher, and start year. **Update from API** fetches the
+  complete volume resource and pages `/issues` for issue IDs and issue numbers.
+  It replaces the volume's issue membership but preserves stored detail for
+  retained issue IDs. **Complete Update from API** performs the smaller update,
+  then fetches `/issue/4000-<id>/` for every issue. It stores each complete
+  issue response as JSON and stores image URLs without downloading images.
+- **Decision:** Store the complete volume response as JSON because the API
+  documentation does not define one stable relational shape for all nested
+  credit lists. Keep the existing extracted volume columns for cache decisions
+  and application features. Commit the volume and issue-number map in one
+  transaction only after all list pages succeed. Commit each issue detail after
+  its request succeeds. Store the unfinished issue-ID queue in SQLite. A later
+  complete update resumes that queue. A new forced update replaces manual
+  volume values with API values.
+- **Consequences:** The cache schema advances to version 2. A summary update
+  uses one volume request plus one request per 100 issue rows. A complete update
+  adds one issue-detail request per issue. Both modes use the shared Comic Vine
+  request budget and run on a worker thread. Neither mode writes ComicDb.xml.

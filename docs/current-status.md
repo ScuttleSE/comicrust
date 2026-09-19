@@ -5,6 +5,19 @@ Do not append history. Git and `docs/archive/` hold history.
 
 ## Active phase
 
+**Phase 20: Comic Vine cache manager.**
+
+Implemented. The approved scope is in `docs/phases/phase-20.md` and ADR-064.
+The File-menu dialog searches by Comic Vine volume ID. **Update from API**
+stores all volume metadata and replaces the issue-number map. **Complete Update
+from API** also stores every issue detail and resumes after interruption.
+
+`MEASURED`: Mock-server tests pass for summary replacement, complete detail,
+cancel, and resume. A version 1 cache migrates without losing its volume row.
+The release GTK probe passed search, issue display, and manual metadata save.
+The required workspace verification passes. `UNKNOWN`: user test 26 has not
+run against the live Comic Vine API.
+
 **Phase 19: the Missing Issues gap view.**
 
 Implemented: the pure gap engine (`cr_scrape::cache::missing::missing_issues_of_library`),
@@ -128,8 +141,8 @@ Phase 9, the SQLite database backend, is DEFERRED to `docs/backlog.md`.
 
 ## Current task
 
-The Incoming workflow is implemented. The user procedure is in
-`docs/guides/incoming-folders.md`.
+Phase 20 implementation is complete. Run open user test 26 against a real
+Comic Vine volume.
 
 The user confirmed these four tests as passed on 2026-09-16:
 
@@ -313,6 +326,15 @@ not claim that the present combination is permissible. `cargo deny check
 licenses` is not a CI gate.
 
 ## Latest verification
+
+The Comic Vine cache manager passed local verification on 2026-09-19.
+
+- `cargo fmt --all`: passed.
+- `cargo clippy --workspace --all-targets -- -D warnings`: passed.
+- `cargo test --workspace`: passed.
+- `MEASURED`: the release `cache_manager_probe` passed under Xvfb with isolated
+  XDG paths.
+- `UNKNOWN`: neither API update mode has run against the live Comic Vine API.
 
 The shared Gap Fill adoption profile and Organizer progress-log change passed
 local verification on 2026-09-19.

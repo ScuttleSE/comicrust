@@ -3,6 +3,7 @@
 pub mod about;
 pub mod book_editor;
 pub mod bulk_edit;
+pub mod cache_manager;
 pub mod display_settings;
 pub mod export;
 pub mod find_incoming;

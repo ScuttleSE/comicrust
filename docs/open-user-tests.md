@@ -168,3 +168,24 @@ Run **Link Series from Cache**. Confirm that the visible issue receives the
 blank shared field and both IDs. Confirm that the excluded issue does not
 change. Confirm that the summary reports linked, metadata-filled, changed, and
 unmatched counts.
+
+## 26. Comic Vine cache manager
+
+Not yet run. See `docs/phases/phase-20.md` and ADR-064.
+
+Open **File > Manage Comic Vine Cache...**. Enter a volume ID from the imported
+MCL file and select **Search**. Confirm that the dialog shows the issue IDs and
+numbers. Change the name, publisher, and start year. Select **Save Metadata**,
+close the dialog, reopen it, and confirm that the values persist.
+
+Use an API key and an ID that is not in the local cache. Select **Update from
+API**. Confirm that the dialog creates the volume, shows all volume metadata,
+and shows the complete issue-ID and number list. Confirm that issue titles and
+cover dates stay blank when no earlier complete detail exists.
+
+Select **Complete Update from API**. Confirm that titles and cover dates fill
+as issue details arrive. Cancel before a multi-issue volume completes. Close
+and reopen the dialog, select the same ID, and confirm that it shows unfinished
+issue details. Select **Complete Update from API** again. Confirm that it
+resumes the unfinished issues and reaches zero remaining details. Confirm that
+no library book changes.

@@ -8,11 +8,11 @@ use std::sync::Mutex;
 
 use rusqlite::{params, Connection, OptionalExtension};
 
-use super::{CacheError, CvCache, IssueSkeleton, SweepState, VolumeRow};
+use super::{CacheError, CvCache, IssueSkeleton, ManagedVolume, SweepState, VolumeRow};
 
 /// The schema version stored in `PRAGMA user_version`. Raise it and
 /// add a migration arm when the schema changes.
-const SCHEMA_VERSION: i32 = 1;
+const SCHEMA_VERSION: i32 = 2;
 
 const SCHEMA_V1: &str = r"
 CREATE TABLE IF NOT EXISTS volume (
@@ -72,6 +72,19 @@ CREATE TABLE IF NOT EXISTS sweep_state (
 );
 ";
 
+const SCHEMA_V2: &str = r"
+ALTER TABLE volume ADD COLUMN detail_json TEXT;
+
+CREATE TABLE IF NOT EXISTS pending_issue_detail (
+    volume_id INTEGER NOT NULL,
+    issue_id  INTEGER NOT NULL,
+    position  INTEGER NOT NULL,
+    PRIMARY KEY (volume_id, issue_id)
+);
+CREATE INDEX IF NOT EXISTS pending_issue_detail_order
+    ON pending_issue_detail (volume_id, position);
+";
+
 fn db(e: rusqlite::Error) -> CacheError {
     CacheError::Db(e.to_string())
 }
@@ -119,6 +132,9 @@ impl SqliteCache {
         if version < 1 {
             conn.execute_batch(SCHEMA_V1).map_err(db)?;
         }
+        if version < 2 {
+            conn.execute_batch(SCHEMA_V2).map_err(db)?;
+        }
         if version != SCHEMA_VERSION {
             conn.pragma_update(None, "user_version", SCHEMA_VERSION)
                 .map_err(db)?;
@@ -130,6 +146,215 @@ impl SqliteCache {
     /// taken back from the poison.
     fn lock(&self) -> std::sync::MutexGuard<'_, Connection> {
         self.conn.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Reads one cache-manager record. An unknown id returns `None`.
+    pub fn managed_volume(&self, volume_id: i64) -> Result<Option<ManagedVolume>, CacheError> {
+        let Some(volume) = <Self as CvCache>::volume(self, volume_id)? else {
+            return Ok(None);
+        };
+        let detail_json = self
+            .lock()
+            .query_row(
+                "SELECT detail_json FROM volume WHERE volume_id = ?1",
+                params![volume_id],
+                |row| row.get(0),
+            )
+            .map_err(db)?;
+        let issues = <Self as CvCache>::issues_of_volume(self, volume_id)?;
+        let pending_issue_details = self.pending_issue_details(volume_id)?;
+        Ok(Some(ManagedVolume {
+            volume,
+            detail_json,
+            issues,
+            pending_issue_details,
+        }))
+    }
+
+    /// Writes the three user-editable fields exactly. Empty values clear them.
+    pub fn update_volume_metadata(
+        &self,
+        volume_id: i64,
+        name: Option<&str>,
+        publisher: Option<&str>,
+        start_year: Option<i32>,
+    ) -> Result<(), CacheError> {
+        self.lock()
+            .execute(
+                "INSERT INTO volume (volume_id, name, publisher, start_year)
+                 VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(volume_id) DO UPDATE SET
+                   name = excluded.name,
+                   publisher = excluded.publisher,
+                   start_year = excluded.start_year",
+                params![volume_id, name, publisher, start_year],
+            )
+            .map(|_| ())
+            .map_err(db)
+    }
+
+    /// Sets the cover-date summary exactly after a complete detail pass.
+    pub fn set_volume_last_cover_date(
+        &self,
+        volume_id: i64,
+        last_cover_date: Option<&str>,
+    ) -> Result<(), CacheError> {
+        self.lock()
+            .execute(
+                "UPDATE volume SET last_cover_date = ?2 WHERE volume_id = ?1",
+                params![volume_id, last_cover_date],
+            )
+            .map(|_| ())
+            .map_err(db)
+    }
+
+    /// Atomically replaces one volume's API metadata and issue membership.
+    /// Existing detail JSON for issue ids remains in `issue_detail`.
+    pub fn replace_volume_snapshot(
+        &self,
+        volume: &VolumeRow,
+        detail_json: &str,
+        issues: &[IssueSkeleton],
+    ) -> Result<(), CacheError> {
+        let mut conn = self.lock();
+        let tx = conn.transaction().map_err(db)?;
+        tx.execute(
+            "INSERT INTO volume
+               (volume_id, name, publisher, start_year, count_of_issues,
+                date_last_updated, last_cover_date, fetched_at, detail_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
+             ON CONFLICT(volume_id) DO UPDATE SET
+               name = excluded.name,
+               publisher = excluded.publisher,
+               start_year = excluded.start_year,
+               count_of_issues = excluded.count_of_issues,
+               date_last_updated = excluded.date_last_updated,
+               last_cover_date = excluded.last_cover_date,
+               fetched_at = excluded.fetched_at,
+               detail_json = excluded.detail_json",
+            params![
+                volume.volume_id,
+                volume.name,
+                volume.publisher,
+                volume.start_year,
+                volume.count_of_issues,
+                volume.date_last_updated,
+                volume.last_cover_date,
+                volume.fetched_at,
+                detail_json,
+            ],
+        )
+        .map_err(db)?;
+        tx.execute(
+            "DELETE FROM issue_skeleton WHERE volume_id = ?1",
+            params![volume.volume_id],
+        )
+        .map_err(db)?;
+        {
+            let mut stmt = tx
+                .prepare(
+                    "INSERT INTO issue_skeleton
+                       (issue_id, volume_id, issue_number, cover_date, name)
+                     VALUES (?1, ?2, ?3, ?4, ?5)
+                     ON CONFLICT(issue_id) DO UPDATE SET
+                       volume_id = excluded.volume_id,
+                       issue_number = excluded.issue_number,
+                       cover_date = excluded.cover_date,
+                       name = excluded.name",
+                )
+                .map_err(db)?;
+            for issue in issues {
+                stmt.execute(params![
+                    issue.issue_id,
+                    issue.volume_id,
+                    issue.issue_number,
+                    issue.cover_date,
+                    issue.name,
+                ])
+                .map_err(db)?;
+            }
+        }
+        tx.commit().map_err(db)
+    }
+
+    /// Replaces the durable queue for one volume.
+    pub fn set_pending_issue_details(
+        &self,
+        volume_id: i64,
+        issue_ids: &[i64],
+    ) -> Result<(), CacheError> {
+        let mut conn = self.lock();
+        let tx = conn.transaction().map_err(db)?;
+        tx.execute(
+            "DELETE FROM pending_issue_detail WHERE volume_id = ?1",
+            params![volume_id],
+        )
+        .map_err(db)?;
+        {
+            let mut stmt = tx
+                .prepare(
+                    "INSERT INTO pending_issue_detail (volume_id, issue_id, position)
+                     VALUES (?1, ?2, ?3)",
+                )
+                .map_err(db)?;
+            for (position, issue_id) in issue_ids.iter().enumerate() {
+                stmt.execute(params![volume_id, issue_id, position as i64])
+                    .map_err(db)?;
+            }
+        }
+        tx.commit().map_err(db)
+    }
+
+    /// The unfinished issue-detail ids, in refresh order.
+    pub fn pending_issue_details(&self, volume_id: i64) -> Result<Vec<i64>, CacheError> {
+        let conn = self.lock();
+        let mut stmt = conn
+            .prepare(
+                "SELECT issue_id FROM pending_issue_detail
+                 WHERE volume_id = ?1 ORDER BY position",
+            )
+            .map_err(db)?;
+        let rows = stmt
+            .query_map(params![volume_id], |row| row.get(0))
+            .map_err(db)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(db)
+    }
+
+    /// Stores one complete issue and removes it from the durable queue.
+    pub fn complete_issue_detail(
+        &self,
+        issue: &IssueSkeleton,
+        json: &str,
+    ) -> Result<(), CacheError> {
+        let mut conn = self.lock();
+        let tx = conn.transaction().map_err(db)?;
+        tx.execute(
+            "INSERT INTO issue_detail (issue_id, json, fetched_at)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(issue_id) DO UPDATE SET
+               json = excluded.json, fetched_at = excluded.fetched_at",
+            params![issue.issue_id, json, now()],
+        )
+        .map_err(db)?;
+        tx.execute(
+            "UPDATE issue_skeleton SET
+               issue_number = ?2, cover_date = ?3, name = ?4
+             WHERE issue_id = ?1",
+            params![
+                issue.issue_id,
+                issue.issue_number,
+                issue.cover_date,
+                issue.name,
+            ],
+        )
+        .map_err(db)?;
+        tx.execute(
+            "DELETE FROM pending_issue_detail
+             WHERE volume_id = ?1 AND issue_id = ?2",
+            params![issue.volume_id, issue.issue_id],
+        )
+        .map_err(db)?;
+        tx.commit().map_err(db)
     }
 }
 

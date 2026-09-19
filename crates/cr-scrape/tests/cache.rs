@@ -37,6 +37,40 @@ fn schema_migrates_from_empty_and_is_idempotent() {
 }
 
 #[test]
+fn schema_migrates_a_version_one_cache_to_the_manager_schema() {
+    let dir = tempdir();
+    let path = dir.join("cvcache.sqlite");
+    {
+        let conn = rusqlite::Connection::open(&path).expect("open version one database");
+        conn.execute_batch(
+            "CREATE TABLE volume (
+                volume_id INTEGER PRIMARY KEY, name TEXT, publisher TEXT,
+                start_year INTEGER, count_of_issues INTEGER,
+                date_last_updated TEXT, last_cover_date TEXT,
+                fetched_at INTEGER NOT NULL DEFAULT 0
+             );
+             CREATE TABLE issue_skeleton (
+                issue_id INTEGER PRIMARY KEY, volume_id INTEGER NOT NULL,
+                issue_number TEXT NOT NULL, cover_date TEXT, name TEXT
+             );
+             INSERT INTO volume (volume_id, name) VALUES (806, 'Kept');
+             PRAGMA user_version = 1;",
+        )
+        .expect("create version one schema");
+    }
+
+    let cache = SqliteCache::open(&path).expect("migrate version one cache");
+    let record = cache
+        .managed_volume(806)
+        .expect("read migrated cache")
+        .expect("kept volume");
+    assert_eq!(record.volume.name.as_deref(), Some("Kept"));
+    assert_eq!(record.detail_json, None);
+    assert!(record.pending_issue_details.is_empty());
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
 fn open_creates_the_parent_directory() {
     let dir = tempdir();
     let path = dir.join("a").join("b").join("cvcache.sqlite");

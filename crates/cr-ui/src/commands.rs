@@ -58,6 +58,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     // NO C# item — the Comic Vine disk cache (ADR-037, ADR-038,
     // Phase 15). The C# plugin had no cache, so it had no commands.
     cmd("cv-import-mcl", &[]),
+    cmd("cv-cache-manager", &[]),
     cmd("cv-update", &[]),
     cmd("cv-warm", &[]),
     // The Library Organizer (Phase 17): the addon's Books/Library/

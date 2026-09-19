@@ -243,6 +243,7 @@ pub enum CvJobKind {
     MissingIssuesGap,
     LinkSeriesSearch,
     SeriesMetadataPropagation,
+    CacheManager,
 }
 
 impl CvJobKind {
@@ -256,6 +257,7 @@ impl CvJobKind {
             CvJobKind::MissingIssuesGap => "Computing the Missing Issues report",
             CvJobKind::LinkSeriesSearch => "Searching Comic Vine for a series",
             CvJobKind::SeriesMetadataPropagation => "Applying cached series metadata",
+            CvJobKind::CacheManager => "Updating one Comic Vine series",
         }
     }
 }
