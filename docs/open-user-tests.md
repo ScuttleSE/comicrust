@@ -91,20 +91,18 @@ Not yet run. See ADR-060. Built in response to a real case found while
 testing #22: a series with an MCL-imported cache but no book ever linked to
 Comic Vine.
 
-Pick a series with an MCL-imported cache and NO book yet linked to Comic
-Vine (check the Properties/custom-values of a few books, or just try a
-series you know you've never scraped). Right-click one book of that series
-and choose "Link Series from Cache…". Confirm exactly one Comic Vine
-request fires (check Preferences ▸ Comic Vine Scraper's request log, or a
-network trace) and that a "pick the volume" dialog appears. Pick the
-correct volume and confirm a summary reports N of M books linked. Open
-Missing Issues, scope it to that series, Refresh, and confirm real gaps now
-show. Then: narrow the browser to a smart list or a quick search that only
-shows SOME of that series' books, right-click one of the still-unlinked
-copies, and confirm only the currently visible books get linked — copies
-outside the view must stay untouched. Finally, re-run the command on a
-series where a book already carries the link and confirm no Comic Vine
-request fires at all (the existing vote is reused).
+Open a view that contains books from two or more series. Select multiple books
+from each series. Leave at least one visible book unselected. Choose **Link
+Series from Cache…**. Confirm that the first selected series opens first. Pick
+its volume. Confirm that all selected books in that series leave the queue and
+that the next selected series opens. Continue until the batch completes.
+Confirm that one final summary includes all selected series. Confirm that the
+unselected book did not change.
+
+For a series with an existing Comic Vine volume link, confirm that no search
+request occurs. For an unlinked series, confirm that no more than one search
+request occurs. Cancel one volume-selection dialog and confirm that the command
+does not process the remaining groups.
 
 ## 17. Incoming folder setup and review views
 

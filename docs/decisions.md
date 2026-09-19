@@ -63,12 +63,13 @@ This index is navigation only. The entry below each ADR is the decision.
 | ADR-057 | Compare recommends with borders and resolves batches in the background | accepted | ADR-054 |
 | ADR-058 | Incoming catalog transactions reference one-time snapshots and suppress their own deletes | accepted | ADR-055 |
 | ADR-059 | The Missing Issues report is a read-only, cache-only, manual-refresh Detail view | accepted | — |
-| ADR-060 | Link Series from Cache: at most one Comic Vine request per series, scoped to the current view | accepted | — |
+| ADR-060 | Link Series from Cache: at most one Comic Vine request per series, scoped to the current view | superseded | ADR-066 |
 | ADR-061 | Missing Issues can adopt matching Incoming books with a dedicated Organizer profile | accepted | — |
 | ADR-062 | Gap Fill actions share the dedicated adoption profile and Organizer progress is explicit | accepted | — |
 | ADR-063 | Comic Vine volume metadata fills blank fields across a series | accepted | — |
 | ADR-064 | The cache manager has summary and complete API updates | accepted | — |
 | ADR-065 | Cached issue linking uses the enabled Proposed Number fallback | accepted | ADR-060 |
+| ADR-066 | Link Series from Cache processes all selected series as one batch | accepted | ADR-060 |
 
 ADR-029 is reserved for the deferred Phase 9 (SQLite) decision. It is not written yet.
 
@@ -613,3 +614,23 @@ v0.1.0 and every rolling build after it, and one manual reinstall clears it.
   editor show. Exact cache matching still limits the fallback. The trace logs
   proposed-number and unmatched candidates, but it no longer logs thousands of
   already-linked books.
+
+## ADR-066: Link Series from Cache processes all selected series as one batch
+
+- **Status:** accepted (2026-09-19, user decision). Supersedes the selection
+  scope in ADR-060.
+- **Context:** ADR-060 processes only the series of the first selected book. A
+  view can contain many series. Processing each book separately repeats the
+  command and the volume-selection step.
+- **Decision:** **Link Series from Cache** takes all selected books in display
+  order. It groups the books by case-insensitive Series and exact Volume. The
+  first book in each group identifies the series. The command links all books
+  in that selected group, removes the group from the queue, and then processes
+  the next group. Books outside the selection do not change. Each group reuses
+  an existing Comic Vine volume vote or uses one series search and one volume
+  selection. Canceling a volume selection stops the remaining batch. The
+  command shows one summary after it processes all groups.
+- **Consequences:** One selection can link many series. The command uses at
+  most one Comic Vine search for each selected series group. Cache reads remain
+  on worker threads. The main thread applies each completed group in one
+  database pass.

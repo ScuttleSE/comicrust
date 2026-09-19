@@ -69,6 +69,33 @@ struct SeriesPropagationReport {
     unmatched: usize,
 }
 
+struct LinkSeriesBatch {
+    groups: Vec<Vec<ComicBook>>,
+    next_group: usize,
+    selected: usize,
+    linked: usize,
+    metadata_filled: usize,
+    updated: usize,
+    unmatched: usize,
+}
+
+fn group_link_series_books(selected: Vec<ComicBook>) -> Vec<Vec<ComicBook>> {
+    let mut groups: Vec<Vec<ComicBook>> = Vec::new();
+    for book in selected {
+        let group = groups.iter_mut().find(|group| {
+            group.first().is_some_and(|first| {
+                first.info.series.eq_ignore_ascii_case(&book.info.series)
+                    && first.info.volume == book.info.volume
+            })
+        });
+        match group {
+            Some(group) => group.push(book),
+            None => groups.push(vec![book]),
+        }
+    }
+    groups
+}
+
 impl IncomingOrganizerEffects {
     fn new(
         transaction: cr_engine::incoming_transaction::IncomingTransaction,
@@ -4498,51 +4525,37 @@ impl ShellState {
         );
     }
 
-    /// "Link Series from Cache": the clicked book identifies the
-    /// series; the candidate set is the CURRENT VIEW
-    /// (`item_view.displayed_books()`), not the whole library, so a
-    /// smart-list or quick-search scope narrows what gets linked. If
-    /// any candidate already votes a Comic Vine volume, that vote is
-    /// reused and no network call happens; otherwise one Comic Vine
-    /// search finds the volume, the user confirms it
-    /// (`dialogs::pick_series`), and every other match comes from the
-    /// local cache alone — no further requests.
+    /// "Link Series from Cache": groups the selected books by series and
+    /// volume in display order, then processes each group. A group reuses an
+    /// existing Comic Vine volume vote when possible. Otherwise, one search
+    /// asks the user to select the volume. All issue matches use the cache.
     fn link_series_from_cache(self: &Rc<ShellState>) {
         let ids = self.item_view.selection_ids();
-        let Some(first_id) = ids.first() else {
+        if ids.is_empty() {
             return;
-        };
-        let Some(clicked) = Self::books_by_ids(std::slice::from_ref(first_id))
-            .into_iter()
-            .next()
-        else {
-            return;
-        };
-        let series = clicked.info.series.clone();
-        let volume = clicked.info.volume;
-
-        let candidates: Vec<ComicBook> = self
+        }
+        let selected: Vec<ComicBook> = self
             .item_view
             .displayed_books()
             .into_iter()
-            .filter(|b| b.info.series.eq_ignore_ascii_case(&series) && b.info.volume == volume)
+            .filter(|book| ids.contains(&book.id))
             .collect();
-        if candidates.is_empty() {
+        if selected.is_empty() {
             return;
         }
 
+        let selected_count = selected.len();
+        let groups = group_link_series_books(selected);
         let config = library::scraper_config();
-        let existing = cr_scrape::cache::missing::volume_id_of(
-            candidates
-                .iter()
-                .map(|b| cr_scrape::bookdata::BookData::from_book(b, &config).series_key),
-        );
-        if let Some(volume_id) = existing {
-            self.link_series_apply(candidates, volume_id);
-            return;
-        }
-
-        if !config.has_api_key() {
+        let needs_search = groups.iter().any(|group| {
+            cr_scrape::cache::missing::volume_id_of(
+                group
+                    .iter()
+                    .map(|book| cr_scrape::bookdata::BookData::from_book(book, &config).series_key),
+            )
+            .is_none()
+        });
+        if needs_search && !config.has_api_key() {
             let window = self.window.clone();
             let state = Rc::downgrade(self);
             crate::settings::preferences::show_preferences(&window, Some("scraper"), move || {
@@ -4550,6 +4563,51 @@ impl ShellState {
                     sh.sync_enabled();
                 }
             });
+            return;
+        }
+
+        let batch = Rc::new(RefCell::new(LinkSeriesBatch {
+            groups,
+            next_group: 0,
+            selected: selected_count,
+            linked: 0,
+            metadata_filled: 0,
+            updated: 0,
+            unmatched: 0,
+        }));
+        self.link_series_batch_next(batch);
+    }
+
+    fn link_series_batch_next(self: &Rc<ShellState>, batch: Rc<RefCell<LinkSeriesBatch>>) {
+        let candidates = {
+            let batch = batch.borrow();
+            if batch.next_group >= batch.groups.len() {
+                show_report_dialog(
+                    &self.window,
+                    "Link Series from Cache",
+                    &format!(
+                        "{} of {} selected book(s) linked across {} series. {} book(s) received blank shared metadata. {} book(s) changed. {} had no matching issue number in the cache.",
+                        batch.linked,
+                        batch.selected,
+                        batch.groups.len(),
+                        batch.metadata_filled,
+                        batch.updated,
+                        batch.unmatched
+                    ),
+                );
+                return;
+            }
+            batch.groups[batch.next_group].clone()
+        };
+        let series = candidates[0].info.series.clone();
+        let config = library::scraper_config();
+        let existing = cr_scrape::cache::missing::volume_id_of(
+            candidates
+                .iter()
+                .map(|book| cr_scrape::bookdata::BookData::from_book(book, &config).series_key),
+        );
+        if let Some(volume_id) = existing {
+            self.link_series_apply(candidates, volume_id, batch);
             return;
         }
 
@@ -4600,13 +4658,18 @@ impl ShellState {
                 }
                 let state = state.clone();
                 let candidates = candidates.clone();
+                let batch = Rc::clone(&batch);
                 crate::dialogs::pick_series::show(
                     window,
                     &series,
                     &refs,
                     Box::new(move |picked| {
                         if let (Some(picked), Some(sh)) = (picked, state.upgrade()) {
-                            sh.link_series_apply(candidates.clone(), picked.series_key);
+                            sh.link_series_apply(
+                                candidates.clone(),
+                                picked.series_key,
+                                Rc::clone(&batch),
+                            );
                         }
                     }),
                 );
@@ -4618,7 +4681,12 @@ impl ShellState {
     /// reads (`CvCache::issues_of_volume` and `CvCache::volume`, never
     /// the network) plus a pure local match and blank-field fill. The
     /// cache read runs on a worker. The result lands in one bulk update.
-    fn link_series_apply(self: &Rc<ShellState>, candidates: Vec<ComicBook>, volume_id: i64) {
+    fn link_series_apply(
+        self: &Rc<ShellState>,
+        candidates: Vec<ComicBook>,
+        volume_id: i64,
+        batch: Rc<RefCell<LinkSeriesBatch>>,
+    ) {
         let Some(cache) = library::cv_cache() else {
             show_failure_dialog(
                 &self.window,
@@ -4627,7 +4695,6 @@ impl ShellState {
             );
             return;
         };
-        let total = candidates.len();
         let config = library::scraper_config();
         let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
         let state = Rc::downgrade(self);
@@ -4653,24 +4720,27 @@ impl ShellState {
                     &config,
                 ))
             },
-            move |window, result| match result {
+            move |_window, result| match result {
                 Ok(report) => {
                     let updated = library::apply_edited_many(report.books);
+                    {
+                        let mut batch = batch.borrow_mut();
+                        batch.linked += report.linked;
+                        batch.metadata_filled += report.metadata_filled;
+                        batch.updated += updated;
+                        batch.unmatched += report.unmatched;
+                        batch.next_group += 1;
+                    }
                     if let Some(sh) = state.upgrade() {
                         sh.refresh_view_from_list();
+                        sh.link_series_batch_next(Rc::clone(&batch));
                     }
-                    show_report_dialog(
-                        window,
-                        "Link Series from Cache",
-                        &format!(
-                            "{} of {total} book(s) linked. {} book(s) received blank shared \
-                             metadata. {updated} book(s) changed. {} had no matching issue number \
-                             in the cache.",
-                            report.linked, report.metadata_filled, report.unmatched
-                        ),
-                    );
                 }
-                Err(error) => show_failure_dialog(window, "Link Series from Cache", &error),
+                Err(error) => {
+                    if let Some(sh) = state.upgrade() {
+                        show_failure_dialog(&sh.window, "Link Series from Cache", &error);
+                    }
+                }
             },
         );
     }
@@ -8262,10 +8332,9 @@ fn show_context_menu(state: &std::rc::Weak<ShellState>, target: Option<CrGuid>, 
                     sh.fill_missing_issues();
                 }
                 "link-series-from-cache" => {
-                    // "Link Series from Cache": one Comic Vine search
-                    // (skipped if a vote already exists), then a local
-                    // cache-only match links the rest of the CURRENT
-                    // VIEW's copies of the series.
+                    // "Link Series from Cache": process each selected
+                    // series in display order. Each group uses at most one
+                    // Comic Vine search, then links from the local cache.
                     sh.link_series_from_cache();
                 }
                 "export" => {
@@ -9242,6 +9311,33 @@ mod tests {
         let m = compose_quick_filter("", "all", "all", "all", true).unwrap();
         let hit = eval(&m, &books);
         assert!(hit.contains(&0) && hit.contains(&1) && !hit.contains(&2));
+    }
+
+    #[test]
+    fn link_series_batch_groups_selected_books_in_first_seen_order() {
+        let mut alpha_1 = book("Alpha", "", 0.0, "/alpha-1.cbz");
+        alpha_1.info.volume = 2020;
+        let mut beta = book("Beta", "", 0.0, "/beta.cbz");
+        beta.info.volume = 2021;
+        let mut alpha_2 = book("alpha", "", 0.0, "/alpha-2.cbz");
+        alpha_2.info.volume = 2020;
+        let mut other_volume = book("Alpha", "", 0.0, "/alpha-v2.cbz");
+        other_volume.info.volume = 2022;
+
+        let groups = group_link_series_books(vec![
+            alpha_1.clone(),
+            beta.clone(),
+            alpha_2.clone(),
+            other_volume.clone(),
+        ]);
+
+        assert_eq!(groups.len(), 3);
+        assert_eq!(
+            groups[0].iter().map(|book| book.id).collect::<Vec<_>>(),
+            vec![alpha_1.id, alpha_2.id]
+        );
+        assert_eq!(groups[1][0].id, beta.id);
+        assert_eq!(groups[2][0].id, other_volume.id);
     }
 
     /// A MATCH query parses only for the All scope, and then the

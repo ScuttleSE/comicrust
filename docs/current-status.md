@@ -22,19 +22,15 @@ save. `UNKNOWN`: neither API update mode has run against the live API.
 
 ## Latest user finding
 
-`MEASURED` (user, 2026-09-19): cached series propagation for volume 19752
-loaded 2,500 cached issues but left 44 books unmatched. `CR_TRACE` showed that
-all 44 books supplied an empty stored Number. The editor displayed numbers such
-as `2451` as filename-derived Proposed Number placeholders.
+`MEASURED` (user, 2026-09-19): **Link Series from Cache** required one command
+for each series when a selection contained books from many series.
 
-ADR-065 makes both cached issue-linking paths use the Proposed Number when the
-stored Number is blank and Enable Proposed is active. It does not write the
-proposed value into the stored Number. `MEASURED`: unit tests reproduce
-`2000 AD 2451.cbz` and link it to issue ID 1135136. `MEASURED` (user): the
-real-library rerun works correctly.
-
-The diagnostic remains available under `CR_TRACE`. It logs only proposed or
-unmatched candidates, plus target and landing totals.
+ADR-066 changes the command to process all selected series groups in display
+order. Each group contains selected books with the same case-insensitive Series
+and exact Volume. Books outside the selection do not change. A canceled volume
+selection stops the remaining batch. One summary reports the completed batch.
+`MEASURED`: the grouping test covers first-seen order, case-insensitive names,
+and separate Volume values. `UNKNOWN`: the GTK batch flow needs a user test.
 
 ## Current task for the next context
 
@@ -100,16 +96,13 @@ licenses` is not a CI gate.
 
 ## Latest verification
 
-The Proposed Number cache-link fix passed on 2026-09-19.
+The Link Series from Cache batch change passed on 2026-09-19.
 
 - `cargo fmt --all`: passed.
 - `cargo clippy --workspace --all-targets -- -D warnings`: passed.
 - `cargo test --workspace`: passed.
-- `MEASURED`: all 11 cache-link tests pass.
-- `MEASURED`: the formerly unstable Incoming epoch test passed in the normal
-  parallel workspace run after its baseline moved inside the mutation guard.
-- `MEASURED` (user): propagation for volume 19752 now links books from their
-  enabled Proposed Numbers.
+- `MEASURED`: the batch grouping test passes.
+- `UNKNOWN`: the GTK batch sequence has not had a user test.
 
 ## Environment notes
 
