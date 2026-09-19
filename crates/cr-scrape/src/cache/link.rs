@@ -32,6 +32,22 @@ pub struct EnrichmentReport {
     pub unmatched: usize,
 }
 
+/// The issue number used by display and matching. A blank stored Number can
+/// fall back to the filename-derived Proposed Number when Enable Proposed is
+/// active. The fallback does not write the proposed value into book metadata.
+fn issue_number_for_matching(book: &ComicBook) -> (&'static str, String) {
+    if !book.info.number.trim().is_empty() {
+        return ("stored", book.info.number.clone());
+    }
+    if book.enable_proposed {
+        return (
+            "proposed",
+            cr_core::model::comic_name_info::from_file_path(&book.file_path).number,
+        );
+    }
+    ("empty", String::new())
+}
+
 /// Fills blank links and blank series-level metadata from one cached
 /// Comic Vine volume. Existing values are never replaced.
 pub fn enrich_series_from_cache(
@@ -91,16 +107,21 @@ pub fn enrich_series_from_cache(
         }
 
         if existing_issue.is_empty() {
-            let key = super::missing::normalize_number(&book.info.number);
+            let (number_source, match_number) = issue_number_for_matching(&book);
+            let key = super::missing::normalize_number(&match_number);
             let matched_issue = by_number.get(&key).copied();
-            cr_core::trace::trace(format!(
-                "series enrichment candidate book_id={:?} raw_number={:?} normalized_number={:?} existing_volume={:?} existing_issue={:?} matched_issue={matched_issue:?}",
-                book.id,
-                book.info.number,
-                key,
-                existing_volume,
-                existing_issue
-            ));
+            if number_source != "stored" || matched_issue.is_none() {
+                cr_core::trace::trace(format!(
+                    "series enrichment candidate book_id={:?} stored_number={:?} match_number={:?} number_source={} normalized_number={:?} existing_volume={:?} existing_issue={:?} matched_issue={matched_issue:?}",
+                    book.id,
+                    book.info.number,
+                    match_number,
+                    number_source,
+                    key,
+                    existing_volume,
+                    existing_issue
+                ));
+            }
             if let Some(issue_id) = matched_issue {
                 set_custom_value(&mut book, "comicvine_issue", &issue_id.to_string());
                 report.linked += 1;
@@ -108,11 +129,6 @@ pub fn enrich_series_from_cache(
             } else {
                 report.unmatched += 1;
             }
-        } else {
-            cr_core::trace::trace(format!(
-                "series enrichment candidate book_id={:?} raw_number={:?} existing_volume={:?} existing_issue={:?} action=skip_existing_issue",
-                book.id, book.info.number, existing_volume, existing_issue
-            ));
         }
 
         if metadata_changed {
@@ -159,7 +175,8 @@ pub fn match_series_to_volume(
         if !get_custom_value(book, "comicvine_issue").is_empty() {
             continue;
         }
-        let key = super::missing::normalize_number(&book.info.number);
+        let (_, match_number) = issue_number_for_matching(book);
+        let key = super::missing::normalize_number(&match_number);
         match by_number.get(&key) {
             Some(&issue_id) => linked.push(LinkedBook {
                 book_id: book.id,
@@ -193,6 +210,13 @@ mod tests {
         }
     }
 
+    fn proposed_book(path: &str) -> ComicBook {
+        ComicBook {
+            file_path: path.to_string(),
+            ..Default::default()
+        }
+    }
+
     #[test]
     fn a_normalized_number_match_links_the_book() {
         let candidates = vec![book("007", None)];
@@ -206,6 +230,51 @@ mod tests {
             }]
         );
         assert_eq!(unmatched, 0);
+    }
+
+    #[test]
+    fn a_blank_stored_number_uses_the_enabled_proposed_number() {
+        let candidates = vec![proposed_book("/library/2000 AD 2451.cbz")];
+        let issues = vec![issue(1_135_136, "2451")];
+
+        let (linked, unmatched) = match_series_to_volume(&candidates, &issues);
+
+        assert_eq!(linked.len(), 1);
+        assert_eq!(linked[0].issue_id, 1_135_136);
+        assert_eq!(unmatched, 0);
+    }
+
+    #[test]
+    fn enrichment_links_from_proposed_number_without_storing_that_number() {
+        let candidate = proposed_book("/library/2000 AD 2451.cbz");
+        let report = enrich_series_from_cache(
+            std::slice::from_ref(&candidate),
+            &[issue(1_135_136, "2451")],
+            &VolumeRow {
+                volume_id: 19_752,
+                ..Default::default()
+            },
+            &Configuration::default(),
+        );
+
+        assert_eq!(report.linked, 1);
+        assert_eq!(report.unmatched, 0);
+        assert_eq!(report.books.len(), 1);
+        assert!(report.books[0].info.number.is_empty());
+        assert_eq!(
+            get_custom_value(&report.books[0], "comicvine_issue"),
+            "1135136"
+        );
+    }
+
+    #[test]
+    fn disabled_proposed_values_do_not_link_a_blank_number() {
+        let mut candidate = proposed_book("/library/2000 AD 2451.cbz");
+        candidate.enable_proposed = false;
+        let (linked, unmatched) = match_series_to_volume(&[candidate], &[issue(1_135_136, "2451")]);
+
+        assert!(linked.is_empty());
+        assert_eq!(unmatched, 1);
     }
 
     #[test]

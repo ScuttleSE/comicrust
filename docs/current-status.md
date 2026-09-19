@@ -18,14 +18,22 @@ The release GTK probe passed search, issue display, and manual metadata save.
 The required workspace verification passes. `UNKNOWN`: user test 26 has not
 run against the live Comic Vine API.
 
-`MEASURED` (user, 2026-09-19): cached volume 19752 contains issue ID 1135136
-with issue number `2451`, and the corresponding book Number is also `2451`,
-but cached series propagation did not add the issue link and reported 46
-unmatched books. `CODE-READ`: these values normalize to the same key, so the
-static matcher does not explain the result. `UNKNOWN`: the exact cache and
-candidate values seen by the worker during the failed run. `CR_TRACE` now logs
-the cache path, target counts, each candidate's raw and normalized number,
-existing links, lookup result, worker totals, and landing total.
+`MEASURED` (user, 2026-09-19): cached volume 19752 contained issue ID 1135136
+with issue number `2451`, but series propagation left the corresponding book
+unlinked. The added trace found the cause: all 44 unmatched candidates supplied
+an empty stored Number. The editor showed filename-derived Proposed Number
+placeholders. ADR-065 makes both cache-linking paths use the Proposed Number
+when the stored Number is blank and Enable Proposed is active. `MEASURED`: new
+tests reproduce `2000 AD 2451.cbz`, link it to issue ID 1135136, preserve the
+blank stored Number, and keep it unmatched when Enable Proposed is inactive.
+
+`MEASURED`: The first workspace run after this fix exposed an unrelated
+parallel-test race in `epoch_compare_and_commit_excludes_mutation_until_commit_finishes`.
+The test failed with `EpochChanged`, then passed alone and with the complete
+test binary restricted to one thread. `CODE-READ`: it read the shared global
+epoch before it acquired the global mutation guard. It now acquires the guard
+first and reads its baseline while the guard is held. The assertions and
+expected values did not change.
 
 **Phase 19: the Missing Issues gap view.**
 
@@ -335,6 +343,17 @@ not claim that the present combination is permissible. `cargo deny check
 licenses` is not a CI gate.
 
 ## Latest verification
+
+The Proposed Number cache-link fix passed local verification on 2026-09-19.
+
+- `cargo fmt --all`: passed.
+- `cargo clippy --workspace --all-targets -- -D warnings`: passed.
+- `cargo test --workspace`: passed, including the formerly unstable Incoming
+  epoch test under the normal parallel workspace run.
+- `MEASURED`: all 11 cache-link tests pass. Three tests cover the enabled
+  Proposed Number fallback, preservation of the blank stored Number, and the
+  disabled fallback.
+- `UNKNOWN`: the user has not rerun series propagation for volume 19752.
 
 The Comic Vine cache manager passed local verification on 2026-09-19.
 

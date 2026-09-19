@@ -169,6 +169,12 @@ blank shared field and both IDs. Confirm that the excluded issue does not
 change. Confirm that the summary reports linked, metadata-filled, changed, and
 unmatched counts.
 
+Use a book whose stored Number is blank but whose enabled Proposed Number comes
+from its filename. Run **Link Series from Cache** or scrape one issue that starts
+cached series propagation. Confirm that the book receives the matching Comic
+Vine issue ID. Confirm that its stored Number remains blank. Disable Enable
+Proposed on another such book and confirm that it remains unmatched.
+
 ## 26. Comic Vine cache manager
 
 Not yet run. See `docs/phases/phase-20.md` and ADR-064.

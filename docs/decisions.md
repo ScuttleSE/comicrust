@@ -68,6 +68,7 @@ This index is navigation only. The entry below each ADR is the decision.
 | ADR-062 | Gap Fill actions share the dedicated adoption profile and Organizer progress is explicit | accepted | — |
 | ADR-063 | Comic Vine volume metadata fills blank fields across a series | accepted | — |
 | ADR-064 | The cache manager has summary and complete API updates | accepted | — |
+| ADR-065 | Cached issue linking uses the enabled Proposed Number fallback | accepted | ADR-060 |
 
 ADR-029 is reserved for the deferred Phase 9 (SQLite) decision. It is not written yet.
 
@@ -594,3 +595,21 @@ v0.1.0 and every rolling build after it, and one manual reinstall clears it.
   uses one volume request plus one request per 100 issue rows. A complete update
   adds one issue-detail request per issue. Both modes use the shared Comic Vine
   request budget and run on a worker thread. Neither mode writes ComicDb.xml.
+
+## ADR-065: Cached issue linking uses the enabled Proposed Number fallback
+
+- **Status:** accepted (2026-09-19, user decision). Extends ADR-060 and ADR-063.
+- **Context:** A real series propagation for Comic Vine volume 19752 loaded
+  2,500 cached issues and 2,484 candidate books. It left 44 books unmatched.
+  `CR_TRACE` showed that every unmatched book supplied an empty stored Number.
+  The book editor showed numbers such as `2451` as filename-derived placeholder
+  text. The cache contained issue number `2451` with issue ID 1135136.
+- **Decision:** Both cached issue-linking functions use the stored Number when
+  it is nonblank. When it is blank and Enable Proposed is active, they use the
+  filename-derived Proposed Number. They do not copy the Proposed Number into
+  the stored Number field. When Enable Proposed is inactive, a blank stored
+  Number stays unmatched.
+- **Consequences:** Cache linking now follows the number that the browser and
+  editor show. Exact cache matching still limits the fallback. The trace logs
+  proposed-number and unmatched candidates, but it no longer logs thousands of
+  already-linked books.

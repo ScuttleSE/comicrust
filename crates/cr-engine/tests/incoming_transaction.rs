@@ -527,8 +527,11 @@ fn epoch_compare_and_commit_excludes_mutation_until_commit_finishes() {
     let engine = TransactionEngine::from_journal_path(root.path("current.json"));
     let mut transaction = transaction(&root, TransactionKind::Scan, TransactionStage::Prepared);
     engine.begin(&transaction).unwrap();
-    let expected = database_epoch();
     let guard = acquire_mutation_guard();
+    // Capture the baseline while this test owns the global mutation lock.
+    // Parallel tests can otherwise advance the shared epoch between these
+    // two operations and make this assertion fail before the tested commit.
+    let expected = database_epoch();
 
     let blocked = std::thread::spawn(|| try_acquire_mutation_guard().is_none());
     assert!(blocked.join().unwrap());
