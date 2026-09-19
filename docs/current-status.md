@@ -22,27 +22,27 @@ save. `UNKNOWN`: neither API update mode has run against the live API.
 
 ## Latest user finding
 
-`MEASURED` (user, 2026-09-19): Missing Issues scoped to a 2,484-book 2000 AD
-smart list reports 2,559 missing rows. It groups 59 rows under `2000 AD` and
-2,500 rows under `Unspecified`. At least one reported row has the same visible
-Series, Number, and Comic Vine issue ID as an owned book.
+`MEASURED` (user, 2026-09-19): **Find in Incoming** did not find two candidates
+for missing `2000 AD` number `2498`, volume `1977`. The Incoming view showed
+number `2498` for both candidates. Their Series values were `2000AD` and
+`2000AD prog`. Both Volume values were blank.
 
-`MEASURED`: `CR_TRACE` found 2,441 books with stored Series and Number values.
-It found 43 books with both values empty and proposed metadata enabled. Both
-groups use stored Volume 1977 and Comic Vine volume 19752. The old gap pass
-made an empty-Series group for the 43 books and reported all 2,500 cached
-issues in that group. Of these cached issues, 2,483 already had a linked book
-in the scope.
+`CODE-READ`: the old matcher required exact normalized Series, Volume, and
+Number values. The blank Incoming Volume rejected both candidates. The `prog`
+suffix also rejected the first candidate.
 
-ADR-067 makes Missing Issues use enabled Proposed Series and Number values when
-the stored values are empty. `MEASURED`: the regression test combines stored
-and proposed metadata into one group and reports only the absent issue.
-`UNKNOWN`: the corrected count needs a real-library user test.
+ADR-068 keeps exact matching first and adds a bounded fallback. The Number must
+match. A blank Incoming Volume can match, and one trailing Series word of at
+most four characters can be ignored. A different nonblank Volume still does
+not match. `MEASURED`: regression tests match both reported filenames and
+reject wrong Number, Volume, Series, and long-suffix candidates. `UNKNOWN`: the
+corrected result needs a real-library user test.
 
 ## Current task for the next context
 
-Retest Missing Issues with the reported 2000 AD scope. Confirm that the
-`Unspecified` group is absent and that the report contains only real gaps.
+Retest **Find in Incoming** for `2000 AD` number `2498`. Confirm that the dialog
+shows both reported candidates. Then complete the remaining Missing Issues
+scope test and confirm that the report contains only real gaps.
 
 After this defect is resolved, resume the deferred task: connect normal
 **Scrape from Comic Vine** to persistent-cache reads. Define cache-use and
@@ -60,7 +60,8 @@ The procedures are in `docs/open-user-tests.md`.
 - Test 17: Incoming folder setup and review views have a partial pass.
 - Test 22: Missing Issues gap report is not complete.
 - Test 23: Link Series from Cache is not complete.
-- Test 24: Find Missing Issues in Incoming is not complete.
+- Test 24: Find Missing Issues in Incoming has a bounded-match fix. The real
+  `2000 AD` number `2498` retest is pending.
 - Test 25: Cached series metadata propagation is not complete. The Proposed
   Number regression now passes on the real library.
 - Test 26: Comic Vine cache manager is not complete. Test both API modes
@@ -92,13 +93,20 @@ licenses` is not a CI gate.
 
 ## Latest verification
 
-The Missing Issues proposed-value fix passed on 2026-09-19.
+The Find in Incoming bounded-match fix passed on 2026-09-19.
 
 - `cargo fmt --all`: passed.
 - `cargo clippy --workspace --all-targets -- -D warnings`: passed.
 - `cargo test --workspace`: passed.
-- `MEASURED`: the proposed-Series and proposed-Number regression test passes.
-- `UNKNOWN`: the corrected real 2000 AD result needs a user test.
+- `MEASURED`: both reported number `2498` filenames match in the regression
+  test.
+- `MEASURED`: conflicting Number, Volume, Series, and long-suffix candidates
+  do not match in the regression test.
+- `MEASURED`: a parallel transaction test exposed interference between two
+  tests that shared the process-wide database epoch. A test-local mutex now
+  serializes those two tests without changing their assertions. The complete
+  transaction test binary and the final workspace run pass.
+- `UNKNOWN`: the corrected real-library dialog result needs a user test.
 
 ## Environment notes
 

@@ -71,6 +71,7 @@ This index is navigation only. The entry below each ADR is the decision.
 | ADR-065 | Cached issue linking uses the enabled Proposed Number fallback | accepted | ADR-060 |
 | ADR-066 | Link Series from Cache processes all selected series as one batch | accepted | ADR-060 |
 | ADR-067 | Missing Issues uses enabled Proposed Series and Number values | accepted | ADR-059 |
+| ADR-068 | Find in Incoming uses a bounded fallback for incomplete filename metadata | accepted | ADR-061 |
 
 ADR-029 is reserved for the deferred Phase 9 (SQLite) decision. It is not written yet.
 
@@ -657,3 +658,22 @@ v0.1.0 and every rolling build after it, and one manual reinstall clears it.
   their visible issue numbers to one gap calculation. Disabled proposed
   metadata does not supply fallback values. The report remains read-only and
   cache-only.
+
+## ADR-068: Find in Incoming uses a bounded fallback for incomplete filename metadata
+
+- **Status:** accepted (2026-09-19, user decision). Extends ADR-061.
+- **Context:** A Missing Issues row for `2000 AD` number `2498`, volume `1977`,
+  did not find two Incoming files. The Incoming view showed number `2498` for
+  both files, blank Volume values, and Series values `2000AD` and `2000AD
+  prog`. The exact matcher required equal Series, Volume, and Number values.
+- **Decision:** Keep the exact match as the first choice. If it finds no
+  candidates, use a bounded fallback. The normalized Number must remain equal.
+  The Incoming Volume must equal the missing Volume or be blank. The normalized
+  Series must be equal, or the Incoming Series can have one trailing
+  alphanumeric word of at most four characters. Do not use edit distance or an
+  unrestricted substring match. A different nonblank Volume does not match.
+- **Consequences:** The two reported `2498` files become candidates. An exact
+  match does not gain additional fuzzy candidates. The existing selection and
+  confirmation dialog still resolves multiple candidates. Automated tests
+  reject a different Number, a different nonblank Volume, an unrelated Series,
+  and a long Series suffix. A real-library user test remains necessary.

@@ -214,8 +214,10 @@ pub fn find_missing_incoming_matches(
     incoming: &[ComicBook],
 ) -> Vec<MissingIncomingMatch> {
     type Key = (String, i32, u32);
+    type FallbackKey = (String, u32);
 
     let mut by_issue: HashMap<Key, Vec<usize>> = HashMap::new();
+    let mut fallback_by_issue: HashMap<FallbackKey, Vec<(usize, i32)>> = HashMap::new();
     for (index, book) in incoming.iter().enumerate() {
         let Some(identity) = incoming_identity(book) else {
             continue;
@@ -227,21 +229,45 @@ pub fn find_missing_incoming_matches(
             .entry((identity.series, identity.volume, number.value().to_bits()))
             .or_default()
             .push(index);
+
+        let proposed = book_view::proposed_cached(book);
+        let series = book_view::shadow_series(book, &proposed);
+        let normalized = normalize_series(series);
+        let number = number.value().to_bits();
+        fallback_by_issue
+            .entry((normalized.clone(), number))
+            .or_default()
+            .push((index, identity.volume));
+        if let Some(base) = short_trailing_series_base(series) {
+            if base != normalized {
+                fallback_by_issue
+                    .entry((base, number))
+                    .or_default()
+                    .push((index, identity.volume));
+            }
+        }
     }
 
     missing
         .iter()
         .enumerate()
         .map(|(missing_index, book)| {
+            let series = normalize_series(&book.info.series);
             let incoming_indexes = IssueNumber::parse(&book.info.number)
-                .and_then(|number| {
-                    by_issue.get(&(
-                        normalize_series(&book.info.series),
-                        book.info.volume,
-                        number.value().to_bits(),
-                    ))
+                .map(|number| {
+                    let number = number.value().to_bits();
+                    if let Some(exact) = by_issue.get(&(series.clone(), book.info.volume, number)) {
+                        return exact.clone();
+                    }
+                    fallback_by_issue
+                        .get(&(series, number))
+                        .into_iter()
+                        .flatten()
+                        .filter_map(|(index, volume)| {
+                            (*volume == -1 || *volume == book.info.volume).then_some(*index)
+                        })
+                        .collect()
                 })
-                .cloned()
                 .unwrap_or_default();
             MissingIncomingMatch {
                 missing_index,
@@ -676,6 +702,30 @@ fn normalize_series(text: &str) -> String {
         .to_ascii_lowercase()
 }
 
+/// Returns the normalized base when a series has one trailing word of at most
+/// four characters. This bounded fallback accepts labels such as "prog"
+/// without making arbitrary substrings or edit-distance matches equivalent.
+fn short_trailing_series_base(text: &str) -> Option<String> {
+    const SEPARATORS: [char; 15] = [
+        ' ', '\t', '\n', '\r', '-', '~', ',', '.', ';', ':', '/', '\\', '\'', '\u{b4}', '`',
+    ];
+    const ARTICLES: [&str; 8] = ["the", "der", "die", "das", "le", "la", "les", "l'"];
+    let parts: Vec<&str> = text
+        .split(SEPARATORS)
+        .filter(|part| {
+            !part.is_empty()
+                && !ARTICLES
+                    .iter()
+                    .any(|article| part.eq_ignore_ascii_case(article))
+        })
+        .collect();
+    let (suffix, base) = parts.split_last()?;
+    if base.is_empty() || suffix.chars().count() > 4 || !suffix.chars().all(char::is_alphanumeric) {
+        return None;
+    }
+    Some(base.concat().to_ascii_lowercase())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -798,6 +848,62 @@ last_organizer_profile = "Move to Library"
         );
         assert_eq!(matches[0].incoming_indexes, [0, 1]);
         assert!(matches[1].incoming_indexes.is_empty());
+    }
+
+    #[test]
+    fn missing_issue_matching_falls_back_for_blank_volume_and_short_series_suffix() {
+        let mut missing = book(&id(40), "2000 AD", "2498");
+        missing.info.volume = 1977;
+
+        let incoming_from_filename = |last, file_name: &str| ComicBook {
+            id: CrGuid::parse(&id(last)).unwrap(),
+            file_path: format!("/incoming/{file_name}"),
+            enable_proposed: true,
+            ..ComicBook::default()
+        };
+        let exact_series = incoming_from_filename(1, "2000AD 2498 (2026) (Digital-Empire).cbz");
+        let prog_suffix =
+            incoming_from_filename(2, "2000AD prog 2498 (2026) (4320p) (juvecube).cbz");
+
+        let matches = find_missing_incoming_matches(&[missing], &[exact_series, prog_suffix]);
+
+        assert_eq!(matches[0].incoming_indexes, [0, 1]);
+    }
+
+    #[test]
+    fn bounded_missing_issue_fallback_rejects_unsafe_candidates() {
+        let mut missing = book(&id(40), "2000 AD", "2498");
+        missing.info.volume = 1977;
+
+        let mut wrong_volume = book(&id(1), "2000AD", "2498");
+        wrong_volume.info.volume = 2000;
+        let mut wrong_number = book(&id(2), "2000AD", "2499");
+        wrong_number.info.volume = -1;
+        let mut wrong_series = book(&id(3), "Judge Dredd", "2498");
+        wrong_series.info.volume = -1;
+        let mut long_suffix = book(&id(4), "2000AD Special", "2498");
+        long_suffix.info.volume = -1;
+
+        let matches = find_missing_incoming_matches(
+            &[missing],
+            &[wrong_volume, wrong_number, wrong_series, long_suffix],
+        );
+
+        assert!(matches[0].incoming_indexes.is_empty());
+    }
+
+    #[test]
+    fn an_exact_missing_issue_match_suppresses_fallback_candidates() {
+        let mut missing = book(&id(40), "2000 AD", "2498");
+        missing.info.volume = 1977;
+        let mut exact = book(&id(1), "2000AD", "2498");
+        exact.info.volume = 1977;
+        let mut fallback = book(&id(2), "2000AD prog", "2498");
+        fallback.info.volume = -1;
+
+        let matches = find_missing_incoming_matches(&[missing], &[exact, fallback]);
+
+        assert_eq!(matches[0].incoming_indexes, [0]);
     }
 
     #[test]

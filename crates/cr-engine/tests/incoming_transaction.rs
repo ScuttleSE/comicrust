@@ -9,6 +9,8 @@ use cr_engine::incoming_transaction::{
     TransactionFiles, TransactionKind, TransactionStage,
 };
 
+static EPOCH_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
 struct TestDir(PathBuf);
 
 impl TestDir {
@@ -523,6 +525,9 @@ fn abort_prepared_removes_only_an_untouched_prepared_journal() {
 
 #[test]
 fn epoch_compare_and_commit_excludes_mutation_until_commit_finishes() {
+    let _epoch_test = EPOCH_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let root = TestDir::new("epoch-commit");
     let engine = TransactionEngine::from_journal_path(root.path("current.json"));
     let mut transaction = transaction(&root, TransactionKind::Scan, TransactionStage::Prepared);
@@ -546,6 +551,9 @@ fn epoch_compare_and_commit_excludes_mutation_until_commit_finishes() {
 
 #[test]
 fn replacement_epoch_invalidates_a_rescan_waiting_for_the_mutation_guard() {
+    let _epoch_test = EPOCH_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let replacement_guard = acquire_mutation_guard();
     let scan_epoch = database_epoch();
     let (waiting_tx, waiting_rx) = std::sync::mpsc::channel();
