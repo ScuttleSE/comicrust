@@ -9,6 +9,7 @@ pub mod item_view;
 pub mod layout;
 pub mod list_view_config;
 pub mod menubar;
+pub mod missing_issues_bar;
 pub mod navigator;
 pub mod pages_view;
 pub mod shell;

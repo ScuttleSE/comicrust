@@ -104,12 +104,18 @@ pub struct BookData {
 }
 
 /// Reads the custom value (case-insensitive keys, `""` when missing).
-fn get_custom_value(book: &ComicBook, key: &str) -> String {
+pub(crate) fn get_custom_value(book: &ComicBook, key: &str) -> String {
     values_store::decode(&book.custom_values_store)
         .into_iter()
         .find(|(k, _)| k.eq_ignore_ascii_case(key))
         .map(|(_, v)| v)
         .unwrap_or_default()
+}
+
+/// Returns the Comic Vine volume ID that the book uses as its series key.
+/// Returns an empty string when the book has no link.
+pub fn series_key_of(book: &ComicBook) -> String {
+    get_custom_value(book, SERIES_KEY_CUSTOM)
 }
 
 /// Writes the custom value (empty values delete the key).

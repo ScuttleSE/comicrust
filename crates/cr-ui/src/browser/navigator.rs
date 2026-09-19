@@ -87,6 +87,11 @@ const INCOMING_INCOMING_DUPLICATES_BYTES: [u8; 16] = [
 const INCOMING_SMART_LISTS_BYTES: [u8; 16] = [
     0x63, 0x72, 0x75, 0x73, 0x74, 0x2d, 0x49, 0x4e, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x08,
 ];
+/// The Missing Issues gap report (Phase 19): a single fixed virtual
+/// leaf, not a subtree like Incoming — there is only one view.
+const MISSING_ISSUES_BYTES: [u8; 16] = [
+    0x63, 0x72, 0x75, 0x73, 0x74, 0x2d, 0x4d, 0x49, 0x80, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
+];
 
 fn incoming_root_id() -> CrGuid {
     CrGuid::from_bytes(INCOMING_ROOT_BYTES)
@@ -108,6 +113,22 @@ fn is_incoming_create_target(id: &CrGuid) -> bool {
     *id == incoming_root_id()
         || *id == incoming_smart_lists_id()
         || crate::library::is_incoming_custom_list(id)
+}
+
+pub fn missing_issues_id() -> CrGuid {
+    CrGuid::from_bytes(MISSING_ISSUES_BYTES)
+}
+
+pub fn is_missing_issues_id(id: &CrGuid) -> bool {
+    *id == missing_issues_id()
+}
+
+/// Either fixed virtual view (Incoming or Missing Issues): the id
+/// carries no persisted per-list view config and stores no real books,
+/// so the structural tree operations (rename, drag-drop, create-child)
+/// must all refuse it the same way they refuse the Incoming subtree.
+pub fn is_fixed_virtual_id(id: &CrGuid) -> bool {
+    is_incoming_fixed_id(id) || is_missing_issues_id(id)
 }
 
 /// A fixed dynamic view over the separate Incoming catalog.
@@ -384,7 +405,7 @@ impl Navigator {
     fn fire_command(&self, command: ListCommand) {
         if self
             .current_selection()
-            .is_some_and(|(id, _)| is_incoming_scope_id(&id))
+            .is_some_and(|(id, _)| is_incoming_scope_id(&id) || is_missing_issues_id(&id))
             && (command != ListCommand::NewSmartList
                 || !self
                     .current_selection()
@@ -502,6 +523,7 @@ impl Navigator {
                     crate::library::find_list_item_any(&id),
                     Some(ComicListItem::Library(_))
                 ) || is_incoming_scope_id(&id)
+                    || is_missing_issues_id(&id)
                 {
                     return None;
                 }
@@ -583,11 +605,12 @@ impl Navigator {
     fn apply_drop(&self, src: &CrGuid, x: f64, y: f64) -> bool {
         let drop = self.drop_target_at(x, y);
         if is_incoming_scope_id(src)
+            || is_missing_issues_id(src)
             || matches!(
                 &drop,
                 crate::library::ListDrop::BeforeItem(id)
                     | crate::library::ListDrop::IntoFolder(id)
-                    if is_incoming_scope_id(id)
+                    if is_incoming_scope_id(id) || is_missing_issues_id(id)
             )
         {
             return false;
@@ -643,7 +666,7 @@ impl Navigator {
         let Some(id) = self.row_id(iter) else {
             return;
         };
-        if is_incoming_fixed_id(&id) {
+        if is_fixed_virtual_id(&id) {
             return;
         }
         crate::library::set_folder_collapsed(&id, !expanded);
@@ -728,6 +751,7 @@ impl Navigator {
         self.store.clear();
         self.fill_items(None, &items);
         self.fill_incoming();
+        self.fill_missing_issues();
         expanded.insert(incoming_root_id());
         self.apply_expansion(None, &expanded);
         let target = previous.or_else(|| items.first().map(|i| i.base().id));
@@ -989,6 +1013,14 @@ impl Navigator {
         }
     }
 
+    /// The Missing Issues gap report (Phase 19): one fixed leaf row, a
+    /// sibling of the Incoming root. It carries no real books of its
+    /// own — see `library::missing_issues_snapshot`.
+    fn fill_missing_issues(&self) {
+        let row = self.store.append(None);
+        self.set_virtual_row(&row, "Missing Issues", &missing_issues_id(), "SearchFolder");
+    }
+
     fn set_virtual_row(&self, iter: &TreeIter, name: &str, id: &CrGuid, icon_name: &str) {
         let id = id.to_d_string();
         let label = glib::markup_escape_text(name).to_string();
@@ -1131,7 +1163,11 @@ impl Navigator {
             .is_some_and(crate::library::is_incoming_custom_list);
         let incoming = incoming_fixed || incoming_custom;
         let incoming_create = target.as_ref().is_some_and(is_incoming_create_target);
-        if incoming_fixed && !incoming_create {
+        // Missing Issues is a fixed leaf with no create-target use
+        // case (nothing can be added under it), so it never shows a
+        // menu — the same rule the Incoming fixed nodes follow.
+        if (incoming_fixed || target.as_ref().is_some_and(is_missing_issues_id)) && !incoming_create
+        {
             return;
         }
         // "Scan List Contents" exists only for the list kinds (the

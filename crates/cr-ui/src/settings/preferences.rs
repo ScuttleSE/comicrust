@@ -78,7 +78,8 @@ pub fn show_preferences(
     );
 
     // ----- Libraries (the watch folders; staged, committed on OK) -----
-    let (libraries_page, folder_commit, original_roles) = build_libraries_page();
+    let (libraries_page, folder_commit, find_profile_commit, original_roles) =
+        build_libraries_page();
     stack.add_titled(&libraries_page, Some("libraries"), "Libraries");
 
     // ----- Advanced (the cache sizes + file update flow) -----
@@ -153,7 +154,8 @@ pub fn show_preferences(
             );
             return;
         }
-        let old_config = library::incoming_config();
+        let mut old_config = library::incoming_config();
+        old_config.find_in_incoming_profile = find_profile_commit.borrow().clone();
         let discovery_old_config = old_config.clone();
         let discovery_roles = roles.clone();
         let confirmation_parent = dlg.clone();
@@ -303,6 +305,7 @@ fn build_reader_page(settings: &SettingsRef) -> GtkBox {
 /// The staged watch-folder list the Libraries page edits; the OK
 /// handler commits it through `Library::set_watch_folders`.
 type StagedFolderRoles = Rc<RefCell<Vec<cr_engine::incoming::FolderRole>>>;
+type StagedProfile = Rc<RefCell<String>>;
 
 /// The Libraries page: the database watch folders (`lbPaths` in the
 /// C# — a folder per row with a Watch check). The C# edits the list
@@ -313,6 +316,7 @@ type StagedFolderRoles = Rc<RefCell<Vec<cr_engine::incoming::FolderRole>>>;
 fn build_libraries_page() -> (
     GtkBox,
     StagedFolderRoles,
+    StagedProfile,
     Vec<cr_engine::incoming::FolderRole>,
 ) {
     let page = GtkBox::new(Orientation::Vertical, 6);
@@ -427,7 +431,48 @@ fn build_libraries_page() -> (
     buttons.append(&remove);
     page.append(&list);
     page.append(&buttons);
-    (page, staged, original_roles)
+
+    page.append(&section_label("Incoming"));
+    let profile_row = GtkBox::new(Orientation::Horizontal, 8);
+    profile_row.append(&Label::new(Some("Find in Incoming profile")));
+    let profile_combo = ComboBoxText::new();
+    profile_combo.append_text("Not configured");
+    let move_profiles: Vec<String> = library::organize_settings()
+        .profiles
+        .into_iter()
+        .filter(|profile| profile.mode == cr_organize::profile::MODE_MOVE)
+        .map(|profile| profile.name)
+        .collect();
+    for name in &move_profiles {
+        profile_combo.append_text(name);
+    }
+    let selected_profile = move_profiles
+        .iter()
+        .position(|name| name == &incoming.find_in_incoming_profile)
+        .map(|index| index as u32 + 1)
+        .unwrap_or(0);
+    profile_combo.set_active(Some(selected_profile));
+    profile_combo.set_hexpand(true);
+    let staged_profile: StagedProfile = Rc::new(RefCell::new(if selected_profile == 0 {
+        String::new()
+    } else {
+        move_profiles[(selected_profile - 1) as usize].clone()
+    }));
+    {
+        let staged_profile = Rc::clone(&staged_profile);
+        profile_combo.connect_changed(move |combo| {
+            *staged_profile.borrow_mut() = combo
+                .active()
+                .and_then(|index| index.checked_sub(1))
+                .and_then(|index| move_profiles.get(index as usize))
+                .cloned()
+                .unwrap_or_default();
+        });
+    }
+    profile_row.append(&profile_combo);
+    page.append(&profile_row);
+
+    (page, staged, staged_profile, original_roles)
 }
 
 /// Rebuilds the watch-folder rows from the staged list (one

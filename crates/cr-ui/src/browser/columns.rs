@@ -322,7 +322,31 @@ pub fn default_columns() -> Vec<Column> {
             Near,
             false,
         ),
+        // Phase 19: a port-external addition (no C# analog) — the
+        // Missing Issues gap report's Comic Vine issue id, read from
+        // the `comicvine_issue` custom value (ADR-035 precedent).
+        column(
+            215,
+            "Comic Vine Issue Id",
+            "ComicVineIssueId",
+            60.0,
+            Far,
+            false,
+        ),
     ]
+}
+
+/// The exact column set the Missing Issues report shows (Series,
+/// Number, Title, Year, and the Comic Vine issue id) — every other
+/// column, including Cover, is forced hidden regardless of what the
+/// user has configured elsewhere in Detail mode. Feeds
+/// `ItemView::set_detail_columns_state`.
+pub fn missing_issues_columns_state() -> Vec<(i32, bool, i32)> {
+    const VISIBLE: [i32; 5] = [1, 2, 4, 8, 215];
+    default_columns()
+        .into_iter()
+        .map(|c| (c.id, VISIBLE.contains(&c.id), c.width as i32))
+        .collect()
 }
 
 impl Column {

@@ -14,6 +14,7 @@
 
 pub mod budget;
 pub mod freshness;
+pub mod link;
 pub mod mcl;
 pub mod missing;
 mod sqlite;

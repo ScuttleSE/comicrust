@@ -5,7 +5,7 @@
 use cr_core::model::comic_book::{values_store, ComicBook};
 use cr_core::model::ComicInfo;
 use cr_core::xml::scalar::CrDateTime;
-use cr_scrape::bookdata::BookData;
+use cr_scrape::bookdata::{series_key_of, BookData};
 use cr_scrape::config::Configuration;
 use cr_scrape::cv::models::Issue;
 
@@ -87,6 +87,26 @@ fn read_side_custom_scrape_keys() {
     let bd = BookData::from_book(&book, &config());
     assert_eq!(bd.issue_key, "400011");
     assert_eq!(bd.series_key, "");
+}
+
+#[test]
+fn series_key_accessor_matches_the_full_book_data_read() {
+    let linked = ComicBook {
+        custom_values_store: values_store::encode(&[("CoMiCvInE_VoLuMe".into(), "40501".into())]),
+        ..Default::default()
+    };
+    assert_eq!(series_key_of(&linked), "40501");
+    assert_eq!(
+        series_key_of(&linked),
+        BookData::from_book(&linked, &config()).series_key
+    );
+
+    let unlinked = ComicBook::default();
+    assert_eq!(series_key_of(&unlinked), "");
+    assert_eq!(
+        series_key_of(&unlinked),
+        BookData::from_book(&unlinked, &config()).series_key
+    );
 }
 
 #[test]

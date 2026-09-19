@@ -499,6 +499,9 @@ struct ShellState {
     reader_page_box: gtk4::Box,
     /// The browser toolbar (the T6 `ComicBrowserControl.toolStrip`).
     browser_toolbar: super::browser_toolbar::BrowserToolbar,
+    /// The Missing Issues scope/Refresh bar (Phase 19): visible only
+    /// while the Missing Issues navigator node is selected.
+    missing_issues_bar: super::missing_issues_bar::MissingIssuesBar,
     /// The live quick-search text (the composed filter reads it).
     search_text: RefCell<String>,
     /// The composed filter (quick search + the view filters) — the
@@ -667,6 +670,93 @@ impl ShellState {
         });
     }
 
+    fn refresh_missing_issues(self: &Rc<Self>) {
+        // The volume-id vote always reads the WHOLE library, never just
+        // the chosen scope. See `refresh_missing_issues_async`.
+        let library_books = library::session().borrow().database().books.clone();
+        let scope_books = match self.missing_issues_bar.chosen_scope() {
+            Some(id) => library::evaluate_books(&id)
+                .map(|(_, books)| books)
+                .unwrap_or_default(),
+            None => library_books.clone(),
+        };
+        library::refresh_missing_issues_async(scope_books, library_books);
+        self.missing_issues_bar
+            .set_status(&missing_issues_status_text());
+        let state = Rc::downgrade(self);
+        glib::timeout_add_local(std::time::Duration::from_millis(200), move || {
+            let Some(sh) = state.upgrade() else {
+                return glib::ControlFlow::Break;
+            };
+            if library::missing_issues_refresh_active() {
+                return glib::ControlFlow::Continue;
+            }
+            if sh
+                .current_list
+                .borrow()
+                .is_some_and(|id| super::navigator::is_missing_issues_id(&id))
+            {
+                sh.item_view.set_books(library::missing_issues_snapshot());
+            }
+            sh.missing_issues_bar
+                .set_status(&missing_issues_status_text());
+            glib::ControlFlow::Break
+        });
+    }
+
+    fn find_in_incoming(self: &Rc<Self>) {
+        let config = library::incoming_config();
+        let profile = library::organize_settings()
+            .profiles
+            .into_iter()
+            .find(|profile| {
+                profile.mode == cr_organize::profile::MODE_MOVE
+                    && profile.name == config.find_in_incoming_profile
+            });
+        let Some(profile) = profile else {
+            show_report_dialog(
+                &self.window,
+                "Find in Incoming",
+                "Select a Find in Incoming Move profile in Preferences > Libraries.",
+            );
+            return;
+        };
+
+        let selected_ids: std::collections::HashSet<CrGuid> =
+            self.item_view.selection_ids().into_iter().collect();
+        let missing: Vec<ComicBook> = self
+            .item_view
+            .displayed_books()
+            .into_iter()
+            .filter(|book| selected_ids.contains(&book.id))
+            .collect();
+        if missing.is_empty() {
+            return;
+        }
+        let incoming = library::incoming_books_snapshot();
+        let matches = cr_engine::incoming::find_missing_incoming_matches(&missing, &incoming);
+        let rows = matches
+            .into_iter()
+            .map(|matched| crate::dialogs::find_incoming::FindIncomingRow {
+                missing: missing[matched.missing_index].clone(),
+                candidates: matched
+                    .incoming_indexes
+                    .into_iter()
+                    .filter_map(|index| incoming.get(index).cloned())
+                    .collect(),
+            })
+            .collect();
+        let weak = Rc::downgrade(self);
+        crate::dialogs::find_incoming::show(&self.window, rows, move |selected| {
+            let Some(selected) = selected else {
+                return;
+            };
+            if let Some(sh) = weak.upgrade() {
+                sh.run_incoming_adoption(selected, profile, false, true);
+            }
+        });
+    }
+
     fn choose_incoming_profile(self: &Rc<Self>, preview: bool) {
         let selected = self.selected_incoming_books();
         if selected.is_empty() {
@@ -717,7 +807,7 @@ impl ShellState {
                     return;
                 };
                 if let Some(sh) = weak.upgrade() {
-                    sh.run_incoming_adoption(selected, profile, preview);
+                    sh.run_incoming_adoption(selected, profile, preview, false);
                 }
             },
         );
@@ -728,6 +818,7 @@ impl ShellState {
         incoming: Vec<ComicBook>,
         mut profile: cr_organize::profile::Profile,
         preview: bool,
+        refresh_missing_after: bool,
     ) {
         if !preview && cr_engine::incoming_transaction::operation_active() {
             show_failure_dialog(
@@ -927,6 +1018,7 @@ impl ShellState {
                     }
                     return;
                 }
+                let mut committed = false;
                 match catalog_result.lock().unwrap().take() {
                     Some(Ok((database, catalog, config, committed_epoch)))
                         if cr_engine::incoming_transaction::database_epoch() == committed_epoch =>
@@ -936,6 +1028,7 @@ impl ShellState {
                             .install_persisted_database(database);
                         library::replace_incoming_catalog(catalog);
                         cr_core::settings::unified::set_plugin(library::INCOMING_PLUGIN, &config);
+                        committed = true;
                     }
                     Some(Ok(_)) => {
                         if let Some(sh) = weak.upgrade() {
@@ -954,7 +1047,11 @@ impl ShellState {
                     None => {}
                 }
                 if let Some(sh) = weak.upgrade() {
-                    sh.refresh_view_from_list();
+                    if committed && refresh_missing_after {
+                        sh.refresh_missing_issues();
+                    } else {
+                        sh.refresh_view_from_list();
+                    }
                     sh.sync_enabled();
                 }
                 cr_engine::incoming_transaction::end_operation();
@@ -1377,7 +1474,7 @@ impl ShellState {
         let Some(id) = list else {
             return;
         };
-        if super::navigator::is_incoming_fixed_id(&id) {
+        if super::navigator::is_fixed_virtual_id(&id) {
             return;
         }
         let cfg = super::list_view_config::collect(&self.item_view);
@@ -1399,6 +1496,16 @@ impl ShellState {
     /// A list with no `<View>` changes nothing: the browser keeps the
     /// view it shows, which is the C# behavior for a null config.
     fn apply_view_config(&self, list: &CrGuid) {
+        if super::navigator::is_missing_issues_id(list) {
+            // Forced Detail mode, no thumbnails, and exactly the five
+            // columns the report needs (Phase 19) — never the user's
+            // per-list configuration.
+            self.item_view.configure(|c| c.mode = ItemViewMode::Detail);
+            self.item_view
+                .set_detail_columns_state(&super::columns::missing_issues_columns_state());
+            self.view_config_dirty.set(false);
+            return;
+        }
         if super::navigator::is_incoming_fixed_id(list) {
             self.view_config_dirty.set(false);
             return;
@@ -1457,6 +1564,12 @@ impl ShellState {
     }
 
     fn evaluate_source(id: &CrGuid) -> Option<(String, Vec<ComicBook>)> {
+        if super::navigator::is_missing_issues_id(id) {
+            return Some((
+                "Missing Issues".to_string(),
+                library::missing_issues_snapshot(),
+            ));
+        }
         let Some(view) = super::navigator::IncomingView::from_id(id) else {
             return library::evaluate_books(id);
         };
@@ -1720,8 +1833,13 @@ impl BrowserShell {
         // toolStrip spans the ComicBrowserControl's list area — the
         // user report: it must start at the left edge of the RIGHT
         // view window, not cover the navigator).
+        // The Missing Issues scope/Refresh bar (Phase 19): a second
+        // row below the browser toolbar, hidden until that navigator
+        // node is selected.
+        let missing_issues_bar = super::missing_issues_bar::MissingIssuesBar::create();
         let item_box = gtk4::Box::new(gtk4::Orientation::Vertical, 0);
         item_box.append(browser_toolbar.widget());
+        item_box.append(missing_issues_bar.widget());
         item_box.append(&item_scroller);
         paned.set_end_child(Some(&item_box));
         paned.set_shrink_end_child(false);
@@ -1833,6 +1951,7 @@ impl BrowserShell {
             menubar,
             toolbar,
             browser_toolbar,
+            missing_issues_bar,
             search_text: RefCell::new(String::new()),
             current_filter: RefCell::new(None),
             // The column chooser builds a FRESH popover per open
@@ -2366,6 +2485,15 @@ impl BrowserShell {
                         if changing {
                             sh.apply_view_config(id);
                         }
+                        if super::navigator::is_missing_issues_id(id) {
+                            sh.missing_issues_bar
+                                .refill_scope(&library::smart_list_scope_options());
+                            sh.missing_issues_bar
+                                .set_status(&missing_issues_status_text());
+                        }
+                        sh.missing_issues_bar
+                            .widget()
+                            .set_visible(super::navigator::is_missing_issues_id(id));
                         sh.sync_enabled();
                     }
                 });
@@ -2384,6 +2512,24 @@ impl BrowserShell {
                     if let Some(sh) = state.upgrade() {
                         sh.navigator.refill(&library::comic_lists_snapshot());
                         sh.refresh_view_from_list();
+                    }
+                });
+        }
+
+        // The Missing Issues Refresh button (Phase 19): the report's
+        // only trigger — it never auto-recomputes. Scopes the pass to
+        // the whole library or to the series a chosen smart list
+        // selects, then polls until the worker lands and, only if the
+        // user is still on this view, replaces the ItemView's rows.
+        {
+            let state = Rc::downgrade(state);
+            state
+                .upgrade()
+                .expect("state")
+                .missing_issues_bar
+                .connect_refresh(move || {
+                    if let Some(sh) = state.upgrade() {
+                        sh.refresh_missing_issues();
                     }
                 });
         }
@@ -2966,6 +3112,36 @@ impl BrowserShell {
     /// select handler).
     pub fn state_select_list(&self, id: &CrGuid) {
         self.state.navigator.select_list(id);
+    }
+
+    /// Probe: whether the Missing Issues scope/Refresh bar is visible
+    /// (Phase 19 — shown only while that navigator node is selected).
+    pub fn state_missing_issues_bar_visible(&self) -> bool {
+        self.state.missing_issues_bar.widget().is_visible()
+    }
+
+    /// Probe: picks the Missing Issues scope combo (`None` = Whole
+    /// Library, `Some(id)` = the named smart list).
+    pub fn state_missing_issues_set_scope(&self, id: Option<CrGuid>) {
+        self.state.missing_issues_bar.set_scope(id);
+    }
+
+    /// Probe: fires the Missing Issues Refresh button.
+    pub fn state_missing_issues_refresh(&self) {
+        self.state.missing_issues_bar.click_refresh();
+    }
+
+    pub fn state_select_books(&self, ids: &[CrGuid]) {
+        self.state.item_view.reselect(ids);
+    }
+
+    pub fn state_find_in_incoming(&self) {
+        self.state.find_in_incoming();
+    }
+
+    /// Probe: the Missing Issues bar's status text.
+    pub fn state_missing_issues_status(&self) -> String {
+        self.state.missing_issues_bar.status_text()
     }
 
     /// Fires a detailed action on the window (the dispatch path).
@@ -4227,6 +4403,169 @@ impl ShellState {
                     sh.item_view.reselect(&new_ids);
                 }
             }),
+        );
+    }
+
+    /// "Link Series from Cache": the clicked book identifies the
+    /// series; the candidate set is the CURRENT VIEW
+    /// (`item_view.displayed_books()`), not the whole library, so a
+    /// smart-list or quick-search scope narrows what gets linked. If
+    /// any candidate already votes a Comic Vine volume, that vote is
+    /// reused and no network call happens; otherwise one Comic Vine
+    /// search finds the volume, the user confirms it
+    /// (`dialogs::pick_series`), and every other match comes from the
+    /// local cache alone — no further requests.
+    fn link_series_from_cache(self: &Rc<ShellState>) {
+        let ids = self.item_view.selection_ids();
+        let Some(first_id) = ids.first() else {
+            return;
+        };
+        let Some(clicked) = Self::books_by_ids(std::slice::from_ref(first_id))
+            .into_iter()
+            .next()
+        else {
+            return;
+        };
+        let series = clicked.info.series.clone();
+        let volume = clicked.info.volume;
+
+        let candidates: Vec<ComicBook> = self
+            .item_view
+            .displayed_books()
+            .into_iter()
+            .filter(|b| b.info.series.eq_ignore_ascii_case(&series) && b.info.volume == volume)
+            .collect();
+        if candidates.is_empty() {
+            return;
+        }
+
+        let config = library::scraper_config();
+        let existing = cr_scrape::cache::missing::volume_id_of(
+            candidates
+                .iter()
+                .map(|b| cr_scrape::bookdata::BookData::from_book(b, &config).series_key),
+        );
+        if let Some(volume_id) = existing {
+            self.link_series_apply(candidates, volume_id);
+            return;
+        }
+
+        if !config.has_api_key() {
+            let window = self.window.clone();
+            let state = Rc::downgrade(self);
+            crate::settings::preferences::show_preferences(&window, Some("scraper"), move || {
+                if let Some(sh) = state.upgrade() {
+                    sh.sync_enabled();
+                }
+            });
+            return;
+        }
+
+        let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let worker_cancel = Arc::clone(&cancel);
+        let api_key = config.api_key.clone();
+        let budget_config = config.clone();
+        let search_terms = series.clone();
+        let state = Rc::downgrade(self);
+        self.run_cv_job(
+            library::CvJobKind::LinkSeriesSearch,
+            "Link Series from Cache",
+            cancel,
+            move |progress| -> Result<Vec<cr_scrape::cv::models::SeriesRef>, String> {
+                let mut client = cr_scrape::cv::connection::CvClient::new(&api_key);
+                if let Some(cache) = library::cv_cache() {
+                    if let Some(budget) = library::cv_budget(
+                        &budget_config,
+                        Arc::clone(&cache),
+                        Arc::clone(&worker_cancel),
+                        Some(wait_reporter(progress.clone())),
+                    ) {
+                        client.set_budget(budget);
+                    }
+                }
+                let mut cv = cr_scrape::cv::queries::Cv::new(client);
+                cv.query_series_refs(&search_terms, &[], 25, &mut |_done, _total| {
+                    worker_cancel.load(std::sync::atomic::Ordering::Relaxed)
+                })
+                .map_err(|e| e.to_string())
+            },
+            move |window, result| {
+                let refs = match result {
+                    Ok(refs) => refs,
+                    Err(error) => {
+                        show_failure_dialog(window, "Link Series from Cache", &error);
+                        return;
+                    }
+                };
+                if refs.is_empty() {
+                    show_failure_dialog(
+                        window,
+                        "Link Series from Cache",
+                        &format!("No Comic Vine series matched \"{series}\"."),
+                    );
+                    return;
+                }
+                let state = state.clone();
+                let candidates = candidates.clone();
+                crate::dialogs::pick_series::show(
+                    window,
+                    &series,
+                    &refs,
+                    Box::new(move |picked| {
+                        if let (Some(picked), Some(sh)) = (picked, state.upgrade()) {
+                            sh.link_series_apply(candidates.clone(), picked.series_key);
+                        }
+                    }),
+                );
+            },
+        );
+    }
+
+    /// The apply step of "Link Series from Cache": a single cache-only
+    /// read (`CvCache::issues_of_volume`, never the network) plus a
+    /// pure local match (`cr_scrape::cache::link::match_series_to_volume`),
+    /// then one `library::apply_edited` per matched book — the only
+    /// persist primitive that exists (no batch variant), the same shape
+    /// the bulk editor's commit loop already uses.
+    fn link_series_apply(self: &Rc<ShellState>, mut candidates: Vec<ComicBook>, volume_id: i64) {
+        let Some(cache) = library::cv_cache() else {
+            show_failure_dialog(
+                &self.window,
+                "Link Series from Cache",
+                "The Comic Vine cache file could not be opened.",
+            );
+            return;
+        };
+        let issues = match cache.issues_of_volume(volume_id) {
+            Ok(issues) => issues,
+            Err(error) => {
+                show_failure_dialog(&self.window, "Link Series from Cache", &error.to_string());
+                return;
+            }
+        };
+        let (linked, unmatched) =
+            cr_scrape::cache::link::match_series_to_volume(&candidates, &issues);
+        let issue_by_book: HashMap<CrGuid, i64> =
+            linked.iter().map(|l| (l.book_id, l.issue_id)).collect();
+        let total = candidates.len();
+        let mut linked_count = 0;
+        for book in &mut candidates {
+            let Some(&issue_id) = issue_by_book.get(&book.id) else {
+                continue;
+            };
+            cr_scrape::bookdata::set_custom_value(book, "comicvine_volume", &volume_id.to_string());
+            cr_scrape::bookdata::set_custom_value(book, "comicvine_issue", &issue_id.to_string());
+            library::apply_edited(book);
+            linked_count += 1;
+        }
+        self.refresh_view_from_list();
+        show_report_dialog(
+            &self.window,
+            "Link Series from Cache",
+            &format!(
+                "{linked_count} of {total} book(s) linked. {unmatched} had no matching issue \
+                 number in the cache."
+            ),
         );
     }
 
@@ -7430,6 +7769,10 @@ fn show_context_menu(state: &std::rc::Weak<ShellState>, target: Option<CrGuid>, 
 
     let window = shell.window.clone();
     let incoming_view = shell.is_incoming_view();
+    let missing_issues_view = shell
+        .current_list
+        .borrow()
+        .is_some_and(|id| super::navigator::is_missing_issues_id(&id));
     let mutations_enabled = !cr_engine::incoming_transaction::operation_active();
     let add_item = |box_: &gtk4::Box, label: &str, action: &'static str| {
         let popover = popover.clone();
@@ -7447,6 +7790,7 @@ fn show_context_menu(state: &std::rc::Weak<ShellState>, target: Option<CrGuid>, 
                 "incoming-adopt" => sh.choose_incoming_profile(false),
                 "incoming-discard" => sh.discard_incoming(),
                 "incoming-cv-refresh" => sh.refresh_incoming_from_comic_vine(),
+                "find-in-incoming" => sh.find_in_incoming(),
                 "open" => {
                     if let Some(id) = target {
                         if let Some(path) = library::book_path(&id) {
@@ -7562,6 +7906,13 @@ fn show_context_menu(state: &std::rc::Weak<ShellState>, target: Option<CrGuid>, 
                     // fileless books.
                     sh.fill_missing_issues();
                 }
+                "link-series-from-cache" => {
+                    // "Link Series from Cache": one Comic Vine search
+                    // (skipped if a vote already exists), then a local
+                    // cache-only match links the rest of the CURRENT
+                    // VIEW's copies of the series.
+                    sh.link_series_from_cache();
+                }
                 "export" => {
                     // The export dialog over the selection (the C#
                     // `ConvertComic`).
@@ -7644,7 +7995,15 @@ fn show_context_menu(state: &std::rc::Weak<ShellState>, target: Option<CrGuid>, 
         box_.append(&button);
         button
     };
-    if incoming_view {
+    if missing_issues_view {
+        let config = library::incoming_config();
+        let has_profile = library::organize_settings().profiles.iter().any(|profile| {
+            profile.mode == cr_organize::profile::MODE_MOVE
+                && profile.name == config.find_in_incoming_profile
+        });
+        add_item(&box_, "Find in Incoming", "find-in-incoming")
+            .set_sensitive(has_profile && mutations_enabled);
+    } else if incoming_view {
         add_item(&box_, "Compare", "incoming-compare");
         let current = *shell.current_list.borrow();
         if current.is_some_and(show_select_worst_for_incoming_view) {
@@ -7674,6 +8033,7 @@ fn show_context_menu(state: &std::rc::Weak<ShellState>, target: Option<CrGuid>, 
         add_item(&box_, "Library Organizer…", "organize");
         add_item(&box_, "Library Organizer (Quick)", "organize-quick");
         add_item(&box_, "Fill Missing Issues…", "fill-missing");
+        add_item(&box_, "Link Series from Cache…", "link-series-from-cache");
         add_item(&box_, "Select Worst Duplicates", "select-worst-duplicates");
         add_item(&box_, "Remove from Library", "remove");
         add_item(&box_, "Properties…", "properties");
@@ -8357,6 +8717,26 @@ fn wait_reporter(
             resume_at: notice.resume_at,
         });
     })
+}
+
+/// The Missing Issues bar's status text (Phase 19): the row count and
+/// timing of the last completed pass, or a running/not-yet-run state.
+fn missing_issues_status_text() -> String {
+    if library::missing_issues_refresh_active() {
+        return "Running…".to_string();
+    }
+    let Some(last_run) = library::missing_issues_last_run() else {
+        return "Not yet run".to_string();
+    };
+    let count = library::missing_issues_snapshot().len();
+    let elapsed = library::missing_issues_last_elapsed()
+        .map(|d| format!(" ({:.1}s)", d.as_secs_f64()))
+        .unwrap_or_default();
+    format!(
+        "{count} missing issue{} — last computed at {}{elapsed}",
+        if count == 1 { "" } else { "s" },
+        local_clock(last_run)
+    )
 }
 
 /// Unix seconds as a local wall-clock time, for "resuming at 14:32".

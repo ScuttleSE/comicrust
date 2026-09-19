@@ -7,6 +7,8 @@ pub struct IncomingConfig {
     pub incoming_folders: Vec<String>,
     #[serde(default)]
     pub last_organizer_profile: String,
+    #[serde(default)]
+    pub find_in_incoming_profile: String,
 }
 
 impl IncomingConfig {
@@ -191,6 +193,62 @@ pub struct IncomingClassification {
     pub gap_fill: bool,
     pub new_series: bool,
     pub needs_review: bool,
+}
+
+/// The Incoming candidates for one selected synthetic Missing Issues row.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MissingIncomingMatch {
+    /// Index into the selected missing-row slice.
+    pub missing_index: usize,
+    /// Indexes into the Incoming catalog slice.
+    pub incoming_indexes: Vec<usize>,
+}
+
+/// Matches Missing Issues rows to Incoming books by series, volume, and number.
+///
+/// Format and language do not participate because a Missing Issues row does not
+/// carry those values. Series and number use the same normalization as the
+/// Incoming Gap Fills view.
+pub fn find_missing_incoming_matches(
+    missing: &[ComicBook],
+    incoming: &[ComicBook],
+) -> Vec<MissingIncomingMatch> {
+    type Key = (String, i32, u32);
+
+    let mut by_issue: HashMap<Key, Vec<usize>> = HashMap::new();
+    for (index, book) in incoming.iter().enumerate() {
+        let Some(identity) = incoming_identity(book) else {
+            continue;
+        };
+        let Some(number) = issue_number(book) else {
+            continue;
+        };
+        by_issue
+            .entry((identity.series, identity.volume, number.value().to_bits()))
+            .or_default()
+            .push(index);
+    }
+
+    missing
+        .iter()
+        .enumerate()
+        .map(|(missing_index, book)| {
+            let incoming_indexes = IssueNumber::parse(&book.info.number)
+                .and_then(|number| {
+                    by_issue.get(&(
+                        normalize_series(&book.info.series),
+                        book.info.volume,
+                        number.value().to_bits(),
+                    ))
+                })
+                .cloned()
+                .unwrap_or_default();
+            MissingIncomingMatch {
+                missing_index,
+                incoming_indexes,
+            }
+        })
+        .collect()
 }
 
 #[derive(Debug)]
@@ -682,6 +740,7 @@ mod tests {
             IncomingConfig {
                 incoming_folders: Vec::new(),
                 last_organizer_profile: String::new(),
+                find_in_incoming_profile: String::new(),
             }
         );
     }
@@ -692,15 +751,53 @@ mod tests {
             r#"
 incoming_folders = ["/data/Incoming"]
 last_organizer_profile = "Move to Library"
+find_in_incoming_profile = "Missing Issues Move"
 "#,
         )
         .expect("incoming config parses");
         assert_eq!(config.incoming_folders, ["/data/Incoming"]);
         assert_eq!(config.last_organizer_profile, "Move to Library");
+        assert_eq!(config.find_in_incoming_profile, "Missing Issues Move");
 
         let text = toml::to_string(&config).expect("incoming config serializes");
         assert!(text.contains("incoming_folders = [\"/data/Incoming\"]"));
         assert!(text.contains("last_organizer_profile = \"Move to Library\""));
+        assert!(text.contains("find_in_incoming_profile = \"Missing Issues Move\""));
+    }
+
+    #[test]
+    fn old_config_defaults_the_find_in_incoming_profile() {
+        let config: IncomingConfig = toml::from_str(
+            r#"
+incoming_folders = []
+last_organizer_profile = "Move to Library"
+"#,
+        )
+        .expect("old incoming config parses");
+        assert!(config.find_in_incoming_profile.is_empty());
+    }
+
+    #[test]
+    fn missing_issue_matching_uses_series_volume_and_number_only() {
+        let mut missing_one = book(&id(40), "The Alpha-Series", "01");
+        missing_one.info.format.clear();
+        missing_one.info.language_iso.clear();
+        let mut missing_two = book(&id(41), "Alpha Series", "2");
+        missing_two.info.volume = 2;
+
+        let mut first = book(&id(1), "alpha series", "1");
+        first.info.format = "Print".into();
+        first.info.language_iso = "fr".into();
+        let second = book(&id(2), "Alpha.Series", "001");
+        let mut wrong_volume = book(&id(3), "Alpha Series", "2");
+        wrong_volume.info.volume = 1;
+
+        let matches = find_missing_incoming_matches(
+            &[missing_one, missing_two],
+            &[first, second, wrong_volume],
+        );
+        assert_eq!(matches[0].incoming_indexes, [0, 1]);
+        assert!(matches[1].incoming_indexes.is_empty());
     }
 
     #[test]

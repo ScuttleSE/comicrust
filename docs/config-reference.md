@@ -447,6 +447,7 @@ Path matching compares complete components without case sensitivity. Both
 |---|---|---|
 | `incoming_folders` | [] | Folder paths that have the incoming and monitored roles. |
 | `last_organizer_profile` | "" | Name of the organizer profile selected for the last incoming-folder operation. |
+| `find_in_incoming_profile` | "" | Name of the Move profile that the Missing Issues **Find in Incoming** command uses. |
 
 ## `[data]`
 

@@ -58,6 +58,19 @@ thread_local! {
     static INCOMING_GAP_GENERATION: Cell<u64> = const { Cell::new(0) };
     static INCOMING_GAP_REFRESH_ACTIVE: Cell<bool> = const { Cell::new(false) };
     static INCOMING_GAP_VIEW_HOOK: RefCell<Option<Box<dyn Fn()>>> = const { RefCell::new(None) };
+    /// The last-computed Missing Issues gap rows (Phase 19): a manual
+    /// report, never auto-recomputed. Only the main thread writes this.
+    static MISSING_ISSUES_ROWS: RefCell<Vec<ComicBook>> = const { RefCell::new(Vec::new()) };
+    static MISSING_ISSUES_GENERATION: Cell<u64> = const { Cell::new(0) };
+    static MISSING_ISSUES_ACTIVE: Cell<bool> = const { Cell::new(false) };
+    /// Unix seconds of the last completed Missing Issues pass, for the
+    /// "last computed" status text.
+    static MISSING_ISSUES_LAST_RUN: Cell<Option<i64>> = const { Cell::new(None) };
+    /// The wall-clock time the last Missing Issues pass took (T2's
+    /// measurement, shown live; recorded once in
+    /// `docs/current-status.md` per the phase's named unknown).
+    static MISSING_ISSUES_LAST_ELAPSED: Cell<Option<std::time::Duration>> =
+        const { Cell::new(None) };
     /// The Comic Vine cache job that runs now (ADR-037, ADR-038): the
     /// MCL import, the incremental sweep, or the warm task. One at a
     /// time, because the sweep and the warm task share one
@@ -227,6 +240,8 @@ pub enum CvJobKind {
     Sweep,
     Warm,
     IncomingRefresh,
+    MissingIssuesGap,
+    LinkSeriesSearch,
 }
 
 impl CvJobKind {
@@ -237,6 +252,8 @@ impl CvJobKind {
             CvJobKind::Sweep => "Updating the Comic Vine cache",
             CvJobKind::Warm => "Warming the Comic Vine cache",
             CvJobKind::IncomingRefresh => "Refreshing Incoming from Comic Vine",
+            CvJobKind::MissingIssuesGap => "Computing the Missing Issues report",
+            CvJobKind::LinkSeriesSearch => "Searching Comic Vine for a series",
         }
     }
 }
@@ -1467,7 +1484,6 @@ fn incoming_volume_ids_for(
     identities: &HashSet<cr_engine::incoming::IncomingIdentity>,
     incoming: &[ComicBook],
     library: &[ComicBook],
-    config: &cr_scrape::config::Configuration,
 ) -> HashMap<cr_engine::incoming::IncomingIdentity, i64> {
     // Compute each book's identity and series key once, grouping the
     // series keys by identity. The earlier code recomputed
@@ -1479,7 +1495,7 @@ fn incoming_volume_ids_for(
     for book in incoming.iter().chain(library) {
         if let Some(identity) = cr_engine::incoming::incoming_identity(book) {
             if identities.contains(&identity) {
-                let series_key = cr_scrape::bookdata::BookData::from_book(book, config).series_key;
+                let series_key = cr_scrape::bookdata::series_key_of(book);
                 series_keys_by_identity
                     .entry(identity)
                     .or_default()
@@ -1504,8 +1520,7 @@ pub fn selected_incoming_volume_ids(selected: &[ComicBook]) -> Vec<i64> {
         .collect();
     let incoming = incoming_books_snapshot();
     let library = session().borrow().database().books.clone();
-    let config = scraper_config();
-    let mut ids: Vec<_> = incoming_volume_ids_for(&identities, &incoming, &library, &config)
+    let mut ids: Vec<_> = incoming_volume_ids_for(&identities, &incoming, &library)
         .into_values()
         .collect();
     ids.sort_unstable();
@@ -1515,10 +1530,8 @@ pub fn selected_incoming_volume_ids(selected: &[ComicBook]) -> Vec<i64> {
 
 /// Checks only the selected records for a direct Comic Vine volume link.
 pub fn selected_incoming_has_volume_id(selected: &[ComicBook]) -> bool {
-    let config = scraper_config();
     selected.iter().any(|book| {
-        cr_scrape::bookdata::BookData::from_book(book, &config)
-            .series_key
+        cr_scrape::bookdata::series_key_of(book)
             .trim()
             .parse::<i64>()
             .is_ok_and(|id| id > 0)
@@ -1529,24 +1542,50 @@ fn project_incoming_external_gaps(
     cache: &dyn cr_scrape::cache::CvCache,
     incoming: &[ComicBook],
     library: &[ComicBook],
-    config: &cr_scrape::config::Configuration,
 ) -> cr_engine::incoming::ExternalGapCache {
     let identities: HashSet<_> = incoming
         .iter()
         .filter_map(cr_engine::incoming::incoming_identity)
         .collect();
-    let volume_ids = incoming_volume_ids_for(&identities, incoming, library, config);
+    let phase_started = std::time::Instant::now();
+    let volume_ids = incoming_volume_ids_for(&identities, incoming, library);
+    crate::trace::trace(format!(
+        "gap refresh phase=volume_ids elapsed={:?} identities={} volumes={}",
+        phase_started.elapsed(),
+        identities.len(),
+        volume_ids.len()
+    ));
+    // One pass over `library`, grouping owned issue numbers by identity,
+    // instead of rescanning the whole library once per identity below
+    // (the same O(identities x books) shape `incoming_volume_ids_for`
+    // fixes just above).
+    let phase_started = std::time::Instant::now();
+    let mut owned_by_identity: HashMap<cr_engine::incoming::IncomingIdentity, Vec<String>> =
+        HashMap::new();
+    for book in library {
+        if let Some(identity) = cr_engine::incoming::incoming_identity(book) {
+            owned_by_identity
+                .entry(identity)
+                .or_default()
+                .push(book.info.number.clone());
+        }
+    }
+    crate::trace::trace(format!(
+        "gap refresh phase=owned_by_identity elapsed={:?} identities={}",
+        phase_started.elapsed(),
+        owned_by_identity.len()
+    ));
+    let phase_started = std::time::Instant::now();
     let mut result = cr_engine::incoming::ExternalGapCache::new();
     for (identity, volume_id) in volume_ids {
         let Ok(issues) = cache.issues_of_volume(volume_id) else {
             continue;
         };
-        let owned: Vec<String> = library
-            .iter()
-            .filter(|book| cr_engine::incoming::incoming_identity(book).as_ref() == Some(&identity))
-            .map(|book| book.info.number.clone())
-            .collect();
-        let gaps: Vec<_> = cr_scrape::cache::missing::missing_issues(&issues, &owned)
+        let owned = owned_by_identity
+            .get(&identity)
+            .map(Vec::as_slice)
+            .unwrap_or(&[]);
+        let gaps: Vec<_> = cr_scrape::cache::missing::missing_issues(&issues, owned)
             .into_iter()
             .filter_map(|issue| cr_engine::incoming::IssueNumber::parse(&issue.issue_number))
             .collect();
@@ -1554,6 +1593,11 @@ fn project_incoming_external_gaps(
             result.insert(identity, gaps);
         }
     }
+    crate::trace::trace(format!(
+        "gap refresh phase=cache_and_missing elapsed={:?} gap_identities={}",
+        phase_started.elapsed(),
+        result.len()
+    ));
     result
 }
 
@@ -1581,9 +1625,15 @@ pub fn refresh_incoming_external_gaps_async() {
     if active {
         return;
     }
+    let snapshot_started = std::time::Instant::now();
     let incoming = incoming_books_snapshot();
     let library = session().borrow().database().books.clone();
-    let config = scraper_config();
+    crate::trace::trace(format!(
+        "gap refresh phase=snapshots elapsed={:?} incoming={} library={}",
+        snapshot_started.elapsed(),
+        incoming.len(),
+        library.len()
+    ));
     let (tx, rx) = std::sync::mpsc::channel();
     std::thread::Builder::new()
         .name("Incoming Comic Vine Gaps".into())
@@ -1591,7 +1641,7 @@ pub fn refresh_incoming_external_gaps_async() {
             let cache = cv_cache();
             let gaps = cache
                 .as_deref()
-                .map(|cache| project_incoming_external_gaps(cache, &incoming, &library, &config))
+                .map(|cache| project_incoming_external_gaps(cache, &incoming, &library))
                 .unwrap_or_default();
             let _ = tx.send((generation, gaps));
         })
@@ -1627,6 +1677,168 @@ pub fn refresh_incoming_external_gaps_async() {
             }
         }
     });
+}
+
+/// Builds one synthetic, in-memory-only `ComicBook` per missing issue
+/// (Phase 19): the same fields "Fill Missing Issues"
+/// (`crates/cr-ui/src/browser/shell.rs`) writes into a real fileless
+/// book, minus the insert. This view never calls `insert_new_book`.
+fn missing_issues_rows(
+    cache: &dyn cr_scrape::cache::CvCache,
+    scope_books: &[ComicBook],
+    library_books: &[ComicBook],
+) -> Vec<ComicBook> {
+    cr_scrape::cache::missing::missing_issues_of_library(cache, scope_books, library_books)
+        .into_iter()
+        .flat_map(|gap| {
+            gap.missing.into_iter().map(move |issue| {
+                let mut book = crate::dialogs::new_book_series::new_fileless_book();
+                book.info.series = gap.series.clone();
+                book.info.number = issue.issue_number.clone();
+                book.info.volume = gap.volume;
+                if let Some(name) = &issue.name {
+                    book.info.title = name.clone();
+                }
+                book.info.year =
+                    cr_scrape::cache::missing::year_of_cover_date(issue.cover_date.as_deref())
+                        .unwrap_or(-1);
+                cr_scrape::bookdata::set_custom_value(
+                    &mut book,
+                    "comicvine_issue",
+                    &issue.issue_id.to_string(),
+                );
+                cr_scrape::bookdata::set_custom_value(
+                    &mut book,
+                    "comicvine_volume",
+                    &gap.volume_id.to_string(),
+                );
+                book
+            })
+        })
+        .collect()
+}
+
+/// The rows of the last completed Missing Issues pass (Phase 19), or
+/// empty before the first refresh. Manual refresh only; never
+/// auto-recomputed.
+pub fn missing_issues_snapshot() -> Vec<ComicBook> {
+    MISSING_ISSUES_ROWS.with(|cell| cell.borrow().clone())
+}
+
+/// Unix seconds of the last completed Missing Issues pass, or `None`
+/// before the first refresh.
+pub fn missing_issues_last_run() -> Option<i64> {
+    MISSING_ISSUES_LAST_RUN.with(Cell::get)
+}
+
+/// The wall-clock time the last completed Missing Issues pass took, or
+/// `None` before the first refresh.
+pub fn missing_issues_last_elapsed() -> Option<std::time::Duration> {
+    MISSING_ISSUES_LAST_ELAPSED.with(Cell::get)
+}
+
+/// True while a Missing Issues gap pass runs.
+pub fn missing_issues_refresh_active() -> bool {
+    MISSING_ISSUES_ACTIVE.with(Cell::get)
+}
+
+/// Runs the Missing Issues gap pass (Phase 19) over `scope_books` on a
+/// worker thread and publishes the result on the main thread. `scope_books`
+/// is either the whole library or the books a chosen smart list selects
+/// (T4 resolves which, on the main thread, before calling this), and
+/// decides which series to report on and which numbers count as owned.
+/// `library_books` is always the whole library: it decides which Comic
+/// Vine volume each series maps to, independent of the chosen scope, so
+/// that scoping to a subset that happens to exclude a series' linked
+/// copies does not make the whole series silently vanish from the
+/// report (see `cr_scrape::cache::missing::missing_issues_of_library`).
+/// Reads the local cache skeleton only — never the network (locked
+/// decision 2).
+///
+/// A call while a pass is already running is dropped: this is a manual,
+/// button-triggered report, not a reactive refresh, so simple
+/// re-entrancy guarding is enough (contrast
+/// `refresh_incoming_external_gaps_async`, which coalesces many rapid
+/// automatic callers).
+pub fn refresh_missing_issues_async(scope_books: Vec<ComicBook>, library_books: Vec<ComicBook>) {
+    if MISSING_ISSUES_ACTIVE.with(Cell::get) {
+        return;
+    }
+    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    if !start_cv_job(CvJobKind::MissingIssuesGap, cancel) {
+        return;
+    }
+    MISSING_ISSUES_ACTIVE.with(|cell| cell.set(true));
+    let generation = MISSING_ISSUES_GENERATION.with(|cell| {
+        let next = cell.get().wrapping_add(1);
+        cell.set(next);
+        next
+    });
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .name("Missing Issues Gap Pass".into())
+        .spawn(move || {
+            let cache = cv_cache();
+            let started = std::time::Instant::now();
+            let rows = cache
+                .as_deref()
+                .map(|cache| missing_issues_rows(cache, &scope_books, &library_books))
+                .unwrap_or_default();
+            let _ = tx.send((generation, rows, started.elapsed()));
+        })
+        .expect("spawn Missing Issues gap worker");
+    glib::timeout_add_local(std::time::Duration::from_millis(50), move || {
+        match rx.try_recv() {
+            Ok((completed, rows, elapsed)) => {
+                MISSING_ISSUES_ACTIVE.with(|cell| cell.set(false));
+                end_cv_job();
+                if completed == MISSING_ISSUES_GENERATION.with(Cell::get) {
+                    let count = rows.len();
+                    MISSING_ISSUES_ROWS.with(|cell| *cell.borrow_mut() = rows);
+                    MISSING_ISSUES_LAST_RUN
+                        .with(|cell| cell.set(Some(chrono::Utc::now().timestamp())));
+                    MISSING_ISSUES_LAST_ELAPSED.with(|cell| cell.set(Some(elapsed)));
+                    crate::trace::trace(format!(
+                        "missing issues gap pass: {count} rows in {elapsed:?}"
+                    ));
+                }
+                ControlFlow::Break
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => ControlFlow::Continue,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                MISSING_ISSUES_ACTIVE.with(|cell| cell.set(false));
+                end_cv_job();
+                ControlFlow::Break
+            }
+        }
+    });
+}
+
+/// The smart lists in the list tree (recursing into folders), for the
+/// Missing Issues scope picker (T4). Unlike `smart_list_base_options`,
+/// this excludes the Library and Folder entries themselves — only a
+/// smart list can narrow the gap pass's input series.
+pub fn smart_list_scope_options() -> Vec<(CrGuid, String)> {
+    fn walk(
+        items: &[cr_core::database::list_items::ComicListItem],
+        out: &mut Vec<(CrGuid, String)>,
+    ) {
+        for i in items {
+            match i {
+                cr_core::database::list_items::ComicListItem::Smart(s) => {
+                    out.push((s.base.id, s.base.name.clone().unwrap_or_default()));
+                }
+                cr_core::database::list_items::ComicListItem::Folder(f) => walk(&f.items, out),
+                cr_core::database::list_items::ComicListItem::Library(_)
+                | cr_core::database::list_items::ComicListItem::IdList(_) => {}
+            }
+        }
+    }
+    let lib = session();
+    let l = lib.borrow();
+    let mut out = Vec::new();
+    walk(&l.database().comic_lists, &mut out);
+    out
 }
 
 /// The database path shown in diagnostics.
@@ -4955,12 +5167,7 @@ mod tests {
         let incoming = vec![series_book("incoming-2.cbz", "2", None)];
         let library = vec![series_book("owned-1.cbz", "1", Some(771))];
 
-        let gaps = project_incoming_external_gaps(
-            &cache,
-            &incoming,
-            &library,
-            &cr_scrape::config::Configuration::default(),
-        );
+        let gaps = project_incoming_external_gaps(&cache, &incoming, &library);
 
         let identity = cr_engine::incoming::incoming_identity(&incoming[0]).expect("identity");
         let values: Vec<f32> = gaps[&identity]
@@ -4968,6 +5175,162 @@ mod tests {
             .map(|number| number.value())
             .collect();
         assert_eq!(values, vec![2.0]);
+    }
+
+    /// Regression test for a bug where the owned-issue-number lookup
+    /// rescanned the whole library once per identity, which could let
+    /// one series' owned numbers leak into another series' gap set.
+    #[test]
+    fn project_incoming_external_gaps_does_not_cross_contaminate_identities() {
+        fn other_series_book(path: &str, number: &str, volume_id: Option<i64>) -> ComicBook {
+            let mut book = book(path);
+            book.info.series = "Other Series".into();
+            book.info.volume = 1999;
+            book.info.number = number.into();
+            book.info.language_iso = "en".into();
+            if let Some(volume_id) = volume_id {
+                cr_scrape::bookdata::set_custom_value(
+                    &mut book,
+                    "comicvine_volume",
+                    &volume_id.to_string(),
+                );
+            }
+            book
+        }
+
+        let cache = cr_scrape::cache::SqliteCache::in_memory().expect("cache");
+        cache
+            .put_issues(&[
+                cr_scrape::cache::IssueSkeleton {
+                    issue_id: 1,
+                    volume_id: 771,
+                    issue_number: "1".into(),
+                    ..Default::default()
+                },
+                cr_scrape::cache::IssueSkeleton {
+                    issue_id: 2,
+                    volume_id: 771,
+                    issue_number: "2".into(),
+                    ..Default::default()
+                },
+                cr_scrape::cache::IssueSkeleton {
+                    issue_id: 3,
+                    volume_id: 900,
+                    issue_number: "1".into(),
+                    ..Default::default()
+                },
+                cr_scrape::cache::IssueSkeleton {
+                    issue_id: 4,
+                    volume_id: 900,
+                    issue_number: "2".into(),
+                    ..Default::default()
+                },
+            ])
+            .expect("seed issues");
+        // Two distinct series, each owning issue "1" in the library and
+        // missing issue "2". A grouping bug (e.g. an unqualified lookup
+        // or wrong key) would let "Example Series" owning "1" hide
+        // "Other Series"'s gap on "1", or vice versa.
+        let incoming = vec![
+            series_book("incoming-example.cbz", "2", None),
+            other_series_book("incoming-other.cbz", "2", None),
+        ];
+        let library = vec![
+            series_book("owned-example-1.cbz", "1", Some(771)),
+            other_series_book("owned-other-1.cbz", "1", Some(900)),
+        ];
+
+        let gaps = project_incoming_external_gaps(&cache, &incoming, &library);
+
+        let example_identity =
+            cr_engine::incoming::incoming_identity(&incoming[0]).expect("identity");
+        let other_identity =
+            cr_engine::incoming::incoming_identity(&incoming[1]).expect("identity");
+        assert_ne!(example_identity, other_identity);
+
+        let example_values: Vec<f32> = gaps[&example_identity]
+            .iter()
+            .map(|number| number.value())
+            .collect();
+        assert_eq!(example_values, vec![2.0]);
+
+        let other_values: Vec<f32> = gaps[&other_identity]
+            .iter()
+            .map(|number| number.value())
+            .collect();
+        assert_eq!(other_values, vec![2.0]);
+    }
+
+    /// Phase 19-style timing gate at a scale comparable to the
+    /// 21,599-book real library named in `docs/current-status.md` (the
+    /// O(identities x books) idle-CPU incident this test exists to avoid
+    /// repeating in `project_incoming_external_gaps`'s owned-number
+    /// lookup). Synthetic, not a real-library measurement.
+    #[test]
+    fn project_incoming_external_gaps_completes_well_inside_budget() {
+        const SERIES: i64 = 2_000;
+        const BOOKS_PER_SERIES: i64 = 10;
+        const ISSUES_PER_VOLUME: i64 = 15;
+        let budget = std::time::Duration::from_secs(10);
+
+        let cache = cr_scrape::cache::SqliteCache::in_memory().expect("cache");
+        let mut cv_issues = Vec::new();
+        for volume_id in 1..=SERIES {
+            for number in 1..=ISSUES_PER_VOLUME {
+                cv_issues.push(cr_scrape::cache::IssueSkeleton {
+                    issue_id: volume_id * 1000 + number,
+                    volume_id,
+                    issue_number: number.to_string(),
+                    ..Default::default()
+                });
+            }
+        }
+        cache.put_issues(&cv_issues).expect("seed issue skeletons");
+
+        let mut incoming = Vec::with_capacity(SERIES as usize);
+        let mut library = Vec::with_capacity((SERIES * BOOKS_PER_SERIES) as usize);
+        for volume_id in 1..=SERIES {
+            let mut wanted = book(&format!("/incoming/series{volume_id:04}.cbz"));
+            wanted.info.series = format!("Series {volume_id:04}");
+            wanted.info.volume = 2020;
+            wanted.info.number = (ISSUES_PER_VOLUME + 1).to_string();
+            wanted.info.language_iso = "en".into();
+            incoming.push(wanted);
+
+            for number in 1..=BOOKS_PER_SERIES {
+                let mut owned = book(&format!("/library/series{volume_id:04}#{number:02}.cbz"));
+                owned.info.series = format!("Series {volume_id:04}");
+                owned.info.volume = 2020;
+                owned.info.number = number.to_string();
+                owned.info.language_iso = "en".into();
+                cr_scrape::bookdata::set_custom_value(
+                    &mut owned,
+                    "comicvine_volume",
+                    &volume_id.to_string(),
+                );
+                library.push(owned);
+            }
+        }
+
+        let t = std::time::Instant::now();
+        let gaps = project_incoming_external_gaps(&cache, &incoming, &library);
+        let elapsed = t.elapsed();
+        eprintln!(
+            "Incoming external gap pass x {} library books / {SERIES} series: {elapsed:?} \
+             ({} series with gaps)",
+            library.len(),
+            gaps.len()
+        );
+        assert_eq!(
+            gaps.len(),
+            SERIES as usize,
+            "every series owns fewer issues than the cache has, so every identity should report a gap"
+        );
+        assert!(
+            elapsed < budget,
+            "gap pass took {elapsed:?}, over the {budget:?} budget — check for a \
+             reintroduced per-identity full-library scan in project_incoming_external_gaps"
+        );
     }
 
     #[test]

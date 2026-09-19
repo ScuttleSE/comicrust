@@ -172,6 +172,10 @@ pub fn column_text(book: &ComicBook, name: &str) -> String {
             .map(|f| f.name.to_string())
             .unwrap_or_default(),
         "LanguageAsText" => book_view::language_as_text(book),
+        // Phase 19: the Missing Issues report's Comic Vine issue id —
+        // a port-external column (ADR-035 precedent), read from the
+        // `comicvine_issue` custom value rather than a struct field.
+        "ComicVineIssueId" => book_view::custom_value(book, "comicvine_issue").unwrap_or_default(),
         "FilePath" => book.file_path.clone(),
         "FileName" | "FileDirectory" => {
             let path = std::path::Path::new(&book.file_path);

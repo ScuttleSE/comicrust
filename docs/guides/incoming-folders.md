@@ -173,6 +173,32 @@ canceled books stay in Incoming.
 `CODE-READ`: The destination-conflict dialog lets you cancel the conflict,
 rename the new file, or replace the existing destination.
 
+## Find missing issues in Incoming
+
+1. Open **Preferences > Libraries**.
+2. Select a Move profile in **Find in Incoming profile**.
+3. Open **Missing Issues** and refresh the report.
+4. Select one or more missing issues.
+5. Right-click the selection.
+6. Select **Find in Incoming**.
+7. Select one file for each issue that has multiple matches.
+8. Review the match summary.
+9. Select **Adopt Matches**.
+
+`CODE-READ`: The command matches Series, Volume, and Number. It ignores Format
+and Language because Missing Issues rows do not contain those values. Series
+and Number use the same normalization as the Incoming Gap Fills view.
+
+`CODE-READ`: The command does not contact Comic Vine. It uses the current
+Incoming catalog and the configured Library Organizer Move profile. An issue
+with no match stays in the report. When multiple Incoming files match one
+issue, the command requires one selection.
+
+`CODE-READ`: Successful files use the normal Incoming adoption transaction.
+The files move to their Organizer destinations, and their complete records
+enter the main Library. Failed, skipped, and canceled files stay in Incoming.
+The command refreshes Missing Issues after a successful transaction.
+
 ## Undo an adoption
 
 Open **Tools > Library Organizer - Revert Last Move**.

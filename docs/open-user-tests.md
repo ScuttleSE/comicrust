@@ -58,6 +58,54 @@ confirm that each setting returns. Create a list and confirm that it inherits
 the current view. Reset one list's view settings. Restart and confirm that
 the saved and reset states persist.
 
+## 22. Missing Issues gap report
+
+Not yet run. See `docs/phases/phase-19.md` and ADR-059. A 2026-09-19 user
+test found and fixed a real bug in the scoped case (below) — the fixed
+scenario still needs a user confirmation on real data.
+
+Import a Comic Vine MCL file (Preferences ▸ Comic Vine Scraper, or the
+Import Comic Vine MCL File command) for a series already in the library.
+Open the Missing Issues navigator entry. Confirm it opens as a plain
+details list with no thumbnails and a Refresh button. Click Refresh with
+the scope set to Whole Library and confirm the details list shows the
+gaps (Series, Number, Title, Year, Comic Vine Issue Id columns) for the
+imported series. Create or pick a smart list that selects only that
+series, switch the scope to it, click Refresh again, and confirm the row
+set narrows to that series' gaps. Confirm the library's book count is
+unchanged after both refreshes — this view must never add a book.
+
+**Scoped-series regression check** (the exact bug a 2026-09-19 user test
+found): pick a series where only SOME of your owned copies have ever been
+scraped/linked to Comic Vine. Build a smart list that selects only the
+UN-linked copies of that series (e.g. by file path, format, or another
+distinguishing matcher — not by series name alone, since that would also
+match the linked copies). Scope Missing Issues to that smart list and
+Refresh. Confirm it reports the series' real gaps, not "0 missing" — the
+Comic Vine volume link must resolve from the whole library even when the
+scoped smart list itself holds no linked copy.
+
+## 23. Link Series from Cache
+
+Not yet run. See ADR-060. Built in response to a real case found while
+testing #22: a series with an MCL-imported cache but no book ever linked to
+Comic Vine.
+
+Pick a series with an MCL-imported cache and NO book yet linked to Comic
+Vine (check the Properties/custom-values of a few books, or just try a
+series you know you've never scraped). Right-click one book of that series
+and choose "Link Series from Cache…". Confirm exactly one Comic Vine
+request fires (check Preferences ▸ Comic Vine Scraper's request log, or a
+network trace) and that a "pick the volume" dialog appears. Pick the
+correct volume and confirm a summary reports N of M books linked. Open
+Missing Issues, scope it to that series, Refresh, and confirm real gaps now
+show. Then: narrow the browser to a smart list or a quick search that only
+shows SOME of that series' books, right-click one of the still-unlinked
+copies, and confirm only the currently visible books get linked — copies
+outside the view must stay untouched. Finally, re-run the command on a
+series where a book already carries the link and confirm no Comic Vine
+request fires at all (the existing vote is reused).
+
 ## 17. Incoming folder setup and review views
 
 `PARTIAL PASS` on 2026-09-18 (user): "So far so good." No failure reported,
@@ -70,3 +118,24 @@ books leave Library and appear under Incoming. Check All, Gap Fills,
 Duplicates, Library Duplicates, Incoming Duplicates, New Series, and Needs
 Review. Confirm that Duplicates contains the combined set. Restart and confirm
 the same state.
+
+## 24. Find Missing Issues in Incoming
+
+Not yet run. See ADR-061.
+
+Create a Library Organizer Move profile that targets a scratch Library folder.
+Open **Preferences > Libraries**. Select that profile in **Find in Incoming
+profile**, save, reopen Preferences, and confirm that the selection persists.
+
+Put files for known gaps into an Incoming folder. Include two copies of one
+issue and no copy of another issue. Refresh **Missing Issues**, select both
+rows, right-click, and select **Find in Incoming**. Confirm that the summary
+shows the matched, unmatched, and multiple-match counts. Select one of the two
+copies and select **Adopt Matches**.
+
+Confirm that the selected file moves according to the profile. Confirm that
+its complete record enters the main Library and leaves Incoming. Confirm that
+the unselected copy stays in Incoming. Confirm that the unmatched issue stays
+in Missing Issues and that the adopted issue disappears. Test **Library
+Organizer - Revert Last Move** and confirm that the adopted record and file
+return to Incoming.

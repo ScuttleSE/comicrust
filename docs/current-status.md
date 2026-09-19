@@ -5,6 +5,95 @@ Do not append history. Git and `docs/archive/` hold history.
 
 ## Active phase
 
+**Phase 19: the Missing Issues gap view.**
+
+Implemented: the pure gap engine (`cr_scrape::cache::missing::missing_issues_of_library`),
+the worker pass (`library::refresh_missing_issues_async`, `CvJobKind::MissingIssuesGap`),
+the navigator entry and forced Detail-mode column set, and the scope
+selector/Refresh bar. `cargo fmt --all`, `cargo clippy --workspace --all-targets
+-- -D warnings`, and `cargo test --workspace` all pass. See
+`docs/phases/phase-19.md` and ADR-059.
+
+`MEASURED` (synthetic, not the real library): `crates/cr-scrape/tests/missing_perf.rs`
+times a full gap pass over 22,000 books across 2,000 series (comparable to the
+21,599-book real library named below) against an in-memory cache seeded with
+60 issues per volume. Release: 66.0 ms. Debug: 354 ms (measured before the
+2026-09-19 fix below added the second pass; the fix showed no measurable
+release-mode cost, 63.5 ms -> 66.0 ms). Both are well inside a generous
+10-second budget and confirm the owned-numbers map (locked decision 5) avoids
+the O(S x N) shape that caused the 2026-09-18 idle-CPU incident. `UNKNOWN`: the
+pass time on the user's real, multi-tens-of-thousands CIFS library is not yet
+observed — ask the user to run Missing Issues ▸ Refresh once and report how
+long it took.
+
+`MEASURED` (user, 2026-09-19, found and fixed same day): a smart-list-scoped
+refresh reported "0 missing issues" for a series (2000 AD, 2433/2448 owned)
+that clearly had gaps. Root cause (`CODE-READ`): `missing_issues_of_library`
+built its Comic Vine volume-id vote from the same scoped book slice as its
+owned-numbers count; a smart list that happened to exclude every one of the
+series' Comic-Vine-linked copies left the vote empty and the whole series was
+skipped. Fixed by splitting the two populations — see ADR-059's 2026-09-19
+follow-up. A new unit test reproduces the exact scenario; the UI probe and the
+synthetic timing gate were re-run and show no regression.
+
+`MEASURED` (user, 2026-09-19, second finding): after the fix above, the
+user's "2000 AD" scope STILL read zero. `CODE-READ`: no book of that series
+had ever been linked to a Comic Vine volume at all — the fix only widened
+where the vote is read from, and there was no vote anywhere to find. The only
+existing way to create a `comicvine_volume` link is a real scrape (or a
+Comic-Vine-driven fill that already needs an existing vote); an MCL-only
+import never sets it. This is a documented limitation (ADR-038, ADR-059,
+phase-19.md), not a further bug.
+
+`MEASURED` (local synthetic run, 2026-09-19): the Incoming Comic Vine gap
+refresh timing gate improved from the handoff's approximately 535 ms to 196.7
+ms for 20,000 books and 2,000 identities. `CODE-READ`: the refresh now reads
+only the `comicvine_volume` custom value instead of building a full `BookData`
+for each book. `CODE-READ`: `CR_TRACE` now reports times for snapshots, volume-id voting,
+owned-number grouping, and cache/diff work. `UNKNOWN`: the exact pass time on
+the user's real 21,397-book library.
+
+`MEASURED` (user, 2026-09-19): the real-library retest after the round-2
+change works correctly. The repeated long gap refresh and sustained idle-CPU
+symptom did not recur. `UNKNOWN`: exact phase durations because the user
+supplied no trace values. The four `CR_TRACE` phase records remain available
+if the problem returns. No implementation work remains for this issue.
+
+**New feature, 2026-09-19: "Link Series from Cache" (ADR-060).** Built in
+response to the finding above: a new context-menu command that spends at
+most one Comic Vine search per series (skipped entirely if any visible book
+already votes a volume), then links the rest of the CURRENT VIEW's copies of
+that series purely from the already-cached issue skeleton — no further
+requests. See ADR-060 for the full design. `cargo fmt`/`clippy`/`test` all
+pass; the new pure matcher (`crates/cr-scrape/src/cache/link.rs`) has 5 unit
+tests. `UNKNOWN`: not yet run against the user's real "2000 AD" library — ask
+them to right-click one unlinked issue, confirm exactly one Comic Vine
+request fires, pick the volume, and confirm the visible copies get linked and
+the Missing Issues report then shows real gaps.
+
+**New feature, 2026-09-19: "Find in Incoming" (ADR-061).** The Missing Issues
+context menu can match one or more selected gaps against Incoming by normalized
+Series, Volume, and Number. The command uses a dedicated Library Organizer Move
+profile from Preferences > Libraries. A summary requires the user to select one
+copy when several Incoming files match. Confirmed matches use the existing
+durable adoption transaction, then refresh Missing Issues. `MEASURED`: the
+release `find_incoming_probe` passed under Xvfb with isolated XDG paths. It
+selected one of two candidates, adopted only that copy, kept the other copy in
+Incoming, inserted the adopted record into the main Library, and removed the
+filled gap after refresh. `cargo fmt`/`clippy`/`test` all pass. `UNKNOWN`: user
+test 24 has not run on the real library.
+
+`MEASURED`: The UI probe (`crates/cr-ui/examples/missing_issues_probe.rs`) ran
+RELEASE under Xvfb with isolated XDG paths (see Environment notes below) and
+passed three gates: the Missing Issues node forces Detail mode with the Cover
+column hidden and exactly the Series/Number/Title/Year/Comic Vine Issue Id
+columns visible; a whole-library refresh shows every seeded series' gaps (3
+rows) with the library's book count unchanged; and scoping to a smart list
+narrows the row set to that series' gaps alone (2 rows), still with no book
+created. Confirmed stable across four consecutive runs. The
+`docs/open-user-tests.md` entry for this phase is added but not yet run by
+the user.
+
 **Phase 18: Incoming folders.**
 
 The implementation and automated gates are complete. The user tests are open.
@@ -201,6 +290,29 @@ not claim that the present combination is permissible. `cargo deny check
 licenses` is not a CI gate.
 
 ## Latest verification
+
+The Find in Incoming feature passed local verification on 2026-09-19.
+
+- `cargo fmt --all`: passed.
+- `cargo clippy --workspace --all-targets -- -D warnings`: passed.
+- `cargo test --workspace`: passed.
+- `MEASURED`: the release `find_incoming_probe` passed with an ambiguous
+  two-copy match, one selected adoption, one retained Incoming copy, a main
+  Library insert, and a Missing Issues refresh.
+- `UNKNOWN`: user test 24 has not run on the real library.
+
+The round-2 Incoming gap-refresh CPU change passed local verification on
+2026-09-19.
+
+- `cargo fmt --all`: passed.
+- `cargo clippy --workspace --all-targets -- -D warnings`: passed.
+- `cargo test --workspace`: passed.
+- `cargo test -p cr-ui --release
+  project_incoming_external_gaps_completes_well_inside_budget -- --nocapture`:
+  passed at 196.7 ms for 20,000 books and 2,000 series.
+- `MEASURED` (user): the real-library retest works correctly. The repeated
+  long refresh and sustained idle-CPU symptom did not recur.
+- `UNKNOWN`: exact real-library phase durations. No trace values were supplied.
 
 The idle-CPU fix (single-pass `incoming_volume_ids_for`) passed local
 verification on 2026-09-18.

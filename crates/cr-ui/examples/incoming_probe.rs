@@ -255,6 +255,7 @@ fn main() {
     let incoming_config = IncomingConfig {
         incoming_folders: vec![incoming_root.to_string_lossy().into_owned()],
         last_organizer_profile: "Probe Move".into(),
+        find_in_incoming_profile: "Probe Move".into(),
     };
     cr_ui::library::store_incoming_config(&incoming_config);
     assert_eq!(cr_ui::library::incoming_config(), incoming_config);
@@ -835,6 +836,7 @@ fn gate_f_to_i(paths: Rc<cr_core::paths::Paths>, work: PathBuf) {
     let final_config = IncomingConfig {
         incoming_folders: vec![conversion_root.to_string_lossy().into_owned()],
         last_organizer_profile: "Converted Move".into(),
+        find_in_incoming_profile: "Converted Move".into(),
     };
     let table = cr_core::settings::unified::serialize_plugin(&final_config).unwrap();
     let settings = cr_ui::library::settings();

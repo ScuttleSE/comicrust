@@ -7,9 +7,11 @@
 //! Everything here is pure. The caller reads the library, and the
 //! caller creates the books.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashMap};
 
-use super::IssueSkeleton;
+use cr_core::model::comic_book::ComicBook;
+
+use super::{CvCache, IssueSkeleton};
 
 /// One issue the library does not hold.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -91,9 +93,150 @@ pub fn volume_id_of(series_keys: impl IntoIterator<Item = String>) -> Option<i64
         .map(|(id, _)| id)
 }
 
+/// The gap-pass grouping key: case-folded series name + volume. Library
+/// books already carry a real series name, so this needs no
+/// shadow/proposed-name fallback (unlike Incoming's `incoming_identity`).
+#[derive(Clone, PartialEq, Eq, Hash, Debug)]
+struct GapSeriesKey {
+    series: String,
+    volume: i32,
+}
+
+/// One series' gap report: the volume it was matched to and the issues
+/// the library does not hold.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SeriesGap {
+    pub series: String,
+    pub volume: i32,
+    pub volume_id: i64,
+    pub missing: Vec<MissingIssue>,
+}
+
+/// The missing issues of every series in `scope_books`, read from the
+/// local cache skeleton only (never the network).
+///
+/// `scope_books` and `library_books` are deliberately two different
+/// populations. `scope_books` decides which series to report on and
+/// which issue numbers count as owned — this is the scoping the user
+/// picked (the whole library, or one smart list's matched subset).
+/// `library_books` decides which Comic Vine volume each series maps
+/// to. These must NOT be the same restriction: which volume a series
+/// corresponds to is a fact about the series, not about whichever
+/// arbitrary subset the user scoped the report to, and a book only
+/// carries the `comicvine_volume` vote after an actual scrape or a
+/// Comic-Vine-driven fill — usually a handful of copies, not the bulk
+/// of a collection. A scope narrow enough to exclude every one of a
+/// series' Comic-Vine-linked copies must not make that series silently
+/// vanish from the report; only its OWNED numbers should be scoped.
+/// (Before this fix, both maps came from `scope_books` alone, so a
+/// smart list scoped to exactly the un-linked copies of a series
+/// always read back "0 missing" for it — the linked copies elsewhere
+/// in the library were invisible to the vote.)
+///
+/// Builds the owned-numbers-by-series map in ONE pass over
+/// `scope_books` and the volume-vote map in a SEPARATE single pass
+/// over `library_books`, then reads the cache once per distinct scoped
+/// series. A series with no `comicvine_volume` custom value carrying a
+/// valid vote ANYWHERE in the library, or with an empty cache, yields
+/// no rows for that series. Do not scan either slice once per series:
+/// that per-series full-collection scan is the exact bug
+/// `project_incoming_external_gaps` (`crates/cr-ui/src/library.rs`)
+/// still carries, and it drove idle CPU to 100% on 2026-09-18 the last
+/// time this shape recurred (see `docs/current-status.md`).
+pub fn missing_issues_of_library(
+    cache: &dyn CvCache,
+    scope_books: &[ComicBook],
+    library_books: &[ComicBook],
+) -> Vec<SeriesGap> {
+    fn key_of(book: &ComicBook) -> GapSeriesKey {
+        GapSeriesKey {
+            series: book.info.series.trim().to_ascii_lowercase(),
+            volume: book.info.volume,
+        }
+    }
+
+    let mut owned: HashMap<GapSeriesKey, Vec<String>> = HashMap::new();
+    let mut display_name: HashMap<GapSeriesKey, String> = HashMap::new();
+    for book in scope_books {
+        let key = key_of(book);
+        owned
+            .entry(key.clone())
+            .or_default()
+            .push(book.info.number.clone());
+        display_name
+            .entry(key)
+            .or_insert_with(|| book.info.series.clone());
+    }
+
+    let mut volume_votes: HashMap<GapSeriesKey, Vec<String>> = HashMap::new();
+    for book in library_books {
+        volume_votes
+            .entry(key_of(book))
+            .or_default()
+            .push(crate::bookdata::get_custom_value(book, "comicvine_volume"));
+    }
+
+    let mut results = Vec::new();
+    for (key, numbers) in owned {
+        let votes = volume_votes.remove(&key).unwrap_or_default();
+        let Some(volume_id) = volume_id_of(votes) else {
+            continue;
+        };
+        let Ok(issues) = cache.issues_of_volume(volume_id) else {
+            continue;
+        };
+        let missing = missing_issues(&issues, &numbers);
+        if missing.is_empty() {
+            continue;
+        }
+        results.push(SeriesGap {
+            series: display_name.remove(&key).unwrap_or_default(),
+            volume: key.volume,
+            volume_id,
+            missing,
+        });
+    }
+    results
+}
+
+/// The four-digit year of a Comic Vine cover date ("YYYY-MM-DD", with an
+/// optional time suffix). `None` when absent or malformed.
+pub fn year_of_cover_date(cover_date: Option<&str>) -> Option<i32> {
+    let value = cover_date?.trim();
+    let head = value.split([' ', 'T']).next()?;
+    head.split('-').next()?.parse::<i32>().ok()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::cache::SqliteCache;
+
+    fn cache() -> SqliteCache {
+        SqliteCache::in_memory().expect("in-memory cache opens")
+    }
+
+    fn series_book(series: &str, volume: i32, number: &str, volume_id: Option<i64>) -> ComicBook {
+        let mut book = ComicBook::default();
+        book.info.series = series.to_string();
+        book.info.volume = volume;
+        book.info.number = number.to_string();
+        if let Some(volume_id) = volume_id {
+            crate::bookdata::set_custom_value(
+                &mut book,
+                "comicvine_volume",
+                &volume_id.to_string(),
+            );
+        }
+        book
+    }
+
+    fn numbers_of(gap: &SeriesGap) -> Vec<&str> {
+        gap.missing
+            .iter()
+            .map(|m| m.issue_number.as_str())
+            .collect()
+    }
 
     fn issue(id: i64, number: &str) -> IssueSkeleton {
         IssueSkeleton {
@@ -215,5 +358,138 @@ mod tests {
             volume_id_of(["771", "999"].iter().map(|s| s.to_string())),
             Some(771)
         );
+    }
+
+    #[test]
+    fn owned_subtraction_is_per_series_across_several_series() {
+        let cache = cache();
+        cache
+            .put_issues(&[
+                IssueSkeleton {
+                    issue_id: 1,
+                    volume_id: 100,
+                    issue_number: "1".into(),
+                    ..Default::default()
+                },
+                IssueSkeleton {
+                    issue_id: 2,
+                    volume_id: 100,
+                    issue_number: "2".into(),
+                    ..Default::default()
+                },
+                IssueSkeleton {
+                    issue_id: 3,
+                    volume_id: 200,
+                    issue_number: "1".into(),
+                    ..Default::default()
+                },
+                IssueSkeleton {
+                    issue_id: 4,
+                    volume_id: 200,
+                    issue_number: "2".into(),
+                    ..Default::default()
+                },
+            ])
+            .expect("seed issues");
+        let books = vec![
+            series_book("Alpha", 2020, "1", Some(100)),
+            series_book("Beta", 2021, "1", Some(200)),
+        ];
+
+        let mut gaps = missing_issues_of_library(&cache, &books, &books);
+        gaps.sort_by(|a, b| a.series.cmp(&b.series));
+
+        assert_eq!(gaps.len(), 2);
+        assert_eq!(gaps[0].series, "Alpha");
+        assert_eq!(numbers_of(&gaps[0]), vec!["2"]);
+        assert_eq!(gaps[1].series, "Beta");
+        assert_eq!(numbers_of(&gaps[1]), vec!["2"]);
+    }
+
+    #[test]
+    fn a_series_with_no_volume_id_is_skipped() {
+        let cache = cache();
+        cache
+            .put_issues(&[IssueSkeleton {
+                issue_id: 1,
+                volume_id: 100,
+                issue_number: "1".into(),
+                ..Default::default()
+            }])
+            .expect("seed issues");
+        let books = vec![series_book("Alpha", 2020, "1", None)];
+
+        assert!(missing_issues_of_library(&cache, &books, &books).is_empty());
+    }
+
+    #[test]
+    fn an_empty_cache_yields_nothing() {
+        let cache = cache();
+        let books = vec![series_book("Alpha", 2020, "1", Some(100))];
+
+        assert!(missing_issues_of_library(&cache, &books, &books).is_empty());
+    }
+
+    #[test]
+    fn a_scope_missing_every_linked_copy_still_votes_from_the_whole_library() {
+        // The exact bug the user found: a smart list (the scope) that
+        // happens to hold none of a series' Comic-Vine-linked copies
+        // must not make the whole series vanish from the report — the
+        // volume vote must come from the library, not the scope.
+        let cache = cache();
+        cache
+            .put_issues(&[
+                IssueSkeleton {
+                    issue_id: 1,
+                    volume_id: 100,
+                    issue_number: "1".into(),
+                    ..Default::default()
+                },
+                IssueSkeleton {
+                    issue_id: 2,
+                    volume_id: 100,
+                    issue_number: "2".into(),
+                    ..Default::default()
+                },
+            ])
+            .expect("seed issues");
+        let unlinked = series_book("Alpha", 2020, "1", None);
+        let linked = series_book("Alpha", 2020, "1", Some(100));
+        let library = vec![unlinked.clone(), linked];
+
+        let gaps = missing_issues_of_library(&cache, std::slice::from_ref(&unlinked), &library);
+
+        assert_eq!(gaps.len(), 1);
+        assert_eq!(gaps[0].series, "Alpha");
+        assert_eq!(numbers_of(&gaps[0]), vec!["2"]);
+    }
+
+    #[test]
+    fn an_owned_number_the_volume_does_not_list_is_ignored_by_the_gap_engine() {
+        let cache = cache();
+        cache
+            .put_issues(&[IssueSkeleton {
+                issue_id: 1,
+                volume_id: 100,
+                issue_number: "1".into(),
+                ..Default::default()
+            }])
+            .expect("seed issues");
+        let books = vec![
+            series_book("Alpha", 2020, "1", Some(100)),
+            series_book("Alpha", 2020, "99", Some(100)),
+        ];
+
+        assert!(missing_issues_of_library(&cache, &books, &books).is_empty());
+    }
+
+    #[test]
+    fn year_of_cover_date_reads_the_leading_four_digits() {
+        assert_eq!(year_of_cover_date(Some("2000-11-01")), Some(2000));
+        assert_eq!(year_of_cover_date(Some("2000-11-01 00:00:00")), Some(2000));
+        assert_eq!(year_of_cover_date(Some("2000-11-01T00:00:00")), Some(2000));
+        assert_eq!(year_of_cover_date(Some("")), None);
+        assert_eq!(year_of_cover_date(Some("unknown")), None);
+        assert_eq!(year_of_cover_date(None), None);
     }
 }
