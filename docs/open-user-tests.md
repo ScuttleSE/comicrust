@@ -152,7 +152,10 @@ rows. Confirm that the bottom progress count continues to update.
 
 ## 25. Cached series metadata propagation
 
-Not yet run. See ADR-063.
+Partial pass on 2026-09-19. See ADR-063 and ADR-065. The user confirmed that
+real volume 19752 now links books whose stored Number is blank from their
+enabled filename-derived Proposed Number. The remaining metadata propagation
+checks below are still open.
 
 Choose a series that has several owned issues with blank Publisher, Imprint,
 and volume year. Keep nonblank test values on at least one other issue. Fully
@@ -169,11 +172,10 @@ blank shared field and both IDs. Confirm that the excluded issue does not
 change. Confirm that the summary reports linked, metadata-filled, changed, and
 unmatched counts.
 
-Use a book whose stored Number is blank but whose enabled Proposed Number comes
-from its filename. Run **Link Series from Cache** or scrape one issue that starts
-cached series propagation. Confirm that the book receives the matching Comic
-Vine issue ID. Confirm that its stored Number remains blank. Disable Enable
-Proposed on another such book and confirm that it remains unmatched.
+**PASS** (user, 2026-09-19): a book whose stored Number was blank linked from
+its enabled filename-derived Proposed Number during cached series propagation.
+The stored Number stayed blank. The disabled Enable Proposed case still needs a
+user check.
 
 ## 26. Comic Vine cache manager
 
