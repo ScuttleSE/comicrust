@@ -9,7 +9,7 @@ use cr_engine::incoming_transaction::{
     TransactionFiles, TransactionKind, TransactionStage,
 };
 
-static EPOCH_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+static MUTATION_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 struct TestDir(PathBuf);
 
@@ -393,6 +393,9 @@ fn commit_applies_a_rename_after_the_journal_exists() {
 
 #[test]
 fn mutation_guard_serializes_process_local_callers() {
+    let _mutation_test = MUTATION_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     let guard = acquire_mutation_guard();
     assert!(guard.is_held());
     assert!(try_acquire_mutation_guard().is_none());
@@ -525,7 +528,7 @@ fn abort_prepared_removes_only_an_untouched_prepared_journal() {
 
 #[test]
 fn epoch_compare_and_commit_excludes_mutation_until_commit_finishes() {
-    let _epoch_test = EPOCH_TEST_LOCK
+    let _mutation_test = MUTATION_TEST_LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let root = TestDir::new("epoch-commit");
@@ -551,7 +554,7 @@ fn epoch_compare_and_commit_excludes_mutation_until_commit_finishes() {
 
 #[test]
 fn replacement_epoch_invalidates_a_rescan_waiting_for_the_mutation_guard() {
-    let _epoch_test = EPOCH_TEST_LOCK
+    let _mutation_test = MUTATION_TEST_LOCK
         .lock()
         .unwrap_or_else(std::sync::PoisonError::into_inner);
     let replacement_guard = acquire_mutation_guard();
@@ -575,6 +578,9 @@ fn replacement_epoch_invalidates_a_rescan_waiting_for_the_mutation_guard() {
 
 #[test]
 fn conversion_and_scan_epoch_rejections_remove_the_prepared_journal() {
+    let _mutation_test = MUTATION_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     for kind in [TransactionKind::FolderConversion, TransactionKind::Scan] {
         let root = TestDir::new(&format!("epoch-reject-{kind:?}"));
         let engine = TransactionEngine::from_journal_path(root.path("current.json"));

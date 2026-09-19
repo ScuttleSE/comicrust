@@ -8,7 +8,8 @@
 
 use chrono::Datelike;
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
+use std::sync::{Arc, Mutex, OnceLock};
 
 use cr_core::model::comic_book::ComicBook;
 use cr_core::model::comic_name_info::{self, ComicNameInfo};
@@ -43,6 +44,37 @@ thread_local! {
 
 static PROPOSED_CACHE_ENTRIES: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
+
+type ProposedSlot = Arc<OnceLock<ComicNameInfo>>;
+
+#[derive(Default)]
+struct ProposedCache {
+    entries: HashMap<String, ProposedSlot>,
+}
+
+impl ProposedCache {
+    fn slot_for(&mut self, path: &str) -> (ProposedSlot, bool) {
+        match self.entries.get(path) {
+            Some(entry) => (Arc::clone(entry), false),
+            None => {
+                let entry = Arc::new(OnceLock::new());
+                self.entries.insert(path.to_string(), Arc::clone(&entry));
+                (entry, true)
+            }
+        }
+    }
+
+    fn retain_paths(&mut self, active_paths: &HashSet<String>) {
+        self.entries.retain(|path, _| active_paths.contains(path));
+        self.entries
+            .reserve(active_paths.len().saturating_sub(self.entries.len()));
+    }
+}
+
+fn proposed_cache() -> &'static Mutex<ProposedCache> {
+    static CACHE: OnceLock<Mutex<ProposedCache>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(ProposedCache::default()))
+}
 
 fn duration_ns(duration: std::time::Duration) -> u64 {
     duration.as_nanos().min(u128::from(u64::MAX)) as u64
@@ -81,6 +113,17 @@ pub fn trace_proposed_cache_delta(label: &str, start: ProposedCacheTraceSnapshot
         elapsed_ms(end.lock_hold_ns, start.lock_hold_ns),
         elapsed_ms(end.parse_ns, start.parse_ns),
     ));
+}
+
+/// Removes filename parses that do not belong to either active catalog.
+/// The cache has no fixed book-count limit. Its normal bound is the set of
+/// paths in the loaded Library and Incoming catalogs.
+pub fn retain_proposed_cache_paths(active_paths: &HashSet<String>) {
+    let mut cache = proposed_cache()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    cache.retain_paths(active_paths);
+    PROPOSED_CACHE_ENTRIES.store(cache.entries.len(), std::sync::atomic::Ordering::Relaxed);
 }
 
 /// `ComicBook.ReadPercentage`: 0 when nothing read; `((LastPageRead + 1)
@@ -136,59 +179,43 @@ pub fn empty_prop() -> &'static ComicNameInfo {
 ///
 /// One parse per distinct file path, process-wide: the parse reads
 /// ONLY the path, so same input = same output and no invalidation
-/// problem. The cap bounds the memory (the C# cache dies with the
-/// book object; a removal here keeps the entry until the next
-/// overflow clears).
+/// problem. The startup load removes paths outside the active Library
+/// and Incoming catalogs. A per-path `OnceLock` keeps parsing outside
+/// the global map lock.
 pub fn proposed_cached(book: &ComicBook) -> ComicNameInfo {
-    static CACHE: std::sync::Mutex<Option<HashMap<String, ComicNameInfo>>> =
-        std::sync::Mutex::new(None);
     if !needs_prop(book) {
         update_proposed_cache_trace(|trace| trace.skipped += 1);
         return ComicNameInfo::new();
     }
     let lock_started = super::eval::trace_accum::enabled().then(std::time::Instant::now);
-    let mut slot = CACHE
+    let mut cache = proposed_cache()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let lock_wait_ns = lock_started.map_or(0, |started| duration_ns(started.elapsed()));
     let hold_started = super::eval::trace_accum::enabled().then(std::time::Instant::now);
-    let cache = slot.get_or_insert_with(HashMap::new);
-    if let Some(info) = cache.get(&book.file_path) {
-        let info = info.clone();
-        let lock_hold_ns = hold_started.map_or(0, |started| duration_ns(started.elapsed()));
-        drop(slot);
-        update_proposed_cache_trace(|trace| {
-            trace.hits += 1;
-            trace.lock_wait_ns += lock_wait_ns;
-            trace.lock_hold_ns += lock_hold_ns;
-        });
-        return info;
-    }
-    let parse_started = super::eval::trace_accum::enabled().then(std::time::Instant::now);
-    let info = super::eval::trace_accum::time_prop(|| proposed(book));
-    let parse_ns = parse_started.map_or(0, |started| duration_ns(started.elapsed()));
-    let mut cleared = false;
-    if cache.len() >= 100_000 {
-        cr_core::trace::trace(format!(
-            "proposed-cache clear thread={} entries_before={}",
-            cr_core::trace::thread_label(),
-            cache.len()
-        ));
-        cache.clear();
-        cleared = true;
-    }
-    cache.insert(book.file_path.clone(), info.clone());
-    PROPOSED_CACHE_ENTRIES.store(cache.len(), std::sync::atomic::Ordering::Relaxed);
+    let (entry, inserted) = cache.slot_for(&book.file_path);
+    PROPOSED_CACHE_ENTRIES.store(cache.entries.len(), std::sync::atomic::Ordering::Relaxed);
     let lock_hold_ns = hold_started.map_or(0, |started| duration_ns(started.elapsed()));
-    drop(slot);
+    drop(cache);
+    let parse_started = super::eval::trace_accum::enabled().then(std::time::Instant::now);
+    let mut parsed = false;
+    let info = entry.get_or_init(|| {
+        parsed = true;
+        super::eval::trace_accum::time_prop(|| proposed(book))
+    });
+    let parse_ns = if parsed {
+        parse_started.map_or(0, |started| duration_ns(started.elapsed()))
+    } else {
+        0
+    };
     update_proposed_cache_trace(|trace| {
-        trace.misses += 1;
-        trace.clears += u64::from(cleared);
+        trace.hits += u64::from(!inserted);
+        trace.misses += u64::from(inserted);
         trace.lock_wait_ns += lock_wait_ns;
         trace.lock_hold_ns += lock_hold_ns;
         trace.parse_ns += parse_ns;
     });
-    info
+    info.clone()
 }
 
 /// The proposed parses of a book slice, computed LAZILY — on first
@@ -722,5 +749,14 @@ mod tests {
         assert_eq!(custom_value(&b, "read").as_deref(), Some("true"));
         assert_eq!(custom_value(&b, "Location").as_deref(), Some("Home"));
         assert_eq!(custom_value(&b, "Nope"), None);
+    }
+
+    #[test]
+    fn proposed_cache_has_no_fixed_book_count_limit() {
+        let mut cache = ProposedCache::default();
+        for index in 0..150_001 {
+            cache.slot_for(&format!("/library/book-{index}.cbz"));
+        }
+        assert_eq!(cache.entries.len(), 150_001);
     }
 }

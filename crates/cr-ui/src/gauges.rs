@@ -5,19 +5,17 @@
 //! Port shape of the C# machinery (`ComicListItem.CommitCache`,
 //! `ComicLibrary.InvalidateComicListCaches`, the browser's
 //! `queryCacheTimer`): book and list mutations bump an epoch and
-//! rebuild a leaf-first work queue; a debounced timer (100 ms, the C#
-//! instant-mode commit interval) then refreshes ONE tree node per
-//! tick (50 ms apart), so the GTK main thread never blocks longer
-//! than one list evaluation. Folders combine their children's cached
-//! sets (`ComicListItemFolder.OnCacheMatch`) — only smart/id-list
-//! leaves re-run the matcher pipeline. Results write into the
-//! session database (they persist to ComicDb.xml, like the C#) and
-//! update the row label in place (the C# repaint-only path — no
-//! refill, no selection churn).
+//! rebuild a leaf-first result set. A debounced timer (100 ms, the C#
+//! instant-mode commit interval) starts one worker pass over a database
+//! snapshot. Folders combine their children's sets
+//! (`ComicListItemFolder.OnCacheMatch`). Only smart and ID-list leaves
+//! run the matcher pipeline. The GTK pump applies current results to the
+//! session database and updates each row label in place.
 
 use std::cell::{Cell, RefCell};
-use std::collections::{HashMap, HashSet, VecDeque};
-use std::rc::Rc;
+use std::collections::HashSet;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use gtk4::glib;
 
@@ -27,7 +25,6 @@ use cr_core::xml::scalar::{CrDateTime, CrGuid};
 use crate::library;
 
 type RowHook = Box<dyn Fn(&CrGuid)>;
-type SetCache = HashMap<CrGuid, (u64, HashSet<CrGuid>)>;
 
 /// The debounce before a burst of invalidations starts the refresh
 /// (the C# instant-mode `queryCacheTimer` interval, 100 ms).
@@ -37,11 +34,7 @@ const TICK_MS: u64 = 50;
 
 thread_local! {
     static EPOCH: Cell<u64> = const { Cell::new(0) };
-    /// Per-node cached book-id sets, stamped with the epoch they were
-    /// built at. Membership-only: classification reads live fields.
-    static SETS: RefCell<SetCache> = RefCell::new(HashMap::new());
-    /// The nodes to refresh, children before parents.
-    static QUEUE: RefCell<VecDeque<CrGuid>> = const { RefCell::new(VecDeque::new()) };
+    static PENDING: Cell<usize> = const { Cell::new(0) };
     /// The queue must rebuild from the model before the next tick.
     /// invalidate() runs INSIDE mutation fns that hold the session
     /// borrow, so it only sets this flag — the rebuild happens on the
@@ -53,6 +46,8 @@ thread_local! {
     static PASSES: Cell<u64> = const { Cell::new(0) };
     /// The one pending timer (the debounce or the next tick).
     static SOURCE: RefCell<Option<glib::SourceId>> = const { RefCell::new(None) };
+    static ACTIVE: Cell<bool> = const { Cell::new(false) };
+    static CANCEL: RefCell<Option<Arc<AtomicBool>>> = const { RefCell::new(None) };
     /// The row applier, set by the shell (a Weak-held state handle).
     static ROW_HOOK: RefCell<Option<RowHook>> = RefCell::new(None);
 }
@@ -65,7 +60,7 @@ pub fn set_row_hook(hook: Option<RowHook>) {
 
 /// The nodes still waiting for a refresh (the probe's drain gate).
 pub fn pending() -> usize {
-    QUEUE.with(|q| q.borrow().len())
+    PENDING.with(Cell::get)
 }
 
 /// Completed refresh runs (the probe's drain gate).
@@ -88,23 +83,24 @@ pub fn invalidate() {
     ));
     EPOCH.with(|e| e.set(e.get().wrapping_add(1)));
     STALE.with(|s| s.set(true));
+    CANCEL.with(|slot| {
+        if let Some(cancel) = slot.borrow().as_ref() {
+            cancel.store(true, Ordering::Relaxed);
+        }
+    });
     schedule(DEBOUNCE_MS);
 }
 
-/// Rebuilds the work queue from the ComicLists model, children before
-/// parents (a folder tick finds fresh child sets).
-fn rebuild_queue() {
-    fn walk(items: &[ComicListItem], q: &mut VecDeque<CrGuid>) {
-        for item in items {
-            if let ComicListItem::Folder(f) = item {
-                walk(&f.items, q);
+fn node_count(items: &[ComicListItem]) -> usize {
+    items
+        .iter()
+        .map(|item| {
+            1 + match item {
+                ComicListItem::Folder(folder) => node_count(&folder.items),
+                _ => 0,
             }
-            q.push_back(item.base().id);
-        }
-    }
-    let mut q = VecDeque::new();
-    walk(&library::comic_lists_snapshot(), &mut q);
-    QUEUE.with(|c| *c.borrow_mut() = q);
+        })
+        .sum()
 }
 
 /// Starts the one pending timer (no double schedules).
@@ -120,104 +116,168 @@ fn schedule(delay_ms: u64) {
     SOURCE.with(|s| *s.borrow_mut() = Some(source));
 }
 
-/// One tick: rebuild the queue when stale, refresh the next node, and
-/// keep ticking while work remains.
+/// Starts one worker pass over a database snapshot.
 fn step() {
-    if STALE.with(|s| s.replace(false)) {
-        rebuild_queue();
-    }
-    let next = QUEUE.with(|q| q.borrow_mut().pop_front());
-    let Some(id) = next else {
+    if ACTIVE.with(Cell::get) || !STALE.with(|stale| stale.replace(false)) {
         return;
-    };
-    refresh_node(&id);
-    if QUEUE.with(|q| q.borrow().is_empty()) {
-        // The run completed — every node of this rebuild refreshed.
-        PASSES.with(|p| p.set(p.get() + 1));
-    } else {
-        schedule(TICK_MS);
     }
-}
-
-/// Refreshes one node: its book set (leaves evaluate, folders combine
-/// children), the counters over the live book fields, the session
-/// fields, and the row.
-fn refresh_node(id: &CrGuid) {
-    let lib = library::session();
-    let Some(item) = library::find_list_item_any(id) else {
-        return;
-    };
     let epoch = EPOCH.with(Cell::get);
-    // 1. The node's book set.
-    let set = match &item {
-        ComicListItem::Folder(folder) => {
-            let children: Vec<HashSet<CrGuid>> = folder
-                .items
-                .iter()
-                .map(|child| child_set(child, &lib, epoch))
-                .collect();
-            cr_engine::gauges::combine_folder_sets(folder.combine_mode, &children)
-        }
-        _ => {
-            let l = lib.borrow();
-            cr_engine::gauges::list_book_ids(&item, l.database())
-        }
-    };
-    SETS.with(|c| c.borrow_mut().insert(*id, (epoch, set.clone())));
-    // 2. The counters over the LIVE book fields (the cached sets hold
-    // membership only — a read-progress change reclassifies without a
-    // membership change).
+    let database = library::session().borrow().database().clone();
+    PENDING.with(|pending| pending.set(node_count(&database.comic_lists)));
     let now = CrDateTime::now();
     let recent = cr_core::settings::EngineConfiguration::global().is_recent_in_days;
-    let gauges = {
-        let l = lib.borrow();
-        cr_engine::gauges::gauge_counts(
-            l.database().books.iter().filter(|b| set.contains(&b.id)),
-            &now,
-            recent,
-        )
-    };
-    // 3. The session fields (persist to ComicDb.xml).
-    let stored = library::store_list_gauges(id, gauges, now);
-    crate::trace::trace(format!(
-        "gauges: refresh id={id} total={} new={} unread={} stored={stored}",
-        gauges.total, gauges.new, gauges.unread
-    ));
-    // 4. The row (in place — no refill).
-    ROW_HOOK.with(|h| {
-        if let Some(f) = h.borrow().as_ref() {
-            f(id);
-        }
-    });
+    let cancel = Arc::new(AtomicBool::new(false));
+    CANCEL.with(|slot| *slot.borrow_mut() = Some(Arc::clone(&cancel)));
+    ACTIVE.with(|active| active.set(true));
+    let (tx, rx) = std::sync::mpsc::channel();
+    std::thread::Builder::new()
+        .name("Library Gauges".into())
+        .spawn(move || {
+            let result = build_pass(&database, &now, recent, &cancel);
+            let _ = tx.send((epoch, now, result));
+        })
+        .expect("spawn library gauge worker");
+    glib::timeout_add_local(
+        std::time::Duration::from_millis(TICK_MS),
+        move || match rx.try_recv() {
+            Ok((completed, now, result)) => {
+                ACTIVE.with(|active| active.set(false));
+                CANCEL.with(|slot| *slot.borrow_mut() = None);
+                let current = EPOCH.with(Cell::get);
+                if completed == current {
+                    if let Some(result) = result {
+                        apply_pass(now, result);
+                    }
+                }
+                if STALE.with(Cell::get) || completed != current {
+                    schedule(DEBOUNCE_MS);
+                }
+                glib::ControlFlow::Break
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                ACTIVE.with(|active| active.set(false));
+                CANCEL.with(|slot| *slot.borrow_mut() = None);
+                PENDING.with(|pending| pending.set(0));
+                if STALE.with(Cell::get) {
+                    schedule(DEBOUNCE_MS);
+                }
+                glib::ControlFlow::Break
+            }
+        },
+    );
 }
 
-/// A folder child's fresh set: the cache when current, otherwise
-/// evaluated right away (nested folders combine their own children).
-fn child_set(
-    child: &ComicListItem,
-    lib: &Rc<RefCell<cr_engine::library::Library>>,
-    epoch: u64,
-) -> HashSet<CrGuid> {
-    let id = child.base().id;
-    if let Some((e, s)) = SETS.with(|c| c.borrow().get(&id).map(|(e, s)| (*e, s.clone()))) {
-        if e == epoch {
-            return s;
+type GaugeResult = (CrGuid, cr_engine::gauges::Gauges);
+
+fn build_pass(
+    database: &cr_core::database::comic_database::ComicDatabase,
+    now: &CrDateTime,
+    recent: i32,
+    cancel: &AtomicBool,
+) -> Option<Vec<GaugeResult>> {
+    fn build_item(
+        item: &ComicListItem,
+        database: &cr_core::database::comic_database::ComicDatabase,
+        now: &CrDateTime,
+        recent: i32,
+        cancel: &AtomicBool,
+        result: &mut Vec<GaugeResult>,
+    ) -> Option<HashSet<CrGuid>> {
+        if cancel.load(Ordering::Relaxed) {
+            return None;
+        }
+        let set = match item {
+            ComicListItem::Folder(folder) => {
+                let mut children = Vec::with_capacity(folder.items.len());
+                for child in &folder.items {
+                    children.push(build_item(child, database, now, recent, cancel, result)?);
+                }
+                cr_engine::gauges::combine_folder_sets(folder.combine_mode, &children)
+            }
+            _ => cr_engine::gauges::list_book_ids(item, database),
+        };
+        if cancel.load(Ordering::Relaxed) {
+            return None;
+        }
+        let gauges = cr_engine::gauges::gauge_counts(
+            database.books.iter().filter(|book| set.contains(&book.id)),
+            now,
+            recent,
+        );
+        result.push((item.base().id, gauges));
+        Some(set)
+    }
+
+    let mut result = Vec::new();
+    for item in &database.comic_lists {
+        build_item(item, database, now, recent, cancel, &mut result)?;
+    }
+    Some(result)
+}
+
+fn apply_pass(now: CrDateTime, result: Vec<GaugeResult>) {
+    for (id, gauges) in result {
+        let stored = library::store_list_gauges(&id, gauges, now);
+        crate::trace::trace(format!(
+            "gauges: refresh id={id} total={} new={} unread={} stored={stored}",
+            gauges.total, gauges.new, gauges.unread
+        ));
+        ROW_HOOK.with(|hook| {
+            if let Some(apply) = hook.borrow().as_ref() {
+                apply(&id);
+            }
+        });
+        PENDING.with(|pending| pending.set(pending.get().saturating_sub(1)));
+    }
+    PENDING.with(|pending| pending.set(0));
+    PASSES.with(|passes| passes.set(passes.get() + 1));
+    if STALE.with(Cell::get) {
+        schedule(DEBOUNCE_MS);
+    }
+}
+
+#[cfg(test)]
+mod worker_tests {
+    use super::*;
+    use std::collections::HashMap;
+
+    #[test]
+    fn worker_pass_returns_children_before_their_folder() {
+        let database = cr_core::database::load(
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../tests/realworld/ComicDb.xml"
+            )
+            .as_ref(),
+        )
+        .unwrap();
+        let result =
+            build_pass(&database, &CrDateTime::now(), 14, &AtomicBool::new(false)).unwrap();
+        let positions: HashMap<CrGuid, usize> = result
+            .iter()
+            .enumerate()
+            .map(|(index, (id, _))| (*id, index))
+            .collect();
+        for item in &database.comic_lists {
+            if let ComicListItem::Folder(folder) = item {
+                for child in &folder.items {
+                    assert!(positions[&child.base().id] < positions[&folder.base.id]);
+                }
+            }
         }
     }
-    match child {
-        ComicListItem::Folder(folder) => {
-            let children: Vec<HashSet<CrGuid>> = folder
-                .items
-                .iter()
-                .map(|c| child_set(c, lib, epoch))
-                .collect();
-            let set = cr_engine::gauges::combine_folder_sets(folder.combine_mode, &children);
-            SETS.with(|c| c.borrow_mut().insert(id, (epoch, set.clone())));
-            set
-        }
-        _ => {
-            let l = lib.borrow();
-            cr_engine::gauges::list_book_ids(child, l.database())
-        }
+
+    #[test]
+    fn cancelled_worker_pass_returns_no_partial_results() {
+        let database = cr_core::database::load(
+            concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/../../tests/realworld/ComicDb.xml"
+            )
+            .as_ref(),
+        )
+        .unwrap();
+        assert!(build_pass(&database, &CrDateTime::now(), 14, &AtomicBool::new(true)).is_none());
     }
 }

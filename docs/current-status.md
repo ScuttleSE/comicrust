@@ -22,25 +22,25 @@ save. `UNKNOWN`: neither API update mode has run against the live API.
 
 ## Latest user finding
 
-`MEASURED` (user, 2026-09-19): Cached Comic Vine series propagation linked six
-books in approximately 6 ms. The derived refresh work then made the UI slow and
-used one CPU core. Smart-list evaluations took up to 8.5 seconds. Sorting 972
-books took up to 4.95 seconds. Incoming gap analysis took up to 14.53 seconds.
-One GTK frame took 8.12 seconds.
+`MEASURED` (user, 2026-09-19): The new trace identified the CPU and UI stall.
+The Incoming gap worker parsed 88,129 paths while it held the global proposed-
+value cache mutex for 7.25 seconds. GTK operations waited on that mutex for up
+to 6.62 seconds. The 100,000-entry cache cleared repeatedly while the active
+Library and Incoming catalogs contained up to 105,825 paths. Cached Comic Vine
+series propagation itself changed three books in approximately 7 ms.
 
-`CODE-READ`: string matchers request proposed filename data even when the
-selected field does not use it. The process-wide proposed-value cache uses one
-mutex, holds the mutex during a cache-miss parse, and clears all entries at
-100,000 entries. The reported pass processed 88,988 Incoming books and 16,837
-library books. `UNKNOWN`: the trace did not record cache clears, mutex wait
-time, or thread identities. New `CR_TRACE` instrumentation records those values
-without changing cache behavior.
+`CODE-READ`: the fix removes the fixed cache limit, reserves for all active
+paths at startup, and parses through per-path `OnceLock` values outside the
+global map lock. String matchers request proposed values only for Series,
+Title, and Format. Gauge evaluation runs on a worker. A new generation cancels
+obsolete Incoming gap work. `UNKNOWN`: the fix needs the same real-library user
+test and a memory measurement.
 
 ## Current task for the next context
 
 Run the same cached series propagation with `CR_TRACE=1` on the real library.
-Use the new proposed-cache and thread measurements to identify the cause. Do
-not design the fix before this measurement.
+Confirm that cache clears are zero, GTK lock waits stay short, and the UI stays
+responsive. Record the cache entry count and process memory.
 
 After this regression is resolved, retest **Find in Incoming** for `2000 AD`
 number `2498`. Then resume the deferred persistent-cache read task.
@@ -66,20 +66,17 @@ The procedures are in `docs/open-user-tests.md`.
 
 ## Other open work
 
-1. `MEASURED`: DirectoryMatcher gauge evaluation took approximately 2.6
-   seconds over 53,618 books on the GTK thread. Measure its internal phases,
-   then move the work to a worker with the ADR-019 pump pattern.
-2. `CODE-READ`: `ShowOnlyDuplicates` writes to ComicDb.xml but does not restore
+1. `CODE-READ`: `ShowOnlyDuplicates` writes to ComicDb.xml but does not restore
    per-list UI state.
-3. `MEASURED`: `duplicates_probe` gate F reads settings before the Preferences
+2. `MEASURED`: `duplicates_probe` gate F reads settings before the Preferences
    worker commits. Fix the probe wait. Do not change the expected value.
-4. `UNKNOWN`: Confirm Incoming discard speed, clean close, and scroll restore
+3. `UNKNOWN`: Confirm Incoming discard speed, clean close, and scroll restore
    on the real CIFS library. See ADR-058.
-5. The `.deb` package has no local content test because this machine has no
+4. The `.deb` package has no local content test because this machine has no
    `dpkg-deb`.
-6. AppStream metadata has no hosted screenshot URLs.
-7. Phase 16, Comic Vine scraper quality of life, remains planned.
-8. Phase 9, the library SQLite backend, remains deferred.
+5. AppStream metadata has no hosted screenshot URLs.
+6. Phase 16, Comic Vine scraper quality of life, remains planned.
+7. Phase 9, the library SQLite backend, remains deferred.
 
 ## Open risk
 
@@ -90,15 +87,19 @@ licenses` is not a CI gate.
 
 ## Latest verification
 
-The CPU-regression trace instrumentation passed on 2026-09-19.
+The proposed-cache contention fix passed on 2026-09-19.
 
 - `cargo fmt --all`: passed.
 - `cargo clippy --workspace --all-targets -- -D warnings`: passed.
 - `cargo test --workspace`: passed.
-- `MEASURED`: a traced smart-list performance test reported thread identity,
-  cache hits, cache misses, clears, entry count, lock wait, lock hold, parse,
-  property access, property extraction, and string comparison time.
-- `UNKNOWN`: the real-library reproduction is pending.
+- `MEASURED`: the 150,001-entry cache regression test passed.
+- `MEASURED`: the gauge worker ordering test passed.
+- `MEASURED`: stale gauge and gap worker cancellation tests passed.
+- `MEASURED`: the release gauge probe passed all gates with fresh isolated
+  data. A prior rerun reused mutated probe data and failed its value checks.
+- `MEASURED`: all direct users of the process-wide Incoming mutation guard now
+  use one test-local mutex. The transaction test binary and workspace pass.
+- `UNKNOWN`: the real-library performance and memory user test is pending.
 
 ## Environment notes
 

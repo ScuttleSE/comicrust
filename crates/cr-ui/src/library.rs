@@ -57,6 +57,8 @@ thread_local! {
     static INCOMING_CLASSIFICATION_ACTIVE: Cell<bool> = const { Cell::new(false) };
     static INCOMING_GAP_GENERATION: Cell<u64> = const { Cell::new(0) };
     static INCOMING_GAP_REFRESH_ACTIVE: Cell<bool> = const { Cell::new(false) };
+    static INCOMING_GAP_CANCEL: RefCell<Option<std::sync::Arc<std::sync::atomic::AtomicBool>>> =
+        const { RefCell::new(None) };
     static INCOMING_GAP_VIEW_HOOK: RefCell<Option<Box<dyn Fn()>>> = const { RefCell::new(None) };
     /// The last-computed Missing Issues gap rows (Phase 19): a manual
     /// report, never auto-recomputed. Only the main thread writes this.
@@ -508,6 +510,15 @@ pub fn load_bootstrap() -> anyhow::Result<BootstrapData> {
                 )),
             ),
         };
+    let active_paths: HashSet<String> = library
+        .database()
+        .books
+        .iter()
+        .chain(&incoming.books)
+        .filter(|book| !book.file_path.is_empty())
+        .map(|book| book.file_path.clone())
+        .collect();
+    cr_engine::matcher::book_view::retain_proposed_cache_paths(&active_paths);
     let message = [
         open_message(status),
         incoming_message,
@@ -1489,6 +1500,16 @@ fn incoming_volume_ids_for(
     incoming: &[ComicBook],
     library: &[ComicBook],
 ) -> HashMap<cr_engine::incoming::IncomingIdentity, i64> {
+    incoming_volume_ids_for_cancellable(identities, incoming, library, &|| false)
+        .unwrap_or_default()
+}
+
+fn incoming_volume_ids_for_cancellable(
+    identities: &HashSet<cr_engine::incoming::IncomingIdentity>,
+    incoming: &[ComicBook],
+    library: &[ComicBook],
+    cancelled: &impl Fn() -> bool,
+) -> Option<HashMap<cr_engine::incoming::IncomingIdentity, i64>> {
     // Compute each book's identity and series key once, grouping the
     // series keys by identity. The earlier code recomputed
     // `incoming_identity` for every book once per requested identity,
@@ -1497,6 +1518,9 @@ fn incoming_volume_ids_for(
     let mut series_keys_by_identity: HashMap<cr_engine::incoming::IncomingIdentity, Vec<String>> =
         HashMap::new();
     for book in incoming.iter().chain(library) {
+        if cancelled() {
+            return None;
+        }
         if let Some(identity) = cr_engine::incoming::incoming_identity(book) {
             if identities.contains(&identity) {
                 let series_key = cr_scrape::bookdata::series_key_of(book);
@@ -1507,12 +1531,14 @@ fn incoming_volume_ids_for(
             }
         }
     }
-    series_keys_by_identity
-        .into_iter()
-        .filter_map(|(identity, keys)| {
-            cr_scrape::cache::missing::volume_id_of(keys).map(|id| (identity, id))
-        })
-        .collect()
+    Some(
+        series_keys_by_identity
+            .into_iter()
+            .filter_map(|(identity, keys)| {
+                cr_scrape::cache::missing::volume_id_of(keys).map(|id| (identity, id))
+            })
+            .collect(),
+    )
 }
 
 /// Returns the distinct Comic Vine volume IDs for selected linked Incoming series.
@@ -1546,13 +1572,22 @@ fn project_incoming_external_gaps(
     cache: &dyn cr_scrape::cache::CvCache,
     incoming: &[ComicBook],
     library: &[ComicBook],
-) -> cr_engine::incoming::ExternalGapCache {
+    cancel: &std::sync::atomic::AtomicBool,
+) -> Option<cr_engine::incoming::ExternalGapCache> {
+    use std::sync::atomic::Ordering;
+
+    let cancelled = || cancel.load(Ordering::Relaxed);
     let phase_started = std::time::Instant::now();
     let cache_trace_started = cr_engine::matcher::book_view::proposed_cache_trace_snapshot();
-    let identities: HashSet<_> = incoming
-        .iter()
-        .filter_map(cr_engine::incoming::incoming_identity)
-        .collect();
+    let mut identities = HashSet::new();
+    for book in incoming {
+        if cancelled() {
+            return None;
+        }
+        if let Some(identity) = cr_engine::incoming::incoming_identity(book) {
+            identities.insert(identity);
+        }
+    }
     crate::trace::trace(format!(
         "gap refresh thread={} phase=identities elapsed={:?} identities={}",
         cr_core::trace::thread_label(),
@@ -1565,7 +1600,8 @@ fn project_incoming_external_gaps(
     );
     let phase_started = std::time::Instant::now();
     let cache_trace_started = cr_engine::matcher::book_view::proposed_cache_trace_snapshot();
-    let volume_ids = incoming_volume_ids_for(&identities, incoming, library);
+    let volume_ids =
+        incoming_volume_ids_for_cancellable(&identities, incoming, library, &cancelled)?;
     crate::trace::trace(format!(
         "gap refresh thread={} phase=volume_ids elapsed={:?} identities={} volumes={}",
         cr_core::trace::thread_label(),
@@ -1586,6 +1622,9 @@ fn project_incoming_external_gaps(
     let mut owned_by_identity: HashMap<cr_engine::incoming::IncomingIdentity, Vec<String>> =
         HashMap::new();
     for book in library {
+        if cancelled() {
+            return None;
+        }
         if let Some(identity) = cr_engine::incoming::incoming_identity(book) {
             owned_by_identity
                 .entry(identity)
@@ -1607,6 +1646,9 @@ fn project_incoming_external_gaps(
     let cache_trace_started = cr_engine::matcher::book_view::proposed_cache_trace_snapshot();
     let mut result = cr_engine::incoming::ExternalGapCache::new();
     for (identity, volume_id) in volume_ids {
+        if cancelled() {
+            return None;
+        }
         let Ok(issues) = cache.issues_of_volume(volume_id) else {
             continue;
         };
@@ -1632,7 +1674,7 @@ fn project_incoming_external_gaps(
         "gap-refresh cache-and-missing",
         cache_trace_started,
     );
-    result
+    Some(result)
 }
 
 /// Refreshes the offline Incoming gap projection without blocking GTK.
@@ -1657,6 +1699,11 @@ pub fn refresh_incoming_external_gaps_async() {
         caller.line()
     ));
     if active {
+        INCOMING_GAP_CANCEL.with(|slot| {
+            if let Some(cancel) = slot.borrow().as_ref() {
+                cancel.store(true, std::sync::atomic::Ordering::Relaxed);
+            }
+        });
         return;
     }
     let snapshot_started = std::time::Instant::now();
@@ -1669,14 +1716,15 @@ pub fn refresh_incoming_external_gaps_async() {
         library.len()
     ));
     let (tx, rx) = std::sync::mpsc::channel();
+    let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    INCOMING_GAP_CANCEL.with(|slot| *slot.borrow_mut() = Some(std::sync::Arc::clone(&cancel)));
     std::thread::Builder::new()
         .name("Incoming Comic Vine Gaps".into())
         .spawn(move || {
             let cache = cv_cache();
-            let gaps = cache
-                .as_deref()
-                .map(|cache| project_incoming_external_gaps(cache, &incoming, &library))
-                .unwrap_or_default();
+            let gaps = cache.as_deref().and_then(|cache| {
+                project_incoming_external_gaps(cache, &incoming, &library, &cancel)
+            });
             let _ = tx.send((generation, gaps));
         })
         .expect("spawn Incoming Comic Vine gap worker");
@@ -1685,11 +1733,13 @@ pub fn refresh_incoming_external_gaps_async() {
             Ok((completed, gaps)) => {
                 let current = INCOMING_GAP_GENERATION.with(Cell::get);
                 INCOMING_GAP_REFRESH_ACTIVE.with(|cell| cell.set(false));
+                INCOMING_GAP_CANCEL.with(|slot| *slot.borrow_mut() = None);
                 crate::trace::trace(format!(
                     "gap refresh done completed={completed} current={current} respawn={}",
                     completed != current
                 ));
                 if completed == current {
+                    let gaps = gaps.unwrap_or_default();
                     INCOMING_EXTERNAL_GAPS.with(|cache| *cache.borrow_mut() = gaps);
                     refresh_incoming_classification_async();
                 } else {
@@ -1700,6 +1750,7 @@ pub fn refresh_incoming_external_gaps_async() {
             Err(std::sync::mpsc::TryRecvError::Empty) => ControlFlow::Continue,
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 INCOMING_GAP_REFRESH_ACTIVE.with(|cell| cell.set(false));
+                INCOMING_GAP_CANCEL.with(|slot| *slot.borrow_mut() = None);
                 crate::trace::trace(format!(
                     "Incoming Comic Vine gap worker stopped at generation {generation}"
                 ));
@@ -5238,7 +5289,13 @@ mod tests {
         let incoming = vec![series_book("incoming-2.cbz", "2", None)];
         let library = vec![series_book("owned-1.cbz", "1", Some(771))];
 
-        let gaps = project_incoming_external_gaps(&cache, &incoming, &library);
+        let gaps = project_incoming_external_gaps(
+            &cache,
+            &incoming,
+            &library,
+            &std::sync::atomic::AtomicBool::new(false),
+        )
+        .expect("gap pass was not cancelled");
 
         let identity = cr_engine::incoming::incoming_identity(&incoming[0]).expect("identity");
         let values: Vec<f32> = gaps[&identity]
@@ -5246,6 +5303,16 @@ mod tests {
             .map(|number| number.value())
             .collect();
         assert_eq!(values, vec![2.0]);
+    }
+
+    #[test]
+    fn cancelled_external_gap_pass_returns_no_partial_result() {
+        let cache = cr_scrape::cache::SqliteCache::in_memory().expect("cache");
+        let incoming = vec![series_book("incoming-2.cbz", "2", None)];
+        let library = vec![series_book("owned-1.cbz", "1", Some(771))];
+        let cancel = std::sync::atomic::AtomicBool::new(true);
+
+        assert!(project_incoming_external_gaps(&cache, &incoming, &library, &cancel).is_none());
     }
 
     /// Regression test for a bug where the owned-issue-number lookup
@@ -5311,7 +5378,13 @@ mod tests {
             other_series_book("owned-other-1.cbz", "1", Some(900)),
         ];
 
-        let gaps = project_incoming_external_gaps(&cache, &incoming, &library);
+        let gaps = project_incoming_external_gaps(
+            &cache,
+            &incoming,
+            &library,
+            &std::sync::atomic::AtomicBool::new(false),
+        )
+        .expect("gap pass was not cancelled");
 
         let example_identity =
             cr_engine::incoming::incoming_identity(&incoming[0]).expect("identity");
@@ -5384,7 +5457,13 @@ mod tests {
         }
 
         let t = std::time::Instant::now();
-        let gaps = project_incoming_external_gaps(&cache, &incoming, &library);
+        let gaps = project_incoming_external_gaps(
+            &cache,
+            &incoming,
+            &library,
+            &std::sync::atomic::AtomicBool::new(false),
+        )
+        .expect("gap pass was not cancelled");
         let elapsed = t.elapsed();
         eprintln!(
             "Incoming external gap pass x {} library books / {SERIES} series: {elapsed:?} \

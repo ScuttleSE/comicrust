@@ -701,15 +701,7 @@ fn compare_text(book: &ComicBook, vm: &ValueMatcher) -> String {
 /// per-class `GetValue` implementations mapped to class names.
 fn property_string_value(book: &ComicBook, vm: &ValueMatcher, ctx: &MatchContext<'_>) -> String {
     let trace = trace_accum::enabled();
-    let started = trace.then(std::time::Instant::now);
-    let prop = ctx.prop(book);
-    if let Some(started) = started {
-        let ms = started.elapsed().as_secs_f64() * 1000.0;
-        trace_accum::with(|a| {
-            a.prop_access_calls += 1;
-            a.prop_access_ms += ms;
-        });
-    }
+    let prop = string_matcher_needs_prop(vm.spec.class_name).then(|| traced_prop(book, ctx));
     let started = trace.then(std::time::Instant::now);
     let value = match vm.spec.class_name {
         "ComicBookAgeRatingMatcher" => book.info.age_rating.clone(),
@@ -736,7 +728,10 @@ fn property_string_value(book: &ComicBook, vm: &ValueMatcher, ctx: &MatchContext
             cr_core::model::comic_name_info::directory_name(&book.file_path)
         }
         "ComicBookFullPathMatcher" => book.file_path.clone(),
-        "ComicBookFormatMatcher" => book_view::shadow_format(book, &prop).to_string(),
+        "ComicBookFormatMatcher" => {
+            book_view::shadow_format(book, prop.as_ref().expect("Format matcher proposed value"))
+                .to_string()
+        }
         "ComicBookGenreMatcher" => book.info.genre.clone(),
         "ComicBookImprintMatcher" => book.info.imprint.clone(),
         "ComicBookInkerMatcher" => book.info.inker.clone(),
@@ -750,13 +745,19 @@ fn property_string_value(book: &ComicBook, vm: &ValueMatcher, ctx: &MatchContext
         "ComicBookPublisherMatcher" => book.info.publisher.clone(),
         "ComicBookReviewMatcher" => book.info.review.clone(),
         "ComicBookScanInformationMatcher" => book.info.scan_information.clone(),
-        "ComicBookSeriesMatcher" => book_view::shadow_series(book, &prop).to_string(),
+        "ComicBookSeriesMatcher" => {
+            book_view::shadow_series(book, prop.as_ref().expect("Series matcher proposed value"))
+                .to_string()
+        }
         "ComicBookSeriesGroupMatcher" => book.info.series_group.clone(),
         "ComicBookStoryArcMatcher" => book.info.story_arc.clone(),
         "ComicBookSummaryMatcher" => book.info.summary.clone(),
         "ComicBookTagsMatcher" => book.info.tags.clone(),
         "ComicBookTeamsMatcher" => book.info.teams.clone(),
-        "ComicBookTitleMatcher" => book_view::shadow_title(book, &prop).to_string(),
+        "ComicBookTitleMatcher" => {
+            book_view::shadow_title(book, prop.as_ref().expect("Title matcher proposed value"))
+                .to_string()
+        }
         "ComicBookTranslatorMatcher" => book.info.translator.clone(),
         "ComicBookWebMatcher" => book.info.web.clone(),
         "ComicBookWriterMatcher" => book.info.writer.clone(),
@@ -770,6 +771,30 @@ fn property_string_value(book: &ComicBook, vm: &ValueMatcher, ctx: &MatchContext
         });
     }
     value
+}
+
+fn string_matcher_needs_prop(class_name: &str) -> bool {
+    matches!(
+        class_name,
+        "ComicBookFormatMatcher" | "ComicBookSeriesMatcher" | "ComicBookTitleMatcher"
+    )
+}
+
+fn traced_prop(
+    book: &ComicBook,
+    ctx: &MatchContext<'_>,
+) -> cr_core::model::comic_name_info::ComicNameInfo {
+    if !trace_accum::enabled() {
+        return ctx.prop(book);
+    }
+    let started = std::time::Instant::now();
+    let prop = ctx.prop(book);
+    let ms = started.elapsed().as_secs_f64() * 1000.0;
+    trace_accum::with(|a| {
+        a.prop_access_calls += 1;
+        a.prop_access_ms += ms;
+    });
+    prop
 }
 
 /// `{name}` field expression at the start of a match value.
@@ -1242,6 +1267,15 @@ mod tests {
         // false for other values (no recompile retry).
         assert!(!regex_match("any", "(["));
         assert!(!regex_match("other", "(["));
+    }
+
+    #[test]
+    fn only_filename_fallback_string_matchers_request_proposed_values() {
+        assert!(string_matcher_needs_prop("ComicBookSeriesMatcher"));
+        assert!(string_matcher_needs_prop("ComicBookTitleMatcher"));
+        assert!(string_matcher_needs_prop("ComicBookFormatMatcher"));
+        assert!(!string_matcher_needs_prop("ComicBookDirectoryMatcher"));
+        assert!(!string_matcher_needs_prop("ComicBookPublisherMatcher"));
     }
 
     #[test]
