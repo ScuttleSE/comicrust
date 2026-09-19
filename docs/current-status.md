@@ -33,17 +33,22 @@ series propagation itself changed three books in approximately 7 ms.
 paths at startup, and parses through per-path `OnceLock` values outside the
 global map lock. String matchers request proposed values only for Series,
 Title, and Format. Gauge evaluation runs on a worker. A new generation cancels
-obsolete Incoming gap work. `UNKNOWN`: the fix needs the same real-library user
-test and a memory measurement.
+obsolete Incoming gap work.
+
+`MEASURED` (user, 2026-09-19): The same real-library workflow completed in one
+to two seconds after the fix. The user reports that it is much better. The
+scrape matched the selected book and three other books in the same series.
+`UNKNOWN`: peak memory use was not measured.
 
 ## Current task for the next context
 
-Run the same cached series propagation with `CR_TRACE=1` on the real library.
-Confirm that cache clears are zero, GTK lock waits stay short, and the UI stays
-responsive. Record the cache entry count and process memory.
+Retest **Find in Incoming** for `2000 AD` number `2498`. Confirm that the dialog
+shows both reported candidates. Then complete the remaining Missing Issues
+scope test and confirm that the report contains only real gaps.
 
-After this regression is resolved, retest **Find in Incoming** for `2000 AD`
-number `2498`. Then resume the deferred persistent-cache read task.
+After this defect is resolved, resume the deferred task: connect normal
+**Scrape from Comic Vine** to persistent-cache reads. Define cache-use and
+forced-refresh rules before that implementation.
 
 ## Open user tests
 
@@ -99,7 +104,9 @@ The proposed-cache contention fix passed on 2026-09-19.
   data. A prior rerun reused mutated probe data and failed its value checks.
 - `MEASURED`: all direct users of the process-wide Incoming mutation guard now
   use one test-local mutex. The transaction test binary and workspace pass.
-- `UNKNOWN`: the real-library performance and memory user test is pending.
+- `MEASURED` (user): the real-library propagation workflow completed in one to
+  two seconds and matched three other books in the series.
+- `UNKNOWN`: peak memory use on the real library was not measured.
 
 ## Environment notes
 
