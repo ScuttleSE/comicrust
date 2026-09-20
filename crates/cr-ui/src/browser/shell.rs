@@ -5208,10 +5208,12 @@ impl ShellState {
         });
     }
 
-    /// "Update Comic Vine Cache" (ADR-038): one paged sweep over the
-    /// issues that changed since the last sweep, or since the MCL
-    /// snapshot date. It keeps the skeleton current for far fewer
-    /// requests than one revalidation per volume.
+    /// "Update Comic Vine Cache" (ADR-075): one incremental pass over
+    /// every endpoint (publishers, people, volumes, issues) that
+    /// changed since each endpoint's `sync_state` watermark. It stamps
+    /// rows with the real API `date_last_updated` and is resumable, so
+    /// a user weeks behind runs it across several sessions. Offline
+    /// mode refuses before any request (ADR-071).
     fn update_cv_cache(self: &Rc<ShellState>) {
         let config = library::scraper_config();
         if !config.has_api_key() {
@@ -5231,45 +5233,7 @@ impl ShellState {
             return;
         };
 
-        let today = chrono::Local::now().date_naive();
-        let stored = cache.sweep_state().ok().flatten();
-        // An unfinished sweep of the SAME window resumes. A finished
-        // one, or an MCL import, starts a window at its end date.
-        let options = match &stored {
-            Some(state) if state.total > 0 && state.offset < state.total => {
-                cr_scrape::cache::sweep::SweepOptions {
-                    start_date: state.start_date.clone(),
-                    end_date: state.end_date.clone(),
-                    max_pages: None,
-                }
-            }
-            Some(state) if !state.end_date.trim().is_empty() => {
-                cr_scrape::cache::sweep::SweepOptions {
-                    start_date: state.end_date.clone(),
-                    end_date: today.format("%Y-%m-%d").to_string(),
-                    max_pages: None,
-                }
-            }
-            _ => {
-                show_failure_dialog(
-                    &self.window,
-                    "Update Comic Vine Cache",
-                    "The cache has no starting point. Import an MCL file first, so the sweep knows which date to start from.",
-                );
-                return;
-            }
-        };
-        if options.start_date == options.end_date {
-            show_report_dialog(
-                &self.window,
-                "Update Comic Vine Cache",
-                "The cache is already current for today.",
-            );
-            return;
-        }
-
         let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let window_text = format!("{} to {}", options.start_date, options.end_date);
         let api_key = config.api_key.clone();
         let worker_cancel = std::sync::Arc::clone(&cancel);
         let budget_config = config.clone();
@@ -5277,7 +5241,7 @@ impl ShellState {
             library::CvJobKind::Sweep,
             "Update Comic Vine Cache",
             cancel,
-            move |progress| -> Result<cr_scrape::cache::sweep::SweepReport, String> {
+            move |progress| -> Result<cr_scrape::cache::update::UpdateReport, String> {
                 let mut client = cr_scrape::cv::connection::CvClient::new(&api_key);
                 library::cv_configure(&mut client, &budget_config);
                 if let Some(budget) = library::cv_budget(
@@ -5288,20 +5252,15 @@ impl ShellState {
                 ) {
                     client.set_budget(budget);
                 }
-                cr_scrape::cache::sweep::run(
+                cr_scrape::cache::update::run(
                     &client,
                     cache.as_ref(),
-                    &options,
+                    cr_scrape::cache::update::ENDPOINTS,
                     &worker_cancel,
                     |p| {
-                        // `offset` counts issues; the page size is 100.
-                        // `div_ceil` is unstable for signed integers.
-                        let size = cr_scrape::cache::sweep::PAGE_SIZE;
-                        let page = p.offset / size;
-                        let pages = (p.total + size - 1) / size;
                         let _ = progress.send(CvProgressMsg::Step {
-                            detail: format!("page {page} of {pages}"),
-                            done: p.offset,
+                            detail: format!("{}: {} fetched", p.endpoint, p.fetched),
+                            done: p.fetched as i64,
                             total: p.total,
                         });
                     },
@@ -5310,18 +5269,31 @@ impl ShellState {
             },
             move |window, outcome| match outcome {
                 Ok(report) => {
-                    let tail = if report.complete {
-                        "The window is complete."
+                    let mut lines = Vec::new();
+                    let mut all_complete = true;
+                    for ep in &report.endpoints {
+                        if !ep.complete {
+                            all_complete = false;
+                        }
+                        let state = if ep.complete {
+                            "complete"
+                        } else {
+                            "stopped early (run again to continue)"
+                        };
+                        lines.push(format!(
+                            "{}: {} rows over {} pages, caught up through {} — {state}",
+                            ep.endpoint, ep.fetched, ep.pages, ep.last_sync
+                        ));
+                    }
+                    let tail = if all_complete {
+                        "Every endpoint is current."
                     } else {
-                        "The run stopped early. Run the command again to continue."
+                        "Some endpoints stopped early. Run the command again to continue."
                     };
                     show_report_dialog(
                         window,
                         "Update Comic Vine Cache",
-                        &format!(
-                            "{window_text}: {} pages, {} issues, {} volumes. {tail}",
-                            report.pages, report.issues, report.volumes
-                        ),
+                        &format!("{}\n\n{tail}", lines.join("\n")),
                     );
                 }
                 Err(reason) => show_failure_dialog(window, "Update Comic Vine Cache", &reason),

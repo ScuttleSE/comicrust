@@ -71,10 +71,11 @@ const PINNED_TABLES: &[&str] = &[
     "concept",
     "object",
     "publisher",
+    "sync_state",
 ];
 
 #[test]
-fn app_and_scripts_agree_on_v6_schema() {
+fn app_and_scripts_agree_on_v7_schema() {
     if !python_available() {
         return;
     }
@@ -89,7 +90,7 @@ fn app_and_scripts_agree_on_v6_schema() {
         .arg(
             "import sys; from scripts.cvcache import commands, schema; \
              c=commands.open_v4(__import__('pathlib').Path(sys.argv[1])); \
-             assert schema.user_version(c)==6; c.close(); print('ok')",
+             assert schema.user_version(c)==7; c.close(); print('ok')",
         )
         .arg(&app_file)
         .current_dir(&root)
@@ -126,7 +127,7 @@ fn app_and_scripts_agree_on_v6_schema() {
     let script_version: i64 = script_conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .expect("script version");
-    assert_eq!(script_version, 6, "script file is not v6");
+    assert_eq!(script_version, 7, "script file is not v7");
 
     for table in PINNED_TABLES {
         let app_cols = table_columns(&app_conn, table);

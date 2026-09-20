@@ -30,6 +30,9 @@ def _make_localcv(path: Path):
             date_last_updated TEXT);
         CREATE TABLE comic_covers(id INTEGER PRIMARY KEY, cvid INTEGER,
             ct_phash TEXT, ct_ahash TEXT, cv_url TEXT);
+        CREATE TABLE cv_sync_metadata(endpoint TEXT PRIMARY KEY,
+            last_sync_date TEXT NOT NULL, last_sync_timestamp TEXT NOT NULL,
+            resume_state TEXT);
         """
     )
     c.execute("INSERT INTO cv_publisher VALUES (31,'Marvel','i','s','US')")
@@ -61,6 +64,12 @@ def _make_localcv(path: Path):
     c.execute("INSERT INTO cv_issue_last_seen VALUES (1000,'2026-07-28 04:47:13')")
     c.execute(
         "INSERT INTO comic_covers VALUES (1, 1000, '111', '222', 'http://iimg/assoc.jpg')"
+    )
+    c.execute(
+        "INSERT INTO cv_sync_metadata VALUES "
+        "('issues','2026-08-03','ts',NULL),"
+        "('volumes','2026-08-03','ts',NULL),"
+        "('issues_quarterly_lookback','2026-07-25','ts',NULL)"
     )
     c.commit()
     c.close()
@@ -123,6 +132,20 @@ class LocalCvImportTest(unittest.TestCase):
         )
         self.assertEqual(v.execute("SELECT id FROM character").fetchall(), [(67267,)])
         v.close()
+
+    def test_sync_state_seeded_from_cv_sync_metadata(self):
+        # The cvcache endpoints seed straight across; the internal
+        # bookkeeping row (issues_quarterly_lookback) is skipped.
+        ad, _, _ = self._import()
+        v = sqlite3.connect(self.live)
+        rows = dict(
+            v.execute("SELECT endpoint, last_sync FROM sync_state").fetchall()
+        )
+        v.close()
+        self.assertEqual(rows.get("issues"), "2026-08-03")
+        self.assertEqual(rows.get("volumes"), "2026-08-03")
+        self.assertNotIn("issues_quarterly_lookback", rows)
+        self.assertEqual(ad.dropped.get("sync_state endpoint issues_quarterly_lookback"), 1)
 
     def test_reimport_is_idempotent(self):
         self._import(PublisherFilter(whitelist={31}))

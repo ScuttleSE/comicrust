@@ -73,6 +73,11 @@ STAGE_COLUMNS = {
         "dhash",
         "phash",
     ),
+    "sync_state": (
+        "endpoint",
+        "last_sync",
+        "resume_state",
+    ),
 }
 for _name in schema.RESOURCE_TABLES:
     STAGE_COLUMNS[_name] = (
@@ -140,6 +145,11 @@ def _validate(row: StagedRow) -> str | None:
             return "issue_id is not an integer"
         if _empty(values.get("original_url")):
             return "original_url is required"
+    elif row.table == "sync_state":
+        if _empty(values.get("endpoint")):
+            return "endpoint is required"
+        if _empty(values.get("last_sync")):
+            return "last_sync is required"
     else:
         if not _is_int(values.get("id")):
             return "resource id is not an integer"

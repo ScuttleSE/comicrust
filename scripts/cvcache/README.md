@@ -57,6 +57,31 @@ blobs, and almost no per-row `date_last_updated`):
   API fetch always wins on merge.
 - Dropped (no target): publisher `country`, and any issue with no
   `issue_number` (the column is NOT NULL); the report lists their ids.
+- Seeds `sync_state` (schema v7, ADR-075) from `cv_sync_metadata`, so
+  the first `update` run starts at localcv's per-endpoint baseline.
+
+### update — a rate-limited backfill from the CV API
+
+```sh
+python3 -m scripts.cvcache update \
+    --into cvcache.sqlite --api-key YOUR_KEY \
+    [--endpoint issues ...] [--max-pages 50] [--since 2026-08-03] \
+    [--delay 1.0] [--whitelist ...] [--blacklist ...] [--no-backup]
+```
+
+Walks each endpoint (publishers, people, volumes, issues) over
+`filter=date_last_updated:<since>|<now>`, stamps rows with the real API
+`date_last_updated`, and merges through the engine (ADR-075). This is
+what fills the empty `date_last_updated` the localcv import left behind.
+It reads the per-endpoint `sync_state` watermark for `<since>` (or
+`--since` overrides it) and advances it when an endpoint catches up. It
+is resumable: a run stopped by `--max-pages` saves its page offset in
+`sync_state.resume_state`, so the next run continues. The CV API is
+rate-limited (200 requests per resource per hour), so a user weeks or
+months behind runs several sessions with `--max-pages` slices and a
+`--delay` spacing. The publisher whitelist/blacklist applies at the
+volume level. The same update lives in the app as "Update Comic Vine
+Cache".
 
 ## Publisher lists (optional, for a future probe workflow)
 

@@ -15,13 +15,13 @@ use super::resources::{
 };
 use super::{
     CacheError, CreditRow, CvCache, IssueSkeleton, ManagedVolume, ResourceRow, SweepState,
-    VolumeRow,
+    SyncState, VolumeRow,
 };
 use crate::cv::queries::parse_image_url;
 
 /// The schema version stored in `PRAGMA user_version`. Raise it and
 /// add a migration arm when the schema changes.
-const SCHEMA_VERSION: i32 = 6;
+const SCHEMA_VERSION: i32 = 7;
 
 const SCHEMA_V1: &str = r"
 CREATE TABLE IF NOT EXISTS volume (
@@ -252,6 +252,19 @@ CREATE INDEX IF NOT EXISTS issue_image_ahash ON issue_image (ahash);
 CREATE INDEX IF NOT EXISTS issue_image_phash ON issue_image (phash);
 ";
 
+/// Schema v7 (ADR-075): the per-endpoint sync watermark. Modeled on
+/// localcv's `cv_sync_metadata`. `last_sync` is the date the endpoint
+/// is caught up through (the start of the next update window);
+/// `resume_state` carries a JSON cursor for a run that stops mid-window.
+/// `sweep_state` stays the in-window page cursor for `/issues`.
+const SCHEMA_V7: &str = r"
+CREATE TABLE IF NOT EXISTS sync_state (
+    endpoint     TEXT PRIMARY KEY,
+    last_sync    TEXT NOT NULL,
+    resume_state TEXT
+);
+";
+
 fn db(e: rusqlite::Error) -> CacheError {
     CacheError::Db(e.to_string())
 }
@@ -281,6 +294,9 @@ pub(crate) fn migrate_connection(conn: &Connection) -> Result<(), CacheError> {
     }
     if version < 6 {
         conn.execute_batch(SCHEMA_V6).map_err(db)?;
+    }
+    if version < 7 {
+        conn.execute_batch(SCHEMA_V7).map_err(db)?;
     }
     if version != SCHEMA_VERSION {
         conn.pragma_update(None, "user_version", SCHEMA_VERSION)
@@ -1071,6 +1087,38 @@ impl CvCache for SqliteCache {
                     state.total,
                     state.updated_at
                 ],
+            )
+            .map(|_| ())
+            .map_err(db)
+    }
+
+    fn sync_state(&self, endpoint: &str) -> Result<Option<SyncState>, CacheError> {
+        self.lock()
+            .query_row(
+                "SELECT endpoint, last_sync, resume_state
+                   FROM sync_state WHERE endpoint = ?1",
+                params![endpoint],
+                |r| {
+                    Ok(SyncState {
+                        endpoint: r.get(0)?,
+                        last_sync: r.get(1)?,
+                        resume_state: r.get(2)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(db)
+    }
+
+    fn put_sync_state(&self, state: &SyncState) -> Result<(), CacheError> {
+        self.lock()
+            .execute(
+                "INSERT INTO sync_state (endpoint, last_sync, resume_state)
+                 VALUES (?1, ?2, ?3)
+                 ON CONFLICT(endpoint) DO UPDATE SET
+                   last_sync    = excluded.last_sync,
+                   resume_state = excluded.resume_state",
+                params![state.endpoint, state.last_sync, state.resume_state],
             )
             .map(|_| ())
             .map_err(db)

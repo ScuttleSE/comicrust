@@ -15,16 +15,18 @@ local-first scrape reads with a refresh switch and an offline mode; a
 backupable, mergeable cache file; the sweep expansion plus Python
 build and import scripts.
 
-T1 through T7 are done. T8 (`scripts/cvcache/`) is done: the merge
-engine, `build`/`merge`, the localcv import adapter (Task A), and the
-publisher filter (Task B); the gated `cvcache_schema_pin` test passes
-both directions. Schema grew past the phase's original v4: v5 added the
-`issue_image` gallery (ADR-073), v6 added ComicTagger cover hashes and
-switched the app to one hash algorithm (ADR-074). The full `localcv.db`
-is imported into the live cache at v6 (verified by the user). Task C
-(an update pipeline that maintains `cvcache.sqlite` plus an in-app
-incremental refresh) and T9 (user tests) stay open. Phase 20 stays
-implemented with open user test 26.
+T1 through T7 are done. T8 (`scripts/cvcache/`) is done. Task C (the
+update pipeline, ADR-075) is done: schema v7 `sync_state`, the
+all-endpoint update in the app ("Update Comic Vine Cache" now walks
+publishers, people, volumes, issues) and the standalone
+`scripts/cvcache update` backfill command, and the localcv
+`sync_state` seed. A live API probe (MEASURED, user key, 2026-09-20)
+confirmed the `date_last_updated` filter narrows all four endpoints.
+Schema grew past the phase's original v4: v5 added the `issue_image`
+gallery (ADR-073), v6 added ComicTagger cover hashes (ADR-074), v7
+added the per-endpoint sync watermark (ADR-075). The full `localcv.db`
+is imported into the live cache (verified by the user). T9 (user
+tests) stays open. Phase 20 stays implemented with open user test 26.
 
 ## Latest user finding
 
@@ -48,18 +50,37 @@ scrape matched the selected book and three other books in the same series.
 
 ## Current task for the next context
 
-Phase 21 Task C (the update pipeline) and T9 (user tests). Read the
-"T8 detail" and "Task C detail" sections of `docs/phases/phase-21.md`
-first; ADR-069 through ADR-074 carry the decisions.
+Phase 21 T9 (user tests). Task C (the update pipeline) is implemented
+under ADR-075. Read the "Task C detail" section of
+`docs/phases/phase-21.md` and ADR-075 for what shipped.
 
-**What is done (do not redo):**
-- The full `localcv.db` is imported into the live cache at
-  `user_version` 6. Galleries, credits, metadata, and ComicTagger
-  cover hashes (`issue_image.ahash`/`phash`, ~154k of 156k rows) are
-  all present. `PRAGMA integrity_check = ok`.
-- The app and the scripts share one hash algorithm (ComicTagger,
-  ADR-074). `MATCH_THRESHOLD` and `MATCH_SIMILARITY_MARGIN` are
-  config-tunable.
+**What Task C shipped (do not redo):**
+- Schema v7 `sync_state` (per-endpoint watermark), pinned in the Rust
+  migration chain and `scripts/cvcache/schema.py`; the gated
+  `cvcache_schema_pin` passes both directions at v7.
+- The `sync_state` merge arm in both engines (Rust `import.rs`, Python
+  `merge.py`): newer `last_sync` wins.
+- The localcv adapter seeds `sync_state` from `cv_sync_metadata`.
+- The in-app "Update Comic Vine Cache" command now walks all four
+  endpoints (publishers, people, volumes, issues) through
+  `cr-scrape` `cache::update::run`, stamping rows with the real API
+  `date_last_updated`, resumable through `sync_state.resume_state`,
+  gated by offline/refresh (ADR-071), on a worker thread.
+- The standalone `python3 -m scripts.cvcache update --into <cache>
+  --api-key <key>` command for a slow backfill; `--max-pages`,
+  `--since`, `--delay`, `--endpoint`, and the publisher filter apply.
+
+**MEASURED (user key, 2026-09-20):** a live API probe confirmed the
+`date_last_updated` filter narrows all four endpoints (publishers 4,
+people 126, volumes 144, issues 985 in 2026-08-01|2026-08-05, against
+unfiltered 9,855 / 89,713 / 160,561 / 1,139,988; dates in-window).
+
+**Not yet run (T9 user tests):** the app "Update Comic Vine Cache"
+against a real cache with the request log watched (does it fill
+`date_last_updated` and advance every `sync_state` watermark), and a
+standalone backfill slice with `--max-pages`. The automatcher parity
+test, a backup-import round trip, and a cached-series scrape stay open
+from before.
 
 **Validation done (MEASURED, user session 2026-09-20):** a live-API
 check of 18 items (2-3 each of volume, issue, publisher, person,
@@ -76,25 +97,12 @@ fetched on demand into `detail_json` per ADR-070): `aliases`, `deck`,
 rollups. Note: CV's live API has typo field names
 (`count_of_isssue_appearances`, `isssues_disbanded_in`).
 
-**Task C — the update pipeline (needs a new ADR).** Rebuild the update
-half of `sqlite_cv_pipeline_1.1.0.py` (reference only) to maintain
-`cvcache.sqlite`, not `localcv.db`:
-1. Add a schema **v7 `sync_state`** table (per-endpoint last-sync
-   watermark), modeled on localcv's `cv_sync_metadata`
-   (`endpoint, last_sync, resume_state`). cvcache has NO equivalent
-   today: `sweep_state` is a single-row issue-paging cursor, not a
-   per-endpoint change watermark. Seed `sync_state` from
-   `cv_sync_metadata` during the localcv import so the first update
-   knows the 2026-08-03 baseline.
-2. An update-only run fetches `/issues?filter=date_last_updated:<since>
-   |<now>` (and the same for other endpoints), stamps rows with the
-   real API date, and merges through the existing engine. This is what
-   fills the empty `date_last_updated` across the library.
-3. The same update must live in the app, wired to the "Update Comic
-   Vine Cache" command (`crates/cr-ui/src/browser/shell.rs:5143`) and
-   gated by the T4 offline/refresh switches.
-4. The publisher whitelist/blacklist (`scripts/cvcache/publishers.py`,
-   Task B) applies here at the volume level — this is its intended use.
+**Task C — the update pipeline: DONE (ADR-075).** The empty
+`date_last_updated` across the ~1.4M rows fills on the next update run
+(app or script). Schema v7 `sync_state` holds the per-endpoint
+watermark, seeded from `cv_sync_metadata` during the localcv import.
+The update runs both in the app ("Update Comic Vine Cache", all four
+endpoints) and as `scripts/cvcache update`.
 
 **Also noted (separate follow-up, not Task C):** the automatcher can
 read `issue_image.ahash` to skip a cover download on a cache hit
@@ -159,26 +167,25 @@ licenses` is not a CI gate.
 
 ## Latest verification
 
-Phase 21 schema v6 (ADR-074, ComicTagger cover hashes) passed on
-2026-09-20.
+Phase 21 Task C / schema v7 (ADR-075, the per-endpoint update
+watermark and the all-endpoint update) passed on 2026-09-20.
 
 - `cargo fmt --all`, `cargo clippy --workspace --all-targets --
-  -D warnings`, `cargo test --workspace` (62 suites ok): passed.
+  -D warnings`, `cargo test --workspace`: passed.
 - `CR_FORMAT_TESTS=1 cargo test -p cr-scrape --test
-  cvcache_schema_pin`: passed (app and scripts agree on the v6 DDL).
-- `python3 -m unittest discover -s scripts/cvcache/tests`: 15 ok.
-- `MEASURED`: the ComicTagger hash port reproduces the reference
-  `localcv.db` hashes to Hamming distance 0 (ahash) / <=2 (phash,
-  decoder tolerance) on two real covers — golden test in
-  `cr-image/tests/comictagger_hash.rs`.
-- `MEASURED`: a full localcv import on a copy of the live cache filled
-  `issue_image.ahash`/`phash` on 154,395 of 156,084 gallery rows;
-  image 7's imported ahash equals localcv's stored value;
-  `PRAGMA integrity_check = ok` at `user_version` 6.
-- `UNKNOWN`: whether the automatcher still auto-matches correctly with
-  the ComicTagger hash. Needs a user test (parity is not proven by a
-  build). The automatcher reading the cached hash to skip a cover
-  download is a noted follow-up.
+  cvcache_schema_pin`: passed (app and scripts agree on the v7 DDL,
+  both directions).
+- `python3 -m unittest discover -s scripts/cvcache/tests`: 22 ok
+  (adds the `sync_state` merge arm, the localcv seed, and the update
+  stagers).
+- `MEASURED` (user key, live API, 2026-09-20): the
+  `date_last_updated` filter narrows all four update endpoints —
+  publishers 4, people 126, volumes 144, issues 985 changed in
+  2026-08-01|2026-08-05, against unfiltered 9,855 / 89,713 /
+  160,561 / 1,139,988; every returned date fell in-window.
+- `UNKNOWN`: the app "Update Comic Vine Cache" against a real cache is
+  not yet user-run (does it fill `date_last_updated` and advance every
+  `sync_state` watermark). A build does not prove it.
 
 ## Environment notes
 

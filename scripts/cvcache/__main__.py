@@ -23,6 +23,7 @@ from pathlib import Path
 from . import commands
 from .adapters.localcv import LocalCvAdapter
 from .publishers import PublisherFilter
+from . import update as update_mod
 
 
 def _print_report(report) -> None:
@@ -85,6 +86,35 @@ def _cmd_import_localcv(args) -> int:
     return 0
 
 
+def _cmd_update(args) -> int:
+    flt = None
+    if args.whitelist or args.blacklist:
+        flt = PublisherFilter.from_files(
+            Path(args.whitelist) if args.whitelist else None,
+            Path(args.blacklist) if args.blacklist else None,
+        )
+    endpoints = (
+        tuple(args.endpoint) if args.endpoint else update_mod.ENDPOINTS
+    )
+    report = update_mod.run(
+        Path(args.into),
+        api_key=args.api_key,
+        endpoints=endpoints,
+        max_pages=args.max_pages,
+        since=args.since,
+        delay_seconds=args.delay,
+        publisher_filter=flt,
+        make_backup=not args.no_backup,
+    )
+    for ep in report.endpoints:
+        state = "complete" if ep.complete else "stopped early (resumable)"
+        print(
+            f"  {ep.endpoint:<12} fetched={ep.fetched} staged={ep.staged} "
+            f"pages={ep.pages} watermark={ep.last_sync} — {state}"
+        )
+    return 0
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="cvcache")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -107,6 +137,37 @@ def main(argv=None) -> int:
     p_import.add_argument("--blacklist", help="optional; for future probe use")
     p_import.add_argument("--no-backup", action="store_true")
     p_import.set_defaults(func=_cmd_import_localcv)
+
+    p_update = sub.add_parser(
+        "update", help="pull changed rows from the CV API since the watermark"
+    )
+    p_update.add_argument("--into", required=True)
+    p_update.add_argument("--api-key", required=True)
+    p_update.add_argument(
+        "--endpoint",
+        action="append",
+        choices=update_mod.ENDPOINTS,
+        help="restrict to one endpoint (repeatable); default is all",
+    )
+    p_update.add_argument(
+        "--max-pages",
+        type=int,
+        help="stop after N pages per endpoint (a resumable backfill slice)",
+    )
+    p_update.add_argument(
+        "--since",
+        help="override the start date (YYYY-MM-DD); default is the watermark",
+    )
+    p_update.add_argument(
+        "--delay",
+        type=float,
+        default=1.0,
+        help="minimum seconds between API calls (rate-limit spacing)",
+    )
+    p_update.add_argument("--whitelist", help="optional publisher whitelist")
+    p_update.add_argument("--blacklist", help="optional publisher blacklist")
+    p_update.add_argument("--no-backup", action="store_true")
+    p_update.set_defaults(func=_cmd_update)
 
     args = parser.parse_args(argv)
     return args.func(args)

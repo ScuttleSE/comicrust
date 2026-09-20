@@ -2,13 +2,15 @@
 
 ## Status
 
-In progress. T1 through T8 are implemented and verified. Schema is at
-v6: v5 added the `issue_image` gallery (ADR-073); v6 added ComicTagger
-cover hashes and made ComicTagger the app's one hash algorithm
-(ADR-074). The full `localcv.db` is imported into the live cache at v6
-and validated against the live API (zero wrong values; see "Validation"
-below). Task C (the update pipeline, needs a new ADR) and T9 (user
-tests) remain.
+In progress. T1 through T8 and Task C are implemented and verified.
+Schema is at v7: v5 added the `issue_image` gallery (ADR-073); v6 added
+ComicTagger cover hashes and made ComicTagger the app's one hash
+algorithm (ADR-074); v7 added the per-endpoint `sync_state` watermark
+(ADR-075). The full `localcv.db` is imported into the live cache and
+validated against the live API (zero wrong values; see "Validation"
+below). Task C (the update pipeline, ADR-075) added the all-endpoint
+update in the app and the standalone `scripts/cvcache update` command,
+plus the localcv `sync_state` seed. T9 (user tests) remains.
 
 T7 implementation notes:
 - The sweep columns land as schema v4 (the correction note is in
@@ -210,10 +212,12 @@ fields, and Python scripts build and import cache files.
       `docs/open-user-tests.md` — chiefly the automatcher parity test
       (does the ComicTagger hash still auto-match correctly, ADR-074),
       a backup-import round trip, and a cached-series scrape.
-- [ ] **Task C — Update pipeline** (new ADR): schema v7 `sync_state`,
-      the update-only script command, seeding from `cv_sync_metadata`,
-      the publisher filter, and the in-app "Update Comic Vine Cache"
-      wiring. See "Task C detail".
+- [x] **Task C — Update pipeline** (ADR-075): schema v7 `sync_state`,
+      the all-endpoint update-only script command, seeding from
+      `cv_sync_metadata`, the publisher filter, and the in-app "Update
+      Comic Vine Cache" wiring (all four endpoints). MEASURED
+      2026-09-20: a live API probe confirmed the `date_last_updated`
+      filter narrows all four endpoints. See "Task C detail".
 
 ## Verification
 

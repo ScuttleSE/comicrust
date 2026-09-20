@@ -22,6 +22,7 @@ pub mod missing;
 pub mod resources;
 mod sqlite;
 pub mod sweep;
+pub mod update;
 pub mod warm;
 
 pub use sqlite::SqliteCache;
@@ -136,6 +137,18 @@ pub struct SweepState {
     pub updated_at: i64,
 }
 
+/// The per-endpoint update watermark (ADR-075). `last_sync` is the
+/// date an endpoint is caught up through — the start of the next
+/// update window. `resume_state` is an opaque JSON cursor a run that
+/// stops mid-window saves, so the next run continues. `sweep_state`
+/// stays the in-window page cursor for the `/issues` sweep.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SyncState {
+    pub endpoint: String,
+    pub last_sync: String,
+    pub resume_state: Option<String>,
+}
+
 /// The store behind the scraper. `SqliteCache` is the only
 /// implementation; `SqliteCache::in_memory` backs the tests.
 pub trait CvCache: Send + Sync {
@@ -197,6 +210,13 @@ pub trait CvCache: Send + Sync {
     fn sweep_state(&self) -> Result<Option<SweepState>, CacheError>;
 
     fn put_sweep_state(&self, state: &SweepState) -> Result<(), CacheError>;
+
+    /// The per-endpoint update watermark (ADR-075), or `None` when the
+    /// endpoint has never synced.
+    fn sync_state(&self, endpoint: &str) -> Result<Option<SyncState>, CacheError>;
+
+    /// Inserts or updates one endpoint's watermark.
+    fn put_sync_state(&self, state: &SyncState) -> Result<(), CacheError>;
 
     // --- inline references (ADR-070) ---
 

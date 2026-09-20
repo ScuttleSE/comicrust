@@ -120,6 +120,7 @@ def merge(live: sqlite3.Connection, source: sqlite3.Connection) -> ImportReport:
     _merge_searches(live, source, report)
     _merge_requests(live, source, report)
     _merge_sweep_state(live, source, report)
+    _merge_sync_state(live, source, report)
     _merge_pending(live, source, report)
     for name in schema.RESOURCE_TABLES:
         _merge_resource(live, source, name, report)
@@ -385,6 +386,37 @@ def _merge_sweep_state(live, source, report):
         table.updated += 1
     else:
         table.skipped += 1
+
+
+def _merge_sync_state(live, source, report):
+    table = report.table("sync_state")
+    rows = source.execute(
+        "SELECT endpoint, last_sync, resume_state FROM sync_state"
+    ).fetchall()
+    for endpoint, last_sync, resume_state in rows:
+        if endpoint is None or last_sync is None:
+            table.rejected += 1
+            continue
+        stored = live.execute(
+            "SELECT last_sync FROM sync_state WHERE endpoint = ?", (endpoint,)
+        ).fetchone()
+        if stored is None:
+            live.execute(
+                "INSERT INTO sync_state (endpoint, last_sync, resume_state) "
+                "VALUES (?, ?, ?)",
+                (endpoint, last_sync, resume_state),
+            )
+            table.added += 1
+        # The API `YYYY-MM-DD` form sorts lexically; the newer wins.
+        elif last_sync > stored[0]:
+            live.execute(
+                "UPDATE sync_state SET last_sync = ?, resume_state = ? "
+                "WHERE endpoint = ?",
+                (last_sync, resume_state, endpoint),
+            )
+            table.updated += 1
+        else:
+            table.skipped += 1
 
 
 def _merge_pending(live, source, report):

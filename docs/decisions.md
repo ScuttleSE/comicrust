@@ -1058,3 +1058,69 @@ response carries them, and the merge rule protects stored values.
   import — ComicTagger-compatible. Roughly 172 MB of hashes join the
   imported gallery. The automatcher reading the cached hash to skip a
   cover download is a NOTED follow-up, not in this change.
+
+## ADR-075: Schema v7 — the per-endpoint update watermark and the update pipeline
+
+- **Status:** accepted (2026-09-20). A PORT ADDITION. Extends ADR-037,
+  ADR-038, ADR-070, and ADR-072.
+- **Context:** The localcv import (Task A) landed ~1.4M rows with empty
+  `date_last_updated`, because localcv carried no per-row stamps
+  (MEASURED, 2026-09-20 validation). The cache needs a maintenance run
+  that fills those stamps and keeps every resource current. The
+  incremental sweep (ADR-038) already pages `/issues` on
+  `filter=date_last_updated:<start>|<end>`, but it covers only issues,
+  and its resume state (`sweep_state`) is a single in-window page
+  cursor, not a per-endpoint change watermark. MEASURED (live API probe,
+  2026-09-20, the user's key): the `date_last_updated` filter narrows
+  all four update endpoints — publishers 4, people 126, volumes 144,
+  issues 985 changed in 2026-08-01|2026-08-05, against unfiltered totals
+  of 9,855 / 89,713 / 160,561 / 1,139,988; every returned date fell
+  inside the window. localcv's `cv_sync_metadata`
+  (`endpoint, last_sync_date, resume_state`) holds a 2026-08-03 baseline
+  for `publishers`, `people`, `volumes`, `issues`.
+- **Decision:**
+  1. **Schema v7 `sync_state`.** One row per endpoint:
+     `endpoint TEXT PRIMARY KEY, last_sync TEXT NOT NULL,
+     resume_state TEXT`. `last_sync` is the date the endpoint is caught
+     up through — the start of the next update window. `resume_state` is
+     an opaque JSON cursor (`{"offset":N}`) a run saves when it stops
+     mid-window. Pinned in the Rust migration chain (`SCHEMA_V7`) and
+     `scripts/cvcache/schema.py`; the schema-pin test drives both
+     directions.
+  2. **`sync_state` is the watermark; `sweep_state` stays the in-window
+     page cursor.** The two tables do not overlap in role. `sync_state`
+     answers "how far back is this endpoint caught up"; `sweep_state`
+     answers "where is the current issues window mid-page". The update
+     drives each endpoint's window from `sync_state`.
+  3. **Merge arm.** Both engines (Rust `import.rs`, Python `merge.py`)
+     gain a `sync_state` arm keyed on `endpoint`: the newer `last_sync`
+     wins (the API `YYYY-MM-DD` form sorts lexically), a tie keeps the
+     stored row, `resume_state` follows the base row.
+  4. **Seed from `cv_sync_metadata`.** The localcv adapter emits
+     `sync_state` rows for the four cvcache endpoints from
+     `cv_sync_metadata` (internal bookkeeping rows are skipped), so the
+     first update knows the 2026-08-03 baseline instead of re-scanning
+     from the floor date.
+  5. **The all-endpoint update.** For each endpoint, read the
+     watermark, fetch `/<endpoint>?filter=date_last_updated:<since>|<now>`
+     paged, stamp rows with the real API `date_last_updated`, store them
+     through the existing write paths (publishers/people through
+     `put_resource_detail`, volumes through `put_volumes`, issues
+     through `put_issues`), then advance the watermark to `now`. A run
+     that stops mid-window saves the page offset and continues on the
+     next run, so a user weeks or months behind catches up over several
+     sessions under the rate limit.
+  6. **Two implementations, one model.** The update lives both in the
+     app (`cr-scrape` `cache::update`, wired to the "Update Comic Vine
+     Cache" command, on a worker thread per Rule 9, gated by
+     `CACHE_OFFLINE_ONLY`/`CACHE_REFRESH_MODE` per ADR-071) and as a
+     standalone `scripts/cvcache update` command for a slow backfill.
+     Both share the `sync_state` watermark and the merge rule. The
+     publisher whitelist/blacklist (Task B) applies at the volume level.
+- **Consequences:** The empty `date_last_updated` stamps fill on the
+  next update. The app command changes from issues-only to all four
+  endpoints. `sweep_state` stays for the existing MCL-seeded issues
+  sweep and is not removed. Volume list rows still carry only the core
+  columns `put_volumes` stores; the richer volume detail columns come
+  from the cache-manager detail fetch (ADR-070), unchanged. The one
+  proven filter stays `date_last_updated`; no other filter is assumed.

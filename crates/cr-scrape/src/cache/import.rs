@@ -162,6 +162,7 @@ pub(crate) fn merge(live: &Connection, source: &Connection) -> Result<ImportRepo
     merge_searches(live, source, &mut report)?;
     merge_requests(live, source, &mut report)?;
     merge_sweep_state(live, source, &mut report)?;
+    merge_sync_state(live, source, &mut report)?;
     merge_pending(live, source, &mut report)?;
     for table in [
         "character",
@@ -822,6 +823,59 @@ fn merge_sweep_state(
         table.updated += 1;
     } else {
         table.skipped += 1;
+    }
+    Ok(())
+}
+
+/// Merges the per-endpoint sync watermark (ADR-075). One row per
+/// endpoint, keyed on `endpoint`. The newer `last_sync` wins; a tie
+/// keeps the stored row. `resume_state` follows the base row.
+fn merge_sync_state(
+    live: &Connection,
+    source: &Connection,
+    report: &mut ImportReport,
+) -> Result<(), CacheError> {
+    let table = report.table("sync_state");
+    let mut stmt = source
+        .prepare("SELECT endpoint, last_sync, resume_state FROM sync_state")
+        .map_err(db)?;
+    let rows: Vec<(String, String, Option<String>)> = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+        .map_err(db)?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(db)?;
+    for (endpoint, last_sync, resume_state) in rows {
+        let stored: Option<String> = live
+            .query_row(
+                "SELECT last_sync FROM sync_state WHERE endpoint = ?1",
+                params![endpoint],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(db)?;
+        let Some(stored_last) = stored else {
+            live.execute(
+                "INSERT INTO sync_state (endpoint, last_sync, resume_state)
+                 VALUES (?1, ?2, ?3)",
+                params![endpoint, last_sync, resume_state],
+            )
+            .map_err(db)?;
+            table.added += 1;
+            continue;
+        };
+        // A date string in the API `YYYY-MM-DD` form sorts lexically,
+        // so a plain string compare picks the newer watermark.
+        if last_sync > stored_last {
+            live.execute(
+                "UPDATE sync_state SET last_sync = ?2, resume_state = ?3
+                 WHERE endpoint = ?1",
+                params![endpoint, last_sync, resume_state],
+            )
+            .map_err(db)?;
+            table.updated += 1;
+        } else {
+            table.skipped += 1;
+        }
     }
     Ok(())
 }

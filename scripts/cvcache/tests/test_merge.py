@@ -44,6 +44,46 @@ class MergeRuleTest(unittest.TestCase):
         self.assertEqual(merge.merge_text("s", "i", False), "s")
 
 
+class MergeSyncStateTest(unittest.TestCase):
+    def test_added_updated_and_skipped(self):
+        live = _fresh()
+        source = _fresh()
+        # A new endpoint is added.
+        source.execute(
+            "INSERT INTO sync_state (endpoint, last_sync, resume_state) "
+            "VALUES ('issues', '2026-08-03', NULL)"
+        )
+        report = merge.merge(live, source)
+        self.assertEqual(live.execute(
+            "SELECT last_sync FROM sync_state WHERE endpoint='issues'"
+        ).fetchone()[0], "2026-08-03")
+        self.assertEqual(report.table("sync_state").added, 1)
+
+        # A newer watermark updates; an older is skipped.
+        source2 = _fresh()
+        source2.execute(
+            "INSERT INTO sync_state (endpoint, last_sync, resume_state) "
+            "VALUES ('issues', '2026-09-01', '{\"offset\": 200}')"
+        )
+        source2.execute(
+            "INSERT INTO sync_state (endpoint, last_sync) "
+            "VALUES ('people', '2026-01-01')"
+        )
+        live.execute(
+            "INSERT INTO sync_state (endpoint, last_sync) "
+            "VALUES ('people', '2026-08-03')"
+        )
+        report2 = merge.merge(live, source2)
+        self.assertEqual(live.execute(
+            "SELECT last_sync, resume_state FROM sync_state WHERE endpoint='issues'"
+        ).fetchone(), ("2026-09-01", '{"offset": 200}'))
+        self.assertEqual(live.execute(
+            "SELECT last_sync FROM sync_state WHERE endpoint='people'"
+        ).fetchone()[0], "2026-08-03")
+        self.assertEqual(report2.table("sync_state").updated, 1)
+        self.assertEqual(report2.table("sync_state").skipped, 1)
+
+
 class MergeVolumeTest(unittest.TestCase):
     def test_newer_incoming_wins_but_empty_never_erases(self):
         live = _fresh()

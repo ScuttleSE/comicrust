@@ -1,4 +1,4 @@
-"""The v6 cvcache schema, pinned to `SCHEMA_V6` in
+"""The v7 cvcache schema, pinned to `SCHEMA_V7` in
 `crates/cr-scrape/src/cache/sqlite.rs`.
 
 A file the app wrote and a file a script wrote must open in both
@@ -8,7 +8,7 @@ directions, so the DDL here mirrors the Rust migration chain
 
 import sqlite3
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 # The migration chain of `migrate_connection`, flattened to the v4
 # end state. `CREATE TABLE IF NOT EXISTS` matches the Rust arms.
@@ -137,6 +137,12 @@ CREATE INDEX IF NOT EXISTS issue_image_ahash
     ON issue_image (ahash);
 CREATE INDEX IF NOT EXISTS issue_image_phash
     ON issue_image (phash);
+
+CREATE TABLE IF NOT EXISTS sync_state (
+    endpoint     TEXT PRIMARY KEY,
+    last_sync    TEXT NOT NULL,
+    resume_state TEXT
+);
 """
 
 # One table per related resource. The columns match RESOURCE_COLUMNS in

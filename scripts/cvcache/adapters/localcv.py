@@ -59,6 +59,7 @@ class LocalCvAdapter:
             yield from self._pending_volumes
             yield from self._emit_people(conn)
             yield from self._emit_issues(conn, allowed_volumes)
+            yield from self._emit_sync_state(conn)
         finally:
             conn.close()
 
@@ -277,6 +278,42 @@ class LocalCvAdapter:
 
     def _drop(self, reason: str) -> None:
         self.dropped[reason] = self.dropped.get(reason, 0) + 1
+
+    # -- sync watermark (ADR-075) --
+
+    # The cvcache update endpoints. localcv's cv_sync_metadata also
+    # carries internal bookkeeping rows (issues_quarterly_*) that are
+    # not cvcache endpoints; those are skipped.
+    _SYNC_ENDPOINTS = ("publishers", "people", "volumes", "issues")
+
+    def _emit_sync_state(self, conn):
+        """Seeds the per-endpoint watermark from cv_sync_metadata so the
+        first update run knows the baseline instead of re-scanning from
+        the start. Maps endpoint/last_sync_date/resume_state across."""
+        try:
+            cursor = conn.execute(
+                "SELECT endpoint, last_sync_date, resume_state "
+                "FROM cv_sync_metadata"
+            )
+        except sqlite3.OperationalError:
+            # A localcv without the sync table: no baseline to seed.
+            return
+        for r in cursor:
+            endpoint = r["endpoint"]
+            if endpoint not in self._SYNC_ENDPOINTS:
+                self._drop(f"sync_state endpoint {endpoint}")
+                continue
+            last_sync = r["last_sync_date"]
+            if not last_sync:
+                continue
+            yield StagedRow(
+                "sync_state",
+                {
+                    "endpoint": endpoint,
+                    "last_sync": last_sync,
+                    "resume_state": r["resume_state"],
+                },
+            )
 
 
 def _to_int(value) -> int | None:
