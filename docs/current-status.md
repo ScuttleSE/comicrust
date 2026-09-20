@@ -5,20 +5,17 @@ Do not append history. Git and `docs/archive/` hold history.
 
 ## Active phase
 
-**Phase 20: Comic Vine cache manager.**
+**Phase 21: Comic Vine cache expansion.**
 
-Implemented. User test pending. See `docs/phases/phase-20.md`, ADR-064, and
-open user test 26.
+Planned. The phase file is `docs/phases/phase-21.md`. The decisions are
+ADR-069 through ADR-072. No code is written yet.
 
-The File-menu dialog searches by Comic Vine volume ID. **Update from API**
-stores the complete volume response and replaces the issue-number map.
-**Complete Update from API** also stores each issue detail and resumes after an
-interruption. Both operations use the shared request budget and worker-job UI.
+Four parts: schema v3 with every comic resource and row stamps;
+local-first scrape reads with a refresh switch and an offline mode; a
+backupable, mergeable cache file; the sweep expansion plus Python
+build and import scripts.
 
-`MEASURED`: Mock-server tests cover summary replacement, complete detail,
-cancel, and resume. A version 1 cache migrates without losing its volume row.
-The release GTK probe passed cache search, issue display, and manual metadata
-save. `UNKNOWN`: neither API update mode has run against the live API.
+Phase 20 stays implemented with open user test 26.
 
 ## Latest user finding
 
@@ -42,13 +39,14 @@ scrape matched the selected book and three other books in the same series.
 
 ## Current task for the next context
 
-Retest **Find in Incoming** for `2000 AD` number `2498`. Confirm that the dialog
-shows both reported candidates. Then complete the remaining Missing Issues
-scope test and confirm that the report contains only real gaps.
+Start Phase 21 at T1: schema v3 in
+`crates/cr-scrape/src/cache/sqlite.rs` (the tables, columns, migration,
+and backfill of ADR-070). Follow `docs/phases/phase-21.md`.
 
-After this defect is resolved, resume the deferred task: connect normal
-**Scrape from Comic Vine** to persistent-cache reads. Define cache-use and
-forced-refresh rules before that implementation.
+When the user tests first: the `2000 AD` number `2498` retest (test 24)
+and the Missing Issues scope test (test 22) stay first in line, and
+user test 26 (the phase-20 cache manager against a real volume) is
+still open.
 
 ## Open user tests
 

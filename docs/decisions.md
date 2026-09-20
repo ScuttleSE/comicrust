@@ -72,6 +72,10 @@ This index is navigation only. The entry below each ADR is the decision.
 | ADR-066 | Link Series from Cache processes all selected series as one batch | accepted | ADR-060 |
 | ADR-067 | Missing Issues uses enabled Proposed Series and Number values | accepted | ADR-059 |
 | ADR-068 | Find in Incoming uses a bounded fallback for incomplete filename metadata | accepted | ADR-061 |
+| ADR-069 | The cache file is backupable and mergeable | accepted | — |
+| ADR-070 | Cache schema v3 — every comic resource, inline credits, row stamps | accepted | — |
+| ADR-071 | Local-first cache reads, a refresh switch, and an offline mode | accepted | — |
+| ADR-072 | The sweep fills list fields; Python scripts build and import cache files | accepted | — |
 
 ADR-029 is reserved for the deferred Phase 9 (SQLite) decision. It is not written yet.
 
@@ -677,3 +681,237 @@ v0.1.0 and every rolling build after it, and one manual reinstall clears it.
   confirmation dialog still resolves multiple candidates. Automated tests
   reject a different Number, a different nonblank Volume, an unrelated Series,
   and a long Series suffix. A real-library user test remains necessary.
+
+## ADR-069: The cache file is backupable and mergeable
+
+- **Status:** accepted (2026-09-20, user decisions). A PORT ADDITION.
+  ComicRack CE has no Comic Vine cache.
+- **Context:** The cache (ADR-037) is one SQLite file at
+  `$XDG_DATA_HOME/comicrust/plugins/comic-vine-scraper/cvcache.sqlite`,
+  opened in WAL mode (`crates/cr-scrape/src/cache/sqlite.rs:116`). A raw
+  copy while the app runs can lose the writes that sit only in the `-wal`
+  side file. The user asked for a backupable file, and for an import that
+  merges a downloaded cache file into the live one.
+- **Decision:**
+  1. **Backup.** The cache-manager dialog (ADR-064,
+     `crates/cr-ui/src/dialogs/cache_manager.rs`) gains "Back up cache…".
+     It runs SQLite `VACUUM INTO` to a user-chosen path. `VACUUM INTO`
+     writes one complete, standalone snapshot while the live connection
+     stays open. The snapshot carries no `-wal`/`-shm` companions.
+  2. **Checkpoint.** A clean app close runs `PRAGMA
+     wal_checkpoint(TRUNCATE)` once on the cache connection. After it, a
+     plain file copy of `cvcache.sqlite` is complete. The checkpoint runs
+     on a worker (Rule 9).
+  3. **Import.** The dialog gains "Import cache from file…". The import
+     copies the chosen file to a temp path, opens the copy, and runs the
+     normal migration chain on it. A file whose `user_version` is NEWER
+     than the app's `SCHEMA_VERSION` is rejected with a message, because
+     the app cannot merge a schema it does not know. The live file stays
+     untouched until the merge succeeds.
+  4. **Merge rule — newer stamp wins (user decision).** Per row: parse
+     the API `date_last_updated` of both rows to timestamps; where one
+     side has none, compare `fetched_at`. The newer row is the base. For
+     every field: an empty incoming value never erases a stored value,
+     and an empty stored value takes the incoming value; two non-empty
+     values take the base row's value. Image blob rows compare on
+     `fetched_at` alone (they carry no API stamp). `request_log` rows
+     are appended as-is (their column is `at`); only rows inside the
+     current one-hour window can affect the budget, so older imported
+     rows change nothing. A tie keeps the stored row.
+  5. **Scope.** The import merges every table: `volume`,
+     `issue_skeleton`, `issue_detail`, `image_blob`, `search_result`,
+     `request_log`, `sweep_state`, `pending_issue_detail`, and the v3
+     tables of ADR-070. The `sweep_state` row takes the newer
+     `updated_at`. The import ends with a per-table report: rows added,
+     updated, skipped, rejected.
+- **Consequences:** A restore through the import is a full merge, not a
+  replace. A user who wants a replace deletes the live file first and
+  imports into the fresh one; the cache is disposable (ADR-037). An
+  imported `request_log` counts foreign requests in the shared one-hour
+  window for that hour, which is the conservative direction for the rate
+  budget. The merge rule is the same one the Python scripts use
+  (ADR-072), so app import and script import cannot diverge.
+
+## ADR-070: Cache schema v3 — every comic resource, inline credits, row stamps
+
+- **Status:** accepted (2026-09-20, user decisions). Extends ADR-037 and
+  ADR-064.
+- **Context:** Schema v2 stores volume summary columns plus the full
+  volume JSON (written by the cache-manager updates), skeleton issue
+  rows, and raw issue-detail JSON (written by complete updates only).
+  The normal scrape never stores its own detail responses. The Comic
+  Vine API exposes ten comic-relevant resources (MEASURED 2026-09-20 on
+  the documentation page): `volume`, `issue`, `publisher`, `character`,
+  `person`, `team`, `story_arc`, `location`, `concept`, `object`. Every
+  one carries `date_last_updated` and `date_added` (the `origin` lookup
+  list does not). The issue and volume detail responses embed reference
+  lists — person, character, team, location, concept, and story-arc
+  credits, first appearances, character deaths, team disbandings — and
+  each reference carries only an id, a name, and a role for people. The
+  user wants all metadata of a resource in the cache, with a
+  last-updated stamp per resource row. The API provides stamps per
+  RESOURCE, not per field, so the row is the finest stamp that exists.
+- **Decision:**
+  1. `PRAGMA user_version` becomes 3. The v2→v3 migration parses the
+     stored `detail_json` blobs and backfills the new columns. The raw
+     JSON text never moves or rewrites.
+  2. **Resource tables.** One typed table per related resource:
+     `character`, `person`, `team`, `story_arc`, `location`, `concept`,
+     `object`, `publisher`. Columns: `id INTEGER PRIMARY KEY`,
+     `name TEXT`, `image_url TEXT`, `date_last_updated TEXT`,
+     `date_added TEXT`, `fetched_at INTEGER`, `detail_json TEXT` (NULL
+     until a full detail fetch). The inline references in issue and
+     volume responses upsert these tables with zero extra requests.
+  3. **Credit table.** One `credit` row per inline reference:
+     `owner_kind` (`issue`|`volume`), `owner_id`, `resource_kind`,
+     `resource_id`, `name`, `role` (people only, else NULL), `marker`
+     (`credit`|`first_appearance`|`died_in`|`disbanded`). A unique index
+     on the natural key with `COALESCE(role,'')` makes re-imports
+     idempotent.
+  4. **Typed columns.** `issue_detail` gains `volume_id`, `issue_number`,
+     `cover_date`, `name`, `store_date`, `image_url`, `date_added`,
+     `date_last_updated`, extracted at store time. `volume` gains
+     `aliases`, `deck`, `description`, `image_url`, `api_detail_url`,
+     `site_detail_url`, `date_added`, `first_issue_id`, `last_issue_id`.
+  5. **Stamps.** Every row of every table carries `date_last_updated`
+     (the API value, preferred) and `fetched_at` (our unix seconds).
+  6. **Full related-resource details are on demand, per volume (user
+     decision).** A cache-manager command walks one volume's credit rows
+     and fetches every referenced resource that has no `detail_json`.
+     One request per resource instance, through that resource's budget
+     bucket. The fetch is cancellable and resumable through the same
+     durable-queue pattern ADR-064 built for issue details. The detail
+     URL prefixes beyond `volume` (4050) and `issue` (4000) are UNKNOWN
+     until read from real responses or the API docs at implementation.
+- **Consequences:** The credit extraction makes scraped detail data
+  queryable with no extra requests. `detail_json` keeps full fidelity,
+  so a later typed-column need backfills without a refetch. A per-volume
+  related-resource fetch can cost hundreds of requests for a large
+  series; it is explicitly user-triggered and budget-bound. The
+  migration needs a test against a real v2 file that holds stored
+  details.
+
+## ADR-071: Local-first cache reads, a refresh switch, and an offline mode
+
+- **Status:** accepted (2026-09-20, user decisions). Amends ADR-037: the
+  freshness revalidation becomes switchable, and strict manual is the
+  default. This is the deferred task that `docs/current-status.md`
+  recorded ("connect normal Scrape from Comic Vine to persistent-cache
+  reads").
+- **Context:** Today only the skeleton consumers read the cache (Missing
+  Issues, Link Series, the cache manager, the warm task). The normal
+  scrape goes online every time: `Cv::query_series_refs`
+  (`cv/queries.rs:134`), `Cv::query_issue_refs` (`:271`, re-pages
+  `/issues` and only WRITES the skeleton), `Cv::query_issue` (`:400`,
+  never stores or reads details), and `Cv::query_image` (`:413`, a
+  direct CDN download). `search_result` and `image_blob` have no
+  production writer or reader (searched 2026-09-20; only tests touch
+  them). The user rule: always check the local database first; go online
+  only when the needed data is absent. The user chose a configurable
+  refresh switch (default strict) and an offline-only toggle.
+- **Decision:**
+  1. **"No data" is per data kind,** judged by the specific row the call
+     needs. An MCL-only volume has skeleton rows but no detail rows: its
+     issue list serves from the cache, its detail requests go online.
+  2. **Read rules.** Series search: read `search_result` for the cleaned
+     search terms first (the existing `cleanup_search_terms` rule,
+     `cv/queries.rs:906`); on miss, fetch and store. Issue list:
+     `freshness::issues_of_volume` (already
+     cache-first). Issue detail: read `issue_detail` first and parse the
+     stored JSON through the same `parse_issue` the live path uses; on
+     miss, fetch and store the full response. Images: read `image_blob`
+     first; on miss, download and store. Images stay outside the API
+     budget (they ride the CDN, unchanged).
+  3. **Series details come from the volume row.** `series_details`
+     (`cv/queries.rs:693`) requests `/volume/4050-N/` once per series
+     per run for the volume year and publisher. It reads the cached
+     `volume` row (`start_year`, `publisher`) first and fetches only on
+     a miss.
+  4. **Refresh switch.** A new advanced key `CACHE_REFRESH_MODE`, values
+     `manual` (default) and `auto`. `manual`: the freshness verdict never
+     returns `Revalidate`, so no probe request runs; an open volume
+     serves from the cache like a closed one. `auto`: the ADR-037 probe
+     runs for open volumes after `CACHE_REVALIDATE_HOURS`. Both modes
+     keep the closed-volume rule and every explicit cache-manager
+     update.
+  5. **Offline mode.** A new advanced key `CACHE_OFFLINE_ONLY` (default
+     false) with a check box in the scraper config dialog. When on,
+     `CvClient` blocks every request at the chokepoint with a new
+     distinct error (`CvError::Offline`) before any network work. The
+     warm task, the sweep, and the cache-manager API operations refuse
+     with a clear message. A cache miss surfaces "not in cache
+     (offline)". No code path reaches the network.
+  6. **Settings surface.** The keys join `AdvancedSettings` and its key
+     list (`config.rs:55-72, 282-287`). The scraper config dialog gets
+     the check boxes beside the existing flags
+     (`crates/cr-ui/src/dialogs/scrape_config.rs`; today the advanced
+     keys ride a free-text KEY=VALUE view, lines 156, 208-223).
+- **Consequences:** A cache hit costs zero requests and zero throttle
+  wait. Under `manual`, new issues of an open series appear only after
+  an explicit update (the cache manager, the sweep, or an MCL import);
+  the user accepted this. A cached search result never auto-refreshes;
+  different search terms get their own cache entry, and the cache file
+  stays prunable by hand. In offline mode the app serves only what it
+  holds; a scrape of an unscraped series reports the misses instead of
+  failing with network errors.
+
+## ADR-072: The sweep fills list fields; Python scripts build and import cache files
+
+- **Status:** accepted (2026-09-20, user decisions). Extends ADR-038.
+- **Context:** The "Update Comic Vine Cache" sweep
+  (`crates/cr-ui/src/browser/shell.rs:5143`, engine
+  `crates/cr-scrape/src/cache/sweep.rs:153-166`) pages
+  `/issues?filter=date_last_updated:<start>|<end>` with
+  `field_list=id,issue_number,volume` and stores bare skeleton rows. The
+  user maintains MCL data with an existing process and treats it as the
+  base; the sweep keeps the cache current. The user wants the command to
+  update "everything new since the last run". Other projects have
+  harvested Comic Vine data; their formats will be named later.
+- **Decision:**
+  1. **Sweep expansion.** The sweep widens its `field_list` to the
+     list-level fields the `/issues` resource documents (MEASURED
+     2026-09-20): `name`, `cover_date`, `deck`, `description`,
+     `store_date`, `image`, `date_added`, `date_last_updated`,
+     `site_detail_url`, `api_detail_url`, beside the existing `id`,
+     `issue_number`, `volume`. Cost: zero extra requests; the page count
+     does not change. The sweep then fills the ADR-070 issue list
+     columns, stores image URLs (it never downloads images), and upserts
+     the inline volume objects as volume and publisher rows. The exact
+     inline sub-fields of the `volume` object are UNKNOWN until one real
+     response is read; the ADR-069 merge rule protects stored values
+     either way. Per-issue details stay on demand (ADR-070); the sweep
+     never fetches them.
+  2. **Scripts.** A Python 3 package (standard library only) at
+     `scripts/cvcache/`:
+     - A shared merge engine that implements the ADR-069 rule.
+     - `build`: MCL files → a fresh, distributable `cvcache.sqlite`
+       (skeleton only, zero API requests).
+     - `merge`: new MCL data → an existing file, same rule.
+     - A generic harvested-data import: pluggable adapters convert one
+       source format into staged rows (table, values, stamps) in the v3
+       shape, and the merge engine applies them. Adapter contract: the
+       input is file paths plus options; the output is staged rows; the
+       stamps come from the source's own last-updated field when it has
+       one, else the adapter sets `fetched_at` to the import time and
+       leaves `date_last_updated` empty. A validation pass runs first
+       (id shapes, value types, required keys); a failed row is
+       reported, never merged. Every import ends with a per-table report
+       (added, updated, skipped, rejected). Per-source formats, fields,
+       and stamps are DEFERRED; each future source needs a sample file
+       from the user.
+  3. **Schema pin.** A golden test makes the scripts open a file the app
+     wrote, and the app open a file the scripts wrote, so the two DDLs
+     cannot drift.
+  4. **CI gate.** The script tests run behind a gated cargo test that
+     shells `python3` and skips when it is absent (the
+     `CBR_RAR4_FIXTURE` gate pattern). Whether the CI image carries
+     `python3` is UNKNOWN until tried (the image is debian:trixie).
+  5. **Distribution.** The scripts ship with the repo. A POPULATED cache
+     file ships only after a terms check (UNKNOWN: whether the Comic
+     Vine API terms permit redistribution of harvested data; the
+     decision it feeds is distribute-or-not).
+- **Consequences:** The distributed file is skeleton-rich and
+  detail-poor by design; users fill details on demand. The sweep's
+  wider pages raise the per-page response size only. The script merge
+  and the app import share one rule, so a file built by a script merges
+  cleanly in the app.
