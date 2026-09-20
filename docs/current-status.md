@@ -73,9 +73,10 @@ The user is running the long backfills. The `rich` command has a
 combined **`all` mode** with an **`--until` deadline** built for one
 daily cron job: forward for every resource first (keeps current), then
 backfill history for every resource. `all` drives every unit in
-stop-on-cap mode and **cycles the resources that still have work**: a
-capped resource yields to the next one, and the run sleeps only when all
-remaining resources are capped, until the earliest window frees. It ends
+stop-on-cap mode and **services one resource per wake**: after a first
+full pass it sleeps until the resource whose rolling-hour window frees
+soonest (with a 2-minute margin), runs only that one until it caps again,
+then re-picks the next-soonest. It ends
 when no resource has work left, or at the deadline (ADR-076). A budget
 wait that would pass the deadline stops instead of sleeping. **HTTP 420**
 (CV's transport throttle) is a per-resource backoff — 3s, 5s, 10s, then a

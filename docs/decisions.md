@@ -1277,3 +1277,19 @@ Decision:
    backoff sleep that would pass the deadline raises instead of sleeping
    past it, matching the budget-wait rule. The ladder value is a fixed
    choice; CV does not document 420, so no `Retry-After` is assumed.
+
+## ADR-076 amendment: single-unit soonest-reset draining, 2-minute wake margin
+
+The `all` scheduler first re-ran the whole capped queue after each sleep,
+so resources whose windows had not yet freed each spent one request only
+to rediscover their cap (and could draw a 420). The draining phase now
+runs one unit per wake: after the first full pass builds the capped
+queue, the scheduler computes each queued resource's next-free time,
+sleeps until the soonest, runs only that resource (it drains until it
+caps again), then re-picks the soonest among the still-queued units.
+Forward wins a tie because the queue keeps forward-before-backfill order
+and the pick is stable. The free time carries a fixed 2-minute margin on
+top of the rolling hour (`WAKE_MARGIN_SECONDS`, so a wake target is
+oldest-in-window + 3600 + 120s), so a wake never races CV's own count.
+The margin applies only to the scheduler's `next_free_at`; the
+single-resource `wait` path (`_throttle_for_budget`) is unchanged.

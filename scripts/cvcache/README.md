@@ -287,13 +287,16 @@ python3 -m scripts.cvcache rich --into cvcache.sqlite --api-key YOUR_KEY \
 > do a large list walk on that first run.
 
 - **`all` drains every resource in one run.** A resource that reaches its
-  hourly cap yields to the next resource instead of blocking; the run
-  sleeps only when all remaining resources are capped, then resumes at
-  the earliest freed window. Forward units run before backfill units, so
-  "stay current" wins the budget. `--on-cap` does not apply to `all`; the
-  scheduler owns cap handling. (For the single-resource modes, `--on-cap
-  wait` sleeps until the window frees and `--on-cap stop` returns a
-  resumable stop.)
+  hourly cap yields to the next resource instead of blocking. Once the
+  first full pass is done, the run services one resource per wake: it
+  sleeps until the resource whose window frees **soonest**, runs only
+  that one (until it caps again), then re-picks the next-soonest. It
+  sleeps 2 minutes past each rolling-hour boundary as a safety margin, so
+  a wake never races CV's count. Forward units run before backfill units
+  and win ties, so "stay current" wins the budget. `--on-cap` does not
+  apply to `all`; the scheduler owns cap handling. (For the
+  single-resource modes, `--on-cap wait` sleeps until the window frees
+  and `--on-cap stop` returns a resumable stop.)
 - **HTTP 420** is CV's transport throttle. The client backs off per
   resource on a fixed ladder — 3s, then 5s, then 10s — and retries; a
   420 past the last step is treated as a rate-limit stop for that

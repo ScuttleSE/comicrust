@@ -264,6 +264,26 @@ class Http420Test(unittest.TestCase):
         self.assertEqual(clock.slept, [])
 
 
+class NextFreeAtTest(unittest.TestCase):
+    def test_wake_target_adds_the_window_and_the_margin(self):
+        clock = _FakeClock()
+        clock.t = 10_000
+        c = _client(clock, on_cap="stop", max_per_hour=2)
+        # Two requests fill the budget; the oldest is at t=10000.
+        c._mem_calls["character"] = update.deque([10_000, 10_000])
+        free = c.next_free_at("character")
+        self.assertEqual(
+            free,
+            10_000 + update.RATE_WINDOW_SECONDS + update.WAKE_MARGIN_SECONDS,
+        )
+
+    def test_returns_none_when_under_budget(self):
+        clock = _FakeClock()
+        c = _client(clock, on_cap="stop", max_per_hour=2)
+        c._mem_calls["character"] = update.deque([10_000])
+        self.assertIsNone(c.next_free_at("character"))
+
+
 class ResourceKeyTest(unittest.TestCase):
     def test_resource_of_first_segment_lowercased(self):
         self.assertEqual(update.resource_of("issues"), "issues")
@@ -707,6 +727,76 @@ class RunAllSchedulerTest(unittest.TestCase):
         # character backfill ran exactly twice: capped, then done after
         # the sleep — never spun mid-cycle.
         self.assertEqual(sum(1 for k in order if k == "character-b"), 2)
+
+    def test_services_the_soonest_reset_resource_first(self):
+        # Two resources capped with different free times: the scheduler
+        # wakes for the sooner one first, then the later one.
+        import os
+        from pathlib import Path
+        path = self._tmpdb()
+        R = update.RichReport
+        script = {
+            "story_arc-f": [R(total=0)], "location-f": [R(total=0)],
+            "team-f": [R(total=0)], "person-f": [R(total=0)],
+            "volume-f": [R(total=0)], "character-f": [R(total=0)],
+            "issues-b": [R(total=0)],
+            "story_arc-b": [R(total=0)], "location-b": [R(total=0)],
+            "team-b": [R(total=0)], "volume-b": [R(total=0)],
+            # person frees later (200s); character frees sooner (50s).
+            "person-b": [R(total=2, fetched=0, credited=0,
+                            stopped_capped=True),
+                         R(total=2, fetched=2, credited=2)],
+            "character-b": [R(total=2, fetched=0, credited=0,
+                              stopped_capped=True),
+                            R(total=2, fetched=2, credited=2)],
+        }
+        idx = {k: 0 for k in script}
+        order = []
+
+        def _serve(key):
+            i = idx[key]
+            idx[key] = min(i + 1, len(script[key]) - 1)
+            order.append(key)
+            return script[key][i]
+
+        orig = (update.rich_resource_forward, update.rich_issue_backfill,
+                update.rich_resource_backfill, update.CvClient.next_free_at)
+        clock = _FakeClock()
+        update.rich_resource_forward = (
+            lambda live_path, resource, **k: _serve(f"{resource}-f"))
+        update.rich_issue_backfill = (
+            lambda live_path, **k: _serve("issues-b"))
+        update.rich_resource_backfill = (
+            lambda live_path, resource, **k: _serve(f"{resource}-b"))
+        free = {"person": 200, "character": 50}
+        start = clock.now()
+
+        def _next_free(self, res):
+            # An absolute wake target fixed at the run start (like the
+            # real oldest-in-window timestamp), so a later re-pick waits
+            # only the remaining time.
+            if res in free and order.count(f"{res}-b") < 2:
+                return start + free[res]
+            return None
+        update.CvClient.next_free_at = _next_free
+        try:
+            update.run_all(
+                Path(path), api_key="k", make_backup=False,
+                _sleep=clock.sleep, _wall=clock.now,
+            )
+        finally:
+            (update.rich_resource_forward, update.rich_issue_backfill,
+             update.rich_resource_backfill, update.CvClient.next_free_at) = orig
+            os.remove(path)
+        # Woke for the 50s (character) window first, then the 200s
+        # (person) window — but only the remaining 150s after the first
+        # sleep advanced the clock.
+        self.assertEqual(clock.slept, [50.0, 150.0])
+        # The second re-run of character came before person's re-run.
+        reruns = [k for k in order
+                  if k in ("character-b", "person-b")]
+        # First pass runs both (capped), then character done, then person.
+        self.assertEqual(reruns[-2:], ["character-b", "person-b"])
 
 
 if __name__ == "__main__":

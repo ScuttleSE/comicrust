@@ -47,6 +47,11 @@ ENDPOINTS = ("publishers", "people", "volumes", "issues")
 MAX_PER_HOUR = 200
 SAFETY_MARGIN = 5
 RATE_WINDOW_SECONDS = 3600.0
+# The `all` scheduler waits this much past a resource's rolling-hour
+# boundary before it wakes to service it, so a wake never races CV's own
+# count. It affects only the scheduler's sleep target (next_free_at),
+# not the per-request budget wait used by the single-resource modes.
+WAKE_MARGIN_SECONDS = 120.0
 # HTTP 420 is CV's transport throttle. Per resource, back off on this
 # escalating ladder; a 420 past the last step raises RateLimitReached.
 # A successful request on the resource resets its position to the start.
@@ -219,7 +224,7 @@ class CvClient:
         if self._used_since(resource, since) < self._budget():
             return None
         oldest = self._oldest_since(resource, since) or now
-        return oldest + RATE_WINDOW_SECONDS + 1
+        return oldest + RATE_WINDOW_SECONDS + WAKE_MARGIN_SECONDS
 
     def get(self, endpoint: str, params: dict) -> dict:
         resource = resource_of(endpoint)
@@ -1317,49 +1322,61 @@ def run_all(
                       _RICH_RESOURCES[resource]["path"],
                       report.backfill, run_resource_backfill))
 
-    # A shared client, ledger-backed, only to time the all-capped sleep.
+    # A shared client, ledger-backed, only to time the sleeps.
     ledger = commands.open_v4(live_path)
     timer = CvClient(api_key=api_key, max_per_hour=max_per_hour, ledger=ledger)
+
+    def run_unit(unit):
+        """Runs one unit (it drains until it caps again) and returns it
+        for re-queue when it stopped capped with work left, else None."""
+        phase, resource, budget_key, store, runner = unit
+        if on_phase is not None:
+            on_phase(phase, resource)
+        r = runner(resource)
+        _accumulate(store, resource, r)
+        if r.stopped_capped and r.remaining > 0:
+            return unit
+        return None
+
     try:
-        while units:
+        # First pass: run every unit once, in forward-then-backfill
+        # order, to drain what budget is free right now and learn which
+        # units are capped with work left.
+        queue = []
+        for unit in units:
             if past_deadline():
                 report.reached_deadline = True
                 break
-            capped = []
-            for phase, resource, budget_key, store, runner in units:
-                if past_deadline():
-                    report.reached_deadline = True
-                    break
-                if on_phase is not None:
-                    on_phase(phase, resource)
-                r = runner(resource)
-                _accumulate(store, resource, r)
-                if r.stopped_capped and r.remaining > 0:
-                    # Capped with work left; keep for the next cycle.
-                    capped.append((phase, resource, budget_key,
-                                   store, runner))
-            units = capped
-            if report.reached_deadline or not units:
-                break
-            # Every unit still queued is capped (a unit that drained or
-            # caught up is no longer here). Re-running one now would only
-            # spend a request to rediscover its cap, so sleep until the
-            # earliest queued resource's window frees before the next
-            # cycle.
-            frees = [t for t in
-                     (timer.next_free_at(u[2]) for u in units)
-                     if t is not None]
-            wake = min(frees) if frees else _wall() + RATE_WINDOW_SECONDS
-            now = _wall()
-            wait = wake - now
-            if wait <= 0:
-                continue
-            if deadline is not None and wake >= deadline:
+            again = run_unit(unit)
+            if again is not None:
+                queue.append(again)
+
+        # Draining phase: every queued unit is capped. Wake and service
+        # only the resource whose window frees soonest (it drains until
+        # it caps again), then re-pick. Forward wins a tie because the
+        # queue keeps forward-before-backfill order and the sort is
+        # stable.
+        while queue and not report.reached_deadline:
+            if past_deadline():
                 report.reached_deadline = True
                 break
-            if on_wait is not None:
-                on_wait("all", wait)
-            _sleep(wait)
+            # Soonest free time per queued unit; None means ready now.
+            timed = [(timer.next_free_at(u[2]) or _wall(), i, u)
+                     for i, u in enumerate(queue)]
+            wake, _, unit = min(timed, key=lambda t: (t[0], t[1]))
+            now = _wall()
+            wait = wake - now
+            if wait > 0:
+                if deadline is not None and wake >= deadline:
+                    report.reached_deadline = True
+                    break
+                if on_wait is not None:
+                    on_wait(unit[1], wait)
+                _sleep(wait)
+            queue.remove(unit)
+            again = run_unit(unit)
+            if again is not None:
+                queue.append(again)
     finally:
         ledger.close()
     return report
