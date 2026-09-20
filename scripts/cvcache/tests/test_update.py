@@ -408,5 +408,38 @@ class UntilParseTest(unittest.TestCase):
         self.assertIsNone(_parse_deadline(None, None))
 
 
+class RemainingTest(unittest.TestCase):
+    def test_report_remaining_is_total_minus_fetched(self):
+        r = update.RichReport(total=10, fetched=3)
+        self.assertEqual(r.remaining, 7)
+        r.fetched = 12
+        self.assertEqual(r.remaining, 0)  # never negative
+
+    def test_backfill_counts_rows_needing_enrichment(self):
+        import tempfile, os, sqlite3 as _sq
+        fd, path = tempfile.mkstemp(suffix=".sqlite")
+        os.close(fd)
+        try:
+            c = _sq.connect(path)
+            schema.create_schema(c)
+            # Two need enrichment (detail_json NULL), one already done.
+            c.execute("INSERT INTO character (id, name) VALUES (1, 'A')")
+            c.execute("INSERT INTO character (id, name) VALUES (2, 'B')")
+            c.execute("INSERT INTO character (id, name, detail_json) "
+                      "VALUES (3, 'C', '{}')")
+            c.commit()
+            c.close()
+            # A past deadline stops before fetching, but total is counted.
+            report = update.rich_resource_backfill(
+                __import__("pathlib").Path(path),
+                api_key="k", resource="character",
+                make_backup=False, deadline=update.time.time() - 1,
+            )
+            self.assertEqual(report.total, 2)
+            self.assertEqual(report.remaining, 2)
+        finally:
+            os.remove(path)
+
+
 if __name__ == "__main__":
     unittest.main()

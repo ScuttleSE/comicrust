@@ -177,7 +177,8 @@ def _cmd_rich(args) -> int:
     def progress(report, rid):
         print(
             f"  {args.mode} {rid:>9}  fetched={report.fetched} "
-            f"stored={report.credited} missing={report.skipped_missing}",
+            f"stored={report.credited} missing={report.skipped_missing} "
+            f"remaining={report.remaining}",
             flush=True,
         )
 
@@ -238,7 +239,8 @@ def _cmd_rich(args) -> int:
     state = "stopped early (resumable)" if report.stopped_capped else "done"
     print(
         f"{args.mode}: fetched={report.fetched} stored={report.credited} "
-        f"missing={report.skipped_missing} — {state}"
+        f"missing={report.skipped_missing} remaining={report.remaining} "
+        f"(of {report.total}) — {state}"
     )
     return 0
 

@@ -730,6 +730,11 @@ class RichReport:
     credited: int = 0
     skipped_missing: int = 0
     stopped_capped: bool = False
+    total: int = 0  # rows needing enrichment at the start of this run
+
+    @property
+    def remaining(self) -> int:
+        return max(0, self.total - self.fetched)
 
 
 def _issue_api_path(detail_url: str | None, issue_id: int) -> str:
@@ -787,6 +792,12 @@ def rich_issue_backfill(
         # first; the cursor holds the lowest id reached.
         _, cursor = _read_watermark(live, "issues", "rich_backfill")
         floor = cursor if cursor else 1 << 62
+        report.total = live.execute(
+            "SELECT COUNT(*) FROM issue_skeleton s WHERE issue_id < ? "
+            "AND NOT EXISTS (SELECT 1 FROM credit c "
+            "  WHERE c.owner_kind='issue' AND c.owner_id = s.issue_id)",
+            (floor,),
+        ).fetchone()[0]
         while True:
             if max_pages is not None and report.fetched >= max_pages:
                 report.stopped_capped = True
@@ -990,6 +1001,11 @@ def rich_resource_backfill(
     try:
         _, cursor = _read_watermark(live, resource, "rich_backfill")
         floor = cursor if cursor else 1 << 62
+        report.total = live.execute(
+            f"SELECT COUNT(*) FROM {resource} "
+            f"WHERE {id_col} < ? AND detail_json IS NULL",
+            (floor,),
+        ).fetchone()[0]
         while True:
             if max_pages is not None and report.fetched >= max_pages:
                 report.stopped_capped = True
@@ -1137,6 +1153,8 @@ def rich_resource_forward(
                     on_progress(report, rid)
             offset += len(results)
             total = _to_int(page.get("number_of_total_results")) or 0
+            if report.total == 0:
+                report.total = total
             if len(results) < PAGE_SIZE or offset >= total:
                 _write_watermark(live, resource, now, None, "rich_forward")
                 live.commit()
