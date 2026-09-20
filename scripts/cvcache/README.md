@@ -120,6 +120,29 @@ last-request time. Because the app and every script run write the same
 ledger, this shows the true shared usage — useful before starting a cron
 job so it knows how much budget is left.
 
+### rich — backfill per-issue credits and images
+
+```sh
+python3 -m scripts.cvcache rich \
+    --into cvcache.sqlite --api-key YOUR_KEY \
+    --mode issues-backfill [--max-pages 200] [--delay 1.0] \
+    [--max-per-hour 200] [--on-cap wait|stop] [--quiet] [--no-backup]
+```
+
+Fills credits and images for issues that have a skeleton row but no
+credit rows — the skeleton-only issues the `update` command adds (the
+list endpoint carries no credits). For each such issue it fetches the
+live `/issue/<id>/` detail and decomposes it into `credit` and
+`issue_image` rows, matching the localcv import shape. It walks issue
+ids from newest down, so recent issues fill first, and is resumable
+through the `rich_backfill` cursor in `sync_state`: a run stopped by
+`--max-pages`, the hourly cap, or a kill continues from the last issue
+done. The detail fetch uses the singular `/issue` path, a separate
+hourly budget from the `/issues` list, and shares the `request_log`
+ledger with every other run. A deleted or unknown id is skipped, not
+fatal. This is a slow background job — one request per issue — meant for
+a cron slice under the rate limit.
+
 ## Publisher lists (optional, for a future probe workflow)
 
 The batch import does not need these; it takes the whole database. The

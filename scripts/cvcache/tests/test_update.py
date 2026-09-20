@@ -297,5 +297,60 @@ class PreflightTest(unittest.TestCase):
         self.assertIn("date_last_updated:2026-08-20|", seen["issues"])
 
 
+class RichDetailTest(unittest.TestCase):
+    _DETAIL = {
+        "id": 6, "issue_number": "13", "volume": {"id": 1487, "name": "V"},
+        "name": "The Lost Race", "cover_date": "1952-10-01",
+        "date_last_updated": "2022-07-11 23:51:22",
+        "person_credits": [
+            {"id": 2756, "name": "Bob Powell", "role": " writer, penciler "},
+        ],
+        "character_credits": [{"id": 67267, "name": "Hercules"}],
+        "location_credits": [{"id": 55778, "name": "France"}],
+        "team_credits": [], "story_arc_credits": [],
+        "associated_images": [
+            {"id": 7, "original_url": "http://x/7.jpg", "caption": None,
+             "image_tags": "All Images"},
+        ],
+    }
+
+    def test_decompose_issue_detail_into_credits_and_images(self):
+        src = _fresh()
+        update._stage_issue_detail(src, self._DETAIL)
+        # The skeleton row is refreshed.
+        self.assertEqual(
+            src.execute("SELECT issue_number, name FROM issue_skeleton "
+                        "WHERE issue_id=6").fetchone(),
+            ("13", "The Lost Race"),
+        )
+        # Credits: one per credited resource, role stripped.
+        credits = src.execute(
+            "SELECT resource_kind, resource_id, name, role FROM credit "
+            "WHERE owner_id=6 ORDER BY resource_kind"
+        ).fetchall()
+        self.assertIn(("character", 67267, "Hercules", None), credits)
+        self.assertIn(("location", 55778, "France", None), credits)
+        self.assertIn(("person", 2756, "Bob Powell", "writer, penciler"), credits)
+        # A resource stub row is seeded once.
+        self.assertEqual(
+            src.execute("SELECT name FROM character WHERE id=67267").fetchone()[0],
+            "Hercules",
+        )
+        # The image gallery row lands.
+        self.assertEqual(
+            src.execute("SELECT issue_id, original_url FROM issue_image "
+                        "WHERE image_id=7").fetchone(),
+            (6, "http://x/7.jpg"),
+        )
+
+    def test_api_path_prefers_detail_url_tail(self):
+        self.assertEqual(
+            update._issue_api_path(
+                "https://comicvine.gamespot.com/api/issue/4000-6/", 6),
+            "issue/4000-6",
+        )
+        self.assertEqual(update._issue_api_path(None, 99), "issue/4000-99")
+
+
 if __name__ == "__main__":
     unittest.main()

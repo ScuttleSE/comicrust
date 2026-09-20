@@ -68,6 +68,13 @@ class CvError(RuntimeError):
     pass
 
 
+class NotFound(RuntimeError):
+    """CV reports the requested id does not exist (deleted or unknown).
+    A rich detail fetch skips it; it is not a fatal error."""
+
+    pass
+
+
 class RateLimitReached(RuntimeError):
     """One endpoint reached its hourly request budget in `stop` mode, or
     the API returned a throttle response. The caller saves the resume
@@ -209,8 +216,30 @@ class CvClient:
             text = str(error).lower()
             if "rate limit" in text or data.get("status_code") == 107:
                 raise RateLimitReached(resource, f"({error!r})")
+            if "not found" in text or data.get("status_code") == 101:
+                # A deleted or unknown id. The caller decides; a detail
+                # fetch skips it rather than aborting the whole run.
+                raise NotFound(f"{endpoint}: {error!r}")
             raise CvError(f"{endpoint}: API error {error!r}")
         return data
+
+    def get_detail(self, path: str, field_list: str | None = None) -> dict | None:
+        """Fetches one resource detail (a singular path like
+        `issue/4000-6`). Returns the `results` object, or None when CV
+        reports the id is gone (a deleted resource is skipped, not
+        fatal). Budget is keyed by the singular path segment, separate
+        from the list endpoints."""
+        params = {}
+        if field_list:
+            params["field_list"] = field_list
+        try:
+            data = self.get(path, params)
+        except NotFound:
+            return None
+        results = data.get("results")
+        if isinstance(results, dict):
+            return results
+        return None
 
 
 def _image_url(item: dict) -> str | None:
@@ -338,6 +367,73 @@ def _stage_item(source: sqlite3.Connection, endpoint: str, item: dict, flt) -> b
     if endpoint == "issues":
         return _stage_issue(source, item)
     raise CvError(f"unknown endpoint {endpoint}")
+
+
+# The credit JSON keys of an issue detail payload and their resource
+# kind. The person list carries a role; the others do not. Matches the
+# localcv adapter, so a live rich fetch produces the same rows.
+_CREDIT_FIELDS = (
+    ("character_credits", "character", False),
+    ("person_credits", "person", True),
+    ("team_credits", "team", False),
+    ("location_credits", "location", False),
+    ("story_arc_credits", "story_arc", False),
+)
+
+
+def _stage_issue_detail(source: sqlite3.Connection, detail: dict) -> None:
+    """Decomposes one live `/issue/<id>/` detail payload into the same
+    rows the localcv import produces: credit rows (plus a resource stub
+    per credited id) and issue_image rows. The skeleton scalar fields
+    are refreshed too, so a fetched issue's own row stays current."""
+    issue_id = _to_int(detail.get("id"))
+    if issue_id is None:
+        return
+    now = int(time.time())
+    _stage_issue(source, detail)  # refresh the skeleton row
+    seen_resources: set[tuple[str, int]] = set()
+    for column, kind, with_role in _CREDIT_FIELDS:
+        entries = detail.get(column) or []
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            rid = _to_int(entry.get("id"))
+            name = entry.get("name")
+            role = None
+            if with_role:
+                role = entry.get("role")
+                if role is not None:
+                    role = role.strip() or None
+            source.execute(
+                "INSERT OR IGNORE INTO credit (owner_kind, owner_id, "
+                "resource_kind, resource_id, name, role, marker) "
+                "VALUES ('issue', ?, ?, ?, ?, ?, 'credit')",
+                (issue_id, kind, rid if rid is not None else 0, name, role),
+            )
+            if rid is not None and (kind, rid) not in seen_resources:
+                seen_resources.add((kind, rid))
+                source.execute(
+                    f"INSERT OR REPLACE INTO {kind} "
+                    "(id, name, image_url, date_last_updated, date_added, "
+                    "fetched_at) VALUES (?, ?, NULL, NULL, NULL, ?)",
+                    (rid, name, now),
+                )
+    for entry in detail.get("associated_images") or []:
+        if not isinstance(entry, dict):
+            continue
+        image_id = _to_int(entry.get("id"))
+        url = entry.get("original_url")
+        if image_id is None or not url:
+            continue
+        source.execute(
+            "INSERT OR REPLACE INTO issue_image (image_id, issue_id, "
+            "original_url, caption, image_tags, fetched_at, ahash, dhash, "
+            "phash) VALUES (?, ?, ?, ?, ?, ?, NULL, NULL, NULL)",
+            (image_id, issue_id, url, entry.get("caption"),
+             entry.get("image_tags"), now),
+        )
 
 
 @dataclass
@@ -617,6 +713,113 @@ def run(
                     max_pages, since, progress=on_page,
                 )
             )
+    finally:
+        live.close()
+    return report
+
+
+@dataclass
+class RichReport:
+    fetched: int = 0
+    credited: int = 0
+    skipped_missing: int = 0
+    stopped_capped: bool = False
+
+
+def _issue_api_path(detail_url: str | None, issue_id: int) -> str:
+    """The singular issue detail path CV expects, e.g. `issue/4000-6`.
+    Prefers the stored api_detail_url tail; falls back to the id form."""
+    if detail_url:
+        # .../api/issue/4000-6/  ->  issue/4000-6
+        parts = [p for p in detail_url.split("/") if p]
+        if len(parts) >= 2:
+            return f"{parts[-2]}/{parts[-1]}"
+    return f"issue/4000-{issue_id}"
+
+
+def rich_issue_backfill(
+    live_path: Path,
+    api_key: str,
+    max_pages: int | None = None,
+    delay_seconds: float = 1.0,
+    max_per_hour: int = MAX_PER_HOUR,
+    on_cap: str = "wait",
+    make_backup: bool = True,
+    on_progress=None,
+    on_wait=None,
+) -> RichReport:
+    """Fills credits and images for issues that have a skeleton row but
+    no credit rows (the post-localcv update added skeleton-only rows).
+    For each such issue it fetches the live `/issue/<id>/` detail and
+    decomposes it into credit + issue_image rows, matching the localcv
+    shape. Resumable through the `rich_backfill` cursor (the last
+    issue_id done); rate-limited through the shared request_log budget.
+    `max_pages` here caps the number of issues fetched in this run."""
+    report = RichReport()
+    live = commands.open_v4(live_path)
+    if make_backup:
+        commands.backup(live_path)
+    client = CvClient(
+        api_key=api_key,
+        delay_seconds=delay_seconds,
+        max_per_hour=max_per_hour,
+        on_cap=on_cap,
+        on_wait=on_wait,
+        ledger=live,
+    )
+    field_list = (
+        "id,issue_number,volume,name,cover_date,deck,description,store_date,"
+        "image,date_added,date_last_updated,site_detail_url,api_detail_url,"
+        "character_credits,person_credits,team_credits,location_credits,"
+        "story_arc_credits,associated_images"
+    )
+    try:
+        # The cursor: the highest issue_id already backfilled. We walk
+        # issue ids downward from the top, so new (high-id) issues fill
+        # first; the cursor holds the lowest id reached.
+        _, cursor = _read_watermark(live, "issues", "rich_backfill")
+        floor = cursor if cursor else 1 << 62
+        while True:
+            if max_pages is not None and report.fetched >= max_pages:
+                report.stopped_capped = True
+                break
+            row = live.execute(
+                "SELECT issue_id, api_detail_url FROM issue_skeleton s "
+                "WHERE issue_id < ? "
+                "AND NOT EXISTS (SELECT 1 FROM credit c "
+                "  WHERE c.owner_kind='issue' AND c.owner_id = s.issue_id) "
+                "ORDER BY issue_id DESC LIMIT 1",
+                (floor,),
+            ).fetchone()
+            if row is None:
+                break
+            issue_id, detail_url = int(row[0]), row[1]
+            path = _issue_api_path(detail_url, issue_id)
+            try:
+                detail = client.get_detail(path, field_list)
+            except RateLimitReached:
+                report.stopped_capped = True
+                break
+            report.fetched += 1
+            floor = issue_id
+            if detail is None:
+                report.skipped_missing += 1
+            else:
+                source = sqlite3.connect(":memory:")
+                try:
+                    schema.create_schema(source)
+                    _stage_issue_detail(source, detail)
+                    source.commit()
+                    merge.merge(live, source)
+                finally:
+                    source.close()
+                report.credited += 1
+            # Persist the cursor after every issue so a kill resumes.
+            _write_watermark(live, "issues", "", {"offset": floor},
+                             "rich_backfill")
+            live.commit()
+            if on_progress is not None:
+                on_progress(report, issue_id)
     finally:
         live.close()
     return report

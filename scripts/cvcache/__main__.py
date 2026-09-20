@@ -145,6 +145,41 @@ def _cmd_usage(args) -> int:
     return 0
 
 
+def _cmd_rich(args) -> int:
+    if args.mode == "issues-backfill":
+        def progress(report, issue_id):
+            print(
+                f"  issue {issue_id:>8}  fetched={report.fetched} "
+                f"credited={report.credited} missing={report.skipped_missing}",
+                flush=True,
+            )
+
+        def on_wait(resource, seconds):
+            print(f"  {resource}: hourly cap reached, waiting {int(seconds)}s",
+                  flush=True)
+
+        report = update_mod.rich_issue_backfill(
+            Path(args.into),
+            api_key=args.api_key,
+            max_pages=args.max_pages,
+            delay_seconds=args.delay,
+            max_per_hour=args.max_per_hour,
+            on_cap=args.on_cap,
+            make_backup=not args.no_backup,
+            on_progress=None if args.quiet else progress,
+            on_wait=None if args.quiet else on_wait,
+        )
+        state = "stopped early (resumable)" if report.stopped_capped else "done"
+        print(
+            f"issues-backfill: fetched={report.fetched} "
+            f"credited={report.credited} missing={report.skipped_missing} "
+            f"— {state}"
+        )
+        return 0
+    print(f"unknown rich mode {args.mode!r}")
+    return 2
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="cvcache")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -234,6 +269,31 @@ def main(argv=None) -> int:
         help="the per-resource hourly cap used to compute remaining",
     )
     p_usage.set_defaults(func=_cmd_usage)
+
+    p_rich = sub.add_parser(
+        "rich", help="fetch rich per-resource detail (credits, images)"
+    )
+    p_rich.add_argument("--into", required=True)
+    p_rich.add_argument("--api-key", required=True)
+    p_rich.add_argument(
+        "--mode",
+        choices=("issues-backfill",),
+        default="issues-backfill",
+        help="which rich pass to run (default issues-backfill)",
+    )
+    p_rich.add_argument(
+        "--max-pages",
+        type=int,
+        help="stop after N issues this run (resumable backfill slice)",
+    )
+    p_rich.add_argument("--delay", type=float, default=1.0,
+                        help="minimum seconds between API calls")
+    p_rich.add_argument("--max-per-hour", type=int,
+                        default=update_mod.MAX_PER_HOUR)
+    p_rich.add_argument("--on-cap", choices=("wait", "stop"), default="wait")
+    p_rich.add_argument("--quiet", action="store_true")
+    p_rich.add_argument("--no-backup", action="store_true")
+    p_rich.set_defaults(func=_cmd_rich)
 
     args = parser.parse_args(argv)
     return args.func(args)
