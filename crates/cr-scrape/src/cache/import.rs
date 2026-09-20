@@ -837,27 +837,27 @@ fn merge_sync_state(
 ) -> Result<(), CacheError> {
     let table = report.table("sync_state");
     let mut stmt = source
-        .prepare("SELECT endpoint, last_sync, resume_state FROM sync_state")
+        .prepare("SELECT endpoint, mode, last_sync, resume_state FROM sync_state")
         .map_err(db)?;
-    let rows: Vec<(String, String, Option<String>)> = stmt
-        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))
+    let rows: Vec<(String, String, String, Option<String>)> = stmt
+        .query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))
         .map_err(db)?
         .collect::<Result<Vec<_>, _>>()
         .map_err(db)?;
-    for (endpoint, last_sync, resume_state) in rows {
+    for (endpoint, mode, last_sync, resume_state) in rows {
         let stored: Option<String> = live
             .query_row(
-                "SELECT last_sync FROM sync_state WHERE endpoint = ?1",
-                params![endpoint],
+                "SELECT last_sync FROM sync_state WHERE endpoint = ?1 AND mode = ?2",
+                params![endpoint, mode],
                 |r| r.get(0),
             )
             .optional()
             .map_err(db)?;
         let Some(stored_last) = stored else {
             live.execute(
-                "INSERT INTO sync_state (endpoint, last_sync, resume_state)
-                 VALUES (?1, ?2, ?3)",
-                params![endpoint, last_sync, resume_state],
+                "INSERT INTO sync_state (endpoint, mode, last_sync, resume_state)
+                 VALUES (?1, ?2, ?3, ?4)",
+                params![endpoint, mode, last_sync, resume_state],
             )
             .map_err(db)?;
             table.added += 1;
@@ -867,9 +867,9 @@ fn merge_sync_state(
         // so a plain string compare picks the newer watermark.
         if last_sync > stored_last {
             live.execute(
-                "UPDATE sync_state SET last_sync = ?2, resume_state = ?3
-                 WHERE endpoint = ?1",
-                params![endpoint, last_sync, resume_state],
+                "UPDATE sync_state SET last_sync = ?3, resume_state = ?4
+                 WHERE endpoint = ?1 AND mode = ?2",
+                params![endpoint, mode, last_sync, resume_state],
             )
             .map_err(db)?;
             table.updated += 1;

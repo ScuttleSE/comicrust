@@ -140,7 +140,7 @@ fn an_update_walks_every_endpoint_and_stamps_rows() {
     // Every endpoint watermark advanced to today (past the seed).
     for endpoint in ENDPOINTS {
         let state = cache
-            .sync_state(endpoint)
+            .sync_state(endpoint, "list")
             .expect("query")
             .expect("watermark");
         assert!(state.last_sync.as_str() >= "2026-08-04");
@@ -156,11 +156,15 @@ fn a_seeded_watermark_sets_the_window_start() {
     cache
         .put_sync_state(&cr_scrape::cache::SyncState {
             endpoint: "issues".into(),
+            mode: "list".into(),
             last_sync: "2026-08-03".into(),
             resume_state: None,
         })
         .expect("seed");
-    let state = cache.sync_state("issues").expect("query").expect("row");
+    let state = cache
+        .sync_state("issues", "list")
+        .expect("query")
+        .expect("row");
     assert_eq!(state.last_sync, "2026-08-03");
 }
 
@@ -225,7 +229,7 @@ fn a_page_cap_stops_the_endpoint_and_holds_the_watermark() {
     // The watermark did NOT advance to today; the resume offset holds
     // page two, so the next run continues.
     let state = cache
-        .sync_state("publishers")
+        .sync_state("publishers", "list")
         .expect("query")
         .expect("watermark");
     assert!(state.last_sync.as_str() < "2026-01-01");

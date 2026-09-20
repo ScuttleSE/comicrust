@@ -8,7 +8,7 @@ directions, so the DDL here mirrors the Rust migration chain
 
 import sqlite3
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 
 # The migration chain of `migrate_connection`, flattened to the v4
 # end state. `CREATE TABLE IF NOT EXISTS` matches the Rust arms.
@@ -139,9 +139,11 @@ CREATE INDEX IF NOT EXISTS issue_image_phash
     ON issue_image (phash);
 
 CREATE TABLE IF NOT EXISTS sync_state (
-    endpoint     TEXT PRIMARY KEY,
+    endpoint     TEXT NOT NULL,
+    mode         TEXT NOT NULL DEFAULT 'list',
     last_sync    TEXT NOT NULL,
-    resume_state TEXT
+    resume_state TEXT,
+    PRIMARY KEY (endpoint, mode)
 );
 """
 

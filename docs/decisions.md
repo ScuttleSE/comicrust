@@ -1173,3 +1173,30 @@ response carries them, and the merge rule protects stored values.
      declared in `scripts/requirements.txt`. The fetch and merge core
      stays standard-library only. This amendment is script-only; the
      in-app `cr-scrape` client keeps its page-cap model unchanged.
+- **Amendment (2026-09-20, same ADR): schema v8 and a shared,
+  persistent request budget for rich enrichment.** Groundwork for a
+  background `--rich` enrichment mode (issue credits, person/character
+  detail) that runs as separate cron jobs.
+  1. **Shared budget = `request_log`.** The standalone script's
+     per-resource hourly cap now reads from and writes to the existing
+     `request_log` table (the same ledger the app's `Budget` uses),
+     keyed by the request path's first segment lowercased
+     (`resource_of`), instead of an in-memory count. A list fetch
+     (`issues`) and a detail fetch (`issue`) are separate budgets,
+     matching CV's per-path cap. Independent runs (a forward-update
+     cron and a rich-backfill cron) therefore share one durable budget.
+     A `scripts/cvcache usage` command reports per-resource last-hour,
+     remaining, total, and last-request time from the ledger.
+  2. **Schema v8: `sync_state (endpoint, mode)`.** The watermark table
+     gains a `mode` column; the primary key becomes `(endpoint, mode)`.
+     `list` is the ADR-075 list-sweep watermark (existing v7 rows
+     migrate to it); `rich_forward` (a date watermark) and
+     `rich_backfill` (a cursor over never-enriched local rows) drive the
+     rich modes. The v7->v8 migration rebuilds the table (SQLite cannot
+     change a primary key in place) and re-inserts the old rows as
+     `list`; MEASURED on a copy of the live cache, the four watermarks
+     survive intact. The `cvcache_schema_pin` gate passes both
+     directions at v8. This part is a cross-crate change: the Rust
+     `sqlite.rs` DDL/migration/accessors, the `import.rs` merge arm, and
+     the Python `schema.py`/`merge.py`/`update.py`/`adapter.py` all move
+     together, because the DDL is pinned across the app and the script.

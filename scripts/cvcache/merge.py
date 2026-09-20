@@ -391,28 +391,31 @@ def _merge_sweep_state(live, source, report):
 def _merge_sync_state(live, source, report):
     table = report.table("sync_state")
     rows = source.execute(
-        "SELECT endpoint, last_sync, resume_state FROM sync_state"
+        "SELECT endpoint, mode, last_sync, resume_state FROM sync_state"
     ).fetchall()
-    for endpoint, last_sync, resume_state in rows:
+    for endpoint, mode, last_sync, resume_state in rows:
         if endpoint is None or last_sync is None:
             table.rejected += 1
             continue
+        if mode is None:
+            mode = "list"
         stored = live.execute(
-            "SELECT last_sync FROM sync_state WHERE endpoint = ?", (endpoint,)
+            "SELECT last_sync FROM sync_state WHERE endpoint = ? AND mode = ?",
+            (endpoint, mode),
         ).fetchone()
         if stored is None:
             live.execute(
-                "INSERT INTO sync_state (endpoint, last_sync, resume_state) "
-                "VALUES (?, ?, ?)",
-                (endpoint, last_sync, resume_state),
+                "INSERT INTO sync_state (endpoint, mode, last_sync, resume_state) "
+                "VALUES (?, ?, ?, ?)",
+                (endpoint, mode, last_sync, resume_state),
             )
             table.added += 1
         # The API `YYYY-MM-DD` form sorts lexically; the newer wins.
         elif last_sync > stored[0]:
             live.execute(
                 "UPDATE sync_state SET last_sync = ?, resume_state = ? "
-                "WHERE endpoint = ?",
-                (last_sync, resume_state, endpoint),
+                "WHERE endpoint = ? AND mode = ?",
+                (last_sync, resume_state, endpoint, mode),
             )
             table.updated += 1
         else:

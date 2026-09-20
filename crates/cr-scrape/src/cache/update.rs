@@ -137,7 +137,7 @@ fn today() -> String {
 
 /// Reads the stored watermark and resume offset for one endpoint.
 fn watermark(cache: &dyn CvCache, endpoint: &str) -> (String, i64) {
-    let Some(state) = cache.sync_state(endpoint).ok().flatten() else {
+    let Some(state) = cache.sync_state(endpoint, "list").ok().flatten() else {
         return (FLOOR_DATE.to_string(), 0);
     };
     let since = if state.last_sync.trim().is_empty() {
@@ -158,6 +158,7 @@ fn save_watermark(cache: &dyn CvCache, endpoint: &str, last_sync: &str, offset: 
     let resume_state = offset.map(|o| format!("{{\"offset\":{o}}}"));
     let _ = cache.put_sync_state(&SyncState {
         endpoint: endpoint.to_string(),
+        mode: "list".to_string(),
         last_sync: last_sync.to_string(),
         resume_state,
     });

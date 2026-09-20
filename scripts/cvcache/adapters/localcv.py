@@ -310,6 +310,7 @@ class LocalCvAdapter:
                 "sync_state",
                 {
                     "endpoint": endpoint,
+                    "mode": "list",
                     "last_sync": last_sync,
                     "resume_state": r["resume_state"],
                 },

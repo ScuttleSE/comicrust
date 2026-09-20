@@ -141,12 +141,26 @@ pub struct SweepState {
 /// date an endpoint is caught up through — the start of the next
 /// update window. `resume_state` is an opaque JSON cursor a run that
 /// stops mid-window saves, so the next run continues. `sweep_state`
-/// stays the in-window page cursor for the `/issues` sweep.
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+/// stays the in-window page cursor for the `/issues` sweep. `mode`
+/// (schema v8) selects which cursor: `list` is the ADR-075 list sweep;
+/// `rich_forward` / `rich_backfill` drive detail enrichment.
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SyncState {
     pub endpoint: String,
+    pub mode: String,
     pub last_sync: String,
     pub resume_state: Option<String>,
+}
+
+impl Default for SyncState {
+    fn default() -> Self {
+        Self {
+            endpoint: String::new(),
+            mode: "list".to_string(),
+            last_sync: String::new(),
+            resume_state: None,
+        }
+    }
 }
 
 /// The store behind the scraper. `SqliteCache` is the only
@@ -213,7 +227,7 @@ pub trait CvCache: Send + Sync {
 
     /// The per-endpoint update watermark (ADR-075), or `None` when the
     /// endpoint has never synced.
-    fn sync_state(&self, endpoint: &str) -> Result<Option<SyncState>, CacheError>;
+    fn sync_state(&self, endpoint: &str, mode: &str) -> Result<Option<SyncState>, CacheError>;
 
     /// Inserts or updates one endpoint's watermark.
     fn put_sync_state(&self, state: &SyncState) -> Result<(), CacheError>;

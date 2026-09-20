@@ -361,12 +361,15 @@ def _today() -> str:
     return datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
 
-def _read_watermark(live: sqlite3.Connection, endpoint: str) -> tuple[str, int]:
+def _read_watermark(
+    live: sqlite3.Connection, endpoint: str, mode: str = "list"
+) -> tuple[str, int]:
     """Returns (since_date, resume_offset). A first run with no row
     starts at a floor date; the caller may override with --since."""
     row = live.execute(
-        "SELECT last_sync, resume_state FROM sync_state WHERE endpoint = ?",
-        (endpoint,),
+        "SELECT last_sync, resume_state FROM sync_state "
+        "WHERE endpoint = ? AND mode = ?",
+        (endpoint, mode),
     ).fetchone()
     if row is None:
         return ("1970-01-01", 0)
@@ -460,14 +463,16 @@ def preflight(
 
 
 def _write_watermark(
-    live: sqlite3.Connection, endpoint: str, last_sync: str, resume: dict | None
+    live: sqlite3.Connection, endpoint: str, last_sync: str,
+    resume: dict | None, mode: str = "list",
 ) -> None:
     resume_json = json.dumps(resume) if resume is not None else None
     live.execute(
-        "INSERT INTO sync_state (endpoint, last_sync, resume_state) "
-        "VALUES (?, ?, ?) "
-        "ON CONFLICT(endpoint) DO UPDATE SET last_sync = ?, resume_state = ?",
-        (endpoint, last_sync, resume_json, last_sync, resume_json),
+        "INSERT INTO sync_state (endpoint, mode, last_sync, resume_state) "
+        "VALUES (?, ?, ?, ?) "
+        "ON CONFLICT(endpoint, mode) DO UPDATE SET "
+        "last_sync = ?, resume_state = ?",
+        (endpoint, mode, last_sync, resume_json, last_sync, resume_json),
     )
 
 

@@ -198,7 +198,7 @@ fn a_v2_cache_with_stored_details_backfills_the_typed_columns() {
     let version: i32 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .expect("version");
-    assert_eq!(version, 7);
+    assert_eq!(version, 8);
 
     let (aliases, deck, description, image_url, api_url, site_url, date_added, first_id, last_id): VolumeColumns =
         conn
@@ -317,7 +317,7 @@ fn the_v1_to_v4_chain_backfills_issue_details() {
     let version: i32 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .expect("version");
-    assert_eq!(version, 7);
+    assert_eq!(version, 8);
     let (volume_id, issue_number, cover_date, name): (
         Option<i64>,
         Option<String>,
@@ -355,7 +355,7 @@ fn malformed_detail_json_keeps_null_columns_and_still_migrates() {
     let version: i32 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .expect("version");
-    assert_eq!(version, 7);
+    assert_eq!(version, 8);
     let (aliases, first_id): (Option<String>, Option<i64>) = conn
         .query_row(
             "SELECT aliases, first_issue_id FROM volume WHERE volume_id = 771",
@@ -524,7 +524,7 @@ fn a_fresh_cache_opens_at_version_four() {
     let version: i32 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .expect("version");
-    assert_eq!(version, 7);
+    assert_eq!(version, 8);
     std::fs::remove_dir_all(&dir).ok();
 }
 

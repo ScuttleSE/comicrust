@@ -75,6 +75,7 @@ STAGE_COLUMNS = {
     ),
     "sync_state": (
         "endpoint",
+        "mode",
         "last_sync",
         "resume_state",
     ),

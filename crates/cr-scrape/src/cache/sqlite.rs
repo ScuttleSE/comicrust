@@ -21,7 +21,7 @@ use crate::cv::queries::parse_image_url;
 
 /// The schema version stored in `PRAGMA user_version`. Raise it and
 /// add a migration arm when the schema changes.
-const SCHEMA_VERSION: i32 = 7;
+const SCHEMA_VERSION: i32 = 8;
 
 const SCHEMA_V1: &str = r"
 CREATE TABLE IF NOT EXISTS volume (
@@ -265,6 +265,27 @@ CREATE TABLE IF NOT EXISTS sync_state (
 );
 ";
 
+/// Schema v8: the sync watermark gains a `mode` so one endpoint can
+/// carry several independent cursors. `list` is the ADR-075 list-sweep
+/// watermark (existing rows migrate to it); `rich_forward` and
+/// `rich_backfill` drive the rich detail enrichment (forward by date,
+/// backfill over never-enriched local rows). The primary key becomes
+/// `(endpoint, mode)`. SQLite cannot change a primary key in place, so
+/// the table is rebuilt and the old rows re-inserted as `list`.
+const SCHEMA_V8: &str = r"
+ALTER TABLE sync_state RENAME TO sync_state_v7;
+CREATE TABLE sync_state (
+    endpoint     TEXT NOT NULL,
+    mode         TEXT NOT NULL DEFAULT 'list',
+    last_sync    TEXT NOT NULL,
+    resume_state TEXT,
+    PRIMARY KEY (endpoint, mode)
+);
+INSERT INTO sync_state (endpoint, mode, last_sync, resume_state)
+    SELECT endpoint, 'list', last_sync, resume_state FROM sync_state_v7;
+DROP TABLE sync_state_v7;
+";
+
 fn db(e: rusqlite::Error) -> CacheError {
     CacheError::Db(e.to_string())
 }
@@ -297,6 +318,9 @@ pub(crate) fn migrate_connection(conn: &Connection) -> Result<(), CacheError> {
     }
     if version < 7 {
         conn.execute_batch(SCHEMA_V7).map_err(db)?;
+    }
+    if version < 8 {
+        conn.execute_batch(SCHEMA_V8).map_err(db)?;
     }
     if version != SCHEMA_VERSION {
         conn.pragma_update(None, "user_version", SCHEMA_VERSION)
@@ -1092,17 +1116,18 @@ impl CvCache for SqliteCache {
             .map_err(db)
     }
 
-    fn sync_state(&self, endpoint: &str) -> Result<Option<SyncState>, CacheError> {
+    fn sync_state(&self, endpoint: &str, mode: &str) -> Result<Option<SyncState>, CacheError> {
         self.lock()
             .query_row(
-                "SELECT endpoint, last_sync, resume_state
-                   FROM sync_state WHERE endpoint = ?1",
-                params![endpoint],
+                "SELECT endpoint, mode, last_sync, resume_state
+                   FROM sync_state WHERE endpoint = ?1 AND mode = ?2",
+                params![endpoint, mode],
                 |r| {
                     Ok(SyncState {
                         endpoint: r.get(0)?,
-                        last_sync: r.get(1)?,
-                        resume_state: r.get(2)?,
+                        mode: r.get(1)?,
+                        last_sync: r.get(2)?,
+                        resume_state: r.get(3)?,
                     })
                 },
             )
@@ -1113,12 +1138,17 @@ impl CvCache for SqliteCache {
     fn put_sync_state(&self, state: &SyncState) -> Result<(), CacheError> {
         self.lock()
             .execute(
-                "INSERT INTO sync_state (endpoint, last_sync, resume_state)
-                 VALUES (?1, ?2, ?3)
-                 ON CONFLICT(endpoint) DO UPDATE SET
+                "INSERT INTO sync_state (endpoint, mode, last_sync, resume_state)
+                 VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT(endpoint, mode) DO UPDATE SET
                    last_sync    = excluded.last_sync,
                    resume_state = excluded.resume_state",
-                params![state.endpoint, state.last_sync, state.resume_state],
+                params![
+                    state.endpoint,
+                    state.mode,
+                    state.last_sync,
+                    state.resume_state
+                ],
             )
             .map(|_| ())
             .map_err(db)
