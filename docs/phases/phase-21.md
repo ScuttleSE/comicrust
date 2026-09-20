@@ -2,8 +2,13 @@
 
 ## Status
 
-In progress. T1 through T7 are implemented and verified. T8 and T9
-remain.
+In progress. T1 through T8 are implemented and verified. Schema is at
+v6: v5 added the `issue_image` gallery (ADR-073); v6 added ComicTagger
+cover hashes and made ComicTagger the app's one hash algorithm
+(ADR-074). The full `localcv.db` is imported into the live cache at v6
+and validated against the live API (zero wrong values; see "Validation"
+below). Task C (the update pipeline, needs a new ADR) and T9 (user
+tests) remain.
 
 T7 implementation notes:
 - The sweep columns land as schema v4 (the correction note is in
@@ -76,8 +81,8 @@ fields, and Python scripts build and import cache files.
 
 | Fact | Where |
 |---|---|
-| One SQLite file, WAL mode, `user_version` 2 | `crates/cr-scrape/src/cache/sqlite.rs:15,116` |
-| Tables: `volume`, `issue_skeleton`, `issue_detail`, `image_blob`, `search_result`, `request_log`, `sweep_state`, `pending_issue_detail` | `sqlite.rs:17-86` |
+| One SQLite file, WAL mode, `user_version` 6 (was 2 at T7) | `crates/cr-scrape/src/cache/sqlite.rs` |
+| Tables: `volume`, `issue_skeleton`, `issue_detail`, `image_blob`, `search_result`, `request_log`, `sweep_state`, `pending_issue_detail`, the resource tables, `credit`, and `issue_image` (v5/v6) | `sqlite.rs` |
 | The volume merge uses COALESCE (an empty value never erases) | `sqlite.rs:362-399` |
 | The cache-manager update stores the full volume JSON and per-issue JSON | `sqlite.rs:213-278,324-358`, `cache/manage.rs` |
 | `search_result` and `image_blob` have no production writer or reader | searched `crates/` on 2026-09-20; only tests touch them |
@@ -200,8 +205,15 @@ fields, and Python scripts build and import cache files.
       pipeline that maintains cvcache, plus the in-app incremental
       refresh) remains open.
 - [ ] **T9 — Docs and user tests**: `docs/config-reference.md` rows for
-      the two new keys; user-test procedures in
-      `docs/open-user-tests.md`; `docs/current-status.md` updated.
+      the config keys are DONE (the two cache keys and the two
+      `MATCH_*` keys of ADR-074). Remaining: user-test procedures in
+      `docs/open-user-tests.md` — chiefly the automatcher parity test
+      (does the ComicTagger hash still auto-match correctly, ADR-074),
+      a backup-import round trip, and a cached-series scrape.
+- [ ] **Task C — Update pipeline** (new ADR): schema v7 `sync_state`,
+      the update-only script command, seeding from `cv_sync_metadata`,
+      the publisher filter, and the in-app "Update Comic Vine Cache"
+      wiring. See "Task C detail".
 
 ## Verification
 
@@ -325,11 +337,86 @@ with the real API `date_last_updated`, and merges. The same update
 must also live inside the app, wired to the existing "Update Comic Vine
 Cache" command (`crates/cr-ui/src/browser/shell.rs:5143`) and gated by
 the T4 offline/refresh switches. Design under a follow-up ADR. It is
-maintenance-only; a fresh build uses the app scrape or MCL `build`.
+maintenance-only; a fresh build uses the app scrape or MCL `build`. The
+full Task C brief is in the "Task C detail" section below.
 
 The MCL `build`/`merge` half does not depend on that input and can
 start without it. No populated cache file ships before the terms check
 (the first open issue).
+
+## Validation against the live API (MEASURED 2026-09-20, user session)
+
+A read-then-refresh check of 18 items — 2 to 3 each of volume, issue,
+publisher, person, character, team, story_arc, location — against the
+live Comic Vine API, using the user's key.
+
+- **Correctness: zero wrong values.** Every field cvcache stored
+  matched the API (name, publisher, start_year, count_of_issues,
+  cover_date, issue_number, and the rest). No corruption from the
+  import.
+- **The only gaps were fields localcv never carried:** `date_added`,
+  `date_last_updated`, and `api_detail_url` were empty in cvcache and
+  present in the API. The 18 sampled rows were refreshed from the API;
+  the other ~1.4M rows keep empty stamps until Task C fills them.
+- **Coverage (API fields cvcache does not pre-populate, by design —
+  ADR-070 fetches them on demand into `detail_json`):** `aliases`,
+  `deck`, `description`, `real_name`, `gender`, `origin`, `powers`,
+  `birth`/`death`, `country`, publisher `location_*`, and the credit
+  rollups (`characters`, `teams`, `volume_credits`,
+  `first_appearance_*`).
+- **API quirk:** CV's live responses carry typo field names
+  (`count_of_isssue_appearances`, `isssues_disbanded_in`). Match the
+  typos when parsing those.
+
+## Task C detail (written 2026-09-20, before any code)
+
+The takeover brief for Task C. It has a new ADR to write first, then a
+schema step, then the script and the app wiring.
+
+1. **New ADR** (next free number). Decide: schema v7 `sync_state`; the
+   update-only semantics; the app entry point; the publisher filter's
+   role. Append to `docs/decisions.md`.
+2. **Schema v7 — `sync_state`.** cvcache has NO per-endpoint sync
+   watermark today. `sweep_state` is a single-row issue-paging cursor,
+   not a change watermark, and covers only the sweep. Add:
+   ```sql
+   CREATE TABLE sync_state (
+       endpoint    TEXT PRIMARY KEY,
+       last_sync   TEXT NOT NULL,
+       resume_state TEXT
+   );
+   ```
+   modeled on localcv's `cv_sync_metadata`. Bump `SCHEMA_VERSION` to 7
+   in `crates/cr-scrape/src/cache/sqlite.rs` AND
+   `scripts/cvcache/schema.py`; add the pin column set; add the merge
+   arm (Rust `import.rs` + Python `merge.py`, newer `last_sync` wins).
+3. **Seed `sync_state` from `cv_sync_metadata`** in the localcv adapter
+   (`scripts/cvcache/adapters/localcv.py`), so the first update knows
+   the 2026-08-03 baseline instead of re-scanning everything. Map
+   `endpoint`/`last_sync_date`/`resume_state` straight across.
+4. **The update run** (`scripts/cvcache/` new command, e.g. `update`):
+   for each endpoint, read `sync_state.last_sync`, fetch
+   `/<endpoint>?filter=date_last_updated:<since>|<now>` paged, stamp
+   rows with the real API date, merge through the existing engine, then
+   write the new `last_sync`. Reuse the reference pipeline's chunking
+   (500) and resume shape (`IssueSyncResumeState`,
+   `sqlite_cv_pipeline_1.1.0.py:420`) — for structure only.
+5. **The publisher filter** (`scripts/cvcache/publishers.py`, Task B)
+   applies here at the volume level: an update honors the
+   whitelist/blacklist. This is the filter's intended use.
+6. **The in-app update.** Wire the same logic to the "Update Comic Vine
+   Cache" command (`crates/cr-ui/src/browser/shell.rs:5143`), on a
+   worker thread (Rule 9), gated by `CACHE_OFFLINE_ONLY` /
+   `CACHE_REFRESH_MODE` (T4). It stamps rows with real dates, so it is
+   the mechanism that fills the empty `date_last_updated` the
+   validation found.
+7. **Exclusions:** update-only. A fresh build still uses the app scrape
+   or MCL `build`. No populated cache file ships before the terms check.
+
+**Separate follow-up (NOT Task C):** the automatcher can read
+`issue_image.ahash` to skip a cover download on a cache hit (deferred
+from ADR-074; the hashes are stored, the matcher still recomputes).
+
 
 ## Completion record
 

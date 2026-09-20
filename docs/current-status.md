@@ -15,13 +15,16 @@ local-first scrape reads with a refresh switch and an offline mode; a
 backupable, mergeable cache file; the sweep expansion plus Python
 build and import scripts.
 
-T1 through T7 are done. T8 (`scripts/cvcache/`) is done for the merge
+T1 through T7 are done. T8 (`scripts/cvcache/`) is done: the merge
 engine, `build`/`merge`, the localcv import adapter (Task A), and the
-publisher filter (Task B); the gated `cvcache_schema_pin` cargo test
-passes both directions. Task C (an update pipeline that maintains
-`cvcache.sqlite` and an in-app incremental refresh) and T9 (docs and
-user tests) stay open. Phase 20 stays implemented with open user test
-26.
+publisher filter (Task B); the gated `cvcache_schema_pin` test passes
+both directions. Schema grew past the phase's original v4: v5 added the
+`issue_image` gallery (ADR-073), v6 added ComicTagger cover hashes and
+switched the app to one hash algorithm (ADR-074). The full `localcv.db`
+is imported into the live cache at v6 (verified by the user). Task C
+(an update pipeline that maintains `cvcache.sqlite` plus an in-app
+incremental refresh) and T9 (user tests) stay open. Phase 20 stays
+implemented with open user test 26.
 
 ## Latest user finding
 
@@ -45,22 +48,65 @@ scrape matched the selected book and three other books in the same series.
 
 ## Current task for the next context
 
-Phase 21 Task C and T9. Task C (ADR-072 follow-up): rebuild the update
+Phase 21 Task C (the update pipeline) and T9 (user tests). Read the
+"T8 detail" and "Task C detail" sections of `docs/phases/phase-21.md`
+first; ADR-069 through ADR-074 carry the decisions.
+
+**What is done (do not redo):**
+- The full `localcv.db` is imported into the live cache at
+  `user_version` 6. Galleries, credits, metadata, and ComicTagger
+  cover hashes (`issue_image.ahash`/`phash`, ~154k of 156k rows) are
+  all present. `PRAGMA integrity_check = ok`.
+- The app and the scripts share one hash algorithm (ComicTagger,
+  ADR-074). `MATCH_THRESHOLD` and `MATCH_SIMILARITY_MARGIN` are
+  config-tunable.
+
+**Validation done (MEASURED, user session 2026-09-20):** a live-API
+check of 18 items (2-3 each of volume, issue, publisher, person,
+character, team, story_arc, location) found ZERO wrong values in
+cvcache. Every stored field matched the API. The only gaps were fields
+localcv never had: `date_added`, `date_last_updated`, and
+`api_detail_url` — all empty because localcv carried no stamps. The
+18 sampled rows were refreshed from the API as a spot check; the other
+~1.4M rows still have empty stamps until an update run fills them.
+Coverage gap (API fields cvcache does not pre-populate, by design,
+fetched on demand into `detail_json` per ADR-070): `aliases`, `deck`,
+`description`, `real_name`, `gender`, `origin`, `powers`,
+`birth`/`death`, `country`, publisher `location_*`, and the credit
+rollups. Note: CV's live API has typo field names
+(`count_of_isssue_appearances`, `isssues_disbanded_in`).
+
+**Task C — the update pipeline (needs a new ADR).** Rebuild the update
 half of `sqlite_cv_pipeline_1.1.0.py` (reference only) to maintain
-`cvcache.sqlite` — an update-only run that fetches
-`/issues?filter=date_last_updated:...` since the last sync, stamps rows
-with the real API date, and merges through the same engine; the same
-update must also live in the app, wired to the "Update Comic Vine
-Cache" command and gated by the T4 switches. Design under a new ADR.
-T9: `docs/config-reference.md` rows for the two new keys, and the
-user-test procedures. Read the "T8 detail" section of
-`docs/phases/phase-21.md` for the recorded answers and the data gap.
+`cvcache.sqlite`, not `localcv.db`:
+1. Add a schema **v7 `sync_state`** table (per-endpoint last-sync
+   watermark), modeled on localcv's `cv_sync_metadata`
+   (`endpoint, last_sync, resume_state`). cvcache has NO equivalent
+   today: `sweep_state` is a single-row issue-paging cursor, not a
+   per-endpoint change watermark. Seed `sync_state` from
+   `cv_sync_metadata` during the localcv import so the first update
+   knows the 2026-08-03 baseline.
+2. An update-only run fetches `/issues?filter=date_last_updated:<since>
+   |<now>` (and the same for other endpoints), stamps rows with the
+   real API date, and merges through the existing engine. This is what
+   fills the empty `date_last_updated` across the library.
+3. The same update must live in the app, wired to the "Update Comic
+   Vine Cache" command (`crates/cr-ui/src/browser/shell.rs:5143`) and
+   gated by the T4 offline/refresh switches.
+4. The publisher whitelist/blacklist (`scripts/cvcache/publishers.py`,
+   Task B) applies here at the volume level — this is its intended use.
+
+**Also noted (separate follow-up, not Task C):** the automatcher can
+read `issue_image.ahash` to skip a cover download on a cache hit
+(deferred from ADR-074). And T9's config-reference rows for
+`MATCH_THRESHOLD`/`MATCH_SIMILARITY_MARGIN` are already written; T9's
+remaining part is user-test procedures.
 
 The one-off localcv import is available now:
 `python3 -m scripts.cvcache import-localcv --into <cvcache> --source
-<localcv.db> [--whitelist FILE] [--blacklist FILE]`. See
-`scripts/cvcache/README.md`. Always run it on a copy of the live cache
-first.
+<localcv.db>`. See `scripts/cvcache/README.md`. Always run it on a copy
+of the live cache first. The publisher filter flags are optional and
+reserved for the Task C probe workflow.
 
 When the user tests first: the `2000 AD` number `2498` retest (test 24)
 and the Missing Issues scope test (test 22) stay first in line, and
