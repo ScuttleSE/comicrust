@@ -2,8 +2,8 @@
 
 ## Status
 
-Planned. The decisions are recorded (ADR-069 through ADR-072). No code
-is written.
+In progress. T1 and T2 are implemented and verified (commits `57d4302`,
+`f6cd8a8`). T3 through T9 remain.
 
 ## Goal
 
@@ -109,12 +109,12 @@ fields, and Python scripts build and import cache files.
 
 ## Tasks
 
-- [ ] **T1 — Schema v3** (`crates/cr-scrape/src/cache/sqlite.rs`): the
+- [x] **T1 — Schema v3** (`crates/cr-scrape/src/cache/sqlite.rs`): the
       new tables and columns of ADR-070, plus the migration with the
       `detail_json` backfill. Acceptance: a v2 file with stored details
       migrates; the raw JSON text stays byte-identical; the v1→v2→v3
       chain passes; the new columns fill.
-- [ ] **T2 — Inline credits and resource upserts**: extract the credit
+- [x] **T2 — Inline credits and resource upserts**: extract the credit
       lists from issue and volume detail JSON into `credit` and the
       resource tables; extend the `CvCache` trait; make the complete
       issue write path store them. Acceptance: mock-server tests cover

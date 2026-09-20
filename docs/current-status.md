@@ -7,15 +7,17 @@ Do not append history. Git and `docs/archive/` hold history.
 
 **Phase 21: Comic Vine cache expansion.**
 
-Planned. The phase file is `docs/phases/phase-21.md`. The decisions are
-ADR-069 through ADR-072. No code is written yet.
+In progress. The phase file is `docs/phases/phase-21.md`. The decisions
+are ADR-069 through ADR-072.
 
 Four parts: schema v3 with every comic resource and row stamps;
 local-first scrape reads with a refresh switch and an offline mode; a
 backupable, mergeable cache file; the sweep expansion plus Python
 build and import scripts.
 
-Phase 20 stays implemented with open user test 26.
+T1 (schema v3) and T2 (inline credits and resource upserts) are done.
+Commits `57d4302` and `f6cd8a8`. Phase 20 stays implemented with open
+user test 26.
 
 ## Latest user finding
 
@@ -39,9 +41,11 @@ scrape matched the selected book and three other books in the same series.
 
 ## Current task for the next context
 
-Start Phase 21 at T1: schema v3 in
-`crates/cr-scrape/src/cache/sqlite.rs` (the tables, columns, migration,
-and backfill of ADR-070). Follow `docs/phases/phase-21.md`.
+Phase 21 T3: local-first reads (ADR-071). Route search, series
+details, issue detail, and images through the cache first in
+`cv/queries.rs` and `engine.rs`. Acceptance: a mock-server test
+scrapes a fully cached series with ZERO API requests. Follow
+`docs/phases/phase-21.md`.
 
 When the user tests first: the `2000 AD` number `2498` retest (test 24)
 and the Missing Issues scope test (test 22) stay first in line, and
@@ -90,21 +94,28 @@ licenses` is not a CI gate.
 
 ## Latest verification
 
-The proposed-cache contention fix passed on 2026-09-19.
+Phase 21 T1 and T2 passed on 2026-09-20.
 
 - `cargo fmt --all`: passed.
 - `cargo clippy --workspace --all-targets -- -D warnings`: passed.
-- `cargo test --workspace`: passed.
-- `MEASURED`: the 150,001-entry cache regression test passed.
-- `MEASURED`: the gauge worker ordering test passed.
-- `MEASURED`: stale gauge and gap worker cancellation tests passed.
-- `MEASURED`: the release gauge probe passed all gates with fresh isolated
-  data. A prior rerun reused mutated probe data and failed its value checks.
-- `MEASURED`: all direct users of the process-wide Incoming mutation guard now
-  use one test-local mutex. The transaction test binary and workspace pass.
-- `MEASURED` (user): the real-library propagation workflow completed in one to
-  two seconds and matched three other books in the series.
-- `UNKNOWN`: peak memory use on the real library was not measured.
+- `cargo test --workspace`: passed (59 suites ok).
+- `MEASURED`: the v2→v3 migration keeps the stored JSON byte-identical
+  and backfills the typed columns; the v1→v2→v3 chain passes; malformed
+  detail JSON keeps NULL columns and still migrates.
+- `MEASURED`: a mock-server complete update stores every credit marker
+  (`credit`, `first_appearance`, `died_in`, `disbanded`) and an
+  identical re-import stores the same rows.
+- `MEASURED`, one gate flake: `cr-engine --test incoming_transaction`
+  failed once inside a full workspace run and passed in two later runs
+  (alone and in the full workspace) on identical code. No cr-engine
+  code changed. The failing test name was not captured. Untreated.
+- `UNKNOWN`: the real API JSON shape of the `volume` `aliases` field
+  (string vs array). The v3 column stores it verbatim, which is
+  lossless either way. A real response settles it.
+- `MEASURED` (docs page, 2026-09-20): the issue resource documents
+  `characters_died_in`, and BOTH `teams_disbanded_in` and
+  `disbanded_teams` with the same meaning. The extractor reads both
+  disbanded keys and the first-appearance keys.
 
 ## Environment notes
 
