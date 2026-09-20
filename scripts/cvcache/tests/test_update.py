@@ -264,26 +264,6 @@ class Http420Test(unittest.TestCase):
         self.assertEqual(clock.slept, [])
 
 
-class NextFreeAtTest(unittest.TestCase):
-    def test_wake_target_adds_the_window_and_the_margin(self):
-        clock = _FakeClock()
-        clock.t = 10_000
-        c = _client(clock, on_cap="stop", max_per_hour=2)
-        # Two requests fill the budget; the oldest is at t=10000.
-        c._mem_calls["character"] = update.deque([10_000, 10_000])
-        free = c.next_free_at("character")
-        self.assertEqual(
-            free,
-            10_000 + update.RATE_WINDOW_SECONDS + update.WAKE_MARGIN_SECONDS,
-        )
-
-    def test_returns_none_when_under_budget(self):
-        clock = _FakeClock()
-        c = _client(clock, on_cap="stop", max_per_hour=2)
-        c._mem_calls["character"] = update.deque([10_000])
-        self.assertIsNone(c.next_free_at("character"))
-
-
 class ResourceKeyTest(unittest.TestCase):
     def test_resource_of_first_segment_lowercased(self):
         self.assertEqual(update.resource_of("issues"), "issues")
@@ -604,7 +584,7 @@ class RunAllSchedulerTest(unittest.TestCase):
         c.close()
         return path
 
-    def test_cycles_resources_then_sleeps_until_all_done(self):
+    def test_first_pass_then_cooldown_drains_the_capped_unit(self):
         import os
         from pathlib import Path
         path = self._tmpdb()
@@ -641,7 +621,7 @@ class RunAllSchedulerTest(unittest.TestCase):
             return script[key][i]
 
         orig = (update.rich_resource_forward, update.rich_issue_backfill,
-                update.rich_resource_backfill, update.CvClient.next_free_at)
+                update.rich_resource_backfill)
         clock = _FakeClock()
         update.rich_resource_forward = (
             lambda live_path, resource, **k: _serve(f"{resource}-f"))
@@ -649,9 +629,6 @@ class RunAllSchedulerTest(unittest.TestCase):
             lambda live_path, **k: _serve("issues-b"))
         update.rich_resource_backfill = (
             lambda live_path, resource, **k: _serve(f"{resource}-b"))
-        # When issues is capped, report it frees 100s from now.
-        update.CvClient.next_free_at = (
-            lambda self, res: clock.now() + 100 if res == "issue" else None)
         try:
             rep = update.run_all(
                 Path(path), api_key="k", make_backup=False,
@@ -659,39 +636,91 @@ class RunAllSchedulerTest(unittest.TestCase):
             )
         finally:
             (update.rich_resource_forward, update.rich_issue_backfill,
-             update.rich_resource_backfill, update.CvClient.next_free_at) = orig
+             update.rich_resource_backfill) = orig
             os.remove(path)
-        # It slept once, for the issue window (100s).
-        self.assertEqual(clock.slept, [100.0])
+        cooldown = update.RATE_WINDOW_SECONDS + update.WAKE_MARGIN_SECONDS
+        # It slept one cooldown before the capped issues re-run.
+        self.assertEqual(clock.slept, [cooldown])
         # Issues backfill ran twice (capped, then done after the sleep).
         self.assertEqual(sum(1 for k in order if k == "issues-b"), 2)
         # The combined issue total credited across cycles.
         self.assertEqual(rep.backfill["issues"].credited, 5)
         self.assertFalse(rep.reached_deadline)
 
-    def test_a_capped_unit_is_not_rerun_before_its_window_frees(self):
-        # A cycle where one resource drains while another stays capped
-        # must sleep before re-running the capped unit, not spin on it
-        # and burn requests rediscovering the cap.
+    def test_capped_unit_waits_a_full_cooldown_then_finishes(self):
         import os
         from pathlib import Path
         path = self._tmpdb()
         R = update.RichReport
-        # All forwards done. person backfill is done on the first try;
-        # character backfill is capped once, then done. So cycle 1 makes
-        # progress (person) yet leaves character capped.
+        script = {
+            "story_arc-f": [R(total=0)], "location-f": [R(total=0)],
+            "team-f": [R(total=0)], "person-f": [R(total=0)],
+            "volume-f": [R(total=0)], "character-f": [R(total=0)],
+            # issues backfill: capped this hour, then done after cooldown.
+            "issues-b": [R(total=5, fetched=0, credited=0, stopped_capped=True),
+                         R(total=5, fetched=5, credited=5)],
+            "story_arc-b": [R(total=0)], "location-b": [R(total=0)],
+            "team-b": [R(total=0)], "person-b": [R(total=0)],
+            "volume-b": [R(total=0)], "character-b": [R(total=0)],
+        }
+        idx = {k: 0 for k in script}
+        order = []
+
+        def _serve(key):
+            i = idx[key]
+            idx[key] = min(i + 1, len(script[key]) - 1)
+            order.append(key)
+            return script[key][i]
+
+        orig = (update.rich_resource_forward, update.rich_issue_backfill,
+                update.rich_resource_backfill)
+        clock = _FakeClock()
+        update.rich_resource_forward = (
+            lambda live_path, resource, **k: _serve(f"{resource}-f"))
+        update.rich_issue_backfill = (
+            lambda live_path, **k: _serve("issues-b"))
+        update.rich_resource_backfill = (
+            lambda live_path, resource, **k: _serve(f"{resource}-b"))
+        try:
+            rep = update.run_all(
+                Path(path), api_key="k", make_backup=False,
+                _sleep=clock.sleep, _wall=clock.now,
+            )
+        finally:
+            (update.rich_resource_forward, update.rich_issue_backfill,
+             update.rich_resource_backfill) = orig
+            os.remove(path)
+        cooldown = update.RATE_WINDOW_SECONDS + update.WAKE_MARGIN_SECONDS
+        # It slept exactly one cooldown before the capped issues re-run.
+        self.assertEqual(clock.slept, [cooldown])
+        self.assertEqual(sum(1 for k in order if k == "issues-b"), 2)
+        self.assertEqual(rep.backfill["issues"].credited, 5)
+        self.assertFalse(rep.reached_deadline)
+
+    def test_a_cap_with_no_request_count_still_gets_a_cooldown(self):
+        # The bug this fixes: a resource stopped by CV's HTTP 420 leaves
+        # the local request_log count untouched, so a count-based free
+        # time would say "ready now" and the scheduler would spin. The
+        # flat cooldown must apply even when the count shows room.
+        import os
+        from pathlib import Path
+        path = self._tmpdb()
+        R = update.RichReport
+        # character caps twice (as a 420 would, no count spent) before it
+        # finishes; every other unit is done immediately.
         script = {
             "story_arc-f": [R(total=0)], "location-f": [R(total=0)],
             "team-f": [R(total=0)], "person-f": [R(total=0)],
             "volume-f": [R(total=0)], "character-f": [R(total=0)],
             "issues-b": [R(total=0)],
             "story_arc-b": [R(total=0)], "location-b": [R(total=0)],
-            "team-b": [R(total=0)],
-            "person-b": [R(total=4, fetched=4, credited=4)],
+            "team-b": [R(total=0)], "person-b": [R(total=0)],
             "volume-b": [R(total=0)],
-            "character-b": [R(total=6, fetched=2, credited=2,
+            "character-b": [R(total=3, fetched=0, credited=0,
                               stopped_capped=True),
-                            R(total=4, fetched=4, credited=4)],
+                            R(total=3, fetched=0, credited=0,
+                              stopped_capped=True),
+                            R(total=3, fetched=3, credited=3)],
         }
         idx = {k: 0 for k in script}
         order = []
@@ -703,7 +732,7 @@ class RunAllSchedulerTest(unittest.TestCase):
             return script[key][i]
 
         orig = (update.rich_resource_forward, update.rich_issue_backfill,
-                update.rich_resource_backfill, update.CvClient.next_free_at)
+                update.rich_resource_backfill)
         clock = _FakeClock()
         update.rich_resource_forward = (
             lambda live_path, resource, **k: _serve(f"{resource}-f"))
@@ -711,8 +740,6 @@ class RunAllSchedulerTest(unittest.TestCase):
             lambda live_path, **k: _serve("issues-b"))
         update.rich_resource_backfill = (
             lambda live_path, resource, **k: _serve(f"{resource}-b"))
-        update.CvClient.next_free_at = (
-            lambda self, res: clock.now() + 50 if res == "character" else None)
         try:
             update.run_all(
                 Path(path), api_key="k", make_backup=False,
@@ -720,83 +747,12 @@ class RunAllSchedulerTest(unittest.TestCase):
             )
         finally:
             (update.rich_resource_forward, update.rich_issue_backfill,
-             update.rich_resource_backfill, update.CvClient.next_free_at) = orig
+             update.rich_resource_backfill) = orig
             os.remove(path)
-        # It slept once (the character window) before re-running it.
-        self.assertEqual(clock.slept, [50.0])
-        # character backfill ran exactly twice: capped, then done after
-        # the sleep — never spun mid-cycle.
-        self.assertEqual(sum(1 for k in order if k == "character-b"), 2)
-
-    def test_services_the_soonest_reset_resource_first(self):
-        # Two resources capped with different free times: the scheduler
-        # wakes for the sooner one first, then the later one.
-        import os
-        from pathlib import Path
-        path = self._tmpdb()
-        R = update.RichReport
-        script = {
-            "story_arc-f": [R(total=0)], "location-f": [R(total=0)],
-            "team-f": [R(total=0)], "person-f": [R(total=0)],
-            "volume-f": [R(total=0)], "character-f": [R(total=0)],
-            "issues-b": [R(total=0)],
-            "story_arc-b": [R(total=0)], "location-b": [R(total=0)],
-            "team-b": [R(total=0)], "volume-b": [R(total=0)],
-            # person frees later (200s); character frees sooner (50s).
-            "person-b": [R(total=2, fetched=0, credited=0,
-                            stopped_capped=True),
-                         R(total=2, fetched=2, credited=2)],
-            "character-b": [R(total=2, fetched=0, credited=0,
-                              stopped_capped=True),
-                            R(total=2, fetched=2, credited=2)],
-        }
-        idx = {k: 0 for k in script}
-        order = []
-
-        def _serve(key):
-            i = idx[key]
-            idx[key] = min(i + 1, len(script[key]) - 1)
-            order.append(key)
-            return script[key][i]
-
-        orig = (update.rich_resource_forward, update.rich_issue_backfill,
-                update.rich_resource_backfill, update.CvClient.next_free_at)
-        clock = _FakeClock()
-        update.rich_resource_forward = (
-            lambda live_path, resource, **k: _serve(f"{resource}-f"))
-        update.rich_issue_backfill = (
-            lambda live_path, **k: _serve("issues-b"))
-        update.rich_resource_backfill = (
-            lambda live_path, resource, **k: _serve(f"{resource}-b"))
-        free = {"person": 200, "character": 50}
-        start = clock.now()
-
-        def _next_free(self, res):
-            # An absolute wake target fixed at the run start (like the
-            # real oldest-in-window timestamp), so a later re-pick waits
-            # only the remaining time.
-            if res in free and order.count(f"{res}-b") < 2:
-                return start + free[res]
-            return None
-        update.CvClient.next_free_at = _next_free
-        try:
-            update.run_all(
-                Path(path), api_key="k", make_backup=False,
-                _sleep=clock.sleep, _wall=clock.now,
-            )
-        finally:
-            (update.rich_resource_forward, update.rich_issue_backfill,
-             update.rich_resource_backfill, update.CvClient.next_free_at) = orig
-            os.remove(path)
-        # Woke for the 50s (character) window first, then the 200s
-        # (person) window — but only the remaining 150s after the first
-        # sleep advanced the clock.
-        self.assertEqual(clock.slept, [50.0, 150.0])
-        # The second re-run of character came before person's re-run.
-        reruns = [k for k in order
-                  if k in ("character-b", "person-b")]
-        # First pass runs both (capped), then character done, then person.
-        self.assertEqual(reruns[-2:], ["character-b", "person-b"])
+        cooldown = update.RATE_WINDOW_SECONDS + update.WAKE_MARGIN_SECONDS
+        # Two caps, so two full cooldowns — never a zero-length spin.
+        self.assertEqual(clock.slept, [cooldown, cooldown])
+        self.assertEqual(sum(1 for k in order if k == "character-b"), 3)
 
 
 if __name__ == "__main__":

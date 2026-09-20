@@ -1293,3 +1293,24 @@ top of the rolling hour (`WAKE_MARGIN_SECONDS`, so a wake target is
 oldest-in-window + 3600 + 120s), so a wake never races CV's own count.
 The margin applies only to the scheduler's `next_free_at`; the
 single-resource `wait` path (`_throttle_for_budget`) is unchanged.
+
+## ADR-076 amendment 2: flat per-unit cooldown replaces count-based timing
+
+The count-based wake time (the prior amendment's `next_free_at`) read the
+local `request_log`. But CV returns HTTP 420 for a resource whose local
+count is tiny (MEASURED: `story_arc` and `volume` drew 420 after 0–2 of
+their own requests, right after a ~195-request `issue` burst). A 420 does
+not move the local count, so `next_free_at` reported the resource as free
+now and the scheduler re-picked it at once — a spin through repeated 420
+backoffs with no real cooldown. Why CV throttles a resource after so few
+of its own requests is UNKNOWN (not measured here).
+
+The scheduler no longer times waits from the local count. A unit that
+stops capped for any reason — hourly count or HTTP 420 — is deferred a
+flat cooldown of one rolling hour plus the 2-minute margin
+(`RATE_WINDOW_SECONDS + WAKE_MARGIN_SECONDS`, 3720s) before it is tried
+again. The queue holds each capped unit with its retry-at wall time; the
+scheduler sleeps until the soonest retry-at, runs that one unit, and
+re-defers it a full cooldown if it caps again. `next_free_at` is removed.
+The CLI wait message no longer claims "hourly cap"; it says
+"rate-limited", since a wait can be a 420 backoff.

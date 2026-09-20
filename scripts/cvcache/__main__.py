@@ -183,7 +183,7 @@ def _cmd_rich(args) -> int:
         )
 
     def on_wait(resource, seconds):
-        print(f"  {resource}: hourly cap reached, waiting {int(seconds)}s",
+        print(f"  {resource}: rate-limited, waiting {int(seconds)}s",
               flush=True)
 
     prog = None if args.quiet else progress
