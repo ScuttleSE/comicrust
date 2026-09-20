@@ -306,10 +306,11 @@ imported issues); no image blobs; no `concept`/`object` credits; no
 volume `deck`/`first_issue_id`/`last_issue_id`. Dropped with no v4
 target: `associated_images`, publisher `country`, numberless issues.
 
-**Task B (publisher filter) — DONE.** `scripts/cvcache/publishers.py`
-reads the four `# ID, Name` list files; the whitelist keeps only its
-ids, the blacklist drops its ids, applied at the volume level in the
-import (and to be reused by the Task C update).
+**Task B (publisher filter) — DONE, for future probe use.**
+`scripts/cvcache/publishers.py` reads the four `# ID, Name` list files;
+the whitelist keeps only its ids, the blacklist drops its ids. It is
+optional and is NOT used by the batch localcv import (which takes the
+whole database). It exists for the Task C probe-the-CV-API workflow.
 
 **Task C (update pipeline for cvcache) — OPEN.** Rebuild the update
 half of `sqlite_cv_pipeline_1.1.0.py` (reference only) to maintain

@@ -3,8 +3,12 @@
     python3 -m scripts.cvcache build   --out FILE MCL [MCL ...]
     python3 -m scripts.cvcache merge   --into FILE MCL [MCL ...]
     python3 -m scripts.cvcache import-localcv --into FILE --source localcv.db
-                                   [--whitelist FILE] [--blacklist FILE]
                                    [--no-backup]
+
+The one-off localcv import takes the whole database. The publisher
+filter (`--whitelist` / `--blacklist`) is optional and exists for a
+later probe-the-CV-API workflow, not for the batch import; leave it off
+to import everything.
 
 Run from the repository root so `scripts.cvcache` resolves.
 """
@@ -95,8 +99,8 @@ def main(argv=None) -> int:
     p_import = sub.add_parser("import-localcv", help="import a localcv.db")
     p_import.add_argument("--into", required=True)
     p_import.add_argument("--source", required=True)
-    p_import.add_argument("--whitelist")
-    p_import.add_argument("--blacklist")
+    p_import.add_argument("--whitelist", help="optional; for future probe use")
+    p_import.add_argument("--blacklist", help="optional; for future probe use")
     p_import.add_argument("--no-backup", action="store_true")
     p_import.set_defaults(func=_cmd_import_localcv)
 

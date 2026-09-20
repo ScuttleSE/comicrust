@@ -33,15 +33,13 @@ made first unless `--no-backup` is given.
 python3 -m scripts.cvcache import-localcv \
     --into  ~/.local/share/comicrust/plugins/comic-vine-scraper/cvcache.sqlite \
     --source /path/to/localcv.db \
-    [--whitelist publisher_whitelist.txt] \
-    [--blacklist publisher_blacklist.txt] \
     [--no-backup]
 ```
 
-A one-off import of a `sqlite_cv_pipeline` `localcv.db`. It migrates the
-live file to v4, stages the localcv rows, and merges them. A
-timestamped backup is made first unless `--no-backup` is given. Always
-try a copy of the live file first.
+A one-off import of a `sqlite_cv_pipeline` `localcv.db`. It takes the
+whole database, migrates the live file to v4, stages the localcv rows,
+and merges them. A timestamped backup is made first unless `--no-backup`
+is given. Always try a copy of the live file first.
 
 Mapping and limits (localcv holds no raw per-issue API JSON, no image
 blobs, and almost no per-row `date_last_updated`):
@@ -57,7 +55,10 @@ blobs, and almost no per-row `date_last_updated`):
 - Dropped (no v4 target): `associated_images`, publisher `country`,
   and any issue with no `issue_number` (the column is NOT NULL).
 
-## Publisher lists
+## Publisher lists (optional, for a future probe workflow)
+
+The batch import does not need these; it takes the whole database. The
+filter exists for a later probe-the-CV-API workflow (Task C).
 
 `--whitelist` keeps only the listed publisher ids; `--blacklist` drops
 them; both together apply the whitelist first, then the blacklist. The
