@@ -83,48 +83,105 @@ class CvClient:
     api_key: str
     delay_seconds: float = 1.0
     max_per_hour: int = MAX_PER_HOUR
+def resource_of(path: str) -> str:
+    """The budget key for a request path: the first non-empty path
+    segment, lowercased. Matches the app's `resource_of` (budget.rs), so
+    the script and the app share one `request_log` ledger. A list fetch
+    (`issues`, `people`) and a detail fetch (`issue`, `person`) are
+    separate keys, which matches CV's per-path cap."""
+    for seg in path.split("/"):
+        if seg:
+            return seg.lower()
+    return "unknown"
+
+
+@dataclass
+class CvClient:
+    api_key: str
+    delay_seconds: float = 1.0
+    max_per_hour: int = MAX_PER_HOUR
     safety_margin: int = SAFETY_MARGIN
     on_cap: str = "wait"  # "wait" (sleep until the window frees) or "stop"
+    # A live sqlite connection to the cache. When set, the per-resource
+    # hourly budget is read from and written to `request_log`, so
+    # independent runs (e.g. a forward cron and a backfill cron) share
+    # one durable budget. When None, the budget falls back to an
+    # in-memory count (used only in isolated tests).
+    ledger: object = None
     _last_call: float = 0.0
-    # A rolling one-hour deque of request timestamps per endpoint path.
-    _calls: dict = field(default_factory=dict)
+    _mem_calls: dict = field(default_factory=dict)  # fallback only
     # Injectable for tests; real code uses the wall/monotonic clock.
-    _now: object = time.monotonic
+    _mono: object = time.monotonic
+    _wall: object = time.time
     _sleep: object = time.sleep
-    on_wait: object = None  # optional callback(endpoint, seconds) before a sleep
+    on_wait: object = None  # optional callback(resource, seconds) before a sleep
 
     def _budget(self) -> int:
         return max(1, self.max_per_hour - self.safety_margin)
 
-    def _prune(self, endpoint: str, now: float) -> deque:
-        calls = self._calls.setdefault(endpoint, deque())
-        while calls and now - calls[0] >= RATE_WINDOW_SECONDS:
+    def _used_since(self, resource: str, since: int) -> int:
+        if self.ledger is not None:
+            row = self.ledger.execute(
+                "SELECT COUNT(*) FROM request_log WHERE resource = ? AND at >= ?",
+                (resource, since),
+            ).fetchone()
+            return int(row[0]) if row else 0
+        calls = self._mem_calls.setdefault(resource, deque())
+        while calls and calls[0] < since:
             calls.popleft()
-        return calls
+        return len(calls)
 
-    def _throttle_for_budget(self, endpoint: str) -> None:
-        """Enforces the per-endpoint hourly cap before a request. In
-        `wait` mode it sleeps until the oldest call in the window ages
-        out; in `stop` mode it raises RateLimitReached."""
+    def _oldest_since(self, resource: str, since: int) -> int | None:
+        if self.ledger is not None:
+            row = self.ledger.execute(
+                "SELECT MIN(at) FROM request_log WHERE resource = ? AND at >= ?",
+                (resource, since),
+            ).fetchone()
+            return int(row[0]) if row and row[0] is not None else None
+        calls = self._mem_calls.get(resource)
+        return int(calls[0]) if calls else None
+
+    def _record(self, resource: str, now: int) -> None:
+        if self.ledger is not None:
+            self.ledger.execute(
+                "INSERT INTO request_log (resource, at) VALUES (?, ?)",
+                (resource, now),
+            )
+            # Prune lazily so the log cannot grow without end.
+            self.ledger.execute(
+                "DELETE FROM request_log WHERE at < ?",
+                (now - int(RATE_WINDOW_SECONDS) * 2,),
+            )
+            self.ledger.commit()
+        else:
+            self._mem_calls.setdefault(resource, deque()).append(now)
+
+    def _throttle_for_budget(self, resource: str) -> None:
+        """Enforces the per-resource hourly cap before a request, using
+        the shared `request_log` ledger. In `wait` mode it sleeps until
+        the window frees; in `stop` mode it raises RateLimitReached."""
         while True:
-            now = self._now()
-            calls = self._prune(endpoint, now)
-            if len(calls) < self._budget():
+            now = int(self._wall())
+            since = now - int(RATE_WINDOW_SECONDS)
+            if self._used_since(resource, since) < self._budget():
                 return
             if self.on_cap == "stop":
-                raise RateLimitReached(endpoint, "(hourly budget)")
-            # wait: sleep until the oldest call leaves the window.
-            wait = RATE_WINDOW_SECONDS - (now - calls[0]) + 0.1
+                raise RateLimitReached(resource, "(hourly budget)")
+            oldest = self._oldest_since(resource, since) or now
+            wait = oldest + RATE_WINDOW_SECONDS + 1 - now
+            if wait <= 0:
+                continue
             if self.on_wait is not None:
-                self.on_wait(endpoint, wait)
+                self.on_wait(resource, wait)
             self._sleep(wait)
 
     def get(self, endpoint: str, params: dict) -> dict:
-        self._throttle_for_budget(endpoint)
+        resource = resource_of(endpoint)
+        self._throttle_for_budget(resource)
         query = {"api_key": self.api_key, "format": "json", **params}
         url = f"{API_BASE}/{endpoint}/?" + urllib.parse.urlencode(query)
         # A gentle self-imposed spacing avoids a burst inside the budget.
-        wait = self.delay_seconds - (self._now() - self._last_call)
+        wait = self.delay_seconds - (self._mono() - self._last_call)
         if wait > 0:
             self._sleep(wait)
         request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
@@ -135,11 +192,10 @@ class CvClient:
             # HTTP 429 is the transport-level throttle. Treat it as a
             # rate-limit stop for this endpoint, not a fatal error.
             if exc.code == 429:
-                raise RateLimitReached(endpoint, "(HTTP 429)") from exc
+                raise RateLimitReached(resource, "(HTTP 429)") from exc
             raise CvError(f"{endpoint}: HTTP {exc.code}") from exc
-        now = self._now()
-        self._last_call = now
-        self._calls.setdefault(endpoint, deque()).append(now)
+        self._last_call = self._mono()
+        self._record(resource, int(self._wall()))
         try:
             data = json.loads(body)
         except ValueError as exc:
@@ -152,7 +208,7 @@ class CvClient:
             # documented status is "rate limit exceeded" / status_code 107.
             text = str(error).lower()
             if "rate limit" in text or data.get("status_code") == 107:
-                raise RateLimitReached(endpoint, f"({error!r})")
+                raise RateLimitReached(resource, f"({error!r})")
             raise CvError(f"{endpoint}: API error {error!r}")
         return data
 
@@ -331,6 +387,47 @@ class EndpointEstimate:
     changed: int
 
 
+@dataclass
+class UsageRow:
+    resource: str
+    last_hour: int
+    remaining: int
+    last_request_at: int | None
+    total: int
+
+
+def usage(
+    live: sqlite3.Connection, max_per_hour: int = MAX_PER_HOUR
+) -> list[UsageRow]:
+    """Reads the shared `request_log` ledger and reports, per resource,
+    the requests in the last rolling hour, the remaining budget, the
+    last-touched time, and the lifetime total. This is the same ledger
+    the app writes, so it reflects every run (app or script)."""
+    now = int(time.time())
+    since = now - int(RATE_WINDOW_SECONDS)
+    rows = []
+    cursor = live.execute(
+        "SELECT resource, "
+        "SUM(CASE WHEN at >= ? THEN 1 ELSE 0 END) AS last_hour, "
+        "MAX(at) AS last_at, "
+        "COUNT(*) AS total "
+        "FROM request_log GROUP BY resource ORDER BY resource",
+        (since,),
+    )
+    for r in cursor:
+        last_hour = int(r[1] or 0)
+        rows.append(
+            UsageRow(
+                resource=r[0],
+                last_hour=last_hour,
+                remaining=max(0, max_per_hour - last_hour),
+                last_request_at=int(r[2]) if r[2] is not None else None,
+                total=int(r[3] or 0),
+            )
+        )
+    return rows
+
+
 def preflight(
     live: sqlite3.Connection,
     client: CvClient,
@@ -480,15 +577,16 @@ def run(
     on_preflight=None,
     dry_run: bool = False,
 ) -> UpdateReport:
+    report = UpdateReport()
+    live = commands.open_v4(live_path)
     client = CvClient(
         api_key=api_key,
         delay_seconds=delay_seconds,
         max_per_hour=max_per_hour,
         on_cap=on_cap,
         on_wait=on_wait,
+        ledger=live,
     )
-    report = UpdateReport()
-    live = commands.open_v4(live_path)
     try:
         # A cheap probe first: report the changed-row count per endpoint
         # so the run shows fetched-of-total, not just fetched-of-page.

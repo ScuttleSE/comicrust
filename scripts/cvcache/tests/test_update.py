@@ -115,8 +115,8 @@ class WatermarkTest(unittest.TestCase):
 
 
 class _FakeClock:
-    """A monotonic clock the test advances by hand. sleep() jumps the
-    clock forward instead of blocking, and records each sleep."""
+    """A wall clock the test advances by hand. sleep() jumps the clock
+    forward instead of blocking, and records each sleep."""
 
     def __init__(self):
         self.t = 1000.0
@@ -130,15 +130,17 @@ class _FakeClock:
         self.t += seconds
 
 
-def _client(clock, on_cap="wait", max_per_hour=10, safety_margin=0):
+def _client(clock, on_cap="wait", max_per_hour=10, safety_margin=0, ledger=None):
     c = update.CvClient(
         api_key="k",
         delay_seconds=0.0,
         max_per_hour=max_per_hour,
         safety_margin=safety_margin,
         on_cap=on_cap,
+        ledger=ledger,
     )
-    c._now = clock.now
+    c._wall = clock.now
+    c._mono = clock.now
     c._sleep = clock.sleep
     return c
 
@@ -147,9 +149,8 @@ class RateLimitTest(unittest.TestCase):
     def test_stop_mode_raises_at_budget(self):
         clock = _FakeClock()
         c = _client(clock, on_cap="stop", max_per_hour=3)
-        # Fill the budget by recording three timestamps directly.
         for _ in range(3):
-            c._calls.setdefault("issues", update.deque()).append(clock.now())
+            c._mem_calls.setdefault("issues", update.deque()).append(int(clock.now()))
         with self.assertRaises(update.RateLimitReached) as ctx:
             c._throttle_for_budget("issues")
         self.assertEqual(ctx.exception.endpoint, "issues")
@@ -157,18 +158,15 @@ class RateLimitTest(unittest.TestCase):
     def test_wait_mode_sleeps_until_window_frees(self):
         clock = _FakeClock()
         c = _client(clock, on_cap="wait", max_per_hour=2)
-        # Two calls at t=1000 fill the budget of 2.
-        c._calls["publishers"] = update.deque([1000.0, 1000.0])
+        c._mem_calls["publishers"] = update.deque([1000, 1000])
         c._throttle_for_budget("publishers")
-        # It must have slept about one full window past the oldest call.
         self.assertTrue(clock.slept)
         self.assertGreaterEqual(clock.slept[0], update.RATE_WINDOW_SECONDS)
 
     def test_budget_is_per_endpoint(self):
         clock = _FakeClock()
         c = _client(clock, on_cap="stop", max_per_hour=2)
-        c._calls["issues"] = update.deque([1000.0, 1000.0])
-        # issues is full, but publishers has its own empty budget.
+        c._mem_calls["issues"] = update.deque([1000, 1000])
         c._throttle_for_budget("publishers")  # must not raise
         with self.assertRaises(update.RateLimitReached):
             c._throttle_for_budget("issues")
@@ -176,10 +174,47 @@ class RateLimitTest(unittest.TestCase):
     def test_old_calls_leave_the_window(self):
         clock = _FakeClock()
         c = _client(clock, on_cap="stop", max_per_hour=1)
-        c._calls["people"] = update.deque([1000.0])
-        # Advance past the window; the stale call is pruned, budget frees.
-        clock.t = 1000.0 + update.RATE_WINDOW_SECONDS + 1
+        c._mem_calls["people"] = update.deque([1000])
+        clock.t = 1000 + update.RATE_WINDOW_SECONDS + 1
         c._throttle_for_budget("people")  # must not raise
+
+
+class ResourceKeyTest(unittest.TestCase):
+    def test_resource_of_first_segment_lowercased(self):
+        self.assertEqual(update.resource_of("issues"), "issues")
+        self.assertEqual(update.resource_of("/issue/4000-6/"), "issue")
+        self.assertEqual(update.resource_of("Character/4005-1"), "character")
+
+
+class SharedLedgerTest(unittest.TestCase):
+    def test_two_clients_share_the_request_log(self):
+        # A budget written by one client is seen by another on the same
+        # db, so a forward run and a backfill run share one budget.
+        live = _fresh()
+        clock = _FakeClock()
+        a = _client(clock, on_cap="stop", max_per_hour=3, ledger=live)
+        b = _client(clock, on_cap="stop", max_per_hour=3, ledger=live)
+        # Client A records three requests via the ledger.
+        for _ in range(3):
+            a._record("character", int(clock.now()))
+        # Client B, sharing the db, now sees the full budget and stops.
+        with self.assertRaises(update.RateLimitReached):
+            b._throttle_for_budget("character")
+
+    def test_usage_report_counts_from_request_log(self):
+        live = _fresh()
+        now = int(update.time.time())
+        live.executemany(
+            "INSERT INTO request_log (resource, at) VALUES (?, ?)",
+            [("issue", now), ("issue", now), ("person", now),
+             ("issue", now - 999999)],  # old row: total but not last hour
+        )
+        live.commit()
+        rows = {r.resource: r for r in update.usage(live, max_per_hour=200)}
+        self.assertEqual(rows["issue"].last_hour, 2)
+        self.assertEqual(rows["issue"].total, 3)
+        self.assertEqual(rows["issue"].remaining, 198)
+        self.assertEqual(rows["person"].last_hour, 1)
 
 
 class _FakeApiClient:

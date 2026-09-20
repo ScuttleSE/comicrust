@@ -122,6 +122,29 @@ def _cmd_update(args) -> int:
     return 0
 
 
+def _cmd_usage(args) -> int:
+    import datetime as _dt
+
+    live = commands.open_v4(Path(args.into))
+    try:
+        rows = update_mod.usage(live, args.max_per_hour)
+    finally:
+        live.close()
+    if not rows:
+        print("no API requests recorded yet.")
+        return 0
+    print(f"{'resource':<12} {'last hour':>9} {'remaining':>9} "
+          f"{'total':>9}  last request")
+    for r in rows:
+        when = (
+            _dt.datetime.fromtimestamp(r.last_request_at).isoformat(" ", "seconds")
+            if r.last_request_at is not None else "-"
+        )
+        print(f"{r.resource:<12} {r.last_hour:>9} {r.remaining:>9} "
+              f"{r.total:>9}  {when}")
+    return 0
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="cvcache")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -199,6 +222,18 @@ def main(argv=None) -> int:
         "per endpoint and exit without fetching",
     )
     p_update.set_defaults(func=_cmd_update)
+
+    p_usage = sub.add_parser(
+        "usage", help="show shared API request-log usage per resource"
+    )
+    p_usage.add_argument("--into", required=True)
+    p_usage.add_argument(
+        "--max-per-hour",
+        type=int,
+        default=update_mod.MAX_PER_HOUR,
+        help="the per-resource hourly cap used to compute remaining",
+    )
+    p_usage.set_defaults(func=_cmd_usage)
 
     args = parser.parse_args(argv)
     return args.func(args)

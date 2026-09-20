@@ -81,8 +81,14 @@ throttle saves its page offset in `sync_state.resume_state`, so the next
 run continues.
 
 The CV API is rate-limited (200 requests per resource per hour). The
-script counts requests per endpoint over a rolling hour and enforces the
-cap itself (`--max-per-hour`, default 200). At the cap it either waits
+script counts requests per resource over a rolling hour and enforces the
+cap itself (`--max-per-hour`, default 200). The count is stored in the
+shared `request_log` table — the same ledger the app writes — so
+independent runs share one durable budget (for example a forward-update
+cron and a backfill cron do not exceed the cap between them). The budget
+key is the request path's first segment, lowercased, so a list fetch
+(`issues`, `people`) and a detail fetch (`issue`, `person`) are separate
+budgets, matching CV's per-path cap. At the cap the script either waits
 for the window to free (`--on-cap wait`, the default, so a plain run
 self-completes over several hours) or stops the endpoint cleanly
 (`--on-cap stop`, resumable). A far-behind user can therefore run the
@@ -101,6 +107,18 @@ count per endpoint and exit without fetching — for example
 that date would fill. This display uses `rich`; install it with
 `pip install -r scripts/requirements.txt`. Without `rich`, or with
 `--quiet`, the command prints plain progress lines instead.
+
+### usage — show the shared API request budget
+
+```sh
+python3 -m scripts.cvcache usage --into cvcache.sqlite
+```
+
+Reads the `request_log` ledger and prints, per resource, the requests in
+the last rolling hour, the remaining budget, the lifetime total, and the
+last-request time. Because the app and every script run write the same
+ledger, this shows the true shared usage — useful before starting a cron
+job so it knows how much budget is left.
 
 ## Publisher lists (optional, for a future probe workflow)
 
