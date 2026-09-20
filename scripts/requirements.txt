@@ -4,3 +4,7 @@
 # command's live progress display uses rich; without it the command
 # falls back to plain text output.
 rich>=13.0
+# The `hashes` pass decodes covers and computes ComicTagger-compatible
+# perceptual hashes; Pillow provides the exact resample/grayscale that
+# reproduces the stored hash values.
+Pillow>=10.0

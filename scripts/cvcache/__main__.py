@@ -195,6 +195,26 @@ def _cmd_rich(args) -> int:
     return 0
 
 
+def _cmd_hashes(args) -> int:
+    def progress(report, image_id):
+        print(
+            f"  image {image_id:>9}  hashed={report.hashed} failed={report.failed}",
+            flush=True,
+        )
+
+    report = update_mod.hash_backfill(
+        Path(args.into),
+        max_images=args.max,
+        delay_seconds=args.delay,
+        all_images=args.all_images,
+        make_backup=not args.no_backup,
+        on_progress=None if args.quiet else progress,
+    )
+    state = "stopped early (resumable)" if report.stopped_capped else "done"
+    print(f"hashes: hashed={report.hashed} failed={report.failed} — {state}")
+    return 0
+
+
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(prog="cvcache")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -319,6 +339,27 @@ def main(argv=None) -> int:
     p_rich.add_argument("--quiet", action="store_true")
     p_rich.add_argument("--no-backup", action="store_true")
     p_rich.set_defaults(func=_cmd_rich)
+
+    p_hash = sub.add_parser(
+        "hashes", help="download covers and fill ComicTagger cover hashes"
+    )
+    p_hash.add_argument("--into", required=True)
+    p_hash.add_argument(
+        "--max", type=int,
+        help="stop after N images this run (resumable)",
+    )
+    p_hash.add_argument(
+        "--delay", type=float, default=0.3,
+        help="seconds between image downloads (CDN politeness; not the "
+        "API budget, which images do not use)",
+    )
+    p_hash.add_argument(
+        "--all-images", action="store_true",
+        help="hash every gallery image, not just the front cover",
+    )
+    p_hash.add_argument("--quiet", action="store_true")
+    p_hash.add_argument("--no-backup", action="store_true")
+    p_hash.set_defaults(func=_cmd_hashes)
 
     args = parser.parse_args(argv)
     return args.func(args)

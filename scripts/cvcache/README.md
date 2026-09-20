@@ -168,6 +168,25 @@ as-is. Each detail fetch uses the singular path budget (`/character`,
 (tens to hundreds of thousands of rows) and is meant to run as a cron
 slice over many sessions; forward is cheap and keeps the data current.
 
+### hashes — fill ComicTagger cover hashes
+
+```sh
+python3 -m scripts.cvcache hashes --into cvcache.sqlite \
+    [--max 2000] [--delay 0.3] [--all-images] [--quiet] [--no-backup]
+```
+
+Downloads cover images and fills the ComicTagger `ahash`, `dhash`, and
+`phash` on `issue_image` rows that have none. By default it hashes only
+the front cover of each issue (the lowest `image_id` per issue, what
+ComicTagger cover-matching uses); `--all-images` hashes the whole
+gallery. The hashes are byte-identical to the values in the reference
+`localcv.db` (MEASURED: Hamming 0), because this uses Pillow — the same
+library ComicTagger runs on. Image downloads hit the CV image CDN, not
+the API, so this pass does **not** spend the API rate-limit budget
+(MEASURED: no API path counter moves); it paces itself with `--delay`
+and is resumable through a `hash_backfill` cursor. Requires Pillow;
+install it with `pip install -r scripts/requirements.txt`.
+
 ## Publisher lists (optional, for a future probe workflow)
 
 The batch import does not need these; it takes the whole database. The

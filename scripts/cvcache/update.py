@@ -23,6 +23,7 @@ all four endpoints (publishers, people, volumes, issues).
 
 from __future__ import annotations
 
+import io
 import json
 import sqlite3
 import time
@@ -841,6 +842,106 @@ _RICH_RESOURCES = {
 
 def _detail_path(cfg: dict, rid: int) -> str:
     return f"{cfg['path']}/{cfg['prefix']}-{rid}"
+
+
+@dataclass
+class HashReport:
+    hashed: int = 0
+    failed: int = 0
+    stopped_capped: bool = False
+
+
+def _download(url: str, timeout: int = 60) -> bytes:
+    request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        return response.read()
+
+
+def hash_backfill(
+    live_path: Path,
+    max_images: int | None = None,
+    delay_seconds: float = 0.3,
+    all_images: bool = False,
+    make_backup: bool = True,
+    on_progress=None,
+) -> HashReport:
+    """Downloads issue cover images and fills the ComicTagger ahash,
+    dhash, and phash on `issue_image` rows that have none. By default it
+    hashes only the front cover of each issue (the lowest image_id per
+    issue, which is what ComicTagger cover-matching uses); `all_images`
+    hashes every gallery image. Image downloads hit the CV CDN, not the
+    API, so this pass does NOT spend the API budget (MEASURED: no API
+    path counter moves). It paces itself with a fixed delay and is
+    resumable through the `hash_backfill` cursor (the last image_id
+    done). Requires Pillow."""
+    from . import imagehasher
+
+    if not imagehasher.PIL_AVAILABLE:
+        raise CvError(
+            "the hashes pass needs Pillow (pip install -r scripts/requirements.txt)"
+        )
+    report = HashReport()
+    live = commands.open_v4(live_path)
+    if make_backup:
+        commands.backup(live_path)
+    try:
+        _, cursor = _read_watermark(live, "issue_image", "hash_backfill")
+        floor = cursor if cursor else 1 << 62
+        # Front cover only: the lowest image_id per issue. `all_images`
+        # drops that restriction.
+        front_clause = (
+            "" if all_images else
+            "AND image_id = (SELECT MIN(i2.image_id) FROM issue_image i2 "
+            "  WHERE i2.issue_id = issue_image.issue_id) "
+        )
+        last = 0.0
+        while True:
+            if max_images is not None and report.hashed + report.failed >= max_images:
+                report.stopped_capped = True
+                break
+            row = live.execute(
+                "SELECT image_id, original_url FROM issue_image "
+                "WHERE image_id < ? AND ahash IS NULL "
+                "AND original_url IS NOT NULL "
+                + front_clause +
+                "ORDER BY image_id DESC LIMIT 1",
+                (floor,),
+            ).fetchone()
+            if row is None:
+                break
+            image_id, url = int(row[0]), row[1]
+            floor = image_id
+            wait = delay_seconds - (time.monotonic() - last)
+            if wait > 0:
+                time.sleep(wait)
+            last = time.monotonic()
+            try:
+                data = _download(url)
+                image = imagehasher.Image.open(io.BytesIO(data))
+                ahash = str(imagehasher.average_hash(image))
+                dhash = str(imagehasher.difference_hash(image))
+                phash = str(imagehasher.perception_hash(image))
+            except Exception:
+                # A dead url or an undecodable image: skip, record, go on.
+                report.failed += 1
+                _write_watermark(live, "issue_image", "", {"offset": floor},
+                                 "hash_backfill")
+                live.commit()
+                continue
+            live.execute(
+                "UPDATE issue_image SET ahash = ?, dhash = ?, phash = ? "
+                "WHERE image_id = ?",
+                (ahash, dhash, phash, image_id),
+            )
+            report.hashed += 1
+            _write_watermark(live, "issue_image", "", {"offset": floor},
+                             "hash_backfill")
+            live.commit()
+            if on_progress is not None:
+                on_progress(report, image_id)
+    finally:
+        live.close()
+    return report
 
 
 def rich_resource_backfill(
