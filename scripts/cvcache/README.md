@@ -2,10 +2,36 @@
 
 Standard-library Python 3 tools for the Comic Vine cache file
 (`cvcache.sqlite`, ADR-037). One merge engine that mirrors
-`crates/cr-scrape/src/cache/import.rs`, a v4 schema pinned to
-`SCHEMA_V4` in `crates/cr-scrape/src/cache/sqlite.rs`, an adapter seam,
-and three commands. Run every command from the repository root so
-`scripts.cvcache` resolves.
+`crates/cr-scrape/src/cache/import.rs`, a schema (currently v8) pinned
+to `crates/cr-scrape/src/cache/sqlite.rs` by the `cvcache_schema_pin`
+gate, an adapter seam, and the commands below. Run every command from
+the repository root so `scripts.cvcache` resolves.
+
+Most commands are standard-library only. Two optional dependencies are
+declared in `scripts/requirements.txt`: `rich` (the `update` progress
+display) and `Pillow` (the `hashes` pass). Install with
+`pip install -r scripts/requirements.txt`.
+
+## Command overview
+
+| Command | What it does | API |
+|---|---|---|
+| `build` | Fresh cache file from MCL snapshots | none |
+| `merge` | Merge an MCL snapshot into a file | none |
+| `import-localcv` | One-off import of a `localcv.db` | none |
+| `update` | Sweep the list endpoints (publishers, people, volumes, issues) by `date_last_updated` | yes |
+| `rich` | Fetch per-resource detail (credits, images, `detail_json`); see modes below | yes |
+| `hashes` | Download covers, fill ComicTagger hashes | CDN only |
+| `usage` | Report the shared `request_log` budget | none |
+
+The `rich` modes:
+
+| `--mode` | Fills | Direction |
+|---|---|---|
+| `all` | forward every resource, then backfill until `--until` | both |
+| `issues-backfill` | issue `credit` + `issue_image` rows | backfill |
+| `person-backfill` `character-backfill` `volume-backfill` `team-backfill` `location-backfill` `story_arc-backfill` | resource `detail_json` for rows that have none | backfill |
+| `person-forward` `character-forward` `volume-forward` `team-forward` `location-forward` `story_arc-forward` | resource `detail_json` for rows changed since the watermark | forward |
 
 ## Commands
 
@@ -140,10 +166,12 @@ through the `rich_backfill` cursor in `sync_state`: a run stopped by
 done. The detail fetch uses the singular `/issue` path, a separate
 hourly budget from the `/issues` list, and shares the `request_log`
 ledger with every other run. A deleted or unknown id is skipped, not
-fatal. This is a slow background job — one request per issue — meant for
-a cron slice under the rate limit.
+fatal. It prints `remaining=<n>` per issue; `--max-pages N` caps a
+slice and `--until "HH:MM"` / `--for N` set a deadline. This is a slow
+background job — one request per issue — meant for a cron slice under
+the rate limit.
 
-### rich — enrich person, character, and volume detail
+### rich — enrich resource detail (person, character, volume, team, location, story_arc)
 
 ```sh
 # initial backfill: fill detail_json for rows that have none, newest first
@@ -155,18 +183,27 @@ python3 -m scripts.cvcache rich --into cvcache.sqlite --api-key YOUR_KEY \
     --mode character-forward
 ```
 
-`<resource>-backfill` (person, character, volume) fills the `detail_json`
-column for rows that have none, walking ids newest-first, resumable
-through the per-resource `rich_backfill` cursor. `<resource>-forward`
-uses the list endpoint's `date_last_updated` filter to find rows changed
-since the `rich_forward` watermark and re-fetches only the rows the cache
-already holds, advancing the watermark when caught up. Both store the
-full CV detail JSON (real_name, powers, origin, bio, birth/death, etc.)
-as-is. Each detail fetch uses the singular path budget (`/character`,
-`/person`, `/volume`), separate from the list budgets, shared through
-`request_log`. A deleted id is skipped. The initial backfill is large
-(tens to hundreds of thousands of rows) and is meant to run as a cron
-slice over many sessions; forward is cheap and keeps the data current.
+The six resources — **person, character, volume, team, location,
+story_arc** — each have a `-backfill` and a `-forward` mode (see the
+mode table above). `<resource>-backfill` fills the `detail_json` column
+for rows that have none, walking ids newest-first, resumable through the
+per-resource `rich_backfill` cursor. `<resource>-forward` uses the list
+endpoint's `date_last_updated` filter to find rows changed since the
+`rich_forward` watermark and re-fetches only the rows the cache already
+holds, advancing the watermark when caught up. Both store the full CV
+detail JSON (real_name, powers, origin, bio, birth/death, etc.) as-is.
+
+Each detail fetch uses the singular path budget (`/character`,
+`/person`, `/volume`, `/team`, `/location`, `/story_arc`), separate from
+the list budgets, shared through `request_log`. A deleted id is skipped.
+Each run prints `remaining=<n>` per item and a `remaining=<n> (of
+<total>)` summary. `--max-pages N` caps a slice; `--until "HH:MM"` /
+`--for N` set a wall-clock deadline. The initial backfill is large (tens
+to hundreds of thousands of rows) and runs as a cron slice over many
+sessions; forward is cheap and keeps the data current.
+
+To run every resource in one invocation, use `--mode all` (see "Running
+as a daily cron job").
 
 ### hashes — fill ComicTagger cover hashes
 
@@ -239,12 +276,8 @@ Check the shared budget any time (the app and every run write the same
 python3 -m scripts.cvcache usage --into cvcache.sqlite
 ```
 
-Run **`hashes` as a separate job** — it uses the image CDN, not the API,
-so it does not share or spend the API budget:
-
-```sh
-python3 -m scripts.cvcache hashes --into cvcache.sqlite --delay 0.3
-```
+`hashes` is a separate job (the 06:00 line above) because it uses the
+image CDN, not the API, so it does not share or spend the API budget.
 
 ## Publisher lists (optional, for a future probe workflow)
 The batch import does not need these; it takes the whole database. The
