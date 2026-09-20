@@ -9,7 +9,13 @@ use std::sync::Mutex;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::Value;
 
-use super::{CacheError, CvCache, IssueSkeleton, ManagedVolume, SweepState, VolumeRow};
+use super::resources::{
+    self, CreditMarker, CreditRef, OwnerKind, References, ResourceKind, ResourceRef,
+};
+use super::{
+    CacheError, CreditRow, CvCache, IssueSkeleton, ManagedVolume, ResourceRow, SweepState,
+    VolumeRow,
+};
 use crate::cv::queries::parse_image_url;
 
 /// The schema version stored in `PRAGMA user_version`. Raise it and
@@ -484,6 +490,11 @@ impl SqliteCache {
                 .map_err(db)?;
             }
         }
+        // The volume detail response carries its own credit lists and
+        // its inline publisher (ADR-070). Zero extra requests.
+        if let Some(references) = resources::extract_volume_references(detail_json) {
+            store_references_tx(&tx, OwnerKind::Volume, volume.volume_id, &references)?;
+        }
         tx.commit().map_err(db)
     }
 
@@ -578,6 +589,11 @@ impl SqliteCache {
             params![issue.volume_id, issue.issue_id],
         )
         .map_err(db)?;
+        // The issue detail response carries its credit lists (ADR-070).
+        // Zero extra requests.
+        if let Some(references) = resources::extract_issue_references(json) {
+            store_references_tx(&tx, OwnerKind::Issue, issue.issue_id, &references)?;
+        }
         tx.commit().map_err(db)
     }
 }
@@ -861,11 +877,199 @@ impl CvCache for SqliteCache {
             .map(|_| ())
             .map_err(db)
     }
+
+    fn put_resources(&self, resources: &[ResourceRef]) -> Result<(), CacheError> {
+        let mut conn = self.lock();
+        let tx = conn.transaction().map_err(db)?;
+        let fetched_at = now();
+        for resource in resources {
+            upsert_resource_tx(&tx, resource, fetched_at)?;
+        }
+        tx.commit().map_err(db)
+    }
+
+    fn put_credits(
+        &self,
+        owner: OwnerKind,
+        owner_id: i64,
+        credits: &[CreditRef],
+    ) -> Result<(), CacheError> {
+        let mut conn = self.lock();
+        let tx = conn.transaction().map_err(db)?;
+        replace_credits_tx(&tx, owner, owner_id, credits)?;
+        tx.commit().map_err(db)
+    }
+
+    fn credits_of(&self, owner: OwnerKind, owner_id: i64) -> Result<Vec<CreditRow>, CacheError> {
+        let conn = self.lock();
+        let mut stmt = conn
+            .prepare(
+                "SELECT resource_kind, resource_id, name, role, marker
+                   FROM credit WHERE owner_kind = ?1 AND owner_id = ?2
+                  ORDER BY marker, resource_kind, resource_id, name, role",
+            )
+            .map_err(db)?;
+        let rows = stmt
+            .query_map(params![owner.as_str(), owner_id], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, String>(4)?,
+                ))
+            })
+            .map_err(db)?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (kind, resource_id, name, role, marker) = row.map_err(db)?;
+            let kind = parse_resource_kind(&kind)
+                .ok_or_else(|| CacheError::Db(format!("unknown resource kind {kind}")))?;
+            let marker = parse_credit_marker(&marker)
+                .ok_or_else(|| CacheError::Db(format!("unknown credit marker {marker}")))?;
+            out.push(CreditRow {
+                owner_kind: owner,
+                owner_id,
+                kind,
+                resource_id,
+                name,
+                role,
+                marker,
+            });
+        }
+        Ok(out)
+    }
+
+    fn resource(&self, kind: ResourceKind, id: i64) -> Result<Option<ResourceRow>, CacheError> {
+        let conn = self.lock();
+        let table = kind.as_str();
+        conn.query_row(
+            &format!(
+                "SELECT id, name, image_url, date_last_updated, date_added,
+                        fetched_at, detail_json
+                   FROM {table} WHERE id = ?1"
+            ),
+            params![id],
+            |r| {
+                Ok(ResourceRow {
+                    kind,
+                    id: r.get(0)?,
+                    name: r.get(1)?,
+                    image_url: r.get(2)?,
+                    date_last_updated: r.get(3)?,
+                    date_added: r.get(4)?,
+                    fetched_at: r.get(5)?,
+                    detail_json: r.get(6)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(db)
+    }
 }
 
 /// The current time in unix seconds.
 fn now() -> i64 {
     chrono::Utc::now().timestamp()
+}
+
+// --- inline reference storage (ADR-070) ---
+//
+// The helpers take a connection so the write paths can run them
+// inside their own transaction. The table names come from the closed
+// `ResourceKind` enum, never from data.
+
+fn upsert_resource_tx(
+    conn: &Connection,
+    resource: &ResourceRef,
+    fetched_at: i64,
+) -> Result<(), CacheError> {
+    let table = resource.kind.as_str();
+    conn.execute(
+        &format!(
+            "INSERT INTO {table} (id, name, fetched_at)
+             VALUES (?1, ?2, ?3)
+             ON CONFLICT(id) DO UPDATE SET
+               name = COALESCE(excluded.name, name),
+               fetched_at = MAX(excluded.fetched_at, fetched_at)"
+        ),
+        params![resource.id, resource.name, fetched_at],
+    )
+    .map(|_| ())
+    .map_err(db)
+}
+
+fn replace_credits_tx(
+    conn: &Connection,
+    owner: OwnerKind,
+    owner_id: i64,
+    credits: &[CreditRef],
+) -> Result<(), CacheError> {
+    conn.execute(
+        "DELETE FROM credit WHERE owner_kind = ?1 AND owner_id = ?2",
+        params![owner.as_str(), owner_id],
+    )
+    .map(|_| ())
+    .map_err(db)?;
+    let mut stmt = conn
+        .prepare(
+            "INSERT INTO credit
+               (owner_kind, owner_id, resource_kind, resource_id, name, role, marker)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        )
+        .map_err(db)?;
+    for credit in credits {
+        stmt.execute(params![
+            owner.as_str(),
+            owner_id,
+            credit.kind.as_str(),
+            credit.resource_id.unwrap_or(0),
+            credit.name,
+            credit.role,
+            credit.marker.as_str(),
+        ])
+        .map_err(db)?;
+    }
+    Ok(())
+}
+
+/// Upserts the identified resources and replaces the credit rows of
+/// one owner, all on the caller's transaction.
+fn store_references_tx(
+    conn: &Connection,
+    owner: OwnerKind,
+    owner_id: i64,
+    references: &References,
+) -> Result<(), CacheError> {
+    let fetched_at = now();
+    for resource in &references.resources {
+        upsert_resource_tx(conn, resource, fetched_at)?;
+    }
+    replace_credits_tx(conn, owner, owner_id, &references.credits)
+}
+
+fn parse_resource_kind(name: &str) -> Option<ResourceKind> {
+    match name {
+        "character" => Some(ResourceKind::Character),
+        "person" => Some(ResourceKind::Person),
+        "team" => Some(ResourceKind::Team),
+        "story_arc" => Some(ResourceKind::StoryArc),
+        "location" => Some(ResourceKind::Location),
+        "concept" => Some(ResourceKind::Concept),
+        "object" => Some(ResourceKind::Object),
+        "publisher" => Some(ResourceKind::Publisher),
+        _ => None,
+    }
+}
+
+fn parse_credit_marker(name: &str) -> Option<CreditMarker> {
+    match name {
+        "credit" => Some(CreditMarker::Credit),
+        "first_appearance" => Some(CreditMarker::FirstAppearance),
+        "died_in" => Some(CreditMarker::DiedIn),
+        "disbanded" => Some(CreditMarker::Disbanded),
+        _ => None,
+    }
 }
 
 // --- typed-column extraction (ADR-070) ---

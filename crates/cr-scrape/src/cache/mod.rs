@@ -18,11 +18,14 @@ pub mod link;
 pub mod manage;
 pub mod mcl;
 pub mod missing;
+pub mod resources;
 mod sqlite;
 pub mod sweep;
 pub mod warm;
 
 pub use sqlite::SqliteCache;
+
+pub use resources::{CreditMarker, CreditRef, OwnerKind, References, ResourceKind, ResourceRef};
 
 use std::path::PathBuf;
 
@@ -66,6 +69,33 @@ pub struct IssueSkeleton {
     pub issue_number: String,
     pub cover_date: Option<String>,
     pub name: Option<String>,
+}
+
+/// One related resource in the cache (ADR-070). `detail_json` stays
+/// `None` until a full detail fetch fills it.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ResourceRow {
+    pub kind: ResourceKind,
+    pub id: i64,
+    pub name: Option<String>,
+    pub image_url: Option<String>,
+    pub date_last_updated: Option<String>,
+    pub date_added: Option<String>,
+    pub fetched_at: i64,
+    pub detail_json: Option<String>,
+}
+
+/// One credit row of an issue or volume (ADR-070). A resource id of
+/// zero means the inline reference carried no id.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct CreditRow {
+    pub owner_kind: OwnerKind,
+    pub owner_id: i64,
+    pub kind: ResourceKind,
+    pub resource_id: i64,
+    pub name: Option<String>,
+    pub role: Option<String>,
+    pub marker: CreditMarker,
 }
 
 /// One volume as the cache-manager dialog presents it (ADR-064).
@@ -153,6 +183,29 @@ pub trait CvCache: Send + Sync {
     fn sweep_state(&self) -> Result<Option<SweepState>, CacheError>;
 
     fn put_sweep_state(&self, state: &SweepState) -> Result<(), CacheError>;
+
+    // --- inline references (ADR-070) ---
+
+    /// Upserts the identified inline references of a detail response.
+    /// The merge rule is the store-wide one: an empty incoming value
+    /// never erases a stored value.
+    fn put_resources(&self, resources: &[ResourceRef]) -> Result<(), CacheError>;
+
+    /// Replaces the credit rows of one owner. The rows are derived
+    /// data of the owner's detail JSON, so a replace cannot lose
+    /// anything the owner no longer states.
+    fn put_credits(
+        &self,
+        owner: OwnerKind,
+        owner_id: i64,
+        credits: &[CreditRef],
+    ) -> Result<(), CacheError>;
+
+    /// The stored credit rows of one owner.
+    fn credits_of(&self, owner: OwnerKind, owner_id: i64) -> Result<Vec<CreditRow>, CacheError>;
+
+    /// One stored resource row, or `None`.
+    fn resource(&self, kind: ResourceKind, id: i64) -> Result<Option<ResourceRow>, CacheError>;
 }
 
 /// The cache policies that the scraper configuration asks for

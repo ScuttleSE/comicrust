@@ -1,6 +1,9 @@
 //! Gates for the Comic Vine disk cache (ADR-037, Phase 15 T1).
 
-use cr_scrape::cache::{CvCache, IssueSkeleton, SqliteCache, SweepState, VolumeRow};
+use cr_scrape::cache::{
+    CreditMarker, CreditRef, CvCache, IssueSkeleton, OwnerKind, ResourceKind, ResourceRef,
+    SqliteCache, SweepState, VolumeRow,
+};
 
 fn cache() -> SqliteCache {
     SqliteCache::in_memory().expect("in-memory cache opens")
@@ -372,6 +375,139 @@ fn malformed_detail_json_keeps_null_columns_and_still_migrates() {
     assert_eq!(issue_number, None);
     assert_eq!(volume_id, None);
     std::fs::remove_dir_all(&dir).ok();
+}
+
+// --- inline references (ADR-070, Phase 21 T2) ---
+
+#[test]
+fn the_reference_extraction_reads_all_three_list_shapes() {
+    use cr_scrape::cache::resources;
+
+    // the plain array form
+    let refs =
+        resources::extract_issue_references(r#"{"character_credits": [{"id":1,"name":"A"}]}"#)
+            .expect("extract");
+    assert_eq!(refs.resources.len(), 1);
+    assert_eq!(refs.credits.len(), 1);
+    assert_eq!(refs.credits[0].marker.as_str(), "credit");
+
+    // the wrapped object form, with a role for people
+    let refs = resources::extract_issue_references(
+        r#"{"person_credits": {"person": [{"id":2,"name":"B","role":"writer"}]}}"#,
+    )
+    .expect("extract");
+    assert_eq!(refs.credits[0].role.as_deref(), Some("writer"));
+
+    // a lone reference object
+    let refs =
+        resources::extract_issue_references(r#"{"team_credits": {"team": {"id":3,"name":"T"}}}"#)
+            .expect("extract");
+    assert_eq!(refs.credits.len(), 1);
+    assert_eq!(refs.credits[0].kind, ResourceKind::Team);
+
+    // a name-only reference becomes a credit without a resource id
+    let refs = resources::extract_issue_references(
+        r#"{"character_credits": {"character": [{"name":"Name Only"}]}}"#,
+    )
+    .expect("extract");
+    assert!(refs.resources.is_empty());
+    assert_eq!(refs.credits[0].resource_id, None);
+
+    // absent fields read as empty
+    let refs = resources::extract_issue_references(r#"{"id":5}"#).expect("extract");
+    assert!(refs.resources.is_empty());
+    assert!(refs.credits.is_empty());
+
+    // the volume extraction reads the publisher object
+    let refs = resources::extract_volume_references(
+        r#"{"publisher": {"id":7,"name":"Press"}, "team_credits": {"team": []}}"#,
+    )
+    .expect("extract");
+    assert_eq!(refs.resources[0].kind, ResourceKind::Publisher);
+    assert_eq!(refs.resources[0].id, Some(7));
+    assert!(refs.credits.is_empty());
+}
+
+#[test]
+fn a_credit_without_an_id_stores_with_resource_id_zero() {
+    let c = cache();
+    c.put_credits(
+        OwnerKind::Issue,
+        5,
+        &[CreditRef {
+            kind: ResourceKind::Character,
+            resource_id: None,
+            name: Some("Name Only".into()),
+            role: None,
+            marker: CreditMarker::Credit,
+        }],
+    )
+    .expect("write");
+    let rows = c.credits_of(OwnerKind::Issue, 5).expect("read");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].resource_id, 0);
+    // No resource row exists for an unidentified reference.
+    assert!(c
+        .resource(ResourceKind::Character, 0)
+        .expect("read")
+        .is_none());
+}
+
+#[test]
+fn a_resource_upsert_never_erases_a_stored_name() {
+    let c = cache();
+    c.put_resources(&[ResourceRef {
+        kind: ResourceKind::Character,
+        id: Some(9),
+        name: Some("Hero".into()),
+    }])
+    .expect("write");
+    c.put_resources(&[ResourceRef {
+        kind: ResourceKind::Character,
+        id: Some(9),
+        name: None,
+    }])
+    .expect("write");
+    let row = c
+        .resource(ResourceKind::Character, 9)
+        .expect("read")
+        .expect("row");
+    assert_eq!(row.name.as_deref(), Some("Hero"));
+    assert!(row.detail_json.is_none());
+}
+
+#[test]
+fn a_reimport_of_the_same_credits_is_idempotent() {
+    let c = cache();
+    let credits = vec![
+        CreditRef {
+            kind: ResourceKind::Person,
+            resource_id: Some(12),
+            name: Some("Writer".into()),
+            role: Some("writer".into()),
+            marker: CreditMarker::Credit,
+        },
+        CreditRef {
+            kind: ResourceKind::Character,
+            resource_id: Some(10),
+            name: Some("Sidekick".into()),
+            role: None,
+            marker: CreditMarker::DiedIn,
+        },
+    ];
+    c.put_credits(OwnerKind::Issue, 5, &credits).expect("write");
+    // A changed list replaces the rows of its owner only.
+    c.put_credits(OwnerKind::Issue, 5, &credits[..1])
+        .expect("rewrite");
+    let rows = c.credits_of(OwnerKind::Issue, 5).expect("read");
+    assert_eq!(rows.len(), 1);
+    assert_eq!(rows[0].name.as_deref(), Some("Writer"));
+    // Another owner keeps its rows.
+    c.put_credits(OwnerKind::Volume, 7, &credits)
+        .expect("write");
+    c.put_credits(OwnerKind::Issue, 5, &credits).expect("write");
+    assert_eq!(c.credits_of(OwnerKind::Volume, 7).expect("read").len(), 2);
+    assert_eq!(c.credits_of(OwnerKind::Issue, 5).expect("read").len(), 2);
 }
 
 #[test]

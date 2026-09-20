@@ -2,7 +2,7 @@ use std::io::{Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use cr_scrape::cache::manage::{self, UpdateMode, UpdatePhase};
-use cr_scrape::cache::{CvCache, IssueSkeleton, SqliteCache, VolumeRow};
+use cr_scrape::cache::{CvCache, IssueSkeleton, OwnerKind, ResourceKind, SqliteCache, VolumeRow};
 use cr_scrape::cv::connection::CvClient;
 
 struct Canned {
@@ -224,4 +224,174 @@ fn manual_metadata_can_create_and_clear_a_volume() {
     assert_eq!(cleared.name, None);
     assert_eq!(cleared.publisher, None);
     assert_eq!(cleared.start_year, None);
+}
+
+// --- inline references (ADR-070, Phase 21 T2) ---
+
+const CREDITS_VOLUME: &str = r#"{
+  "status_code":1,
+  "results":{
+    "id":806,"name":"Credits Series","start_year":"2001",
+    "count_of_issues":1,"date_last_updated":"2026-09-20 12:00:00",
+    "publisher":{"id":7,"name":"Example Press"},
+    "character_credits":[{"id":9,"name":"Hero"}],
+    "person_credits":{"person":[{"id":12,"name":"Series Writer","role":"writer"}]}
+  }
+}"#;
+
+const CREDITS_ISSUES: &str = r#"{
+  "status_code":1,"number_of_total_results":1,
+  "results":[
+    {"id":92643,"issue_number":"1","volume":{"id":806}}
+  ]
+}"#;
+
+/// One issue detail carrying every credit marker. The list shapes
+/// vary on purpose: the wrapped object form, the plain array, and a
+/// lone reference object all occur.
+const CREDITS_ISSUE: &str = r#"{
+  "status_code":1,
+  "results":{"id":92643,"issue_number":"1","name":"Credits",
+    "cover_date":"2001-01-01","store_date":"2000-12-10",
+    "volume":{"id":806},
+    "person_credits":{"person":[
+      {"id":12,"name":"Writer","role":"writer"},
+      {"id":13,"name":"Artist","role":"artist, cover"}]},
+    "character_credits":{"character":[{"id":9,"name":"Hero"},{"id":10,"name":"Sidekick"}]},
+    "team_credits":{"team":[{"id":20,"name":"The Team"}]},
+    "location_credits":{"location":[{"id":30,"name":"Gotham"}]},
+    "concept_credits":{"concept":[{"id":40,"name":"The Concept"}]},
+    "object_credits":{"object":[{"id":50,"name":"The Object"}]},
+    "story_arc_credits":{"story_arc":[{"id":60,"name":"The Arc"}]},
+    "characters_died_in":{"character":[{"id":10,"name":"Sidekick"}]},
+    "teams_disbanded_in":{"team":[{"id":20,"name":"The Team"}]},
+    "disbanded_teams":{"team":[{"id":21,"name":"Other Team"}]},
+    "first_appearance_characters":{"character":[{"id":11,"name":"New Hero"}]},
+    "first_appearance_storyarcs":{"story_arc":[{"id":61,"name":"New Arc"}]},
+    "first_appearance_teams":{"team":[{"id":22,"name":"New Team"}]}
+  }
+}"#;
+
+static CREDITS_RESPONSES: &[Canned] = &[
+    Canned {
+        path: "/volume/4050-806/",
+        body: CREDITS_VOLUME,
+    },
+    Canned {
+        path: "/issues/",
+        body: CREDITS_ISSUES,
+    },
+    Canned {
+        path: "/issue/4000-92643/",
+        body: CREDITS_ISSUE,
+    },
+];
+
+#[test]
+fn a_complete_update_stores_every_credit_marker() {
+    use std::collections::BTreeSet;
+
+    let cache = SqliteCache::in_memory().expect("cache");
+    let base = serve(CREDITS_RESPONSES);
+    let report = manage::update_volume(
+        &client(&base),
+        &cache,
+        806,
+        UpdateMode::Complete,
+        &AtomicBool::new(false),
+        |_| {},
+    )
+    .expect("complete update");
+    assert_eq!(report.issue_details, 1);
+
+    // Every marker of ADR-070 appears on the issue's credits.
+    let credits = cache
+        .credits_of(OwnerKind::Issue, 92_643)
+        .expect("issue credits");
+    let markers: BTreeSet<&str> = credits.iter().map(|c| c.marker.as_str()).collect();
+    assert_eq!(
+        markers,
+        BTreeSet::from(["credit", "died_in", "disbanded", "first_appearance"])
+    );
+
+    // People carry roles; the rest carry `None`.
+    let writer = credits
+        .iter()
+        .find(|c| c.name.as_deref() == Some("Writer"))
+        .expect("writer credit");
+    assert_eq!(writer.kind, ResourceKind::Person);
+    assert_eq!(writer.role.as_deref(), Some("writer"));
+    let hero = credits
+        .iter()
+        .find(|c| c.name.as_deref() == Some("Hero"))
+        .expect("hero credit");
+    assert_ne!(hero.kind, ResourceKind::Person);
+    assert_eq!(hero.role, None);
+
+    // The died-in sidekick is both a credit and a death, with the
+    // same resource id.
+    let died = credits
+        .iter()
+        .find(|c| c.marker.as_str() == "died_in")
+        .expect("died_in credit");
+    assert_eq!(died.resource_id, 10);
+
+    // The identified resources landed in their tables.
+    let character = cache
+        .resource(ResourceKind::Character, 11)
+        .expect("read")
+        .expect("first-appearance character");
+    assert_eq!(character.name.as_deref(), Some("New Hero"));
+    assert_eq!(character.detail_json, None, "no detail was fetched");
+    assert!(cache
+        .resource(ResourceKind::Publisher, 7)
+        .expect("read")
+        .is_some());
+    assert!(cache
+        .resource(ResourceKind::StoryArc, 61)
+        .expect("read")
+        .is_some());
+
+    // The volume's own credits and publisher landed too.
+    let volume_credits = cache
+        .credits_of(OwnerKind::Volume, 806)
+        .expect("volume credits");
+    assert!(volume_credits.iter().all(|c| c.marker.as_str() == "credit"));
+    assert!(volume_credits
+        .iter()
+        .any(|c| c.name.as_deref() == Some("Series Writer")));
+
+    // An idempotent re-import: the same update again stores the same
+    // rows.
+    let before_issue = cache
+        .credits_of(OwnerKind::Issue, 92_643)
+        .expect("issue credits");
+    let before_volume = cache
+        .credits_of(OwnerKind::Volume, 806)
+        .expect("volume credits");
+    manage::update_volume(
+        &client(&base),
+        &cache,
+        806,
+        UpdateMode::Complete,
+        &AtomicBool::new(false),
+        |_| {},
+    )
+    .expect("re-import");
+    assert_eq!(
+        cache
+            .credits_of(OwnerKind::Issue, 92_643)
+            .expect("issue credits"),
+        before_issue
+    );
+    assert_eq!(
+        cache
+            .credits_of(OwnerKind::Volume, 806)
+            .expect("volume credits"),
+        before_volume
+    );
+    assert!(cache
+        .resource(ResourceKind::Character, 9)
+        .expect("read")
+        .is_some());
 }
