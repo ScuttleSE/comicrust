@@ -8,7 +8,7 @@ Do not append history. Git and `docs/archive/` hold history.
 **Phase 21: Comic Vine cache expansion.**
 
 In progress. The phase file is `docs/phases/phase-21.md`. The decisions
-are ADR-069 through ADR-072.
+are ADR-069 through ADR-073.
 
 Four parts: schema v3 with every comic resource and row stamps;
 local-first scrape reads with a refresh switch and an offline mode; a
@@ -109,17 +109,18 @@ licenses` is not a CI gate.
 
 ## Latest verification
 
-Phase 21 T7 passed on 2026-09-20.
+Phase 21 T8 + schema v5 (ADR-073) passed on 2026-09-20.
 
-- `cargo fmt --all`: passed.
-- `cargo clippy --workspace --all-targets -- -D warnings`: passed.
-- `cargo test --workspace`: passed (60 suites ok).
-- `MEASURED`: the widened sweep page fills every list-level skeleton
-  column with ONE request for the page, records the inline volume
-  name, and upserts the inline publisher as a resource row.
-- `MEASURED`: the v1→v2→v3→v4 chain passes; a fresh open lands on
-  `user_version` 4; the v4 columns read back cleanly over pre-v4
-  rows (`fetched_at` is NOT NULL with a 0 default).
+- `cargo fmt --all`, `cargo clippy --workspace --all-targets --
+  -D warnings`, `cargo test --workspace` (61 suites ok): passed.
+- `CR_FORMAT_TESTS=1 cargo test -p cr-scrape --test
+  cvcache_schema_pin`: passed (app and scripts agree on the v5 DDL,
+  both directions).
+- `python3 -m unittest discover -s scripts/cvcache/tests`: 15 ok.
+- `MEASURED`: a full localcv import on a copy of the live cache filled
+  the v5 `issue_image` table (156,084 gallery rows; one multi-image
+  issue carried 80), reported the 28 numberless issue ids, and left
+  `PRAGMA integrity_check = ok` at `user_version` 5.
 - `UNKNOWN`: the exact inline sub-fields of the `volume` object in
   `/issues` responses. The reader takes `name` and a `publisher`
   sub-object when present; a real response settles the rest.

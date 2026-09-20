@@ -102,6 +102,55 @@ pub struct References {
     pub credits: Vec<CreditRef>,
 }
 
+/// One entry of an issue's `associated_images` gallery (ADR-073). The
+/// four keys are MEASURED on a real `localcv.db` and on the API issue
+/// detail: `id`, `original_url`, `caption`, `image_tags`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IssueImage {
+    pub image_id: i64,
+    pub original_url: String,
+    pub caption: Option<String>,
+    pub image_tags: Option<String>,
+}
+
+/// Extracts the `associated_images` gallery from an issue detail
+/// response. An entry with no id or no `original_url` is skipped: the
+/// table keys on the image id and requires the URL.
+pub fn extract_issue_images(json: &str) -> Vec<IssueImage> {
+    let Ok(value) = serde_json::from_str::<Value>(json) else {
+        return Vec::new();
+    };
+    let Some(items) = value.get("associated_images").and_then(Value::as_array) else {
+        return Vec::new();
+    };
+    let mut out = Vec::new();
+    for item in items {
+        let Some(image_id) = value_i64(item.get("id")) else {
+            continue;
+        };
+        let original_url = item
+            .get("original_url")
+            .and_then(Value::as_str)
+            .map(str::to_string);
+        let Some(original_url) = original_url.filter(|u| !u.is_empty()) else {
+            continue;
+        };
+        out.push(IssueImage {
+            image_id,
+            original_url,
+            caption: item
+                .get("caption")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            image_tags: item
+                .get("image_tags")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+        });
+    }
+    out
+}
+
 /// The inline references of one volume detail response: the six
 /// credit lists the volume field list fetches, plus the inline
 /// publisher object.

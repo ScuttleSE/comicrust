@@ -928,3 +928,71 @@ v3 in place: `issue_skeleton` gains `deck`, `description`, `store_date`,
 ADR-070. The exact sub-fields of the inline `volume` object remain
 UNKNOWN; the reader takes `name` and a `publisher` sub-object when the
 response carries them, and the merge rule protects stored values.
+
+---
+
+## ADR-073: Schema v5 — the per-issue image gallery (`issue_image`)
+
+- **Status:** accepted (2026-09-20).
+- **Context:** The Comic Vine issue resource carries a per-issue image
+  gallery beyond the one main cover. The `sqlite_cv_pipeline`
+  `localcv.db` stores it per issue as `associated_images`, a JSON
+  array. Each entry is MEASURED (156,119 entries sampled from a real
+  `localcv.db`) to carry exactly four keys: `id` (the image's own
+  Comic Vine id, globally unique), `original_url` (the full-size URL),
+  `caption` (a string or null; set on about 1.5% of entries), and
+  `image_tags` (a comma-joined tag string such as
+  `"All Images,Covers"`; 1,003 distinct combinations). The v4 schema
+  has no place for this list, so the localcv import dropped it (about
+  1.13 million issues). The API documents an issue's gallery under
+  detail-only fields; the LIST resource carries only the single `image`
+  object. The data file is the authoritative shape (AGENTS.md: the data
+  file wins over the docs page).
+- **Decision:** Add schema v5 with one table, `issue_image`, keyed on
+  the Comic Vine image id:
+
+  ```sql
+  CREATE TABLE issue_image (
+      image_id     INTEGER PRIMARY KEY,
+      issue_id     INTEGER NOT NULL,
+      original_url TEXT NOT NULL,
+      caption      TEXT,
+      image_tags   TEXT,
+      fetched_at   INTEGER NOT NULL DEFAULT 0
+  );
+  CREATE INDEX issue_image_issue ON issue_image (issue_id);
+  ```
+
+  1. **Image id is the primary key.** The Comic Vine image id is
+     globally unique across issues, so it dedupes cleanly and makes a
+     re-import idempotent, like the other id-keyed resource tables.
+  2. **`image_tags` stays the raw comma-joined string** the API sends,
+     as `credit.role` does. No tag table; the cache is disposable and
+     the round trip stays lossless.
+  3. **URLs only, no bytes.** The `image_blob` layer stays the separate
+     on-demand byte store. `issue_image` records the gallery URLs.
+  4. **Two writers.** The live scrape and the localcv import both fill
+     it. The scrape extracts `associated_images` from an issue detail
+     response inside `put_issue_detail` (the gallery is a detail-only
+     field, so the sweep's list pages do not carry it). The import
+     stages `issue_image` rows from the localcv column.
+  5. **Merge rule.** `issue_image` merges id-keyed under the ADR-069
+     rule with `fetched_at` alone (the entries carry no
+     `date_last_updated`): the newer `fetched_at` wins, an empty value
+     never erases, a tie keeps the stored row. The Rust engine
+     (`cache/import.rs`) and the Python engine
+     (`scripts/cvcache/merge.py`) both run the pass, and the schema pin
+     test adds `issue_image` so the two DDLs cannot drift.
+  6. **The v4→v5 migration** is a plain `CREATE TABLE`/`CREATE INDEX`
+     with no backfill. A re-run of the localcv import fills it.
+- **The numberless issues.** The localcv import still drops issues with
+  no `issue_number` (the column is NOT NULL and a number is
+  load-bearing for matching; inventing one is forbidden by the no-
+  invention rule). MEASURED: 28 such issues in the sampled `localcv.db`,
+  all single-issue graphic novels, sketchbooks, or specials. The import
+  report now lists their ids so the drop is visible, not silent. This
+  ADR does not change that policy.
+- **Consequences:** The distributed cache grows one row per gallery
+  image. No new API request: the scrape already fetches the issue
+  detail, and the import already reads the localcv row. A prune command
+  is still not in scope.

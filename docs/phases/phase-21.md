@@ -303,8 +303,11 @@ Recorded CV-data gap in localcv.db (not populated by the import): no
 `date_last_updated`/`date_added` on most rows; no raw issue JSON (so
 `issue_detail` and the automatcher's remote cover hash stay empty for
 imported issues); no image blobs; no `concept`/`object` credits; no
-volume `deck`/`first_issue_id`/`last_issue_id`. Dropped with no v4
-target: `associated_images`, publisher `country`, numberless issues.
+volume `deck`/`first_issue_id`/`last_issue_id`. Dropped with no
+target: publisher `country`, and numberless issues (28 in the sampled
+`localcv.db`; their ids are reported). The `associated_images` gallery
+is now imported into the v5 `issue_image` table (ADR-073), no longer
+dropped.
 
 **Task B (publisher filter) — DONE, for future probe use.**
 `scripts/cvcache/publishers.py` reads the four `# ID, Name` list files;

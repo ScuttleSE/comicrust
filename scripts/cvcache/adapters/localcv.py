@@ -9,11 +9,12 @@ per-row `date_last_updated`. So:
 - The credit JSON becomes `credit` rows plus resource-table rows
   (character, person, team, location, story_arc).
 - `cv_publisher` and `cv_person` become resource rows.
+- The `associated_images` JSON list becomes `issue_image` rows (ADR-073).
 - Every row's `date_last_updated` is empty and `fetched_at` is the
   import time, except issues found in `cv_issue_last_seen`, which take
   that stamp. A later real API fetch always wins on merge.
-- Dropped, with no v4 target: `associated_images`, publisher
-  `country`.
+- Dropped, with no v4/v5 target: publisher `country`, and issues with
+  no `issue_number` (the column is NOT NULL); their ids are reported.
 """
 
 from __future__ import annotations
@@ -44,6 +45,7 @@ class LocalCvAdapter:
     publisher_filter: object | None = None  # PublisherFilter or None
     name: str = "localcv"
     dropped: dict = field(default_factory=dict)
+    numberless_issue_ids: list = field(default_factory=list)
 
     def rows(self) -> Iterable[StagedRow]:
         conn = sqlite3.connect(f"file:{self.db_path}?mode=ro", uri=True)
@@ -160,11 +162,11 @@ class LocalCvAdapter:
             issue_number = r["issue_number"]
             if issue_number is None or issue_number == "":
                 # issue_number is NOT NULL in v4; a numberless issue is
-                # dropped and counted.
+                # dropped, counted, and its id reported.
                 self._drop("issue_no_number")
+                if len(self.numberless_issue_ids) < 1000:
+                    self.numberless_issue_ids.append(r["id"])
                 continue
-            if r["associated_images"]:
-                self._drop("associated_images")
             date_updated = last_seen.get(r["id"])
             yield StagedRow(
                 "issue_skeleton",
@@ -183,6 +185,7 @@ class LocalCvAdapter:
                 },
             )
             yield from self._emit_credits(r, seen_resources)
+            yield from self._emit_images(r)
 
     def _emit_credits(self, issue_row, seen_resources) -> Iterable[StagedRow]:
         issue_id = issue_row["id"]
@@ -224,6 +227,28 @@ class LocalCvAdapter:
                             "fetched_at": self.fetched_at,
                         },
                     )
+
+    def _emit_images(self, issue_row):
+        """Stages the issue's associated_images gallery as issue_image
+        rows (ADR-073). An entry with no id or no original_url is
+        skipped; the table keys on the image id and needs the URL."""
+        issue_id = issue_row["id"]
+        for entry in _parse_json_list(issue_row["associated_images"]):
+            image_id = _to_int(entry.get("id"))
+            url = entry.get("original_url")
+            if image_id is None or not url:
+                continue
+            yield StagedRow(
+                "issue_image",
+                {
+                    "image_id": image_id,
+                    "issue_id": issue_id,
+                    "original_url": url,
+                    "caption": entry.get("caption"),
+                    "image_tags": entry.get("image_tags"),
+                    "fetched_at": self.fetched_at,
+                },
+            )
 
     def _drop(self, reason: str) -> None:
         self.dropped[reason] = self.dropped.get(reason, 0) + 1

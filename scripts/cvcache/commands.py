@@ -19,8 +19,8 @@ from . import adapter, mcl, merge, schema
 
 
 def open_v4(path: Path, create: bool = False) -> sqlite3.Connection:
-    """Opens a cache file and brings it to v4. A missing file is an
-    error unless `create` is set."""
+    """Opens a cache file and brings it to the current schema (v5). A
+    missing file is an error unless `create` is set."""
     if not create and not path.exists():
         raise FileNotFoundError(path)
     conn = sqlite3.connect(path)
@@ -32,10 +32,11 @@ def open_v4(path: Path, create: bool = False) -> sqlite3.Connection:
 
 
 def _migrate_to_v4(conn: sqlite3.Connection) -> None:
-    """Runs the v4 DDL over a file at any version <= 4. The
-    `IF NOT EXISTS` DDL is idempotent, so a v2 or v3 file gains the
-    missing tables and columns without a backfill (the scripts do not
-    need the v3 typed-column backfill; the app already did it)."""
+    """Runs the current DDL over a file at any version <= the build's.
+    The `IF NOT EXISTS` DDL is idempotent, so a pre-v5 file gains the
+    missing tables and columns without a backfill (the app already ran
+    the v3 typed-column backfill). v5 adds the `issue_image` table,
+    which `create_schema` creates directly."""
     version = schema.user_version(conn)
     schema.create_schema(conn)
     _add_missing_columns(conn, version)

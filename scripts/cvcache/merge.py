@@ -124,6 +124,7 @@ def merge(live: sqlite3.Connection, source: sqlite3.Connection) -> ImportReport:
     for name in schema.RESOURCE_TABLES:
         _merge_resource(live, source, name, report)
     _merge_credits(live, source, report)
+    _merge_issue_images(live, source, report)
     return report
 
 
@@ -464,6 +465,49 @@ def _merge_credits(live, source, report):
             table.added += 1
         else:
             table.skipped += 1
+
+
+def _merge_issue_images(live, source, report):
+    table = report.table("issue_image")
+    rows = source.execute(
+        "SELECT image_id, issue_id, original_url, caption, image_tags, fetched_at "
+        "FROM issue_image"
+    ).fetchall()
+    for image_id, issue_id, original_url, caption, image_tags, fetched_at in rows:
+        if image_id is None or issue_id is None or _empty_text(original_url):
+            table.rejected += 1
+            continue
+        stored = live.execute(
+            "SELECT issue_id, original_url, caption, image_tags, fetched_at "
+            "FROM issue_image WHERE image_id = ?",
+            (image_id,),
+        ).fetchone()
+        if stored is None:
+            live.execute(
+                "INSERT INTO issue_image (image_id, issue_id, original_url, caption, "
+                "image_tags, fetched_at) VALUES (?, ?, ?, ?, ?, ?)",
+                (image_id, issue_id, original_url, caption, image_tags, fetched_at),
+            )
+            table.added += 1
+            continue
+        # No API stamp: fetched_at alone decides, empty never erases.
+        base = fetched_at > stored[4]
+        merged = (
+            merge_int(stored[0], issue_id, base),
+            merge_text(stored[1], original_url, base),
+            merge_text(stored[2], caption, base),
+            merge_text(stored[3], image_tags, base),
+            fetched_at if base else stored[4],
+        )
+        if merged == stored:
+            table.skipped += 1
+        else:
+            live.execute(
+                "UPDATE issue_image SET issue_id = ?, original_url = ?, caption = ?, "
+                "image_tags = ?, fetched_at = ? WHERE image_id = ?",
+                (*merged, image_id),
+            )
+            table.updated += 1
 
 
 def _placeholders(count: int) -> str:

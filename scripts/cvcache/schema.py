@@ -1,4 +1,4 @@
-"""The v4 cvcache schema, pinned to `SCHEMA_V4` in
+"""The v5 cvcache schema, pinned to `SCHEMA_V5` in
 `crates/cr-scrape/src/cache/sqlite.rs`.
 
 A file the app wrote and a file a script wrote must open in both
@@ -8,7 +8,7 @@ directions, so the DDL here mirrors the Rust migration chain
 
 import sqlite3
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 # The migration chain of `migrate_connection`, flattened to the v4
 # end state. `CREATE TABLE IF NOT EXISTS` matches the Rust arms.
@@ -119,6 +119,17 @@ CREATE UNIQUE INDEX IF NOT EXISTS credit_natural
                COALESCE(name, ''), COALESCE(role, ''), marker);
 CREATE INDEX IF NOT EXISTS credit_owner
     ON credit (owner_kind, owner_id);
+
+CREATE TABLE IF NOT EXISTS issue_image (
+    image_id     INTEGER PRIMARY KEY,
+    issue_id     INTEGER NOT NULL,
+    original_url TEXT NOT NULL,
+    caption      TEXT,
+    image_tags   TEXT,
+    fetched_at   INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS issue_image_issue
+    ON issue_image (issue_id);
 """
 
 # One table per related resource. The columns match RESOURCE_COLUMNS in

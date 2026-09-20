@@ -176,6 +176,7 @@ pub(crate) fn merge(live: &Connection, source: &Connection) -> Result<ImportRepo
         merge_resource(live, source, table, &mut report)?;
     }
     merge_credits(live, source, &mut report)?;
+    merge_issue_images(live, source, &mut report)?;
     Ok(report)
 }
 
@@ -1055,6 +1056,113 @@ fn merge_credits(
             table.added += 1;
         } else {
             table.skipped += 1;
+        }
+    }
+    Ok(())
+}
+
+// --- issue images (ADR-073) ---
+
+/// The stored side of one `issue_image` row, as the merge reads it.
+type StoredIssueImage = (
+    Option<i64>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    i64,
+);
+
+fn merge_issue_images(
+    live: &Connection,
+    source: &Connection,
+    report: &mut ImportReport,
+) -> Result<(), CacheError> {
+    let table = report.table("issue_image");
+    let mut stmt = source
+        .prepare(
+            "SELECT image_id, issue_id, original_url, caption, image_tags, fetched_at
+               FROM issue_image",
+        )
+        .map_err(db)?;
+    let rows = stmt
+        .query_map([], |r| {
+            Ok((
+                r.get::<_, Option<i64>>(0)?,
+                r.get::<_, Option<i64>>(1)?,
+                r.get::<_, Option<String>>(2)?,
+                r.get::<_, Option<String>>(3)?,
+                r.get::<_, Option<String>>(4)?,
+                r.get::<_, i64>(5)?,
+            ))
+        })
+        .map_err(db)?;
+    for row in rows {
+        let (image_id, issue_id, original_url, caption, image_tags, fetched_at) =
+            row.map_err(db)?;
+        let (Some(image_id), Some(issue_id), Some(original_url)) =
+            (image_id, issue_id, original_url)
+        else {
+            table.rejected += 1;
+            continue;
+        };
+        let stored: Option<StoredIssueImage> = live
+            .query_row(
+                "SELECT issue_id, original_url, caption, image_tags, fetched_at
+                   FROM issue_image WHERE image_id = ?1",
+                params![image_id],
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+            )
+            .optional()
+            .map_err(db)?;
+        let Some((s_issue, s_url, s_caption, s_tags, s_at)) = stored else {
+            live.execute(
+                "INSERT INTO issue_image
+                   (image_id, issue_id, original_url, caption, image_tags, fetched_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![
+                    image_id,
+                    issue_id,
+                    original_url,
+                    caption,
+                    image_tags,
+                    fetched_at
+                ],
+            )
+            .map_err(db)?;
+            table.added += 1;
+            continue;
+        };
+        // The entries carry no API stamp: fetched_at alone decides, and
+        // an empty value never erases.
+        let base_is_incoming = fetched_at > s_at;
+        let merged_issue = merge_int(&s_issue, &Some(issue_id), base_is_incoming);
+        let merged_url = merge_text(&s_url, &Some(original_url), base_is_incoming);
+        let merged_caption = merge_text(&s_caption, &caption, base_is_incoming);
+        let merged_tags = merge_text(&s_tags, &image_tags, base_is_incoming);
+        let merged_at = if base_is_incoming { fetched_at } else { s_at };
+        let same = s_issue == merged_issue
+            && s_url == merged_url
+            && s_caption == merged_caption
+            && s_tags == merged_tags
+            && s_at == merged_at;
+        if same {
+            table.skipped += 1;
+        } else {
+            live.execute(
+                "UPDATE issue_image SET issue_id = ?2, original_url = ?3,
+                   caption = ?4, image_tags = ?5, fetched_at = ?6
+                 WHERE image_id = ?1",
+                params![
+                    image_id,
+                    merged_issue,
+                    merged_url,
+                    merged_caption,
+                    merged_tags,
+                    merged_at
+                ],
+            )
+            .map_err(db)?;
+            table.updated += 1;
         }
     }
     Ok(())

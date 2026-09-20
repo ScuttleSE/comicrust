@@ -21,7 +21,7 @@ use crate::cv::queries::parse_image_url;
 
 /// The schema version stored in `PRAGMA user_version`. Raise it and
 /// add a migration arm when the schema changes.
-const SCHEMA_VERSION: i32 = 4;
+const SCHEMA_VERSION: i32 = 5;
 
 const SCHEMA_V1: &str = r"
 CREATE TABLE IF NOT EXISTS volume (
@@ -223,6 +223,23 @@ ALTER TABLE issue_skeleton ADD COLUMN site_detail_url TEXT;
 ALTER TABLE issue_skeleton ADD COLUMN fetched_at INTEGER NOT NULL DEFAULT 0;
 ";
 
+/// Schema v5 (ADR-073): the per-issue image gallery. The Comic Vine
+/// issue detail carries `associated_images`; each entry is keyed on
+/// its own globally unique image id. URLs only; `image_blob` stays the
+/// on-demand byte store.
+const SCHEMA_V5: &str = r"
+CREATE TABLE IF NOT EXISTS issue_image (
+    image_id     INTEGER PRIMARY KEY,
+    issue_id     INTEGER NOT NULL,
+    original_url TEXT NOT NULL,
+    caption      TEXT,
+    image_tags   TEXT,
+    fetched_at   INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS issue_image_issue
+    ON issue_image (issue_id);
+";
+
 fn db(e: rusqlite::Error) -> CacheError {
     CacheError::Db(e.to_string())
 }
@@ -246,6 +263,9 @@ pub(crate) fn migrate_connection(conn: &Connection) -> Result<(), CacheError> {
     }
     if version < 4 {
         conn.execute_batch(SCHEMA_V4).map_err(db)?;
+    }
+    if version < 5 {
+        conn.execute_batch(SCHEMA_V5).map_err(db)?;
     }
     if version != SCHEMA_VERSION {
         conn.pragma_update(None, "user_version", SCHEMA_VERSION)
@@ -896,6 +916,7 @@ impl CvCache for SqliteCache {
         if let Some(references) = resources::extract_issue_references(json) {
             store_references_tx(&tx, OwnerKind::Issue, issue_id, &references)?;
         }
+        store_issue_images_tx(&tx, issue_id, &resources::extract_issue_images(json))?;
         tx.commit().map_err(db)
     }
 
@@ -1238,6 +1259,45 @@ fn store_references_tx(
         upsert_resource_tx(conn, resource, fetched_at)?;
     }
     replace_credits_tx(conn, owner, owner_id, &references.credits)
+}
+
+/// Upserts an issue's `associated_images` gallery (ADR-073). The image
+/// id is the primary key; a re-scrape refreshes the URL and keeps the
+/// newer `fetched_at`. An empty gallery leaves the stored rows.
+fn store_issue_images_tx(
+    conn: &Connection,
+    issue_id: i64,
+    images: &[resources::IssueImage],
+) -> Result<(), CacheError> {
+    if images.is_empty() {
+        return Ok(());
+    }
+    let fetched_at = now();
+    let mut stmt = conn
+        .prepare(
+            "INSERT INTO issue_image
+               (image_id, issue_id, original_url, caption, image_tags, fetched_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+             ON CONFLICT(image_id) DO UPDATE SET
+               issue_id = excluded.issue_id,
+               original_url = excluded.original_url,
+               caption = COALESCE(excluded.caption, caption),
+               image_tags = COALESCE(excluded.image_tags, image_tags),
+               fetched_at = MAX(excluded.fetched_at, fetched_at)",
+        )
+        .map_err(db)?;
+    for image in images {
+        stmt.execute(params![
+            image.image_id,
+            issue_id,
+            image.original_url,
+            image.caption,
+            image.image_tags,
+            fetched_at,
+        ])
+        .map_err(db)?;
+    }
+    Ok(())
 }
 
 fn parse_resource_kind(name: &str) -> Option<ResourceKind> {

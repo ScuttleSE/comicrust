@@ -62,6 +62,14 @@ STAGE_COLUMNS = {
         "role",
         "marker",
     ),
+    "issue_image": (
+        "image_id",
+        "issue_id",
+        "original_url",
+        "caption",
+        "image_tags",
+        "fetched_at",
+    ),
 }
 for _name in schema.RESOURCE_TABLES:
     STAGE_COLUMNS[_name] = (
@@ -122,6 +130,13 @@ def _validate(row: StagedRow) -> str | None:
         for key in ("owner_kind", "owner_id", "resource_kind", "resource_id", "marker"):
             if _empty(values.get(key)):
                 return f"credit {key} is required"
+    elif row.table == "issue_image":
+        if not _is_int(values.get("image_id")):
+            return "image_id is not an integer"
+        if not _is_int(values.get("issue_id")):
+            return "issue_id is not an integer"
+        if _empty(values.get("original_url")):
+            return "original_url is required"
     else:
         if not _is_int(values.get("id")):
             return "resource id is not an integer"

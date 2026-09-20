@@ -62,6 +62,7 @@ const PINNED_TABLES: &[&str] = &[
     "sweep_state",
     "pending_issue_detail",
     "credit",
+    "issue_image",
     "character",
     "person",
     "team",
@@ -73,7 +74,7 @@ const PINNED_TABLES: &[&str] = &[
 ];
 
 #[test]
-fn app_and_scripts_agree_on_v4_schema() {
+fn app_and_scripts_agree_on_v5_schema() {
     if !python_available() {
         return;
     }
@@ -88,7 +89,7 @@ fn app_and_scripts_agree_on_v4_schema() {
         .arg(
             "import sys; from scripts.cvcache import commands, schema; \
              c=commands.open_v4(__import__('pathlib').Path(sys.argv[1])); \
-             assert schema.user_version(c)==4; c.close(); print('ok')",
+             assert schema.user_version(c)==5; c.close(); print('ok')",
         )
         .arg(&app_file)
         .current_dir(&root)
@@ -125,7 +126,7 @@ fn app_and_scripts_agree_on_v4_schema() {
     let script_version: i64 = script_conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .expect("script version");
-    assert_eq!(script_version, 4, "script file is not v4");
+    assert_eq!(script_version, 5, "script file is not v5");
 
     for table in PINNED_TABLES {
         let app_cols = table_columns(&app_conn, table);

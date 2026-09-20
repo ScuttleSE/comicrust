@@ -77,6 +77,10 @@ def _cmd_import_localcv(args) -> int:
     if the_adapter.dropped:
         for reason, count in sorted(the_adapter.dropped.items()):
             print(f"  dropped {reason}: {count}")
+    if the_adapter.numberless_issue_ids:
+        shown = the_adapter.numberless_issue_ids
+        print(f"  numberless issue ids ({len(shown)}): "
+              f"{', '.join(str(i) for i in shown)}")
     _print_report(report)
     return 0
 

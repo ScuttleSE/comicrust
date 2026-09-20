@@ -39,10 +39,14 @@ def _make_localcv(path: Path):
     c.execute("INSERT INTO cv_volume VALUES (200,'Blocked','','2000',99,3,'x',NULL,NULL)")
     chars = json.dumps([{"id": 67267, "name": "Hercules"}])
     people = json.dumps([{"id": 5, "name": "Stan Lee", "role": "writer "}])
+    assoc = json.dumps(
+        [{"id": 7, "caption": None, "image_tags": "All Images,Covers",
+          "original_url": "http://iimg/assoc.jpg"}]
+    )
     c.execute(
         "INSERT INTO cv_issue VALUES (1000,100,'Origin','1','1963-03-01','','d',"
-        "'ii','is',?,?,'[]','[]','[]','[{\"id\":7}]')",
-        (chars, people),
+        "'ii','is',?,?,'[]','[]','[]',?)",
+        (chars, people, assoc),
     )
     c.execute(
         "INSERT INTO cv_issue VALUES (1001,100,NULL,'',NULL,NULL,NULL,NULL,NULL,"
@@ -82,11 +86,21 @@ class LocalCvImportTest(unittest.TestCase):
             v.execute("SELECT volume_id, publisher FROM volume").fetchall(),
             [(100, "Marvel")],
         )
-        # numberless issue dropped, blocked-publisher issue filtered out.
+        # numberless issue dropped and reported, blocked-publisher issue
+        # filtered out.
         self.assertEqual(
             v.execute("SELECT issue_id FROM issue_skeleton").fetchall(), [(1000,)]
         )
         self.assertEqual(ad.dropped.get("issue_no_number"), 1)
+        self.assertEqual(ad.numberless_issue_ids, [1001])
+        # associated_images landed as issue_image rows (ADR-073).
+        self.assertEqual(
+            v.execute(
+                "SELECT image_id, issue_id, original_url, image_tags "
+                "FROM issue_image"
+            ).fetchall(),
+            [(7, 1000, "http://iimg/assoc.jpg", "All Images,Covers")],
+        )
         # last_seen stamp landed on the issue.
         self.assertEqual(
             v.execute(

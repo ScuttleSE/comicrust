@@ -198,7 +198,7 @@ fn a_v2_cache_with_stored_details_backfills_the_typed_columns() {
     let version: i32 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .expect("version");
-    assert_eq!(version, 4);
+    assert_eq!(version, 5);
 
     let (aliases, deck, description, image_url, api_url, site_url, date_added, first_id, last_id): VolumeColumns =
         conn
@@ -317,7 +317,7 @@ fn the_v1_to_v4_chain_backfills_issue_details() {
     let version: i32 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .expect("version");
-    assert_eq!(version, 4);
+    assert_eq!(version, 5);
     let (volume_id, issue_number, cover_date, name): (
         Option<i64>,
         Option<String>,
@@ -355,7 +355,7 @@ fn malformed_detail_json_keeps_null_columns_and_still_migrates() {
     let version: i32 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .expect("version");
-    assert_eq!(version, 4);
+    assert_eq!(version, 5);
     let (aliases, first_id): (Option<String>, Option<i64>) = conn
         .query_row(
             "SELECT aliases, first_issue_id FROM volume WHERE volume_id = 771",
@@ -524,7 +524,7 @@ fn a_fresh_cache_opens_at_version_four() {
     let version: i32 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .expect("version");
-    assert_eq!(version, 4);
+    assert_eq!(version, 5);
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -679,6 +679,54 @@ fn detail_image_and_search_round_trip_and_overwrite() {
         c.search("blacksad").expect("read").map(|(j, _)| j),
         Some("[]".to_string())
     );
+}
+
+#[test]
+fn issue_detail_stores_the_associated_images_gallery() {
+    // A real issue detail response carries `associated_images`; each
+    // entry's own image id is the primary key (ADR-073).
+    let dir = tempdir();
+    let path = dir.join("cvcache.sqlite");
+    let json = r#"{"id":6,"volume":{"id":1487},"issue_number":"13","associated_images":[{"id":5358089,"caption":null,"image_tags":"All Images,Covers","original_url":"http://cv/a-back.jpg"},{"id":5457,"caption":"var","image_tags":"All Images","original_url":"http://cv/a.jpg"},{"id":0,"original_url":""}]}"#;
+    {
+        let c = SqliteCache::open(&path).expect("open");
+        c.put_issue_detail(6, json).expect("write detail");
+    }
+    let conn = rusqlite::Connection::open(&path).expect("inspect");
+    type ImageRow = (i64, i64, String, Option<String>, Option<String>);
+    let rows: Vec<ImageRow> = conn
+        .prepare(
+            "SELECT image_id, issue_id, original_url, caption, image_tags
+               FROM issue_image ORDER BY image_id",
+        )
+        .expect("prepare")
+        .query_map([], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?))
+        })
+        .expect("query")
+        .collect::<Result<_, _>>()
+        .expect("collect");
+    // The id-less/url-less entry is skipped; the two real entries land.
+    assert_eq!(
+        rows,
+        vec![
+            (
+                5457,
+                6,
+                "http://cv/a.jpg".to_string(),
+                Some("var".to_string()),
+                Some("All Images".to_string())
+            ),
+            (
+                5358089,
+                6,
+                "http://cv/a-back.jpg".to_string(),
+                None,
+                Some("All Images,Covers".to_string())
+            ),
+        ]
+    );
+    std::fs::remove_dir_all(&dir).ok();
 }
 
 #[test]
