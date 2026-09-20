@@ -15,10 +15,13 @@ local-first scrape reads with a refresh switch and an offline mode; a
 backupable, mergeable cache file; the sweep expansion plus Python
 build and import scripts.
 
-T1 (schema v3) through T7 (the sweep expansion, schema v4) are done.
-Phase 20 stays implemented with open user test 26. The user declined
-the offered real-cache user tests (2026-09-20); the real v2-file
-migration check remains unperformed.
+T1 through T7 are done. T8 (`scripts/cvcache/`) is done for the merge
+engine, `build`/`merge`, the localcv import adapter (Task A), and the
+publisher filter (Task B); the gated `cvcache_schema_pin` cargo test
+passes both directions. Task C (an update pipeline that maintains
+`cvcache.sqlite` and an in-app incremental refresh) and T9 (docs and
+user tests) stay open. Phase 20 stays implemented with open user test
+26.
 
 ## Latest user finding
 
@@ -42,12 +45,22 @@ scrape matched the selected book and three other books in the same series.
 
 ## Current task for the next context
 
-Phase 21 T8: the Python scripts (ADR-072). Read the "T8 detail"
-section of `docs/phases/phase-21.md` first — it carries the
-implementation order, the code of reference, and the blocked part:
-the user has an import source they want the first adapter to support
-and has not described it yet; the four asks are in the phase file.
-The MCL `build`/`merge` half can start without their input.
+Phase 21 Task C and T9. Task C (ADR-072 follow-up): rebuild the update
+half of `sqlite_cv_pipeline_1.1.0.py` (reference only) to maintain
+`cvcache.sqlite` — an update-only run that fetches
+`/issues?filter=date_last_updated:...` since the last sync, stamps rows
+with the real API date, and merges through the same engine; the same
+update must also live in the app, wired to the "Update Comic Vine
+Cache" command and gated by the T4 switches. Design under a new ADR.
+T9: `docs/config-reference.md` rows for the two new keys, and the
+user-test procedures. Read the "T8 detail" section of
+`docs/phases/phase-21.md` for the recorded answers and the data gap.
+
+The one-off localcv import is available now:
+`python3 -m scripts.cvcache import-localcv --into <cvcache> --source
+<localcv.db> [--whitelist FILE] [--blacklist FILE]`. See
+`scripts/cvcache/README.md`. Always run it on a copy of the live cache
+first.
 
 When the user tests first: the `2000 AD` number `2498` retest (test 24)
 and the Missing Issues scope test (test 22) stay first in line, and

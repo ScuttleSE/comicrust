@@ -190,10 +190,15 @@ fields, and Python scripts build and import cache files.
       new column fills, image URL storage, and volume name records.
       Acceptance: a mock-server test holds the request count at one per
       page and shows the new columns filled.
-- [ ] **T8 — Python scripts** (ADR-072): `scripts/cvcache/` with the
-      merge engine, build, merge, one adapter shape, and the schema pin
-      test; the gated CI hook. Acceptance: a script-built file opens
-      and merges in the app; an app-written file opens in a script.
+- [x] **T8 — Python scripts** (ADR-072): `scripts/cvcache/` with the
+      merge engine, build, merge, the adapter seam, the localcv adapter
+      (Task A), the publisher filter (Task B), and the schema pin test
+      (gated `cvcache_schema_pin`). `MEASURED` 2026-09-20: the schema
+      pin passes both directions against the app DDL; a whitelisted
+      real-data import of the 2.9 GB `localcv.db` completed in 51 s with
+      zero rejects and `PRAGMA integrity_check = ok`. Task C (the update
+      pipeline that maintains cvcache, plus the in-app incremental
+      refresh) remains open.
 - [ ] **T9 — Docs and user tests**: `docs/config-reference.md` rows for
       the two new keys; user-test procedures in
       `docs/open-user-tests.md`; `docs/current-status.md` updated.
@@ -279,16 +284,42 @@ seam, two pin directions.
    `docs/guides/verification.md`). Whether the CI image carries
    `python3` is UNKNOWN until tried.
 
-**Blocked on user input — the first adapter.** The user has data they
-want to import and has not described it yet. Ask, and record the
-answers here:
-1. What is the data, and which tool produced it?
-2. A sample file — even one small, redacted example. The adapter is
-   designed against real bytes, not a description.
-3. What each row carries (ids, names, dates), and whether it has a
-   per-row last-updated stamp — that decides how the merge orders it
-   against app-side data.
-4. Where it should land: skeleton rows only, or the richer v4 columns.
+**Blocked on user input — the first adapter.** RESOLVED 2026-09-20.
+The first adapter is `localcv.db` (from `sqlite_cv_pipeline`).
+Answers:
+1. A `sqlite_cv_pipeline` SQLite database (`localcv.db`, ~2.9 GB) at
+   `/home/scuttle/Downloads/localcv/`.
+2. Its schema is MEASURED: `cv_volume`, `cv_issue` (typed columns plus
+   credit lists as JSON text), `cv_publisher`, `cv_person`,
+   `cv_issue_last_seen`.
+3. Per-row last-updated: only `cv_issue_last_seen` (2,569 issue rows);
+   every other row has none. So the adapter stamps `fetched_at` at
+   import time and leaves `date_last_updated` empty, except issues in
+   `cv_issue_last_seen`. A later real API fetch wins on merge.
+4. Landing: `issue_skeleton` (v4 columns) + `credit` + resource tables.
+   No synthetic `issue_detail` (localcv holds no raw API JSON).
+
+Recorded CV-data gap in localcv.db (not populated by the import): no
+`date_last_updated`/`date_added` on most rows; no raw issue JSON (so
+`issue_detail` and the automatcher's remote cover hash stay empty for
+imported issues); no image blobs; no `concept`/`object` credits; no
+volume `deck`/`first_issue_id`/`last_issue_id`. Dropped with no v4
+target: `associated_images`, publisher `country`, numberless issues.
+
+**Task B (publisher filter) — DONE.** `scripts/cvcache/publishers.py`
+reads the four `# ID, Name` list files; the whitelist keeps only its
+ids, the blacklist drops its ids, applied at the volume level in the
+import (and to be reused by the Task C update).
+
+**Task C (update pipeline for cvcache) — OPEN.** Rebuild the update
+half of `sqlite_cv_pipeline_1.1.0.py` (reference only) to maintain
+`cvcache.sqlite`, not `localcv.db`: an update-only run that pulls
+`/issues?filter=date_last_updated:...` since the last sync, stamps rows
+with the real API `date_last_updated`, and merges. The same update
+must also live inside the app, wired to the existing "Update Comic Vine
+Cache" command (`crates/cr-ui/src/browser/shell.rs:5143`) and gated by
+the T4 offline/refresh switches. Design under a follow-up ADR. It is
+maintenance-only; a fresh build uses the app scrape or MCL `build`.
 
 The MCL `build`/`merge` half does not depend on that input and can
 start without it. No populated cache file ships before the terms check
