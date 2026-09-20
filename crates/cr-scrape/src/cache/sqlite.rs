@@ -7,12 +7,14 @@ use std::path::Path;
 use std::sync::Mutex;
 
 use rusqlite::{params, Connection, OptionalExtension};
+use serde_json::Value;
 
 use super::{CacheError, CvCache, IssueSkeleton, ManagedVolume, SweepState, VolumeRow};
+use crate::cv::queries::parse_image_url;
 
 /// The schema version stored in `PRAGMA user_version`. Raise it and
 /// add a migration arm when the schema changes.
-const SCHEMA_VERSION: i32 = 2;
+const SCHEMA_VERSION: i32 = 3;
 
 const SCHEMA_V1: &str = r"
 CREATE TABLE IF NOT EXISTS volume (
@@ -85,6 +87,120 @@ CREATE INDEX IF NOT EXISTS pending_issue_detail_order
     ON pending_issue_detail (volume_id, position);
 ";
 
+/// Schema v3 (ADR-070): typed columns on `volume` and `issue_detail`,
+/// one table per related resource, and the credit table. The v2→v3
+/// migration backfills the typed columns from the stored JSON.
+const SCHEMA_V3: &str = r"
+ALTER TABLE volume ADD COLUMN aliases TEXT;
+ALTER TABLE volume ADD COLUMN deck TEXT;
+ALTER TABLE volume ADD COLUMN description TEXT;
+ALTER TABLE volume ADD COLUMN image_url TEXT;
+ALTER TABLE volume ADD COLUMN api_detail_url TEXT;
+ALTER TABLE volume ADD COLUMN site_detail_url TEXT;
+ALTER TABLE volume ADD COLUMN date_added TEXT;
+ALTER TABLE volume ADD COLUMN first_issue_id INTEGER;
+ALTER TABLE volume ADD COLUMN last_issue_id INTEGER;
+
+ALTER TABLE issue_detail ADD COLUMN volume_id INTEGER;
+ALTER TABLE issue_detail ADD COLUMN issue_number TEXT;
+ALTER TABLE issue_detail ADD COLUMN cover_date TEXT;
+ALTER TABLE issue_detail ADD COLUMN name TEXT;
+ALTER TABLE issue_detail ADD COLUMN store_date TEXT;
+ALTER TABLE issue_detail ADD COLUMN image_url TEXT;
+ALTER TABLE issue_detail ADD COLUMN date_added TEXT;
+ALTER TABLE issue_detail ADD COLUMN date_last_updated TEXT;
+
+CREATE TABLE IF NOT EXISTS character (
+    id                INTEGER PRIMARY KEY,
+    name              TEXT,
+    image_url         TEXT,
+    date_last_updated TEXT,
+    date_added        TEXT,
+    fetched_at        INTEGER,
+    detail_json       TEXT
+);
+CREATE TABLE IF NOT EXISTS person (
+    id                INTEGER PRIMARY KEY,
+    name              TEXT,
+    image_url         TEXT,
+    date_last_updated TEXT,
+    date_added        TEXT,
+    fetched_at        INTEGER,
+    detail_json       TEXT
+);
+CREATE TABLE IF NOT EXISTS team (
+    id                INTEGER PRIMARY KEY,
+    name              TEXT,
+    image_url         TEXT,
+    date_last_updated TEXT,
+    date_added        TEXT,
+    fetched_at        INTEGER,
+    detail_json       TEXT
+);
+CREATE TABLE IF NOT EXISTS story_arc (
+    id                INTEGER PRIMARY KEY,
+    name              TEXT,
+    image_url         TEXT,
+    date_last_updated TEXT,
+    date_added        TEXT,
+    fetched_at        INTEGER,
+    detail_json       TEXT
+);
+CREATE TABLE IF NOT EXISTS location (
+    id                INTEGER PRIMARY KEY,
+    name              TEXT,
+    image_url         TEXT,
+    date_last_updated TEXT,
+    date_added        TEXT,
+    fetched_at        INTEGER,
+    detail_json       TEXT
+);
+CREATE TABLE IF NOT EXISTS concept (
+    id                INTEGER PRIMARY KEY,
+    name              TEXT,
+    image_url         TEXT,
+    date_last_updated TEXT,
+    date_added        TEXT,
+    fetched_at        INTEGER,
+    detail_json       TEXT
+);
+CREATE TABLE IF NOT EXISTS object (
+    id                INTEGER PRIMARY KEY,
+    name              TEXT,
+    image_url         TEXT,
+    date_last_updated TEXT,
+    date_added        TEXT,
+    fetched_at        INTEGER,
+    detail_json       TEXT
+);
+CREATE TABLE IF NOT EXISTS publisher (
+    id                INTEGER PRIMARY KEY,
+    name              TEXT,
+    image_url         TEXT,
+    date_last_updated TEXT,
+    date_added        TEXT,
+    fetched_at        INTEGER,
+    detail_json       TEXT
+);
+
+CREATE TABLE IF NOT EXISTS credit (
+    owner_kind    TEXT NOT NULL,
+    owner_id      INTEGER NOT NULL,
+    resource_kind TEXT NOT NULL,
+    resource_id   INTEGER NOT NULL,
+    name          TEXT,
+    role          TEXT,
+    marker        TEXT NOT NULL
+);
+-- The natural key of ADR-070 with COALESCE on both nullable name
+-- parts, so a re-import can never duplicate a row.
+CREATE UNIQUE INDEX IF NOT EXISTS credit_natural
+    ON credit (owner_kind, owner_id, resource_kind, resource_id,
+               COALESCE(name, ''), COALESCE(role, ''), marker);
+CREATE INDEX IF NOT EXISTS credit_owner
+    ON credit (owner_kind, owner_id);
+";
+
 fn db(e: rusqlite::Error) -> CacheError {
     CacheError::Db(e.to_string())
 }
@@ -135,9 +251,104 @@ impl SqliteCache {
         if version < 2 {
             conn.execute_batch(SCHEMA_V2).map_err(db)?;
         }
+        if version < 3 {
+            conn.execute_batch(SCHEMA_V3).map_err(db)?;
+            Self::backfill_v3(&conn)?;
+        }
         if version != SCHEMA_VERSION {
             conn.pragma_update(None, "user_version", SCHEMA_VERSION)
                 .map_err(db)?;
+        }
+        Ok(())
+    }
+
+    /// Fills the v3 typed columns from the stored detail JSON (the
+    /// v2→v3 backfill of ADR-070). The raw JSON text never moves or
+    /// rewrites. A row whose JSON does not parse keeps NULL columns
+    /// and does not fail the migration.
+    fn backfill_v3(conn: &Connection) -> Result<(), CacheError> {
+        let volume_rows: Vec<(i64, String)> = {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT volume_id, detail_json FROM volume
+                      WHERE detail_json IS NOT NULL",
+                )
+                .map_err(db)?;
+            let rows = stmt
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .map_err(db)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(db)?
+        };
+        {
+            let mut stmt = conn
+                .prepare(
+                    "UPDATE volume SET
+                        aliases = ?2, deck = ?3, description = ?4,
+                        image_url = ?5, api_detail_url = ?6,
+                        site_detail_url = ?7, date_added = ?8,
+                        first_issue_id = ?9, last_issue_id = ?10
+                      WHERE volume_id = ?1",
+                )
+                .map_err(db)?;
+            for (volume_id, json) in &volume_rows {
+                let Some(columns) = volume_detail_columns(json) else {
+                    continue;
+                };
+                stmt.execute(params![
+                    volume_id,
+                    columns.aliases,
+                    columns.deck,
+                    columns.description,
+                    columns.image_url,
+                    columns.api_detail_url,
+                    columns.site_detail_url,
+                    columns.date_added,
+                    columns.first_issue_id,
+                    columns.last_issue_id,
+                ])
+                .map_err(db)?;
+            }
+        }
+
+        let issue_rows: Vec<(i64, String)> = {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT issue_id, json FROM issue_detail
+                      WHERE json IS NOT NULL",
+                )
+                .map_err(db)?;
+            let rows = stmt
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .map_err(db)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(db)?
+        };
+        {
+            let mut stmt = conn
+                .prepare(
+                    "UPDATE issue_detail SET
+                        volume_id = ?2, issue_number = ?3, cover_date = ?4,
+                        name = ?5, store_date = ?6, image_url = ?7,
+                        date_added = ?8, date_last_updated = ?9
+                      WHERE issue_id = ?1",
+                )
+                .map_err(db)?;
+            for (issue_id, json) in &issue_rows {
+                let Some(columns) = issue_detail_columns(json) else {
+                    continue;
+                };
+                stmt.execute(params![
+                    issue_id,
+                    columns.volume_id,
+                    columns.issue_number,
+                    columns.cover_date,
+                    columns.name,
+                    columns.store_date,
+                    columns.image_url,
+                    columns.date_added,
+                    columns.date_last_updated,
+                ])
+                .map_err(db)?;
+            }
         }
         Ok(())
     }
@@ -147,7 +358,6 @@ impl SqliteCache {
     fn lock(&self) -> std::sync::MutexGuard<'_, Connection> {
         self.conn.lock().unwrap_or_else(|e| e.into_inner())
     }
-
     /// Reads one cache-manager record. An unknown id returns `None`.
     pub fn managed_volume(&self, volume_id: i64) -> Result<Option<ManagedVolume>, CacheError> {
         let Some(volume) = <Self as CvCache>::volume(self, volume_id)? else {
@@ -329,11 +539,25 @@ impl SqliteCache {
         let mut conn = self.lock();
         let tx = conn.transaction().map_err(db)?;
         tx.execute(
-            "INSERT INTO issue_detail (issue_id, json, fetched_at)
-             VALUES (?1, ?2, ?3)
+            "INSERT INTO issue_detail
+               (issue_id, json, fetched_at, volume_id, issue_number,
+                cover_date, name)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
              ON CONFLICT(issue_id) DO UPDATE SET
-               json = excluded.json, fetched_at = excluded.fetched_at",
-            params![issue.issue_id, json, now()],
+               json = excluded.json, fetched_at = excluded.fetched_at,
+               volume_id = excluded.volume_id,
+               issue_number = excluded.issue_number,
+               cover_date = excluded.cover_date,
+               name = excluded.name",
+            params![
+                issue.issue_id,
+                json,
+                now(),
+                issue.volume_id,
+                issue.issue_number,
+                issue.cover_date,
+                issue.name,
+            ],
         )
         .map_err(db)?;
         tx.execute(
@@ -642,4 +866,100 @@ impl CvCache for SqliteCache {
 /// The current time in unix seconds.
 fn now() -> i64 {
     chrono::Utc::now().timestamp()
+}
+
+// --- typed-column extraction (ADR-070) ---
+//
+// Both stored JSON shapes are the serialized `results` object of one
+// API response (ADR-064). The extraction never rewrites the stored
+// text; the write paths and the v2→v3 backfill share these helpers.
+
+/// The typed `volume` columns of ADR-070.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct VolumeDetailColumns {
+    pub aliases: Option<String>,
+    pub deck: Option<String>,
+    pub description: Option<String>,
+    pub image_url: Option<String>,
+    pub api_detail_url: Option<String>,
+    pub site_detail_url: Option<String>,
+    pub date_added: Option<String>,
+    pub first_issue_id: Option<i64>,
+    pub last_issue_id: Option<i64>,
+}
+
+/// Extracts the typed columns of one volume from its detail JSON.
+/// `None` when the text does not parse to an object. `aliases` is
+/// stored verbatim: a string stays a string and an array serializes
+/// back. The real API shape is UNKNOWN (the docs page does not state
+/// it); verbatim is lossless either way.
+pub(crate) fn volume_detail_columns(json: &str) -> Option<VolumeDetailColumns> {
+    let value = serde_json::from_str::<Value>(json).ok()?;
+    Some(VolumeDetailColumns {
+        aliases: aliases_text(value.get("aliases")),
+        deck: string_value(value.get("deck")),
+        description: string_value(value.get("description")),
+        image_url: parse_image_url(&value),
+        api_detail_url: string_value(value.get("api_detail_url")),
+        site_detail_url: string_value(value.get("site_detail_url")),
+        date_added: string_value(value.get("date_added")),
+        first_issue_id: value_i64(value.pointer("/first_issue/id")),
+        last_issue_id: value_i64(value.pointer("/last_issue/id")),
+    })
+}
+
+/// The typed `issue_detail` columns of ADR-070.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct IssueDetailColumns {
+    pub volume_id: Option<i64>,
+    pub issue_number: Option<String>,
+    pub cover_date: Option<String>,
+    pub name: Option<String>,
+    pub store_date: Option<String>,
+    pub image_url: Option<String>,
+    pub date_added: Option<String>,
+    pub date_last_updated: Option<String>,
+}
+
+/// Extracts the typed columns of one issue from its detail JSON.
+/// `None` when the text does not parse to an object. `issue_number`
+/// is trimmed, like every live extraction path.
+pub(crate) fn issue_detail_columns(json: &str) -> Option<IssueDetailColumns> {
+    let value = serde_json::from_str::<Value>(json).ok()?;
+    Some(IssueDetailColumns {
+        volume_id: value_i64(value.pointer("/volume/id")),
+        issue_number: value
+            .get("issue_number")
+            .and_then(Value::as_str)
+            .map(str::trim)
+            .map(str::to_string),
+        cover_date: string_value(value.get("cover_date")),
+        name: string_value(value.get("name")),
+        store_date: string_value(value.get("store_date")),
+        image_url: parse_image_url(&value),
+        date_added: string_value(value.get("date_added")),
+        date_last_updated: string_value(value.get("date_last_updated")),
+    })
+}
+
+fn aliases_text(value: Option<&Value>) -> Option<String> {
+    match value {
+        Some(Value::String(text)) => Some(text.clone()),
+        Some(Value::Array(items)) => serde_json::to_string(items).ok(),
+        _ => None,
+    }
+}
+
+fn string_value(value: Option<&Value>) -> Option<String> {
+    value.and_then(Value::as_str).map(str::to_string)
+}
+
+/// The C# dom values are strings; the JSON API returns numbers for
+/// ids. Both parse (the same union behavior as `queries.rs`).
+fn value_i64(value: Option<&Value>) -> Option<i64> {
+    match value {
+        Some(Value::Number(number)) => number.as_i64(),
+        Some(Value::String(text)) => text.trim().parse().ok(),
+        _ => None,
+    }
 }

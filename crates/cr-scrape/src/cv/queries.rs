@@ -562,8 +562,9 @@ fn alternate_issue_num(issue_num: &str) -> String {
 }
 
 /// `__parse_image_url`: small, medium, large, super, thumb — the
-/// first string present wins.
-fn parse_image_url(dom: &Value) -> Option<String> {
+/// first string present wins. The cache backfill reuses this rule, so
+/// a stored `image_url` is the URL a scrape would use (ADR-070).
+pub(crate) fn parse_image_url(dom: &Value) -> Option<String> {
     let image = dom.get("image")?;
     for field in [
         "small_url",

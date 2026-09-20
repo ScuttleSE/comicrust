@@ -36,27 +36,60 @@ fn schema_migrates_from_empty_and_is_idempotent() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+/// The full v1 table set, as phase 15 wrote it. The migrations alter
+/// `volume` and `issue_detail`, so a v1 fixture carries every v1
+/// table.
+fn create_v1_schema(conn: &rusqlite::Connection) {
+    conn.execute_batch(
+        "CREATE TABLE volume (
+            volume_id INTEGER PRIMARY KEY, name TEXT, publisher TEXT,
+            start_year INTEGER, count_of_issues INTEGER,
+            date_last_updated TEXT, last_cover_date TEXT,
+            fetched_at INTEGER NOT NULL DEFAULT 0
+         );
+         CREATE TABLE issue_skeleton (
+            issue_id INTEGER PRIMARY KEY, volume_id INTEGER NOT NULL,
+            issue_number TEXT NOT NULL, cover_date TEXT, name TEXT
+         );
+         CREATE TABLE issue_detail (
+            issue_id INTEGER PRIMARY KEY, json TEXT NOT NULL,
+            fetched_at INTEGER NOT NULL
+         );
+         CREATE TABLE image_blob (
+            url TEXT PRIMARY KEY, bytes BLOB NOT NULL,
+            fetched_at INTEGER NOT NULL
+         );
+         CREATE TABLE search_result (
+            terms TEXT PRIMARY KEY, json TEXT NOT NULL,
+            fetched_at INTEGER NOT NULL
+         );
+         CREATE TABLE request_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            resource TEXT NOT NULL, at INTEGER NOT NULL
+         );
+         CREATE TABLE sweep_state (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            start_date TEXT NOT NULL, end_date TEXT NOT NULL,
+            offset INTEGER NOT NULL, total INTEGER NOT NULL,
+            updated_at INTEGER NOT NULL
+         );
+         PRAGMA user_version = 1;",
+    )
+    .expect("create version one schema");
+}
+
 #[test]
 fn schema_migrates_a_version_one_cache_to_the_manager_schema() {
     let dir = tempdir();
     let path = dir.join("cvcache.sqlite");
     {
         let conn = rusqlite::Connection::open(&path).expect("open version one database");
-        conn.execute_batch(
-            "CREATE TABLE volume (
-                volume_id INTEGER PRIMARY KEY, name TEXT, publisher TEXT,
-                start_year INTEGER, count_of_issues INTEGER,
-                date_last_updated TEXT, last_cover_date TEXT,
-                fetched_at INTEGER NOT NULL DEFAULT 0
-             );
-             CREATE TABLE issue_skeleton (
-                issue_id INTEGER PRIMARY KEY, volume_id INTEGER NOT NULL,
-                issue_number TEXT NOT NULL, cover_date TEXT, name TEXT
-             );
-             INSERT INTO volume (volume_id, name) VALUES (806, 'Kept');
-             PRAGMA user_version = 1;",
+        create_v1_schema(&conn);
+        conn.execute(
+            "INSERT INTO volume (volume_id, name) VALUES (806, 'Kept')",
+            [],
         )
-        .expect("create version one schema");
+        .expect("insert volume");
     }
 
     let cache = SqliteCache::open(&path).expect("migrate version one cache");
@@ -70,12 +103,292 @@ fn schema_migrates_a_version_one_cache_to_the_manager_schema() {
     std::fs::remove_dir_all(&dir).ok();
 }
 
+// --- schema v3 (ADR-070, Phase 21 T1) ---
+
+/// Builds a version-2 database with one stored volume detail and one
+/// stored issue detail — the shape a phase-20 complete update wrote.
+/// A real v2 file carries the full v1 schema plus the v2 additions.
+fn v2_file_with_details(path: &std::path::Path, volume_json: &str, issue_json: &str) {
+    let conn = rusqlite::Connection::open(path).expect("open version two database");
+    create_v1_schema(&conn);
+    conn.execute_batch(
+        "ALTER TABLE volume ADD COLUMN detail_json TEXT;
+         CREATE TABLE pending_issue_detail (
+            volume_id INTEGER NOT NULL,
+            issue_id  INTEGER NOT NULL,
+            position  INTEGER NOT NULL,
+            PRIMARY KEY (volume_id, issue_id)
+         );",
+    )
+    .expect("upgrade the fixture to version two");
+    conn.execute(
+        "INSERT INTO volume (volume_id, name, detail_json) VALUES (771, 'Blacksad', ?1)",
+        rusqlite::params![volume_json],
+    )
+    .expect("insert volume detail");
+    conn.execute(
+        "INSERT INTO issue_detail (issue_id, json, fetched_at) VALUES (92469, ?1, 500)",
+        rusqlite::params![issue_json],
+    )
+    .expect("insert issue detail");
+    conn.execute("PRAGMA user_version = 2", [])
+        .expect("stamp v2");
+}
+
 #[test]
 fn open_creates_the_parent_directory() {
     let dir = tempdir();
     let path = dir.join("a").join("b").join("cvcache.sqlite");
     SqliteCache::open(&path).expect("open creates the directory chain");
     assert!(path.exists());
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+/// The typed `volume` columns as one raw read of the migrated file.
+type VolumeColumns = (
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<i64>,
+    Option<i64>,
+);
+
+/// The typed `issue_detail` columns as one raw read of the migrated file.
+type IssueColumns = (
+    Option<i64>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+);
+
+#[test]
+fn a_v2_cache_with_stored_details_backfills_the_typed_columns() {
+    let dir = tempdir();
+    let path = dir.join("cvcache.sqlite");
+    let volume_json = r#"{"id":771,"name":"Blacksad","deck":"John Blacksad's cases","description":"A description","aliases":"Blacksad\nJohn Blacksad","image":{"small_url":"http://cv/small.jpg","medium_url":""},"api_detail_url":"http://api/volume/4050-771/","site_detail_url":"http://comics/volume/771","date_added":"2020-01-02 03:04:05","date_last_updated":"2021-02-03 04:05:06","first_issue":{"id":92469},"last_issue":{"id":165276},"count_of_issues":6}"#;
+    let issue_json = r#"{"id":92469,"volume":{"id":771},"issue_number":" 1 ","cover_date":"2000-11-01","name":"Quelque part entre les ombres","store_date":"2000-10-15","image":{"small_url":"http://cv/i-small.jpg","super_url":"http://cv/i-super.jpg"},"date_added":"2020-06-07 08:09:10","date_last_updated":"2021-11-12 13:14:15"}"#;
+    v2_file_with_details(&path, volume_json, issue_json);
+
+    let cache = SqliteCache::open(&path).expect("migrate the v2 cache");
+    // The raw JSON text stays byte-identical through the migration.
+    let record = cache.managed_volume(771).expect("read").expect("volume");
+    assert_eq!(record.detail_json.as_deref(), Some(volume_json));
+    let (stored, at) = cache.issue_detail(92469).expect("read").expect("detail");
+    assert_eq!(stored, issue_json);
+    assert_eq!(at, 500);
+    // A second open changes nothing.
+    drop(cache);
+    let cache = SqliteCache::open(&path).expect("reopen the migrated cache");
+    let record = cache.managed_volume(771).expect("read").expect("volume");
+    assert_eq!(record.detail_json.as_deref(), Some(volume_json));
+    drop(cache);
+
+    let conn = rusqlite::Connection::open(&path).expect("inspect the migrated file");
+    let version: i32 = conn
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .expect("version");
+    assert_eq!(version, 3);
+
+    let (aliases, deck, description, image_url, api_url, site_url, date_added, first_id, last_id): VolumeColumns =
+        conn
+        .query_row(
+            "SELECT aliases, deck, description, image_url, api_detail_url,
+                    site_detail_url, date_added, first_issue_id, last_issue_id
+               FROM volume WHERE volume_id = 771",
+            [],
+            |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                    r.get(6)?,
+                    r.get(7)?,
+                    r.get(8)?,
+                ))
+            },
+        )
+        .expect("volume columns");
+    assert_eq!(aliases.as_deref(), Some("Blacksad\nJohn Blacksad"));
+    assert_eq!(deck.as_deref(), Some("John Blacksad's cases"));
+    assert_eq!(description.as_deref(), Some("A description"));
+    // The first non-empty URL in the scrape's own order wins.
+    assert_eq!(image_url.as_deref(), Some("http://cv/small.jpg"));
+    assert_eq!(api_url.as_deref(), Some("http://api/volume/4050-771/"));
+    assert_eq!(site_url.as_deref(), Some("http://comics/volume/771"));
+    assert_eq!(date_added.as_deref(), Some("2020-01-02 03:04:05"));
+    assert_eq!(first_id, Some(92_469));
+    assert_eq!(last_id, Some(165_276));
+
+    let (
+        volume_id,
+        issue_number,
+        cover_date,
+        name,
+        store_date,
+        issue_image,
+        issue_added,
+        issue_updated,
+    ): IssueColumns = conn
+        .query_row(
+            "SELECT volume_id, issue_number, cover_date, name, store_date,
+                    image_url, date_added, date_last_updated
+               FROM issue_detail WHERE issue_id = 92469",
+            [],
+            |r| {
+                Ok((
+                    r.get(0)?,
+                    r.get(1)?,
+                    r.get(2)?,
+                    r.get(3)?,
+                    r.get(4)?,
+                    r.get(5)?,
+                    r.get(6)?,
+                    r.get(7)?,
+                ))
+            },
+        )
+        .expect("issue columns");
+    assert_eq!(volume_id, Some(771));
+    assert_eq!(issue_number.as_deref(), Some("1"));
+    assert_eq!(cover_date.as_deref(), Some("2000-11-01"));
+    assert_eq!(name.as_deref(), Some("Quelque part entre les ombres"));
+    assert_eq!(store_date.as_deref(), Some("2000-10-15"));
+    assert_eq!(issue_image.as_deref(), Some("http://cv/i-small.jpg"));
+    assert_eq!(issue_added.as_deref(), Some("2020-06-07 08:09:10"));
+    assert_eq!(issue_updated.as_deref(), Some("2021-11-12 13:14:15"));
+
+    // The resource tables and the credit table exist.
+    let mut stmt = conn
+        .prepare("SELECT name FROM sqlite_master WHERE type = 'table'")
+        .expect("list tables");
+    let tables: Vec<String> = stmt
+        .query_map([], |r| r.get(0))
+        .expect("query tables")
+        .collect::<Result<_, _>>()
+        .expect("table names");
+    for name in [
+        "character",
+        "person",
+        "team",
+        "story_arc",
+        "location",
+        "concept",
+        "object",
+        "publisher",
+        "credit",
+    ] {
+        assert!(tables.iter().any(|t| t == name), "the {name} table exists");
+    }
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn the_v1_to_v3_chain_backfills_issue_details() {
+    let dir = tempdir();
+    let path = dir.join("cvcache.sqlite");
+    {
+        let conn = rusqlite::Connection::open(&path).expect("open version one database");
+        create_v1_schema(&conn);
+        conn.execute(
+            "INSERT INTO issue_detail (issue_id, json, fetched_at)
+               VALUES (11, '{\"id\":11,\"volume\":{\"id\":42},\"issue_number\":\"2\",\"cover_date\":\"1998-03-01\",\"name\":\"The Case\"}', 100)",
+            [],
+        )
+        .expect("insert issue detail");
+    }
+    SqliteCache::open(&path).expect("the v1 file migrates through v2 to v3");
+    drop(SqliteCache::open(&path).expect("reopen"));
+
+    let conn = rusqlite::Connection::open(&path).expect("inspect");
+    let version: i32 = conn
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .expect("version");
+    assert_eq!(version, 3);
+    let (volume_id, issue_number, cover_date, name): (
+        Option<i64>,
+        Option<String>,
+        Option<String>,
+        Option<String>,
+    ) = conn
+        .query_row(
+            "SELECT volume_id, issue_number, cover_date, name
+               FROM issue_detail WHERE issue_id = 11",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
+        )
+        .expect("columns");
+    assert_eq!(volume_id, Some(42));
+    assert_eq!(issue_number.as_deref(), Some("2"));
+    assert_eq!(cover_date.as_deref(), Some("1998-03-01"));
+    assert_eq!(name.as_deref(), Some("The Case"));
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn malformed_detail_json_keeps_null_columns_and_still_migrates() {
+    let dir = tempdir();
+    let path = dir.join("cvcache.sqlite");
+    v2_file_with_details(&path, "{not json", "[");
+
+    let cache = SqliteCache::open(&path).expect("the migration survives bad JSON");
+    let record = cache.managed_volume(771).expect("read").expect("volume");
+    assert_eq!(record.detail_json.as_deref(), Some("{not json"));
+    let (stored, _) = cache.issue_detail(92469).expect("read").expect("detail");
+    assert_eq!(stored, "[");
+    drop(cache);
+
+    let conn = rusqlite::Connection::open(&path).expect("inspect");
+    let version: i32 = conn
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .expect("version");
+    assert_eq!(version, 3);
+    let (aliases, first_id): (Option<String>, Option<i64>) = conn
+        .query_row(
+            "SELECT aliases, first_issue_id FROM volume WHERE volume_id = 771",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .expect("volume columns");
+    assert_eq!(aliases, None);
+    assert_eq!(first_id, None);
+    let (issue_number, volume_id): (Option<String>, Option<i64>) = conn
+        .query_row(
+            "SELECT issue_number, volume_id FROM issue_detail WHERE issue_id = 92469",
+            [],
+            |r| Ok((r.get(0)?, r.get(1)?)),
+        )
+        .expect("issue columns");
+    assert_eq!(issue_number, None);
+    assert_eq!(volume_id, None);
+    std::fs::remove_dir_all(&dir).ok();
+}
+
+#[test]
+fn a_fresh_cache_opens_at_version_three() {
+    let dir = tempdir();
+    let path = dir.join("cvcache.sqlite");
+    {
+        let cache = SqliteCache::open(&path).expect("fresh open");
+        cache
+            .put_volumes(&[vol(771)])
+            .expect("write through the v3 schema");
+    }
+    let conn = rusqlite::Connection::open(&path).expect("inspect");
+    let version: i32 = conn
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .expect("version");
+    assert_eq!(version, 3);
     std::fs::remove_dir_all(&dir).ok();
 }
 
