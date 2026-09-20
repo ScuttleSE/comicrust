@@ -224,6 +224,33 @@ the API, so this pass does **not** spend the API rate-limit budget
 and is resumable through a `hash_backfill` cursor. Requires Pillow;
 install it with `pip install -r scripts/requirements.txt`.
 
+## First run: establishing the forward watermarks
+
+The **backfill** modes fill the detail for rows already in your cache —
+that is the bulk of the initial work, and they need no setup (each walks
+its rows and stops at a cursor). The **forward** modes are different:
+they refresh rows changed since a per-resource `rich_forward` watermark.
+
+On a cache that has never done a rich-forward, that watermark is unset
+and falls back to the floor date `1970-01-01`, so a first forward run
+would filter `date_last_updated:1970-01-01|<today>` — essentially the
+whole endpoint, a huge list walk that only stores rows you already hold.
+That is wasteful. Seed each forward watermark to a recent date first, so
+forward starts caught-up and only ever fetches genuine recent changes:
+
+```sh
+# One cheap forward run per resource pinned to a recent date. Each
+# fetches only that window's changes and stamps the watermark = today.
+for r in person character volume team location story_arc; do
+  python3 -m scripts.cvcache rich --into cvcache.sqlite --api-key YOUR_KEY \
+      --mode "$r-forward" --since "$(date -d yesterday +%F)"
+done
+```
+
+After this, plain `--mode all` (or any `<resource>-forward`) is cheap:
+forward only touches what changed. Do the heavy filling with the
+**backfill** modes (or `--mode all`, which backfills after forward).
+
 ## Running as a daily cron job
 
 The `rich` command has a combined `all` mode built for one cron entry:
@@ -237,6 +264,10 @@ history until a deadline you set with `--until`.
 python3 -m scripts.cvcache rich --into cvcache.sqlite --api-key YOUR_KEY \
     --mode all --until "04:00"
 ```
+
+> Run the "First run" watermark seeding above once before the first
+> `--mode all`, or its forward phase will start from the 1970 floor and
+> do a large list walk on that first run.
 
 - **Forward always runs to completion** (`on_cap=wait` internally) so
   "stay current" wins the budget; **backfill honors the deadline** and

@@ -1090,6 +1090,20 @@ def rich_resource_forward(
         if since is not None:
             watermark = since
             offset = 0
+        # A cheap probe up front sets the changed-row total, so the
+        # per-item `remaining` is right from the first item (the paged
+        # `number_of_total_results` would otherwise land only after the
+        # first page's progress lines had printed with total 0).
+        try:
+            probe = client.get(cfg["list"], {
+                "field_list": "id",
+                "filter": f"date_last_updated:{watermark}|{now}",
+                "limit": 1,
+            })
+            report.total = _to_int(probe.get("number_of_total_results")) or 0
+        except RateLimitReached:
+            report.stopped_capped = True
+            return report
         while True:
             if (max_pages is not None and report.fetched >= max_pages) or (
                 deadline is not None and time.time() >= deadline
@@ -1153,8 +1167,6 @@ def rich_resource_forward(
                     on_progress(report, rid)
             offset += len(results)
             total = _to_int(page.get("number_of_total_results")) or 0
-            if report.total == 0:
-                report.total = total
             if len(results) < PAGE_SIZE or offset >= total:
                 _write_watermark(live, resource, now, None, "rich_forward")
                 live.commit()

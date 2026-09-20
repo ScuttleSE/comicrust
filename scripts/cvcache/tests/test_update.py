@@ -441,5 +441,52 @@ class RemainingTest(unittest.TestCase):
             os.remove(path)
 
 
+class ForwardTotalTest(unittest.TestCase):
+    def test_forward_total_is_set_before_first_progress(self):
+        import tempfile, os, sqlite3 as _sq
+        fd, path = tempfile.mkstemp(suffix=".sqlite")
+        os.close(fd)
+        try:
+            c = _sq.connect(path)
+            schema.create_schema(c)
+            c.execute("INSERT INTO person (id, name) VALUES (5, 'A')")
+            c.commit()
+            c.close()
+
+            class _FakeClient:
+                def __init__(self, *a, **k):
+                    self.n = 0
+
+                def get(self, endpoint, params):
+                    self.n += 1
+                    if params.get("limit") == 1:
+                        # the up-front probe
+                        return {"number_of_total_results": 3, "results": []}
+                    # the page: one holdable person, short page ends it
+                    return {"number_of_total_results": 3,
+                            "results": [{"id": 5}]}
+
+                def get_detail(self, path, field_list=None):
+                    return {"id": 5, "real_name": "X",
+                            "date_last_updated": "2026-09-19 00:00:00"}
+
+            seen = []
+            orig = update.CvClient
+            update.CvClient = _FakeClient
+            try:
+                update.rich_resource_forward(
+                    __import__("pathlib").Path(path),
+                    api_key="k", resource="person", since="2026-09-19",
+                    make_backup=False,
+                    on_progress=lambda r, rid: seen.append(r.total),
+                )
+            finally:
+                update.CvClient = orig
+            self.assertTrue(seen, "progress should have fired")
+            self.assertEqual(seen[0], 3, "total must be set before item 1")
+        finally:
+            os.remove(path)
+
+
 if __name__ == "__main__":
     unittest.main()
