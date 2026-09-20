@@ -145,7 +145,35 @@ def _cmd_usage(args) -> int:
     return 0
 
 
+def _parse_deadline(until: str | None, for_minutes: int | None) -> float | None:
+    """Turns --until HH:MM (or ISO) / --for N into a Unix deadline. An
+    HH:MM already past today rolls to tomorrow, so a job that starts at
+    05:00 with --until 04:00 targets tomorrow, not an instant stop."""
+    import datetime as _dt
+
+    if for_minutes is not None:
+        return time.time() + for_minutes * 60
+    if not until:
+        return None
+    now = _dt.datetime.now()
+    try:
+        if ":" in until and len(until) <= 5:
+            hh, mm = until.split(":")
+            target = now.replace(hour=int(hh), minute=int(mm), second=0,
+                                 microsecond=0)
+            if target <= now:
+                target += _dt.timedelta(days=1)
+        else:
+            target = _dt.datetime.fromisoformat(until)
+    except ValueError as exc:
+        raise SystemExit(f"bad --until value {until!r}: {exc}")
+    return target.timestamp()
+
+
 def _cmd_rich(args) -> int:
+    deadline = _parse_deadline(getattr(args, "until", None),
+                               getattr(args, "for_minutes", None))
+
     def progress(report, rid):
         print(
             f"  {args.mode} {rid:>9}  fetched={report.fetched} "
@@ -159,6 +187,25 @@ def _cmd_rich(args) -> int:
 
     prog = None if args.quiet else progress
     wait = None if args.quiet else on_wait
+
+    if args.mode == "all":
+        def on_phase(phase, resource):
+            if not args.quiet:
+                print(f"== {phase}: {resource}", flush=True)
+
+        rep = update_mod.run_all(
+            Path(args.into), api_key=args.api_key,
+            deadline=deadline, delay_seconds=args.delay,
+            max_per_hour=args.max_per_hour, backfill_on_cap=args.on_cap,
+            make_backup=not args.no_backup,
+            on_phase=on_phase, on_progress=prog, on_wait=wait,
+        )
+        fwd = sum(r.credited for r in rep.forward.values())
+        bkf = sum(r.credited for r in rep.backfill.values())
+        tail = "reached deadline" if rep.reached_deadline else "done"
+        print(f"all: forward stored={fwd} backfill stored={bkf} — {tail}")
+        return 0
+
     common = dict(
         delay_seconds=args.delay,
         max_per_hour=args.max_per_hour,
@@ -166,6 +213,7 @@ def _cmd_rich(args) -> int:
         make_backup=not args.no_backup,
         on_progress=prog,
         on_wait=wait,
+        deadline=deadline,
     )
     if args.mode == "issues-backfill":
         report = update_mod.rich_issue_backfill(
@@ -313,6 +361,7 @@ def main(argv=None) -> int:
     p_rich.add_argument(
         "--mode",
         choices=(
+            "all",
             "issues-backfill",
             "person-backfill", "character-backfill", "volume-backfill",
             "team-backfill", "location-backfill", "story_arc-backfill",
@@ -320,7 +369,17 @@ def main(argv=None) -> int:
             "team-forward", "location-forward", "story_arc-forward",
         ),
         default="issues-backfill",
-        help="which rich pass to run (default issues-backfill)",
+        help="which rich pass to run; 'all' runs forward then backfill "
+        "for every resource under one --until deadline",
+    )
+    p_rich.add_argument(
+        "--until",
+        help="stop backfilling at this wall-clock time (HH:MM, rolling to "
+        "tomorrow if already past, or an ISO timestamp)",
+    )
+    p_rich.add_argument(
+        "--for", dest="for_minutes", type=int,
+        help="stop after this many minutes (alternative to --until)",
     )
     p_rich.add_argument(
         "--since",

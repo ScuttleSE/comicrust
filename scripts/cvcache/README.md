@@ -187,8 +187,43 @@ the API, so this pass does **not** spend the API rate-limit budget
 and is resumable through a `hash_backfill` cursor. Requires Pillow;
 install it with `pip install -r scripts/requirements.txt`.
 
-## Publisher lists (optional, for a future probe workflow)
+## Running as a daily cron job
 
+The `rich` command has a combined `all` mode built for one cron entry:
+it runs the **forward** pass for every resource first (keeps the
+enriched data current — cheap, finishes in minutes), then **backfills**
+history until a deadline you set with `--until`.
+
+```sh
+# 05:00 daily: forward everything, then backfill until 04:00 (one hour
+# before tomorrow's run). Resumable; stops cleanly at the deadline.
+python3 -m scripts.cvcache rich --into cvcache.sqlite --api-key YOUR_KEY \
+    --mode all --until "04:00"
+```
+
+- **Forward always runs to completion** (`on_cap=wait` internally) so
+  "stay current" wins the budget; **backfill honors the deadline** and
+  uses `--on-cap stop` by default, so it never sleeps past the deadline.
+- `--until "HH:MM"` that is already past today rolls to tomorrow, so a
+  05:00 job with `--until "04:00"` targets the next 04:00, not an instant
+  stop. `--for <minutes>` is an alternative (stop N minutes from now).
+- **There is no API-counter reset, and none is needed.** The 200/hour is
+  CV's own rolling-hour count; `request_log` only mirrors it. Requests
+  age out of the window 3600s after they are made, so stopping the
+  backfill an hour before the next forward run leaves the budget nearly
+  full when forward starts. Timing, not resetting, is the mechanism.
+- The backlog drains across many days; each run continues from the
+  per-resource cursors. When every resource is caught up, `all` finishes
+  quickly and only the forward pass does real work.
+
+Run **`hashes` as a separate job** — it uses the image CDN, not the API,
+so it does not share or spend the API budget:
+
+```sh
+python3 -m scripts.cvcache hashes --into cvcache.sqlite --delay 0.3
+```
+
+## Publisher lists (optional, for a future probe workflow)
 The batch import does not need these; it takes the whole database. The
 filter exists for a later probe-the-CV-API workflow (Task C).
 

@@ -366,5 +366,47 @@ class RichDetailTest(unittest.TestCase):
         )
 
 
+class DeadlineTest(unittest.TestCase):
+    def test_backfill_stops_at_a_past_deadline_without_fetching(self):
+        # A deadline already in the past stops the loop before any
+        # request, even with rows that need enriching.
+        import tempfile, os, sqlite3 as _sq
+        fd, path = tempfile.mkstemp(suffix=".sqlite")
+        os.close(fd)
+        try:
+            c = _sq.connect(path)
+            schema.create_schema(c)
+            c.execute("INSERT INTO character (id, name) VALUES (5, 'X')")
+            c.commit()
+            c.close()
+            report = update.rich_resource_backfill(
+                __import__("pathlib").Path(path),
+                api_key="k", resource="character",
+                make_backup=False, deadline=update.time.time() - 1,
+            )
+            self.assertEqual(report.fetched, 0)
+            self.assertTrue(report.stopped_capped)
+        finally:
+            os.remove(path)
+
+
+class UntilParseTest(unittest.TestCase):
+    def test_for_minutes(self):
+        from scripts.cvcache.__main__ import _parse_deadline
+        import time as _t
+        d = _parse_deadline(None, 30)
+        self.assertAlmostEqual(d, _t.time() + 1800, delta=5)
+
+    def test_hhmm_rolls_to_tomorrow_when_past(self):
+        from scripts.cvcache.__main__ import _parse_deadline
+        import datetime as _dt
+        d = _parse_deadline("00:00", None)  # midnight already passed today
+        self.assertGreater(d, _dt.datetime.now().timestamp())
+
+    def test_none_is_none(self):
+        from scripts.cvcache.__main__ import _parse_deadline
+        self.assertIsNone(_parse_deadline(None, None))
+
+
 if __name__ == "__main__":
     unittest.main()

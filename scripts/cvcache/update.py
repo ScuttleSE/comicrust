@@ -123,6 +123,7 @@ class CvClient:
     _wall: object = time.time
     _sleep: object = time.sleep
     on_wait: object = None  # optional callback(resource, seconds) before a sleep
+    deadline: float = 0.0  # wall-clock stop; a wait past it raises instead of sleeping
 
     def _budget(self) -> int:
         return max(1, self.max_per_hour - self.safety_margin)
@@ -179,6 +180,10 @@ class CvClient:
             wait = oldest + RATE_WINDOW_SECONDS + 1 - now
             if wait <= 0:
                 continue
+            # A wait that would pass the deadline stops instead of
+            # sleeping past it, so a deadline-bound run ends on time.
+            if self.deadline and now + wait >= self.deadline:
+                raise RateLimitReached(resource, "(deadline before window frees)")
             if self.on_wait is not None:
                 self.on_wait(resource, wait)
             self._sleep(wait)
@@ -748,6 +753,7 @@ def rich_issue_backfill(
     make_backup: bool = True,
     on_progress=None,
     on_wait=None,
+    deadline: float | None = None,
 ) -> RichReport:
     """Fills credits and images for issues that have a skeleton row but
     no credit rows (the post-localcv update added skeleton-only rows).
@@ -767,6 +773,7 @@ def rich_issue_backfill(
         on_cap=on_cap,
         on_wait=on_wait,
         ledger=live,
+        deadline=deadline or 0.0,
     )
     field_list = (
         "id,issue_number,volume,name,cover_date,deck,description,store_date,"
@@ -782,6 +789,9 @@ def rich_issue_backfill(
         floor = cursor if cursor else 1 << 62
         while True:
             if max_pages is not None and report.fetched >= max_pages:
+                report.stopped_capped = True
+                break
+            if deadline is not None and time.time() >= deadline:
                 report.stopped_capped = True
                 break
             row = live.execute(
@@ -955,6 +965,7 @@ def rich_resource_backfill(
     make_backup: bool = True,
     on_progress=None,
     on_wait=None,
+    deadline: float | None = None,
 ) -> RichReport:
     """Fills `detail_json` for resource rows that have none yet (person,
     character, volume). Walks ids downward, resumable through the
@@ -973,6 +984,7 @@ def rich_resource_backfill(
         on_cap=on_cap,
         on_wait=on_wait,
         ledger=live,
+        deadline=deadline or 0.0,
     )
     id_col = "volume_id" if resource == "volume" else "id"
     try:
@@ -980,6 +992,9 @@ def rich_resource_backfill(
         floor = cursor if cursor else 1 << 62
         while True:
             if max_pages is not None and report.fetched >= max_pages:
+                report.stopped_capped = True
+                break
+            if deadline is not None and time.time() >= deadline:
                 report.stopped_capped = True
                 break
             row = live.execute(
@@ -1031,6 +1046,7 @@ def rich_resource_forward(
     make_backup: bool = True,
     on_progress=None,
     on_wait=None,
+    deadline: float | None = None,
 ) -> RichReport:
     """Re-fetches `detail_json` for resource rows changed since the
     `rich_forward` watermark, using the list endpoint's
@@ -1049,6 +1065,7 @@ def rich_resource_forward(
         on_cap=on_cap,
         on_wait=on_wait,
         ledger=live,
+        deadline=deadline or 0.0,
     )
     id_col = "volume_id" if resource == "volume" else "id"
     now = _today()
@@ -1058,7 +1075,9 @@ def rich_resource_forward(
             watermark = since
             offset = 0
         while True:
-            if max_pages is not None and report.fetched >= max_pages:
+            if (max_pages is not None and report.fetched >= max_pages) or (
+                deadline is not None and time.time() >= deadline
+            ):
                 report.stopped_capped = True
                 _write_watermark(live, resource, watermark, {"offset": offset},
                                  "rich_forward")
@@ -1080,6 +1099,12 @@ def rich_resource_forward(
                 break
             results = page.get("results") or []
             for item in results:
+                if deadline is not None and time.time() >= deadline:
+                    report.stopped_capped = True
+                    _write_watermark(live, resource, watermark,
+                                     {"offset": offset}, "rich_forward")
+                    live.commit()
+                    return report
                 rid = _to_int(item.get("id"))
                 if rid is None:
                     continue
@@ -1121,4 +1146,83 @@ def rich_resource_forward(
             live.commit()
     finally:
         live.close()
+    return report
+
+
+# The rich resources, cheapest to most expensive, for the combined run.
+_RICH_ORDER = ("story_arc", "location", "team", "person", "volume", "character")
+
+
+@dataclass
+class AllReport:
+    forward: dict = field(default_factory=dict)
+    backfill: dict = field(default_factory=dict)
+    reached_deadline: bool = False
+
+
+def run_all(
+    live_path: Path,
+    api_key: str,
+    deadline: float | None = None,
+    delay_seconds: float = 1.0,
+    max_per_hour: int = MAX_PER_HOUR,
+    backfill_on_cap: str = "stop",
+    make_backup: bool = True,
+    on_phase=None,
+    on_progress=None,
+    on_wait=None,
+) -> AllReport:
+    """One combined enrichment run: forward first (keep current), then
+    backfill (fill history) until `deadline`. Forward always uses
+    `on_cap=wait` so it finishes; backfill uses `backfill_on_cap`
+    (default `stop`) and honors the deadline, so a daily job drains the
+    backlog in the window left after forward and stops cleanly before
+    the next run. hashes are a separate command and not run here."""
+    report = AllReport()
+
+    # Phase 1: forward for every resource (issues have no forward pass;
+    # the `update` command's issues sweep is the issue forward).
+    for resource in _RICH_ORDER:
+        if on_phase is not None:
+            on_phase("forward", resource)
+        r = rich_resource_forward(
+            live_path, api_key=api_key, resource=resource,
+            delay_seconds=delay_seconds, max_per_hour=max_per_hour,
+            on_cap="wait", make_backup=make_backup,
+            on_progress=on_progress, on_wait=on_wait, deadline=deadline,
+        )
+        report.forward[resource] = r
+        make_backup = False  # one backup per run is enough
+        if deadline is not None and time.time() >= deadline:
+            report.reached_deadline = True
+            return report
+
+    # Phase 2: backfill. Issues first (the heavy set that also grows the
+    # resource tables), then each resource.
+    if on_phase is not None:
+        on_phase("backfill", "issues")
+    ri = rich_issue_backfill(
+        live_path, api_key=api_key, delay_seconds=delay_seconds,
+        max_per_hour=max_per_hour, on_cap=backfill_on_cap,
+        make_backup=False, on_progress=on_progress, on_wait=on_wait,
+        deadline=deadline,
+    )
+    report.backfill["issues"] = ri
+    if deadline is not None and time.time() >= deadline:
+        report.reached_deadline = True
+        return report
+
+    for resource in _RICH_ORDER:
+        if on_phase is not None:
+            on_phase("backfill", resource)
+        r = rich_resource_backfill(
+            live_path, api_key=api_key, resource=resource,
+            delay_seconds=delay_seconds, max_per_hour=max_per_hour,
+            on_cap=backfill_on_cap, make_backup=False,
+            on_progress=on_progress, on_wait=on_wait, deadline=deadline,
+        )
+        report.backfill[resource] = r
+        if deadline is not None and time.time() >= deadline:
+            report.reached_deadline = True
+            return report
     return report
