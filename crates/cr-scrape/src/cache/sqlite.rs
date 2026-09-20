@@ -725,16 +725,47 @@ impl CvCache for SqliteCache {
     }
 
     fn put_issue_detail(&self, issue_id: i64, json: &str) -> Result<(), CacheError> {
-        self.lock()
-            .execute(
-                "INSERT INTO issue_detail (issue_id, json, fetched_at)
-                 VALUES (?1, ?2, ?3)
-                 ON CONFLICT(issue_id) DO UPDATE SET
-                   json = excluded.json, fetched_at = excluded.fetched_at",
-                params![issue_id, json, now()],
-            )
-            .map(|_| ())
-            .map_err(db)
+        // The typed columns and the inline references extract from
+        // the same response at zero extra cost (ADR-070). The merge
+        // rule stays store-wide: an empty value never erases.
+        let columns = issue_detail_columns(json).unwrap_or_default();
+        let mut conn = self.lock();
+        let tx = conn.transaction().map_err(db)?;
+        tx.execute(
+            "INSERT INTO issue_detail
+               (issue_id, json, fetched_at, volume_id, issue_number,
+                cover_date, name, store_date, image_url, date_added,
+                date_last_updated)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+             ON CONFLICT(issue_id) DO UPDATE SET
+               json = excluded.json, fetched_at = excluded.fetched_at,
+               volume_id = COALESCE(excluded.volume_id, volume_id),
+               issue_number = COALESCE(excluded.issue_number, issue_number),
+               cover_date = COALESCE(excluded.cover_date, cover_date),
+               name = COALESCE(excluded.name, name),
+               store_date = COALESCE(excluded.store_date, store_date),
+               image_url = COALESCE(excluded.image_url, image_url),
+               date_added = COALESCE(excluded.date_added, date_added),
+               date_last_updated = COALESCE(excluded.date_last_updated, date_last_updated)",
+            params![
+                issue_id,
+                json,
+                now(),
+                columns.volume_id,
+                columns.issue_number,
+                columns.cover_date,
+                columns.name,
+                columns.store_date,
+                columns.image_url,
+                columns.date_added,
+                columns.date_last_updated,
+            ],
+        )
+        .map_err(db)?;
+        if let Some(references) = resources::extract_issue_references(json) {
+            store_references_tx(&tx, OwnerKind::Issue, issue_id, &references)?;
+        }
+        tx.commit().map_err(db)
     }
 
     fn issue_detail(&self, issue_id: i64) -> Result<Option<(String, i64)>, CacheError> {

@@ -4,10 +4,11 @@
 //! numbers, the series-details cache, the magic cvinfo file).
 
 use std::io::{Read, Write};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 
-use cr_scrape::cache::{CvCache, SqliteCache};
+use cr_scrape::cache::{CvCache, IssueSkeleton, SqliteCache, VolumeRow};
 use cr_scrape::cv::connection::CvClient;
 use cr_scrape::cv::models::{IssueRef, SeriesRef};
 use cr_scrape::cv::queries::Cv;
@@ -21,7 +22,9 @@ struct Canned {
 }
 
 /// Spawns a server thread answering each connection with the first
-/// canned response whose path matches (or 404). Returns the base url.
+/// canned response whose path matches (or 404). Returns the base url
+/// and a handle; the JoinHandle keeps the thread alive for `'static`
+/// canned slices.
 fn serve(canned: &'static [Canned]) -> (String, JoinHandle<()>) {
     let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
     let port = listener.local_addr().unwrap().port();
@@ -49,6 +52,39 @@ fn serve(canned: &'static [Canned]) -> (String, JoinHandle<()>) {
         }
     });
     (format!("http://127.0.0.1:{port}/api"), handle)
+}
+
+/// The same server, counting the connections that reach it. The
+/// zero-request acceptance gates read the counter (ADR-071).
+fn serve_counted(canned: &'static [Canned]) -> (String, Arc<AtomicUsize>, JoinHandle<()>) {
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    let counter = Arc::new(AtomicUsize::new(0));
+    let counted = Arc::clone(&counter);
+    let handle = std::thread::spawn(move || {
+        for stream in listener.incoming() {
+            let Ok(mut stream) = stream else { continue };
+            counted.fetch_add(1, Ordering::Relaxed);
+            let mut buf = [0u8; 8192];
+            let len = stream.read(&mut buf).unwrap_or(0);
+            let request = String::from_utf8_lossy(&buf[..len]).to_string();
+            let request_line = request.lines().next().unwrap_or("");
+            let path = request_line.split_whitespace().nth(1).unwrap_or("");
+            let canned = canned
+                .iter()
+                .find(|c| path.contains(c.path))
+                .map(|c| (c.status, c.body))
+                .unwrap_or((404, "{\"status_code\": 404, \"error\": \"no route\"}"));
+            let (status, body) = canned;
+            let response = format!(
+                "HTTP/1.1 {status} X\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
+            let _ = stream.write_all(response.as_bytes());
+        }
+    });
+    (format!("http://127.0.0.1:{port}/api"), counter, handle)
 }
 
 fn client_for(base: &str) -> Cv {
@@ -434,6 +470,137 @@ fn cleanup_terms_follow_the_python_rules() {
         cleanup_search_terms("O'Malley, Part #2!", false),
         "o'malley part 2"
     );
+}
+
+#[test]
+fn a_stale_open_volume_never_serves_its_stale_issue_list() {
+    let (base, counter, _guard) = serve_counted(&[]);
+    let cache = Arc::new(SqliteCache::in_memory().unwrap());
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    // An open volume (a recent last issue) last checked two days
+    // ago: outside the revalidate window, so the list is stale.
+    cache
+        .put_volumes(&[VolumeRow {
+            volume_id: 40501,
+            name: Some("Batman".into()),
+            count_of_issues: Some(1),
+            last_cover_date: Some("2026-09-01".into()),
+            fetched_at: now - 2 * 86_400,
+            ..Default::default()
+        }])
+        .unwrap();
+    cache
+        .put_issues(&[IssueSkeleton {
+            issue_id: 400001,
+            volume_id: 40501,
+            issue_number: "1".into(),
+            ..Default::default()
+        }])
+        .unwrap();
+    let mut cv = client_for(&base);
+    cv.client.set_cache(Arc::clone(&cache) as Arc<dyn CvCache>);
+    let series = SeriesRef::new(40501, "Batman", 1940, "", 1, None).unwrap();
+    // The stale list does not serve: the call goes online and the
+    // empty server surfaces the failure.
+    assert!(cv.query_issue_refs(&series, &mut no_cancel_issue).is_err());
+    assert!(counter.load(Ordering::Relaxed) >= 1);
+    drop(_guard);
+}
+
+#[test]
+fn a_fully_cached_series_scrapes_with_zero_requests() {
+    static CANNED: &[Canned] = &[
+        Canned {
+            path: "/search/",
+            status: 200,
+            body: SEARCH_PAGE_1,
+        },
+        Canned {
+            path: "/issues/",
+            status: 200,
+            body: ISSUE_LIST,
+        },
+        Canned {
+            path: "/issue/4000-",
+            status: 200,
+            body: ISSUE_DETAILS,
+        },
+        Canned {
+            path: "/volume/4050-",
+            status: 200,
+            body: VOLUME_DETAILS,
+        },
+        Canned {
+            path: "/img/",
+            status: 200,
+            body: "fakejpegbytes",
+        },
+    ];
+
+    // Run 1: the online scrape populates the persistent cache.
+    let (base, counter, _guard) = serve_counted(CANNED);
+    let cache = Arc::new(SqliteCache::in_memory().unwrap());
+    let mut cv = client_for(&base);
+    cv.client.set_cache(Arc::clone(&cache) as Arc<dyn CvCache>);
+    let refs = cv
+        .query_series_refs("batman", &[], 100, &mut no_cancel_series)
+        .unwrap();
+    assert_eq!(refs.len(), 2);
+    let series = SeriesRef::new(40501, "Batman", 1940, "DC Comics", 900, None).unwrap();
+    let issues = cv.query_issue_refs(&series, &mut no_cancel_issue).unwrap();
+    let issue_ref = issues
+        .iter()
+        .find(|r| r.issue_key == 400011)
+        .expect("issue in list")
+        .clone();
+    let detail = cv.query_issue(&issue_ref, true).unwrap();
+    let cover_url = format!("{base}/img/cover.jpg");
+    let cover = cv.query_image(&cover_url).expect("cover downloads");
+    let first_run_requests = counter.load(Ordering::Relaxed);
+    // search, issue list, issue detail, cover. The volume-details
+    // request is already local-first: the search cached the volume
+    // row, so series details never go online here.
+    assert!(first_run_requests >= 4, "the first run goes online");
+    drop(cv);
+    drop(_guard);
+
+    // Run 2: a cold session over an EMPTY server. The cache serves
+    // everything (ADR-071).
+    let (empty_base, empty_counter, _guard2) = serve_counted(&[]);
+    let mut cv2 = client_for(&empty_base);
+    cv2.client.set_cache(Arc::clone(&cache) as Arc<dyn CvCache>);
+    let refs2 = cv2
+        .query_series_refs("batman", &[], 100, &mut no_cancel_series)
+        .unwrap();
+    assert_eq!(refs2, refs, "the cached search serves the same refs");
+    let issues2 = cv2.query_issue_refs(&series, &mut no_cancel_issue).unwrap();
+    let same_issues = issues
+        .iter()
+        .map(|r| (r.issue_key, r.issue_num.clone(), r.title.clone()))
+        .collect::<Vec<_>>();
+    let same_issues2 = issues2
+        .iter()
+        .map(|r| (r.issue_key, r.issue_num.clone(), r.title.clone()))
+        .collect::<Vec<_>>();
+    assert_eq!(same_issues2, same_issues);
+    let issue_ref2 = issues2
+        .iter()
+        .find(|r| r.issue_key == 400011)
+        .expect("cached list holds the issue")
+        .clone();
+    let detail2 = cv2.query_issue(&issue_ref2, true).unwrap();
+    assert_eq!(detail2, detail, "the cached detail parses identically");
+    let cover2 = cv2.query_image(&cover_url).expect("cached cover");
+    assert_eq!(cover2, cover);
+    assert_eq!(
+        empty_counter.load(Ordering::Relaxed),
+        0,
+        "zero requests reached the server"
+    );
+    drop(_guard2);
 }
 
 #[test]

@@ -9,6 +9,8 @@ use std::time::{Duration, Instant};
 
 use serde_json::Value;
 
+use crate::cache::freshness::FreshnessPolicy;
+
 /// The scraper version that rides the User-Agent (the C#
 /// `Resources.SCRIPT_VERSION`).
 pub const SCRAPER_VERSION: &str = env!("CARGO_PKG_VERSION");
@@ -58,6 +60,9 @@ pub struct CvClient {
     /// The persistent cache that receives reusable response data.
     /// Cache write failures are logged and never stop a scrape.
     cache: Option<Arc<dyn crate::cache::CvCache>>,
+    /// The freshness rule the local-first issue-list read applies
+    /// (ADR-071). The defaults hold when the wiring does not set it.
+    freshness: FreshnessPolicy,
 }
 
 impl CvClient {
@@ -96,6 +101,7 @@ impl CvClient {
             series_details_cache: Mutex::new(HashMap::new()),
             budget: None,
             cache: None,
+            freshness: FreshnessPolicy::default(),
         }
     }
 
@@ -108,6 +114,107 @@ impl CvClient {
     /// Installs the persistent Comic Vine cache used by normal scrapes.
     pub fn set_cache(&mut self, cache: Arc<dyn crate::cache::CvCache>) {
         self.cache = Some(cache);
+    }
+
+    /// Installs the freshness rule for the local-first issue-list
+    /// read (ADR-071). The scraper wiring derives it from the same
+    /// advanced keys as the budget.
+    pub fn set_freshness(&mut self, policy: FreshnessPolicy) {
+        self.freshness = policy;
+    }
+
+    /// The installed cache, for the local-first reads (ADR-071).
+    pub(crate) fn cache(&self) -> Option<&Arc<dyn crate::cache::CvCache>> {
+        self.cache.as_ref()
+    }
+
+    pub(crate) fn freshness(&self) -> FreshnessPolicy {
+        self.freshness
+    }
+
+    /// The stored issue detail JSON, when the cache holds one.
+    /// A cache failure is a miss, never a scrape failure.
+    pub(crate) fn cached_issue_detail(&self, issue_id: i64) -> Option<String> {
+        let cache = self.cache.as_ref()?;
+        match cache.issue_detail(issue_id) {
+            Ok(Some((json, _))) => Some(json),
+            Ok(None) => None,
+            Err(error) => {
+                crate::log::debug(&format!("could not read the cached issue detail: {error}"));
+                None
+            }
+        }
+    }
+
+    /// The stored issue detail JSON for one issue. A cache failure is
+    /// logged and ignored.
+    pub(crate) fn put_issue_detail(&self, issue_id: i64, json: &str) {
+        let Some(cache) = &self.cache else {
+            return;
+        };
+        if let Err(error) = cache.put_issue_detail(issue_id, json) {
+            crate::log::debug(&format!("could not cache the issue detail: {error}"));
+        }
+    }
+
+    /// The stored volume row, when the cache holds one.
+    pub(crate) fn cached_volume(&self, volume_id: i64) -> Option<crate::cache::VolumeRow> {
+        let cache = self.cache.as_ref()?;
+        match cache.volume(volume_id) {
+            Ok(row) => row,
+            Err(error) => {
+                crate::log::debug(&format!("could not read the cached volume: {error}"));
+                None
+            }
+        }
+    }
+
+    /// The stored volume objects of one cleaned search (ADR-071).
+    pub(crate) fn cached_search(&self, terms: &str) -> Option<String> {
+        let cache = self.cache.as_ref()?;
+        match cache.search(terms) {
+            Ok(Some((json, _))) => Some(json),
+            Ok(None) => None,
+            Err(error) => {
+                crate::log::debug(&format!("could not read the cached search: {error}"));
+                None
+            }
+        }
+    }
+
+    /// Stores the volume objects of one search under its cleaned
+    /// terms. An empty result is not stored, so the alternate-terms
+    /// retry keeps its chance on the next run.
+    pub(crate) fn cache_search(&self, terms: &str, json: &str) {
+        let Some(cache) = &self.cache else {
+            return;
+        };
+        if let Err(error) = cache.put_search(terms, json) {
+            crate::log::debug(&format!("could not cache the search result: {error}"));
+        }
+    }
+
+    /// The stored image bytes for one URL (ADR-071).
+    pub(crate) fn cached_image(&self, url: &str) -> Option<Vec<u8>> {
+        let cache = self.cache.as_ref()?;
+        match cache.image(url) {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                crate::log::debug(&format!("could not read the cached image: {error}"));
+                None
+            }
+        }
+    }
+
+    /// Stores one downloaded cover. Images ride the CDN and stay
+    /// outside the request budget (ADR-071).
+    pub(crate) fn cache_image(&self, url: &str, bytes: &[u8]) {
+        let Some(cache) = &self.cache else {
+            return;
+        };
+        if let Err(error) = cache.put_image(url, bytes) {
+            crate::log::debug(&format!("could not cache the image: {error}"));
+        }
     }
 
     /// Saves volume metadata without making a cache failure fail the scrape.

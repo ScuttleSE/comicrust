@@ -15,9 +15,10 @@ local-first scrape reads with a refresh switch and an offline mode; a
 backupable, mergeable cache file; the sweep expansion plus Python
 build and import scripts.
 
-T1 (schema v3) and T2 (inline credits and resource upserts) are done.
-Commits `57d4302` and `f6cd8a8`. Phase 20 stays implemented with open
-user test 26.
+T1 (schema v3), T2 (inline credits and resource upserts), and T3
+(local-first reads) are done. Phase 20 stays implemented with open
+user test 26. The user declined the offered real-cache user tests
+(2026-09-20); the real v2-file migration check remains unperformed.
 
 ## Latest user finding
 
@@ -41,11 +42,12 @@ scrape matched the selected book and three other books in the same series.
 
 ## Current task for the next context
 
-Phase 21 T3: local-first reads (ADR-071). Route search, series
-details, issue detail, and images through the cache first in
-`cv/queries.rs` and `engine.rs`. Acceptance: a mock-server test
-scrapes a fully cached series with ZERO API requests. Follow
-`docs/phases/phase-21.md`.
+Phase 21 T4: the refresh switch and offline mode (ADR-071). The two
+config keys with defaults and parse rules; the check boxes in the
+scraper config dialog; `CvError::Offline` at the client chokepoint;
+the warm, sweep, and cache-manager disabled states. Acceptance: in
+manual mode an open volume makes no probe request; in offline mode no
+request leaves the process. Follow `docs/phases/phase-21.md`.
 
 When the user tests first: the `2000 AD` number `2498` retest (test 24)
 and the Missing Issues scope test (test 22) stay first in line, and
@@ -94,28 +96,28 @@ licenses` is not a CI gate.
 
 ## Latest verification
 
-Phase 21 T1 and T2 passed on 2026-09-20.
+Phase 21 T3 and the gate-flake fix passed on 2026-09-20.
 
 - `cargo fmt --all`: passed.
 - `cargo clippy --workspace --all-targets -- -D warnings`: passed.
 - `cargo test --workspace`: passed (59 suites ok).
-- `MEASURED`: the v2→v3 migration keeps the stored JSON byte-identical
-  and backfills the typed columns; the v1→v2→v3 chain passes; malformed
-  detail JSON keeps NULL columns and still migrates.
-- `MEASURED`: a mock-server complete update stores every credit marker
-  (`credit`, `first_appearance`, `died_in`, `disbanded`) and an
-  identical re-import stores the same rows.
-- `MEASURED`, one gate flake: `cr-engine --test incoming_transaction`
-  failed once inside a full workspace run and passed in two later runs
-  (alone and in the full workspace) on identical code. No cr-engine
-  code changed. The failing test name was not captured. Untreated.
+- `MEASURED`: the zero-request acceptance — a second, cold-session
+  scrape of a fully cached series over an empty mock server makes
+  ZERO API requests and returns identical search results, issue
+  list, detail parse, and cover bytes.
+- `MEASURED`: a stale open volume never serves its stale issue list;
+  the call goes online.
+- Flake fix: the two `ACTIVE_OPERATIONS` tests in
+  `cr-engine/tests/incoming_transaction.rs` now serialize on
+  `MUTATION_TEST_LOCK` (`CODE-READ` cause: unsynchronized process
+  global; 155 clean runs could not reproduce the original single
+  failure). Committed as `5680e5e`.
 - `UNKNOWN`: the real API JSON shape of the `volume` `aliases` field
   (string vs array). The v3 column stores it verbatim, which is
   lossless either way. A real response settles it.
-- `MEASURED` (docs page, 2026-09-20): the issue resource documents
-  `characters_died_in`, and BOTH `teams_disbanded_in` and
-  `disbanded_teams` with the same meaning. The extractor reads both
-  disbanded keys and the first-appearance keys.
+- `UNKNOWN`: whether any real cache file has already migrated to v3.
+  The user declined the migration check, so T7 must treat v3 as
+  possibly deployed when it widens the schema.
 
 ## Environment notes
 

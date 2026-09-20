@@ -12,6 +12,7 @@ use serde_json::Value;
 
 use super::connection::{CvClient, CvError};
 use super::models::{Issue, IssueRef, SeriesRef};
+use crate::cache::freshness::{self, Verdict};
 use crate::utils::convert_number_words;
 
 /// A progress/cancel callback for the series search: the matches so
@@ -156,7 +157,17 @@ impl Cv {
         if let Some(cached) = self.caches.get_series(&terms) {
             return Ok(cached);
         }
-        let refs = self.uncached_series_refs(&terms, max_results, progress)?;
+        // Local-first (ADR-071): the persistent search result under
+        // the cleaned terms parses through the same volume parser. An
+        // unparseable stored result falls through to the network.
+        let cleaned = cleanup_search_terms(&terms, false);
+        if let Some(json) = self.client.cached_search(&cleaned) {
+            if let Some(refs) = stored_search_refs(&json, max_results) {
+                self.caches.put_series(terms, refs.clone());
+                return Ok(refs);
+            }
+        }
+        let (refs, raw_results) = self.uncached_series_refs(&terms, max_results, progress)?;
         let now = unix_now();
         let cached: Vec<crate::cache::VolumeRow> = refs
             .iter()
@@ -172,6 +183,14 @@ impl Cv {
             })
             .collect();
         self.client.cache_volumes(&cached);
+        // The raw search results store under the cleaned terms for the
+        // next run. An empty result is never stored, so the
+        // alternate-terms retry keeps its chance (ADR-071).
+        if !refs.is_empty() {
+            if let Ok(json) = serde_json::to_string(&raw_results) {
+                self.client.cache_search(&cleaned, &json);
+            }
+        }
         self.caches.put_series(terms, refs.clone());
         Ok(refs)
     }
@@ -181,11 +200,12 @@ impl Cv {
         terms: &str,
         max_results: i32,
         progress: &mut SeriesProgressFn,
-    ) -> Result<Vec<SeriesRef>, CvError> {
+    ) -> Result<(Vec<SeriesRef>, Vec<Value>), CvError> {
         let mut refs = Vec::new();
+        let mut raw_results = Vec::new();
         let cleaned = cleanup_search_terms(terms, false);
         if cleaned.is_empty() {
-            return Ok(refs);
+            return Ok((refs, raw_results));
         }
 
         // a pasted ComicVine URL wins outright
@@ -193,27 +213,30 @@ impl Cv {
             refs.push(url_ref);
         }
         if refs.is_empty() {
-            refs = self.paged_series_search(&cleaned, max_results, progress)?;
+            (refs, raw_results) = self.paged_series_search(&cleaned, max_results, progress)?;
         }
         if refs.is_empty() {
             let alt = cleanup_search_terms(&cleaned, true);
             if !terms.is_empty() && alt != cleaned {
-                refs = self.paged_series_search(&alt, max_results, progress)?;
+                refs = self.paged_series_search(&alt, max_results, progress)?.0;
             }
         }
-        Ok(refs)
+        Ok((refs, raw_results))
     }
 
     /// The paged volume search (the C# `__query_series_refs`): pages
-    /// of 100, capped at `max_results`, cancellable.
+    /// of 100, capped at `max_results`, cancellable. The raw volume
+    /// objects ride along, aligned with the refs, so the persistent
+    /// search cache stores what the API actually said (ADR-071).
     fn paged_series_search(
         &self,
         terms: &str,
         max_results: i32,
         progress: &mut SeriesProgressFn,
-    ) -> Result<Vec<SeriesRef>, CvError> {
+    ) -> Result<(Vec<SeriesRef>, Vec<Value>), CvError> {
         const PAGE_SIZE: usize = 100;
         let mut refs: Vec<SeriesRef> = Vec::new();
+        let mut raw_results: Vec<Value> = Vec::new();
         let mut seen: BTreeSet<i64> = BTreeSet::new();
         let max = max_results.max(0) as usize;
 
@@ -226,11 +249,11 @@ impl Cv {
             "search \u{201C}{terms}\u{201D} page 1: {num_results} total results"
         ));
         if num_results <= 0 || result_items(&dom, "volume").is_empty() {
-            return Ok(refs);
+            return Ok((refs, raw_results));
         }
         let num_results = num_results as usize;
 
-        collect_volumes(&dom, &mut refs, &mut seen, max);
+        collect_volumes(&dom, &mut refs, &mut raw_results, &mut seen, max);
         let mut iteration = PAGE_SIZE;
         let num_remaining_pages = num_results / PAGE_SIZE;
         let mut cancelled = progress(refs.len(), num_remaining_pages);
@@ -244,10 +267,13 @@ impl Cv {
                 .unwrap_or(0)
                 >= 1;
             if has_page {
-                collect_volumes(&dom, &mut refs, &mut seen, max);
+                collect_volumes(&dom, &mut refs, &mut raw_results, &mut seen, max);
             }
         }
-        Ok(if cancelled { Vec::new() } else { refs })
+        Ok((
+            if cancelled { Vec::new() } else { refs },
+            if cancelled { Vec::new() } else { raw_results },
+        ))
     }
 
     fn series_search_dom(&self, terms: &str, page: usize) -> Result<Value, CvError> {
@@ -277,6 +303,14 @@ impl Cv {
             if *key == series_ref.series_key {
                 return Ok(refs.clone());
             }
+        }
+        // Local-first (ADR-071): a FRESH cached issue list serves with
+        // zero requests. Every other verdict — or any cache failure —
+        // runs the online path below. The one-request revalidation
+        // probe is the refresh switch's business (ADR-071, T4).
+        if let Some(refs) = self.fresh_cached_issue_refs(series_ref) {
+            self.caches.issue_refs = Some((series_ref.series_key, refs.clone()));
+            return Ok(refs);
         }
         let refs = self.uncached_issue_refs(series_ref, progress)?;
         let cached: Vec<crate::cache::IssueSkeleton> = refs
@@ -346,6 +380,34 @@ impl Cv {
         self.client.get_dom("/issues/", &query)
     }
 
+    /// The cached issue list of a series, when the freshness rule
+    /// calls it fresh (ADR-071). `None` means "go online"; a cache
+    /// failure never fails a scrape.
+    fn fresh_cached_issue_refs(&self, series_ref: &SeriesRef) -> Option<Vec<IssueRef>> {
+        let cache = self.client.cache()?;
+        let stored = cache.volume(series_ref.series_key).ok().flatten();
+        let count = cache.issue_count(series_ref.series_key).unwrap_or(0);
+        if freshness::verdict(stored.as_ref(), count, unix_now(), &self.client.freshness())
+            != Verdict::Fresh
+        {
+            return None;
+        }
+        let skeletons = cache.issues_of_volume(series_ref.series_key).ok()?;
+        Some(
+            skeletons
+                .into_iter()
+                .map(|s| {
+                    IssueRef::new(
+                        &s.issue_number,
+                        s.issue_id,
+                        s.name.as_deref().unwrap_or(""),
+                        None,
+                    )
+                })
+                .collect(),
+        )
+    }
+
     /// `db.query_issue_ref`: the issue in the given series with the
     /// given number, retrying with the ½ alternate form when the
     /// exact number yields nothing (attempts <= 3, C# parity).
@@ -398,10 +460,31 @@ impl Cv {
     /// associated-images fetch (the C# passes the SCRAPE_RATING flag
     /// here).
     pub fn query_issue(&self, issue_ref: &IssueRef, slow_data: bool) -> Result<Issue, CvError> {
+        // Local-first (ADR-071): a stored detail parses through the
+        // same parser as the live response. A stored row that fails
+        // to parse falls through to the network and gets replaced.
+        if let Some(json) = self.client.cached_issue_detail(issue_ref.issue_key) {
+            if let Ok(value) = serde_json::from_str::<Value>(&json) {
+                let results = value.get("results").unwrap_or(&value);
+                let mut issue = parse_issue_results(results, &self.client)?;
+                if slow_data {
+                    parse_associated_images_results(results, &mut issue);
+                }
+                return Ok(issue);
+            }
+        }
         let query = self.client.base_query();
         let dom = self
             .client
             .get_dom(&format!("/issue/4000-{}/", issue_ref.issue_key), &query)?;
+        // The full response stores for the next run (ADR-071): the
+        // serialized `results` object, the shape every issue-detail
+        // store keeps (ADR-064).
+        if let Some(results) = dom.get("results") {
+            if let Ok(json) = serde_json::to_string(results) {
+                self.client.put_issue_detail(issue_ref.issue_key, &json);
+            }
+        }
         let mut issue = parse_issue(&dom, &self.client)?;
         if slow_data {
             parse_associated_images(&dom, &mut issue);
@@ -409,9 +492,16 @@ impl Cv {
         Ok(issue)
     }
 
-    /// The image bytes for a URL (the C# `_query_image`).
+    /// The image bytes for a URL (the C# `_query_image`). The blob
+    /// cache serves first; a miss downloads and stores. Images ride
+    /// the CDN and stay outside the request budget (ADR-071).
     pub fn query_image(&self, url: &str) -> Option<Vec<u8>> {
-        self.client.get_bytes(url)
+        if let Some(bytes) = self.client.cached_image(url) {
+            return Some(bytes);
+        }
+        let bytes = self.client.get_bytes(url)?;
+        self.client.cache_image(url, &bytes);
+        Some(bytes)
     }
 
     /// `__url_to_seriesref`: a ComicVine URL carrying `4000-<num>`
@@ -517,8 +607,37 @@ fn result_items<'a>(dom: &'a Value, key: &str) -> Vec<&'a Value> {
     }
 }
 
-fn collect_volumes(dom: &Value, refs: &mut Vec<SeriesRef>, seen: &mut BTreeSet<i64>, max: usize) {
+fn collect_volumes(
+    dom: &Value,
+    refs: &mut Vec<SeriesRef>,
+    raw: &mut Vec<Value>,
+    seen: &mut BTreeSet<i64>,
+    max: usize,
+) {
     for volume in result_items(dom, "volume") {
+        if refs.len() >= max {
+            break;
+        }
+        if let Some(reference) = volume_to_seriesref(volume) {
+            if seen.insert(reference.series_key) {
+                refs.push(reference);
+                raw.push(volume.clone());
+            }
+        }
+    }
+}
+
+/// The refs of one stored search result (ADR-071): the raw volume
+/// objects parse through the same `volume_to_seriesref` as the live
+/// path. `None` means the stored text is unusable — the caller goes
+/// online.
+fn stored_search_refs(json: &str, max_results: i32) -> Option<Vec<SeriesRef>> {
+    let items = serde_json::from_str::<Value>(json).ok()?;
+    let items = items.as_array()?;
+    let mut refs: Vec<SeriesRef> = Vec::new();
+    let mut seen: BTreeSet<i64> = BTreeSet::new();
+    let max = max_results.max(0) as usize;
+    for volume in items {
         if refs.len() >= max {
             break;
         }
@@ -528,6 +647,7 @@ fn collect_volumes(dom: &Value, refs: &mut Vec<SeriesRef>, seen: &mut BTreeSet<i
             }
         }
     }
+    (!refs.is_empty()).then_some(refs)
 }
 
 fn collect_issues(dom: &Value, refs: &mut Vec<IssueRef>, seen: &mut BTreeSet<i64>) {
@@ -616,6 +736,12 @@ fn parse_issue(dom: &Value, client: &CvClient) -> Result<Issue, CvError> {
     let results = dom
         .get("results")
         .ok_or_else(|| CvError::BadResponse("issue dom has no results".to_string()))?;
+    parse_issue_results(results, client)
+}
+
+/// The parser over one issue's `results` object. Both the live path
+/// and the stored-detail read (ADR-071) come through here.
+fn parse_issue_results(results: &Value, client: &CvClient) -> Result<Issue, CvError> {
     let key = value_i64(results.get("id")).unwrap_or(0);
     let mut issue = Issue::new(key);
 
@@ -704,6 +830,25 @@ fn series_details(
         .cloned()
     {
         return Ok(cached);
+    }
+    // Local-first (ADR-071): the cached volume row answers when it
+    // holds either field. A row that holds neither (an MCL import, a
+    // manual name-only row) stays a miss and the volume query runs.
+    if series_id > 0 {
+        if let Some(row) = client.cached_volume(series_id) {
+            let year = row.start_year.filter(|year| *year > 0);
+            let publisher = row.publisher.filter(|p| !p.is_empty());
+            if year.is_some() || publisher.is_some() {
+                let volume_year = year.unwrap_or(-1);
+                let publisher = publisher.unwrap_or_default();
+                client
+                    .series_details_cache
+                    .lock()
+                    .unwrap()
+                    .insert(series_id, (volume_year, publisher.clone()));
+                return Ok((volume_year, publisher));
+            }
+        }
     }
     let mut volume_year = -1;
     let mut publisher = String::new();
@@ -875,7 +1020,16 @@ fn push_name(list: &mut Vec<String>, name: &str) {
 /// `__parse_associated_images`: the alternate cover urls (the
 /// `slow_data` path).
 fn parse_associated_images(dom: &Value, issue: &mut Issue) {
-    let images = dom.pointer("/results/associated_images");
+    match dom.get("results") {
+        Some(results) => parse_associated_images_results(results, issue),
+        None => parse_associated_images_results(dom, issue),
+    }
+}
+
+/// The same parse over one issue's `results` object (the stored
+/// detail shape, ADR-071).
+fn parse_associated_images_results(results: &Value, issue: &mut Issue) {
+    let images = results.get("associated_images");
     let Some(items) = images.and_then(Value::as_array) else {
         return;
     };

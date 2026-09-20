@@ -2,8 +2,23 @@
 
 ## Status
 
-In progress. T1 and T2 are implemented and verified (commits `57d4302`,
-`f6cd8a8`). T3 through T9 remain.
+In progress. T1 through T3 are implemented and verified (commits
+`57d4302`, `f6cd8a8`, and the T3 commit). T4 through T9 remain.
+
+T3 implementation notes:
+- The scrape's issue list short-circuits on a `Fresh` verdict only.
+  A `Revalidate` verdict falls back to the existing full re-page; the
+  one-request probe stays with the freshness consumers that already
+  have it. Under the default manual mode (T4) `Revalidate` never
+  fires.
+- A cache-served issue list carries no thumbnail URLs (the skeleton
+  has no image column until T7). The issue-picker dialog and the
+  automatcher's remote cover hash degrade on a fully cached series.
+- Empty search results are never cached, so the alternate-terms
+  retry keeps its chance on the next run.
+- `put_issue_detail` now also extracts the typed columns and the
+  inline references, so a normal scrape stores details as rich as a
+  complete cache-manager update.
 
 ## Goal
 
@@ -119,7 +134,7 @@ fields, and Python scripts build and import cache files.
       resource tables; extend the `CvCache` trait; make the complete
       issue write path store them. Acceptance: mock-server tests cover
       every credit marker and an idempotent re-import.
-- [ ] **T3 — Local-first reads** (ADR-071): route search, series
+- [x] **T3 — Local-first reads** (ADR-071): route search, series
       details, issue detail, and images through the cache first.
       `cv/queries.rs` and `engine.rs` change; `parse_issue` parses
       stored JSON. Acceptance: a mock-server test scrapes a fully
