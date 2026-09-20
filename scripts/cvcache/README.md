@@ -19,7 +19,7 @@ display) and `Pillow` (the `hashes` pass). Install with
 | `build` | Fresh cache file from MCL snapshots | none |
 | `merge` | Merge an MCL snapshot into a file | none |
 | `import-localcv` | One-off import of a `localcv.db` | none |
-| `update` | Sweep the list endpoints (publishers, people, volumes, issues) by `date_last_updated` | yes |
+| `update` | Thin list-sweep: refresh skeletons/stamps (publishers, people, volumes, issues) by `date_last_updated`, no per-item detail | yes |
 | `rich` | Fetch per-resource detail (credits, images, `detail_json`); see modes below | yes |
 | `hashes` | Download covers, fill ComicTagger hashes | CDN only |
 | `usage` | Report the shared `request_log` budget | none |
@@ -86,7 +86,13 @@ blobs, and almost no per-row `date_last_updated`):
 - Seeds `sync_state` (schema v7, ADR-075) from `cv_sync_metadata`, so
   the first `update` run starts at localcv's per-endpoint baseline.
 
-### update — a rate-limited backfill from the CV API
+### update — the thin (list-sweep) update
+
+This is the lightweight "keep current" sweep: it refreshes only the
+**list-level** rows and their `date_last_updated` stamps. It does **not**
+fetch per-item detail — no credits, no image gallery, no `detail_json`,
+no cover hashes (those are the `rich` and `hashes` passes). One request
+returns 100 rows, so it is far cheaper than the per-item passes.
 
 ```sh
 python3 -m scripts.cvcache update \
@@ -127,11 +133,17 @@ rows fetched of the changed total, percent, staged, the hourly budget,
 and a wait countdown). Before fetching, a cheap pre-flight probe (one
 `limit=1` request per endpoint) reads `number_of_total_results` for the
 `date_last_updated:<since>|<now>` window, so the run knows and shows how
-many records each endpoint will fetch. Use `--dry-run` to print that
-count per endpoint and exit without fetching — for example
-`--since 2026-08-20 --dry-run` shows exactly how much a backfill from
-that date would fill. This display uses `rich`; install it with
-`pip install -r scripts/requirements.txt`. Without `rich`, or with
+many records each endpoint will fetch. Use `--dry-run` to size a thin
+update before running it — it prints the changed-row count per endpoint
+and exits without fetching:
+
+```sh
+python3 -m scripts.cvcache update --into cvcache.sqlite --api-key YOUR_KEY --dry-run
+```
+
+For example `--since 2026-08-20 --dry-run` shows exactly how much a
+sweep from that date would fetch. This display uses `rich`; install it
+with `pip install -r scripts/requirements.txt`. Without `rich`, or with
 `--quiet`, the command prints plain progress lines instead.
 
 ### usage — show the shared API request budget
