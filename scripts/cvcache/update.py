@@ -9,12 +9,16 @@ next run continues instead of paying for the same pages again.
 
 The Comic Vine API is heavily rate-limited (200 requests per resource
 per hour), so a user weeks or months behind runs this slowly, over
-many sessions, until every endpoint is caught up. The in-app update
-(cr-scrape) shares the same `sync_state` model and merge engine.
+many sessions, until every endpoint is caught up. `CvClient` counts
+requests per endpoint over a rolling hour and enforces the cap itself:
+it either waits for the window to free (default) or stops the endpoint
+cleanly, saving a resume offset. The in-app update (cr-scrape) shares
+the same `sync_state` model and merge engine.
 
-Standard library only. The one proven filter is `date_last_updated`;
-a live probe on 2026-09-20 confirmed it narrows all four endpoints
-(publishers, people, volumes, issues).
+The fetch and merge core is standard-library only; the CLI progress
+display (`__main__.py`) uses `rich`. The one proven filter is
+`date_last_updated`; a live probe on 2026-09-20 confirmed it narrows
+all four endpoints (publishers, people, volumes, issues).
 """
 
 from __future__ import annotations
@@ -22,8 +26,10 @@ from __future__ import annotations
 import json
 import sqlite3
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
+from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -35,6 +41,11 @@ USER_AGENT = "comicrust-cvcache/0.1"
 PAGE_SIZE = 100
 # The endpoints an update walks, in cheap-to-expensive order.
 ENDPOINTS = ("publishers", "people", "volumes", "issues")
+# The CV cap is 200 requests per resource path per rolling hour. A small
+# safety margin keeps the script clear of a race with CV's own count.
+MAX_PER_HOUR = 200
+SAFETY_MARGIN = 5
+RATE_WINDOW_SECONDS = 3600.0
 
 # The list-level field_list per endpoint. Only fields the cvcache
 # schema stores are requested, to keep the response small.
@@ -57,31 +68,92 @@ class CvError(RuntimeError):
     pass
 
 
+class RateLimitReached(RuntimeError):
+    """One endpoint reached its hourly request budget in `stop` mode, or
+    the API returned a throttle response. The caller saves the resume
+    offset and continues on a later run."""
+
+    def __init__(self, endpoint: str, detail: str = ""):
+        self.endpoint = endpoint
+        super().__init__(f"{endpoint}: rate limit reached {detail}".strip())
+
+
 @dataclass
 class CvClient:
     api_key: str
     delay_seconds: float = 1.0
+    max_per_hour: int = MAX_PER_HOUR
+    safety_margin: int = SAFETY_MARGIN
+    on_cap: str = "wait"  # "wait" (sleep until the window frees) or "stop"
     _last_call: float = 0.0
+    # A rolling one-hour deque of request timestamps per endpoint path.
+    _calls: dict = field(default_factory=dict)
+    # Injectable for tests; real code uses the wall/monotonic clock.
+    _now: object = time.monotonic
+    _sleep: object = time.sleep
+    on_wait: object = None  # optional callback(endpoint, seconds) before a sleep
+
+    def _budget(self) -> int:
+        return max(1, self.max_per_hour - self.safety_margin)
+
+    def _prune(self, endpoint: str, now: float) -> deque:
+        calls = self._calls.setdefault(endpoint, deque())
+        while calls and now - calls[0] >= RATE_WINDOW_SECONDS:
+            calls.popleft()
+        return calls
+
+    def _throttle_for_budget(self, endpoint: str) -> None:
+        """Enforces the per-endpoint hourly cap before a request. In
+        `wait` mode it sleeps until the oldest call in the window ages
+        out; in `stop` mode it raises RateLimitReached."""
+        while True:
+            now = self._now()
+            calls = self._prune(endpoint, now)
+            if len(calls) < self._budget():
+                return
+            if self.on_cap == "stop":
+                raise RateLimitReached(endpoint, "(hourly budget)")
+            # wait: sleep until the oldest call leaves the window.
+            wait = RATE_WINDOW_SECONDS - (now - calls[0]) + 0.1
+            if self.on_wait is not None:
+                self.on_wait(endpoint, wait)
+            self._sleep(wait)
 
     def get(self, endpoint: str, params: dict) -> dict:
+        self._throttle_for_budget(endpoint)
         query = {"api_key": self.api_key, "format": "json", **params}
         url = f"{API_BASE}/{endpoint}/?" + urllib.parse.urlencode(query)
-        # A gentle self-imposed spacing keeps a long backfill under the
-        # per-hour cap without a burst.
-        wait = self.delay_seconds - (time.monotonic() - self._last_call)
+        # A gentle self-imposed spacing avoids a burst inside the budget.
+        wait = self.delay_seconds - (self._now() - self._last_call)
         if wait > 0:
-            time.sleep(wait)
+            self._sleep(wait)
         request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-        with urllib.request.urlopen(request, timeout=60) as response:
-            body = response.read().decode("utf-8", "replace")
-        self._last_call = time.monotonic()
+        try:
+            with urllib.request.urlopen(request, timeout=60) as response:
+                body = response.read().decode("utf-8", "replace")
+        except urllib.error.HTTPError as exc:
+            # HTTP 429 is the transport-level throttle. Treat it as a
+            # rate-limit stop for this endpoint, not a fatal error.
+            if exc.code == 429:
+                raise RateLimitReached(endpoint, "(HTTP 429)") from exc
+            raise CvError(f"{endpoint}: HTTP {exc.code}") from exc
+        now = self._now()
+        self._last_call = now
+        self._calls.setdefault(endpoint, deque()).append(now)
         try:
             data = json.loads(body)
         except ValueError as exc:
             raise CvError(f"{endpoint}: bad JSON: {exc}") from exc
         # error is the string "OK" on success (status_code 1).
-        if data.get("error") not in (None, "OK"):
-            raise CvError(f"{endpoint}: API error {data.get('error')!r}")
+        error = data.get("error")
+        if error not in (None, "OK"):
+            # CV signals an over-limit condition through the error field.
+            # UNKNOWN: the exact throttle payload is not yet measured; the
+            # documented status is "rate limit exceeded" / status_code 107.
+            text = str(error).lower()
+            if "rate limit" in text or data.get("status_code") == 107:
+                raise RateLimitReached(endpoint, f"({error!r})")
+            raise CvError(f"{endpoint}: API error {error!r}")
         return data
 
 
@@ -219,6 +291,7 @@ class EndpointReport:
     staged: int = 0
     pages: int = 0
     complete: bool = False
+    capped: bool = False
     last_sync: str | None = None
 
 
@@ -270,34 +343,51 @@ def update_endpoint(
     flt,
     max_pages: int | None,
     since_override: str | None,
+    progress=None,
 ) -> EndpointReport:
     """Pages one endpoint over `date_last_updated:<since>|<now>`, stages
     each page into an in-memory v-current source, merges it into the
     live file, and advances the watermark. Resumable through the stored
-    page offset."""
+    page offset. `progress`, if given, is called after each page and on
+    a rate-limit stop with (report, total)."""
     report = EndpointReport(endpoint)
     since, offset = _read_watermark(live, endpoint)
     if since_override is not None:
         since = since_override
         offset = 0
     field_list = _FIELD_LISTS[endpoint]
+    total = 0
     while True:
         if max_pages is not None and report.pages >= max_pages:
             # Stopped early: save the offset so the next run resumes.
             _write_watermark(live, endpoint, since, {"offset": offset})
             live.commit()
             report.last_sync = since
+            report.capped = True
+            if progress is not None:
+                progress(report, total)
             return report
-        data = client.get(
-            endpoint,
-            {
-                "filter": f"date_last_updated:{since}|{now}",
-                "field_list": field_list,
-                "sort": "date_last_updated:asc",
-                "limit": PAGE_SIZE,
-                "offset": offset,
-            },
-        )
+        try:
+            data = client.get(
+                endpoint,
+                {
+                    "filter": f"date_last_updated:{since}|{now}",
+                    "field_list": field_list,
+                    "sort": "date_last_updated:asc",
+                    "limit": PAGE_SIZE,
+                    "offset": offset,
+                },
+            )
+        except RateLimitReached:
+            # The hourly budget or an API throttle stopped this endpoint.
+            # Hold `since`, save the offset, report resumable, do not crash.
+            _write_watermark(live, endpoint, since, {"offset": offset})
+            live.commit()
+            report.last_sync = since
+            report.capped = True
+            if progress is not None:
+                progress(report, total)
+            return report
         results = data.get("results") or []
         report.pages += 1
         report.fetched += len(results)
@@ -323,11 +413,15 @@ def update_endpoint(
             live.commit()
             report.complete = True
             report.last_sync = now
+            if progress is not None:
+                progress(report, total)
             return report
         # Mid-window: hold `since`, save the offset, keep the live file
         # durable after every page.
         _write_watermark(live, endpoint, since, {"offset": offset})
         live.commit()
+        if progress is not None:
+            progress(report, total)
 
 
 def run(
@@ -339,18 +433,32 @@ def run(
     delay_seconds: float = 1.0,
     publisher_filter=None,
     make_backup: bool = True,
+    max_per_hour: int = MAX_PER_HOUR,
+    on_cap: str = "wait",
+    on_page=None,
+    on_wait=None,
+    on_endpoint_start=None,
 ) -> UpdateReport:
     if make_backup:
         commands.backup(live_path)
-    client = CvClient(api_key=api_key, delay_seconds=delay_seconds)
+    client = CvClient(
+        api_key=api_key,
+        delay_seconds=delay_seconds,
+        max_per_hour=max_per_hour,
+        on_cap=on_cap,
+        on_wait=on_wait,
+    )
     now = _today()
     report = UpdateReport()
     live = commands.open_v4(live_path)
     try:
         for endpoint in endpoints:
+            if on_endpoint_start is not None:
+                on_endpoint_start(endpoint)
             report.endpoints.append(
                 update_endpoint(
-                    live, client, endpoint, now, publisher_filter, max_pages, since
+                    live, client, endpoint, now, publisher_filter,
+                    max_pages, since, progress=on_page,
                 )
             )
     finally:

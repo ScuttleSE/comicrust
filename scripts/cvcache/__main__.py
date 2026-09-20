@@ -24,6 +24,7 @@ from . import commands
 from .adapters.localcv import LocalCvAdapter
 from .publishers import PublisherFilter
 from . import update as update_mod
+from .progress import make_display
 
 
 def _print_report(report) -> None:
@@ -96,6 +97,7 @@ def _cmd_update(args) -> int:
     endpoints = (
         tuple(args.endpoint) if args.endpoint else update_mod.ENDPOINTS
     )
+    display = make_display(endpoints, args.max_per_hour, args.quiet)
     report = update_mod.run(
         Path(args.into),
         api_key=args.api_key,
@@ -105,13 +107,13 @@ def _cmd_update(args) -> int:
         delay_seconds=args.delay,
         publisher_filter=flt,
         make_backup=not args.no_backup,
+        max_per_hour=args.max_per_hour,
+        on_cap=args.on_cap,
+        on_page=display.on_page,
+        on_wait=display.on_wait,
+        on_endpoint_start=display.on_endpoint_start,
     )
-    for ep in report.endpoints:
-        state = "complete" if ep.complete else "stopped early (resumable)"
-        print(
-            f"  {ep.endpoint:<12} fetched={ep.fetched} staged={ep.staged} "
-            f"pages={ep.pages} watermark={ep.last_sync} — {state}"
-        )
+    display.finish(report.endpoints)
     return 0
 
 
@@ -167,6 +169,24 @@ def main(argv=None) -> int:
     p_update.add_argument("--whitelist", help="optional publisher whitelist")
     p_update.add_argument("--blacklist", help="optional publisher blacklist")
     p_update.add_argument("--no-backup", action="store_true")
+    p_update.add_argument(
+        "--max-per-hour",
+        type=int,
+        default=update_mod.MAX_PER_HOUR,
+        help="per-endpoint hourly request cap (CV allows 200)",
+    )
+    p_update.add_argument(
+        "--on-cap",
+        choices=("wait", "stop"),
+        default="wait",
+        help="at the hourly cap: wait for the window to free, or stop "
+        "(resumable). Default wait.",
+    )
+    p_update.add_argument(
+        "--quiet",
+        action="store_true",
+        help="plain text output instead of the live progress display",
+    )
     p_update.set_defaults(func=_cmd_update)
 
     args = parser.parse_args(argv)

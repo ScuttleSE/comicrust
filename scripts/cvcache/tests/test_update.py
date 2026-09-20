@@ -114,5 +114,119 @@ class WatermarkTest(unittest.TestCase):
         self.assertEqual(update._read_watermark(live, "issues"), ("2026-09-20", 0))
 
 
+class _FakeClock:
+    """A monotonic clock the test advances by hand. sleep() jumps the
+    clock forward instead of blocking, and records each sleep."""
+
+    def __init__(self):
+        self.t = 1000.0
+        self.slept = []
+
+    def now(self):
+        return self.t
+
+    def sleep(self, seconds):
+        self.slept.append(seconds)
+        self.t += seconds
+
+
+def _client(clock, on_cap="wait", max_per_hour=10, safety_margin=0):
+    c = update.CvClient(
+        api_key="k",
+        delay_seconds=0.0,
+        max_per_hour=max_per_hour,
+        safety_margin=safety_margin,
+        on_cap=on_cap,
+    )
+    c._now = clock.now
+    c._sleep = clock.sleep
+    return c
+
+
+class RateLimitTest(unittest.TestCase):
+    def test_stop_mode_raises_at_budget(self):
+        clock = _FakeClock()
+        c = _client(clock, on_cap="stop", max_per_hour=3)
+        # Fill the budget by recording three timestamps directly.
+        for _ in range(3):
+            c._calls.setdefault("issues", update.deque()).append(clock.now())
+        with self.assertRaises(update.RateLimitReached) as ctx:
+            c._throttle_for_budget("issues")
+        self.assertEqual(ctx.exception.endpoint, "issues")
+
+    def test_wait_mode_sleeps_until_window_frees(self):
+        clock = _FakeClock()
+        c = _client(clock, on_cap="wait", max_per_hour=2)
+        # Two calls at t=1000 fill the budget of 2.
+        c._calls["publishers"] = update.deque([1000.0, 1000.0])
+        c._throttle_for_budget("publishers")
+        # It must have slept about one full window past the oldest call.
+        self.assertTrue(clock.slept)
+        self.assertGreaterEqual(clock.slept[0], update.RATE_WINDOW_SECONDS)
+
+    def test_budget_is_per_endpoint(self):
+        clock = _FakeClock()
+        c = _client(clock, on_cap="stop", max_per_hour=2)
+        c._calls["issues"] = update.deque([1000.0, 1000.0])
+        # issues is full, but publishers has its own empty budget.
+        c._throttle_for_budget("publishers")  # must not raise
+        with self.assertRaises(update.RateLimitReached):
+            c._throttle_for_budget("issues")
+
+    def test_old_calls_leave_the_window(self):
+        clock = _FakeClock()
+        c = _client(clock, on_cap="stop", max_per_hour=1)
+        c._calls["people"] = update.deque([1000.0])
+        # Advance past the window; the stale call is pruned, budget frees.
+        clock.t = 1000.0 + update.RATE_WINDOW_SECONDS + 1
+        c._throttle_for_budget("people")  # must not raise
+
+
+class _FakeApiClient:
+    """A stand-in CvClient for the loop: serves canned pages, or raises
+    RateLimitReached on the configured call index."""
+
+    def __init__(self, pages, raise_on=None):
+        self._pages = pages
+        self._raise_on = raise_on
+        self.calls = 0
+
+    def get(self, endpoint, params):
+        idx = self.calls
+        self.calls += 1
+        if self._raise_on is not None and idx == self._raise_on:
+            raise update.RateLimitReached(endpoint, "(test)")
+        return self._pages[idx]
+
+
+class LoopCapTest(unittest.TestCase):
+    def test_cap_midwindow_saves_resume_offset(self):
+        live = _fresh()
+        # Page 0 returns a full page (100) of a larger window; the second
+        # call raises the rate limit.
+        page0 = {
+            "results": [
+                {"id": i, "name": f"p{i}",
+                 "date_last_updated": "2026-08-05 00:00:00"}
+                for i in range(100)
+            ],
+            "number_of_total_results": 500,
+        }
+        client = _FakeApiClient([page0], raise_on=1)
+        seen = []
+        report = update.update_endpoint(
+            live, client, "publishers", "2026-09-20", None,
+            max_pages=None, since_override="2026-08-02",
+            progress=lambda r, t: seen.append((r.pages, r.capped)),
+        )
+        self.assertTrue(report.capped)
+        self.assertFalse(report.complete)
+        # The resume offset is saved at 100; the watermark holds `since`.
+        self.assertEqual(
+            update._read_watermark(live, "publishers"), ("2026-08-02", 100)
+        )
+        self.assertTrue(seen)
+
+
 if __name__ == "__main__":
     unittest.main()

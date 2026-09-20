@@ -1,0 +1,6 @@
+# Runtime dependencies for the cvcache scripts.
+#
+# The fetch and merge core is standard-library only. Only the `update`
+# command's live progress display uses rich; without it the command
+# falls back to plain text output.
+rich>=13.0

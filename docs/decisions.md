@@ -1143,3 +1143,28 @@ response carries them, and the merge rule protects stored values.
      `CACHE_UPDATE_MAX_PAGES`.
   3. **Menu wording.** The item is "Update Comic Vine Cache…" (the
      ellipsis marks the dialog), matching the other Comic Vine items.
+- **Amendment (2026-09-20, same ADR): the standalone script enforces
+  the hourly cap itself and depends on `rich` for its output.** The CV
+  cap is 200 requests per resource path per rolling hour. The script's
+  `CvClient` now counts requests per endpoint over a rolling hour and
+  enforces the cap:
+  1. **Per-endpoint budget.** A rolling one-hour deque of request
+     timestamps per endpoint path, capped at `--max-per-hour` (default
+     200) minus a small safety margin.
+  2. **At the cap.** `--on-cap wait` (default) sleeps until the oldest
+     request in the window ages out, then continues, so a plain run
+     self-completes over several hours unattended. `--on-cap stop` ends
+     the endpoint cleanly and saves the resume offset in
+     `sync_state.resume_state`. An API throttle (HTTP 429, or the CV
+     `rate limit` / status_code 107 error) is caught as the same
+     resumable stop, not a fatal error. UNKNOWN: the exact CV throttle
+     payload is not yet measured; the handler covers the documented
+     forms.
+  3. **Verbose output.** The `update` command shows a live per-endpoint
+     progress display (page, rows fetched and staged, the hourly budget,
+     a wait countdown) through `rich`, with a plain-text fallback when
+     `rich` is absent or `--quiet` is set. `rich` is the first
+     third-party dependency of the `scripts/` tooling; it is declared in
+     `scripts/requirements.txt`. The fetch and merge core stays
+     standard-library only. This amendment is script-only; the in-app
+     `cr-scrape` client keeps its page-cap model unchanged.
