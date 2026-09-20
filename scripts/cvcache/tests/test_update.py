@@ -228,5 +228,39 @@ class LoopCapTest(unittest.TestCase):
         self.assertTrue(seen)
 
 
+class PreflightTest(unittest.TestCase):
+    def test_preflight_reports_changed_count_per_endpoint(self):
+        live = _fresh()
+        update._write_watermark(live, "publishers", "2026-08-02", None)
+        totals = {"publishers": 4, "people": 126, "volumes": 144, "issues": 985}
+
+        class _C:
+            def get(self, endpoint, params):
+                assert params["limit"] == 1
+                assert params["field_list"] == "id"
+                return {"number_of_total_results": totals[endpoint]}
+
+        est = update.preflight(live, _C(), update.ENDPOINTS)
+        self.assertEqual(
+            [(e.endpoint, e.changed) for e in est],
+            [("publishers", 4), ("people", 126), ("volumes", 144),
+             ("issues", 985)],
+        )
+        self.assertEqual(est[0].since, "2026-08-02")
+
+    def test_preflight_honors_since_override(self):
+        live = _fresh()
+        update._write_watermark(live, "issues", "2026-08-02", None)
+        seen = {}
+
+        class _C:
+            def get(self, endpoint, params):
+                seen[endpoint] = params["filter"]
+                return {"number_of_total_results": 1}
+
+        update.preflight(live, _C(), ("issues",), since_override="2026-08-20")
+        self.assertIn("date_last_updated:2026-08-20|", seen["issues"])
+
+
 if __name__ == "__main__":
     unittest.main()

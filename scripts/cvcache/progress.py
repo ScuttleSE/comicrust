@@ -25,9 +25,10 @@ except ImportError:  # pragma: no cover - exercised only without rich
 
 
 def make_display(endpoints, max_per_hour: int, quiet: bool):
-    """Returns a display object with on_endpoint_start(endpoint),
-    on_page(report, total), on_wait(endpoint, seconds), and
-    finish(reports). Picks the rich or the plain implementation."""
+    """Returns a display object with on_preflight(estimates),
+    on_endpoint_start(endpoint), on_page(report, total),
+    on_wait(endpoint, seconds), and finish(reports). Picks the rich or
+    the plain implementation."""
     if quiet or not _HAVE_RICH:
         if not quiet and not _HAVE_RICH:
             print(
@@ -38,24 +39,32 @@ def make_display(endpoints, max_per_hour: int, quiet: bool):
     return _RichDisplay(endpoints, max_per_hour)
 
 
-def _budget_line(report, total, max_per_hour: int) -> str:
-    pct = f"{100 * report.fetched // total}%" if total else "—"
+def _budget_line(report, changed, max_per_hour: int) -> str:
+    pct = f"{100 * report.fetched // changed}%" if changed else "—"
     return (
         f"{report.endpoint:<11} page {report.pages:>4}  "
-        f"fetched {report.fetched:>6}  staged {report.staged:>6}  "
-        f"of ~{total:<7} ({pct})"
+        f"fetched {report.fetched:>6}/{changed:<7} ({pct})  "
+        f"staged {report.staged:>6}"
     )
 
 
 class _PlainDisplay:
     def __init__(self, max_per_hour: int):
         self.max_per_hour = max_per_hour
+        self.changed = {}
+
+    def on_preflight(self, estimates):
+        self.changed = {e.endpoint: e.changed for e in estimates}
+        print("pre-flight (records changed since the watermark):")
+        for e in estimates:
+            print(f"  {e.endpoint:<11} since {e.since}  ->  {e.changed} to fetch")
 
     def on_endpoint_start(self, endpoint):
         print(f"== {endpoint}: starting")
 
     def on_page(self, report, total):
-        print("  " + _budget_line(report, total, self.max_per_hour))
+        changed = self.changed.get(report.endpoint, total)
+        print("  " + _budget_line(report, changed, self.max_per_hour))
 
     def on_wait(self, endpoint, seconds):
         print(
@@ -72,13 +81,17 @@ class _PlainDisplay:
                 f"pages={r.pages} watermark={r.last_sync} — {state}"
             )
 
+    def close(self):
+        pass
+
 
 class _RichDisplay:
     def __init__(self, endpoints, max_per_hour: int):
         self.max_per_hour = max_per_hour
         self.console = Console()
-        # Latest (report, total) per endpoint, in run order.
+        # Latest report per endpoint, in run order.
         self.rows = {ep: None for ep in endpoints}
+        self.changed = {ep: 0 for ep in endpoints}
         self.waiting = {}
         self.live = Live(self._render(), console=self.console, refresh_per_second=8)
         self.live.start()
@@ -87,15 +100,17 @@ class _RichDisplay:
         table = Table(title="Comic Vine cache update", expand=True)
         table.add_column("endpoint")
         table.add_column("page", justify="right")
-        table.add_column("fetched", justify="right")
+        table.add_column("fetched / changed", justify="right")
+        table.add_column("%", justify="right")
         table.add_column("staged", justify="right")
-        table.add_column("of ~total", justify="right")
         table.add_column("state")
-        for ep, entry in self.rows.items():
-            if entry is None:
-                table.add_row(ep, "-", "-", "-", "-", "pending")
+        for ep, report in self.rows.items():
+            changed = self.changed.get(ep, 0)
+            if report is None:
+                total = f"0 / {changed}" if changed else "-"
+                table.add_row(ep, "-", total, "-", "-", "pending")
                 continue
-            report, total = entry
+            pct = f"{100 * report.fetched // changed}%" if changed else "—"
             state = _state(report)
             wait = self.waiting.get(ep)
             if wait:
@@ -103,12 +118,17 @@ class _RichDisplay:
             table.add_row(
                 ep,
                 str(report.pages),
-                str(report.fetched),
+                f"{report.fetched} / {changed}",
+                pct,
                 str(report.staged),
-                f"~{total}",
                 state,
             )
         return Panel(table)
+
+    def on_preflight(self, estimates):
+        for e in estimates:
+            self.changed[e.endpoint] = e.changed
+        self.live.update(self._render())
 
     def on_endpoint_start(self, endpoint):
         self.waiting.pop(endpoint, None)
@@ -116,7 +136,7 @@ class _RichDisplay:
 
     def on_page(self, report, total):
         self.waiting.pop(report.endpoint, None)
-        self.rows[report.endpoint] = (report, total)
+        self.rows[report.endpoint] = report
         self.live.update(self._render())
 
     def on_wait(self, endpoint, seconds):
@@ -125,8 +145,11 @@ class _RichDisplay:
 
     def finish(self, reports):
         for r in reports:
-            self.rows[r.endpoint] = (r, self.rows[r.endpoint][1] if self.rows[r.endpoint] else 0)
+            self.rows[r.endpoint] = r
         self.live.update(self._render())
+        self.live.stop()
+
+    def close(self):
         self.live.stop()
 
 

@@ -298,6 +298,7 @@ class EndpointReport:
 @dataclass
 class UpdateReport:
     endpoints: list = field(default_factory=list)
+    estimates: list = field(default_factory=list)
 
 
 def _today() -> str:
@@ -321,6 +322,44 @@ def _read_watermark(live: sqlite3.Connection, endpoint: str) -> tuple[str, int]:
         except (ValueError, TypeError):
             offset = 0
     return (since, offset)
+
+
+@dataclass
+class EndpointEstimate:
+    endpoint: str
+    since: str
+    changed: int
+
+
+def preflight(
+    live: sqlite3.Connection,
+    client: CvClient,
+    endpoints=ENDPOINTS,
+    since_override: str | None = None,
+) -> list[EndpointEstimate]:
+    """A cheap pre-flight: one `limit=1` request per endpoint reads the
+    changed-row count since each watermark, so the caller sees the scale
+    before a full run (ADR-075). `number_of_total_results` is the total
+    matching the filter, independent of the page. Costs one request per
+    endpoint."""
+    now = _today()
+    out = []
+    for endpoint in endpoints:
+        since, _ = _read_watermark(live, endpoint)
+        if since_override is not None:
+            since = since_override
+        data = client.get(
+            endpoint,
+            {
+                "field_list": "id",
+                "filter": f"date_last_updated:{since}|{now}",
+                "limit": 1,
+                "offset": 0,
+            },
+        )
+        changed = _to_int(data.get("number_of_total_results")) or 0
+        out.append(EndpointEstimate(endpoint, since, changed))
+    return out
 
 
 def _write_watermark(
@@ -438,9 +477,9 @@ def run(
     on_page=None,
     on_wait=None,
     on_endpoint_start=None,
+    on_preflight=None,
+    dry_run: bool = False,
 ) -> UpdateReport:
-    if make_backup:
-        commands.backup(live_path)
     client = CvClient(
         api_key=api_key,
         delay_seconds=delay_seconds,
@@ -448,9 +487,23 @@ def run(
         on_cap=on_cap,
         on_wait=on_wait,
     )
-    now = _today()
     report = UpdateReport()
     live = commands.open_v4(live_path)
+    try:
+        # A cheap probe first: report the changed-row count per endpoint
+        # so the run shows fetched-of-total, not just fetched-of-page.
+        estimates = preflight(live, client, endpoints, since)
+        report.estimates = estimates
+        if on_preflight is not None:
+            on_preflight(estimates)
+        if dry_run:
+            return report
+    finally:
+        if dry_run:
+            live.close()
+    if make_backup:
+        commands.backup(live_path)
+    now = _today()
     try:
         for endpoint in endpoints:
             if on_endpoint_start is not None:

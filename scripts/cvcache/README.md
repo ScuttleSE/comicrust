@@ -91,10 +91,16 @@ the volume level. The same update lives in the app as "Update Comic Vine
 Cache".
 
 The `update` command shows a live per-endpoint progress display (page,
-rows fetched and staged, the hourly budget, and a wait countdown). This
-uses `rich`; install it with `pip install -r scripts/requirements.txt`.
-Without `rich`, or with `--quiet`, the command prints plain progress
-lines instead.
+rows fetched of the changed total, percent, staged, the hourly budget,
+and a wait countdown). Before fetching, a cheap pre-flight probe (one
+`limit=1` request per endpoint) reads `number_of_total_results` for the
+`date_last_updated:<since>|<now>` window, so the run knows and shows how
+many records each endpoint will fetch. Use `--dry-run` to print that
+count per endpoint and exit without fetching — for example
+`--since 2026-08-20 --dry-run` shows exactly how much a backfill from
+that date would fill. This display uses `rich`; install it with
+`pip install -r scripts/requirements.txt`. Without `rich`, or with
+`--quiet`, the command prints plain progress lines instead.
 
 ## Publisher lists (optional, for a future probe workflow)
 

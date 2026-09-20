@@ -1161,10 +1161,15 @@ response carries them, and the merge rule protects stored values.
      payload is not yet measured; the handler covers the documented
      forms.
   3. **Verbose output.** The `update` command shows a live per-endpoint
-     progress display (page, rows fetched and staged, the hourly budget,
-     a wait countdown) through `rich`, with a plain-text fallback when
-     `rich` is absent or `--quiet` is set. `rich` is the first
-     third-party dependency of the `scripts/` tooling; it is declared in
-     `scripts/requirements.txt`. The fetch and merge core stays
-     standard-library only. This amendment is script-only; the in-app
-     `cr-scrape` client keeps its page-cap model unchanged.
+     progress display (page, rows fetched of the changed total, percent,
+     staged, the hourly budget, a wait countdown) through `rich`, with a
+     plain-text fallback when `rich` is absent or `--quiet` is set. A
+     cheap pre-flight probe (one `limit=1` request per endpoint reads
+     `number_of_total_results` for the window) runs before fetching, so
+     the counter shows fetched-of-total, not fetched-of-page; `--dry-run`
+     prints the per-endpoint count and exits without fetching. This is
+     the same probe the in-app `cache::update::preflight` uses. `rich` is
+     the first third-party dependency of the `scripts/` tooling; it is
+     declared in `scripts/requirements.txt`. The fetch and merge core
+     stays standard-library only. This amendment is script-only; the
+     in-app `cr-scrape` client keeps its page-cap model unchanged.

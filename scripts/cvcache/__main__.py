@@ -112,8 +112,13 @@ def _cmd_update(args) -> int:
         on_page=display.on_page,
         on_wait=display.on_wait,
         on_endpoint_start=display.on_endpoint_start,
+        on_preflight=display.on_preflight,
+        dry_run=args.dry_run,
     )
-    display.finish(report.endpoints)
+    if not args.dry_run:
+        display.finish(report.endpoints)
+    else:
+        display.close()
     return 0
 
 
@@ -186,6 +191,12 @@ def main(argv=None) -> int:
         "--quiet",
         action="store_true",
         help="plain text output instead of the live progress display",
+    )
+    p_update.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="run only the pre-flight probe: print the changed-row count "
+        "per endpoint and exit without fetching",
     )
     p_update.set_defaults(func=_cmd_update)
 
