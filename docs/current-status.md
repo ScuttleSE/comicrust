@@ -15,10 +15,11 @@ local-first scrape reads with a refresh switch and an offline mode; a
 backupable, mergeable cache file; the sweep expansion plus Python
 build and import scripts.
 
-T1 (schema v3), T2 (inline credits and resource upserts), and T3
-(local-first reads) are done. Phase 20 stays implemented with open
-user test 26. The user declined the offered real-cache user tests
-(2026-09-20); the real v2-file migration check remains unperformed.
+T1 (schema v3), T2 (inline credits and resource upserts), T3
+(local-first reads), and T4 (the refresh switch and offline mode) are
+done. Phase 20 stays implemented with open user test 26. The user
+declined the offered real-cache user tests (2026-09-20); the real
+v2-file migration check remains unperformed.
 
 ## Latest user finding
 
@@ -42,12 +43,13 @@ scrape matched the selected book and three other books in the same series.
 
 ## Current task for the next context
 
-Phase 21 T4: the refresh switch and offline mode (ADR-071). The two
-config keys with defaults and parse rules; the check boxes in the
-scraper config dialog; `CvError::Offline` at the client chokepoint;
-the warm, sweep, and cache-manager disabled states. Acceptance: in
-manual mode an open volume makes no probe request; in offline mode no
-request leaves the process. Follow `docs/phases/phase-21.md`.
+Phase 21 T5: backup and import (ADR-069). The `VACUUM INTO` backup
+command, the close checkpoint, and the temp-copy import with
+validation, the newer-stamp merge, and the per-table report.
+Acceptance: unit tests cover newer-wins, empty-never-erases, the blob
+rule, a tie that keeps the stored row, a rejected newer schema, and a
+v1 file that migrates in the temp copy. Follow
+`docs/phases/phase-21.md`.
 
 When the user tests first: the `2000 AD` number `2498` retest (test 24)
 and the Missing Issues scope test (test 22) stay first in line, and
@@ -96,22 +98,22 @@ licenses` is not a CI gate.
 
 ## Latest verification
 
-Phase 21 T3 and the gate-flake fix passed on 2026-09-20.
+Phase 21 T4 passed on 2026-09-20.
 
 - `cargo fmt --all`: passed.
 - `cargo clippy --workspace --all-targets -- -D warnings`: passed.
 - `cargo test --workspace`: passed (59 suites ok).
-- `MEASURED`: the zero-request acceptance — a second, cold-session
-  scrape of a fully cached series over an empty mock server makes
-  ZERO API requests and returns identical search results, issue
-  list, detail parse, and cover bytes.
-- `MEASURED`: a stale open volume never serves its stale issue list;
-  the call goes online.
-- Flake fix: the two `ACTIVE_OPERATIONS` tests in
-  `cr-engine/tests/incoming_transaction.rs` now serialize on
-  `MUTATION_TEST_LOCK` (`CODE-READ` cause: unsynchronized process
-  global; 155 clean runs could not reproduce the original single
-  failure). Committed as `5680e5e`.
+- `MEASURED`: manual mode (the new default) serves a stale open
+  volume's issue list from the cache with zero requests; auto mode
+  still probes and re-pages (the two freshness integration tests
+  moved to an explicit auto policy).
+- `MEASURED`: offline mode refuses a cache miss with
+  `CvError::Offline` before any connection, and still serves a cached
+  detail parse with zero requests.
+- `MEASURED`: the config parse accepts `CACHE_REFRESH_MODE=auto` and
+  anything unrecognized is manual; `CACHE_OFFLINE_ONLY` parses like
+  the other boolean flags. The doc drift gate passes with the two new
+  `docs/config-reference.md` rows.
 - `UNKNOWN`: the real API JSON shape of the `volume` `aliases` field
   (string vs array). The v3 column stores it verbatim, which is
   lossless either way. A real response settles it.

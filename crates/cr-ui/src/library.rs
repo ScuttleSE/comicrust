@@ -731,6 +731,19 @@ pub fn cv_cache() -> Option<std::sync::Arc<cr_scrape::cache::SqliteCache>> {
     }
 }
 
+/// Applies the cache-side configuration to one client: the freshness
+/// rule and the offline switch (ADR-071). Every client the shell
+/// builds calls this next to `cv_budget`.
+pub fn cv_configure(
+    client: &mut cr_scrape::cv::connection::CvClient,
+    config: &cr_scrape::config::Configuration,
+) {
+    let advanced = config.advanced();
+    let (_, freshness, _) = cr_scrape::cache::policies_from(advanced);
+    client.set_freshness(freshness);
+    client.set_offline(advanced.cache_offline_only);
+}
+
 /// The per-resource request budget over the shared cache, built from
 /// the scraper configuration. `None` means no budget: either the cache
 /// is off, or its file could not open.

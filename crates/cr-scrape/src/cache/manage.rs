@@ -57,6 +57,10 @@ pub fn update_volume(
     cancel: &AtomicBool,
     mut on_progress: impl FnMut(UpdateProgress),
 ) -> Result<UpdateReport, CvError> {
+    // Offline mode refuses before any work (ADR-071).
+    if client.is_offline() {
+        return Err(CvError::Offline);
+    }
     if volume_id <= 0 {
         return Err(CvError::BadResponse(
             "the Comic Vine volume id must be positive".to_string(),

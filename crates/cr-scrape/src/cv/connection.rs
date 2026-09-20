@@ -38,6 +38,10 @@ pub enum CvError {
     /// caller made no request.
     #[error("the Comic Vine request budget for {0} is spent")]
     BudgetSpent(String),
+    /// Offline mode refused the request before any network work
+    /// (ADR-071). The caller made no request.
+    #[error("not in cache (offline mode: no request left the process)")]
+    Offline,
 }
 
 /// The blocking ComicVine client: request throttling, one retry per
@@ -63,6 +67,9 @@ pub struct CvClient {
     /// The freshness rule the local-first issue-list read applies
     /// (ADR-071). The defaults hold when the wiring does not set it.
     freshness: FreshnessPolicy,
+    /// The offline switch (ADR-071): every request dies at the
+    /// chokepoint, before any network work.
+    offline: bool,
 }
 
 impl CvClient {
@@ -102,6 +109,7 @@ impl CvClient {
             budget: None,
             cache: None,
             freshness: FreshnessPolicy::default(),
+            offline: false,
         }
     }
 
@@ -121,6 +129,17 @@ impl CvClient {
     /// advanced keys as the budget.
     pub fn set_freshness(&mut self, policy: FreshnessPolicy) {
         self.freshness = policy;
+    }
+
+    /// Sets the offline switch (ADR-071): when on, every request dies
+    /// at the chokepoint with [`CvError::Offline`].
+    pub fn set_offline(&mut self, offline: bool) {
+        self.offline = offline;
+    }
+
+    /// True when offline mode blocks every request (ADR-071).
+    pub fn is_offline(&self) -> bool {
+        self.offline
     }
 
     /// The installed cache, for the local-first reads (ADR-071).
@@ -287,6 +306,11 @@ impl CvClient {
     /// `__get_page`): non-200 statuses and transport errors become
     /// `CvError::Connection`.
     fn get_page(&self, path: &str, query: &[(&str, String)]) -> Result<String, CvError> {
+        // The offline chokepoint: before the budget, before the
+        // throttle, before any network work (ADR-071).
+        if self.offline {
+            return Err(CvError::Offline);
+        }
         self.take_budget(path)?;
         self.wait_until_ready();
         let url = format!("{}{}", self.base_url, path);
@@ -331,9 +355,9 @@ impl CvClient {
     pub(crate) fn get_dom(&self, path: &str, query: &[(&str, String)]) -> Result<Value, CvError> {
         match self.try_get_dom(path, query) {
             Ok(dom) => Ok(dom),
-            // A budget refusal made no request, so a retry would only
-            // refuse again.
-            Err(CvError::BudgetSpent(r)) => Err(CvError::BudgetSpent(r)),
+            // A budget refusal or an offline refusal made no request,
+            // so a retry would only refuse again.
+            Err(error @ (CvError::BudgetSpent(_) | CvError::Offline)) => Err(error),
             Err(first) => {
                 std::thread::sleep(self.retry_delay);
                 self.try_get_dom(path, query).map_err(|second| {
@@ -389,6 +413,10 @@ impl CvClient {
     }
 
     fn get_bytes_once(&self, url: &str) -> Option<Vec<u8>> {
+        // The offline chokepoint covers the CDN too (ADR-071).
+        if self.offline {
+            return None;
+        }
         self.wait_until_ready();
         let ua = self.user_agent();
         let response = self

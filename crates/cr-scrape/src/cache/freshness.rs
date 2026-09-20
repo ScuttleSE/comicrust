@@ -21,6 +21,16 @@ use crate::cv::connection::{CvClient, CvError};
 /// The API caps a page at 100 results for `/issues`.
 const PAGE_SIZE: i64 = 100;
 
+/// The refresh switch (ADR-071). Manual is the default: the verdict
+/// never revalidates, so an open volume serves from the cache like a
+/// closed one until an explicit update runs. Auto keeps the ADR-037
+/// probe.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RefreshMode {
+    Manual,
+    Auto,
+}
+
 /// When to trust the cache, and when to ask.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct FreshnessPolicy {
@@ -31,6 +41,8 @@ pub struct FreshnessPolicy {
     /// An open volume is revalidated at most once in this many
     /// seconds.
     pub revalidate_after_seconds: i64,
+    /// The refresh switch (ADR-071).
+    pub refresh: RefreshMode,
 }
 
 impl Default for FreshnessPolicy {
@@ -41,6 +53,7 @@ impl Default for FreshnessPolicy {
             closed_horizon_days: 365,
             // One day.
             revalidate_after_seconds: 86_400,
+            refresh: RefreshMode::Manual,
         }
     }
 }
@@ -78,7 +91,11 @@ pub fn verdict(
     if now - v.fetched_at < policy.revalidate_after_seconds {
         return Verdict::Fresh;
     }
-    Verdict::Revalidate
+    match policy.refresh {
+        // Manual never revalidates (ADR-071): no probe request runs.
+        RefreshMode::Manual => Verdict::Fresh,
+        RefreshMode::Auto => Verdict::Revalidate,
+    }
 }
 
 /// True when the volume cannot have gained an issue.
@@ -397,7 +414,10 @@ mod tests {
 
     #[test]
     fn an_open_volume_is_fresh_until_the_revalidate_window_passes() {
-        let policy = FreshnessPolicy::default();
+        let policy = FreshnessPolicy {
+            refresh: RefreshMode::Auto,
+            ..FreshnessPolicy::default()
+        };
         let mut v = closed_volume();
         v.last_cover_date = Some("2019-12-01".into());
         // Checked ten seconds ago.
@@ -405,6 +425,18 @@ mod tests {
         // Checked two days ago.
         v.fetched_at = NOW - 2 * 86_400;
         assert_eq!(verdict(Some(&v), 6, NOW, &policy), Verdict::Revalidate);
+    }
+
+    #[test]
+    fn manual_mode_never_revalidates_an_open_volume() {
+        // The default is manual (ADR-071): an open volume past the
+        // revalidate window still serves from the cache.
+        let policy = FreshnessPolicy::default();
+        assert_eq!(policy.refresh, RefreshMode::Manual);
+        let mut v = closed_volume();
+        v.last_cover_date = Some("2019-12-01".into());
+        v.fetched_at = NOW - 2 * 86_400;
+        assert_eq!(verdict(Some(&v), 6, NOW, &policy), Verdict::Fresh);
     }
 
     #[test]

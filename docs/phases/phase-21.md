@@ -2,8 +2,17 @@
 
 ## Status
 
-In progress. T1 through T3 are implemented and verified (commits
-`57d4302`, `f6cd8a8`, and the T3 commit). T4 through T9 remain.
+In progress. T1 through T4 are implemented and verified. T5 through
+T9 remain.
+
+T4 implementation notes:
+- The Missing Issues dialog keeps `FreshnessPolicy::default()`, which
+  is now manual: its list reads stop probing open volumes. Wiring its
+  policy to the user config is a possible follow-up.
+- The warm task refuses offline mode in the shell closure, which now
+  returns `Result<WarmReport, String>`; the sweep and the
+  cache-manager updates refuse inside their own functions and surface
+  `CvError::Offline` through their existing error paths.
 
 T3 implementation notes:
 - The scrape's issue list short-circuits on a `Fresh` verdict only.
@@ -139,7 +148,7 @@ fields, and Python scripts build and import cache files.
       `cv/queries.rs` and `engine.rs` change; `parse_issue` parses
       stored JSON. Acceptance: a mock-server test scrapes a fully
       cached series with ZERO API requests.
-- [ ] **T4 — Refresh switch and offline mode**: the two config keys
+- [x] **T4 — Refresh switch and offline mode**: the two config keys
       with defaults and parse rules; the check boxes in the config
       dialog; `CvError::Offline` at the chokepoint; the warm, sweep,
       and cache-manager disabled states. Acceptance: in manual mode an

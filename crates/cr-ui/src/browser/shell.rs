@@ -1291,6 +1291,7 @@ impl ShellState {
                     return Err("The Comic Vine cache file could not be opened.".to_string());
                 };
                 let mut client = cr_scrape::cv::connection::CvClient::new(&api_key);
+                library::cv_configure(&mut client, &budget_config);
                 if let Some(budget) = library::cv_budget(
                     &budget_config,
                     Arc::clone(&cache),
@@ -4491,6 +4492,7 @@ impl ShellState {
                 volume_id,
                 owned_numbers,
                 api_key: config.api_key.clone(),
+                offline: config.advanced().cache_offline_only,
             },
             Box::new(move |picked| {
                 let mut new_ids = Vec::with_capacity(picked.len());
@@ -4623,6 +4625,7 @@ impl ShellState {
             cancel,
             move |progress| -> Result<Vec<cr_scrape::cv::models::SeriesRef>, String> {
                 let mut client = cr_scrape::cv::connection::CvClient::new(&api_key);
+                library::cv_configure(&mut client, &budget_config);
                 if let Some(cache) = library::cv_cache() {
                     if let Some(budget) = library::cv_budget(
                         &budget_config,
@@ -5024,6 +5027,7 @@ impl ShellState {
                     cancel,
                     move |progress| {
                         let mut client = cr_scrape::cv::connection::CvClient::new(&api_key);
+                        library::cv_configure(&mut client, &budget_config);
                         if let Some(budget) = library::cv_budget(
                             &budget_config,
                             std::sync::Arc::clone(&cache),
@@ -5211,6 +5215,7 @@ impl ShellState {
             cancel,
             move |progress| -> Result<cr_scrape::cache::sweep::SweepReport, String> {
                 let mut client = cr_scrape::cv::connection::CvClient::new(&api_key);
+                library::cv_configure(&mut client, &budget_config);
                 if let Some(budget) = library::cv_budget(
                     &budget_config,
                     std::sync::Arc::clone(&cache),
@@ -5301,8 +5306,15 @@ impl ShellState {
             library::CvJobKind::Warm,
             "Warm Comic Vine Cache",
             cancel,
-            move |progress| {
+            move |progress| -> Result<cr_scrape::cache::warm::WarmReport, String> {
                 let mut client = cr_scrape::cv::connection::CvClient::new(&api_key);
+                library::cv_configure(&mut client, &budget_config);
+                if client.is_offline() {
+                    return Err(
+                        "Offline mode is on: the warm task makes no network requests."
+                            .to_string(),
+                    );
+                }
                 if let Some(budget) = library::cv_budget(
                     &budget_config,
                     std::sync::Arc::clone(&cache),
@@ -5311,7 +5323,7 @@ impl ShellState {
                 ) {
                     client.set_budget(budget);
                 }
-                cr_scrape::cache::warm::run(
+                Ok(cr_scrape::cache::warm::run(
                     &client,
                     cache.as_ref(),
                     &volume_ids,
@@ -5327,9 +5339,16 @@ impl ShellState {
                             total: p.total as i64,
                         });
                     },
-                )
+                ))
             },
-            |window, report| {
+            |window, result| {
+                let report = match result {
+                    Ok(report) => report,
+                    Err(error) => {
+                        show_failure_dialog(window, "Warm Comic Vine Cache", &error);
+                        return;
+                    }
+                };
                 let stopped = if report.stopped_early {
                     " The run stopped early: the request budget, the cap, or a cancel stopped it."
                 } else {

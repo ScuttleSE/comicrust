@@ -153,6 +153,10 @@ pub struct ScrapeConfigWidgets {
     base: Configuration,
     api_entry: Entry,
     checks: Vec<CheckButton>,
+    /// The offline switch of the advanced settings (ADR-071).
+    offline_check: CheckButton,
+    /// The auto refresh switch of the advanced settings (ADR-071).
+    auto_refresh_check: CheckButton,
     advanced_view: TextView,
 }
 
@@ -205,6 +209,18 @@ impl ScrapeConfigWidgets {
         grid.attach(&check_all, 0, buttons_row, 1, 1);
         grid.attach(&uncheck_all, 1, buttons_row, 1, 1);
 
+        // The two cache switches of the advanced settings (ADR-071).
+        // They read the parsed defaults and write back into the
+        // KEY=VALUE text on collect, so a hand-edited line and the
+        // check box cannot disagree.
+        let advanced = config.advanced();
+        let offline_check = CheckButton::with_label("Offline Mode (Cache Only)");
+        offline_check.set_active(advanced.cache_offline_only);
+        let auto_refresh_check = CheckButton::with_label("Auto Cache Refresh");
+        auto_refresh_check.set_active(advanced.cache_refresh_auto);
+        grid.attach(&offline_check, 0, buttons_row + 1, 1, 1);
+        grid.attach(&auto_refresh_check, 1, buttons_row + 1, 1, 1);
+
         // the advanced settings text, verbatim
         let advanced_view = TextView::builder().monospace(true).build();
         advanced_view.buffer().set_text(&config.advanced_settings);
@@ -216,17 +232,19 @@ impl ScrapeConfigWidgets {
         grid.attach(
             &Label::new(Some("Advanced settings (KEY=VALUE lines)")),
             0,
-            buttons_row + 1,
+            buttons_row + 2,
             2,
             1,
         );
-        grid.attach(&advanced_scroll, 0, buttons_row + 2, 2, 1);
+        grid.attach(&advanced_scroll, 0, buttons_row + 3, 2, 1);
 
         ScrapeConfigWidgets {
             grid,
             base: config.clone(),
             api_entry,
             checks,
+            offline_check,
+            auto_refresh_check,
             advanced_view,
         }
     }
@@ -243,9 +261,56 @@ impl ScrapeConfigWidgets {
         let text = buf
             .text(&buf.start_iter(), &buf.end_iter(), false)
             .to_string();
+        // The cache switches write into the advanced text, so the
+        // text stays the one source of truth (ADR-071).
+        let text = set_advanced_line(
+            &text,
+            "CACHE_OFFLINE_ONLY",
+            if self.offline_check.is_active() {
+                "true"
+            } else {
+                "false"
+            },
+        );
+        let text = set_advanced_line(
+            &text,
+            "CACHE_REFRESH_MODE",
+            if self.auto_refresh_check.is_active() {
+                "auto"
+            } else {
+                "manual"
+            },
+        );
         result.set_advanced_settings(&text);
         result
     }
+}
+
+/// Replaces the one `KEY=VALUE` line in the advanced text, or appends
+/// it when absent.
+fn set_advanced_line(text: &str, key: &str, value: &str) -> String {
+    let mut replaced = false;
+    let mut lines: Vec<String> = Vec::new();
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        let matches = trimmed.len() >= key.len()
+            && trimmed[..key.len()].eq_ignore_ascii_case(key)
+            && trimmed[key.len()..].trim_start().starts_with('=');
+        if matches {
+            lines.push(format!("{key}={value}"));
+            replaced = true;
+        } else {
+            lines.push(line.to_string());
+        }
+    }
+    if !replaced {
+        lines.push(format!("{key}={value}"));
+    }
+    let mut out = lines.join("\n");
+    if text.ends_with('\n') {
+        out.push('\n');
+    }
+    out
 }
 
 /// Opens the modal config dialog. `on_done` runs once with the

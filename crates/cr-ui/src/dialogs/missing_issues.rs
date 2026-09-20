@@ -44,6 +44,9 @@ pub struct Request {
     pub owned_numbers: Vec<String>,
     /// The API key. An empty key still allows a cache-only lookup.
     pub api_key: String,
+    /// The offline switch (ADR-071): when on, the lookup never
+    /// reaches the network.
+    pub offline: bool,
 }
 
 /// The books the dialog asks the caller to create.
@@ -114,10 +117,11 @@ pub fn show(parent: &impl IsA<gtk4::Window>, request: Request, on_create: Create
     let volume_id = request.volume_id;
     let owned = request.owned_numbers.clone();
     let api_key = request.api_key.clone();
+    let offline = request.offline;
     std::thread::Builder::new()
         .name("Missing Issues".into())
         .spawn(move || {
-            let _ = tx.send(look_up(volume_id, &owned, &api_key, &policy));
+            let _ = tx.send(look_up(volume_id, &owned, &api_key, &policy, offline));
         })
         .expect("spawn the missing-issue worker");
 
@@ -216,7 +220,13 @@ fn row_text(issue: &MissingIssue) -> String {
 
 /// The worker body. It opens its own cache handle, because the cache
 /// is a file and the worker must not share the main thread's state.
-fn look_up(volume_id: i64, owned: &[String], api_key: &str, policy: &FreshnessPolicy) -> Found {
+fn look_up(
+    volume_id: i64,
+    owned: &[String],
+    api_key: &str,
+    policy: &FreshnessPolicy,
+    offline: bool,
+) -> Found {
     let path = cr_scrape::cache::default_cache_path();
     let cache = match SqliteCache::open(&path) {
         Ok(c) => c,
@@ -231,7 +241,8 @@ fn look_up(volume_id: i64, owned: &[String], api_key: &str, policy: &FreshnessPo
             Err(e) => return Found::Failed(e.to_string()),
         }
     } else {
-        let client = CvClient::new(api_key);
+        let mut client = CvClient::new(api_key);
+        client.set_offline(offline);
         match freshness::issues_of_volume(
             &client,
             &cache,

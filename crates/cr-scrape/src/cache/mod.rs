@@ -218,20 +218,32 @@ pub fn policies_from(
     freshness::FreshnessPolicy,
     warm::WarmOptions,
 ) {
-    let freshness = freshness::FreshnessPolicy {
-        closed_horizon_days: i64::from(advanced.cache_closed_horizon_days),
-        revalidate_after_seconds: i64::from(advanced.cache_revalidate_hours) * 3600,
-    };
     (
         budget::BudgetPolicy {
             per_resource: i64::from(advanced.cache_rate_limit),
             window_seconds: budget::DEFAULT_WINDOW_SECONDS,
         },
-        freshness,
+        freshness::FreshnessPolicy {
+            closed_horizon_days: i64::from(advanced.cache_closed_horizon_days),
+            revalidate_after_seconds: i64::from(advanced.cache_revalidate_hours) * 3600,
+            refresh: if advanced.cache_refresh_auto {
+                freshness::RefreshMode::Auto
+            } else {
+                freshness::RefreshMode::Manual
+            },
+        },
         warm::WarmOptions {
             max_requests: Some(advanced.cache_warm_max_requests.max(1) as usize),
             max_volumes: None,
-            policy: freshness,
+            policy: freshness::FreshnessPolicy {
+                closed_horizon_days: i64::from(advanced.cache_closed_horizon_days),
+                revalidate_after_seconds: i64::from(advanced.cache_revalidate_hours) * 3600,
+                refresh: if advanced.cache_refresh_auto {
+                    freshness::RefreshMode::Auto
+                } else {
+                    freshness::RefreshMode::Manual
+                },
+            },
         },
     )
 }
@@ -315,12 +327,14 @@ mod policy_tests {
             "CACHE_RATE_LIMIT=25\n\
              CACHE_CLOSED_HORIZON_DAYS=90\n\
              CACHE_REVALIDATE_HOURS=6\n\
-             CACHE_WARM_MAX_REQUESTS=7\n",
+             CACHE_WARM_MAX_REQUESTS=7\n\
+             CACHE_REFRESH_MODE=auto\n",
         );
         let (budget, fresh, warm) = policies_from(&advanced);
         assert_eq!(budget.per_resource, 25);
         assert_eq!(fresh.closed_horizon_days, 90);
         assert_eq!(fresh.revalidate_after_seconds, 6 * 3600);
+        assert_eq!(fresh.refresh, freshness::RefreshMode::Auto);
         assert_eq!(warm.max_requests, Some(7));
         // The warm task shares the freshness policy.
         assert_eq!(warm.policy, fresh);

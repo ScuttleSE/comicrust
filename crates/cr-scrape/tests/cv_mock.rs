@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 use std::thread::JoinHandle;
 
+use cr_scrape::cache::freshness::{FreshnessPolicy, RefreshMode};
 use cr_scrape::cache::{CvCache, IssueSkeleton, SqliteCache, VolumeRow};
 use cr_scrape::cv::connection::CvClient;
 use cr_scrape::cv::models::{IssueRef, SeriesRef};
@@ -473,7 +474,7 @@ fn cleanup_terms_follow_the_python_rules() {
 }
 
 #[test]
-fn a_stale_open_volume_never_serves_its_stale_issue_list() {
+fn a_stale_open_volume_serves_no_stale_issue_list_in_auto_mode() {
     let (base, counter, _guard) = serve_counted(&[]);
     let cache = Arc::new(SqliteCache::in_memory().unwrap());
     let now = std::time::SystemTime::now()
@@ -502,11 +503,100 @@ fn a_stale_open_volume_never_serves_its_stale_issue_list() {
         .unwrap();
     let mut cv = client_for(&base);
     cv.client.set_cache(Arc::clone(&cache) as Arc<dyn CvCache>);
+    // AUTO mode revalidates: the stale list does not serve, and the
+    // call goes online (the empty server surfaces the failure).
+    cv.client.set_freshness(FreshnessPolicy {
+        refresh: RefreshMode::Auto,
+        ..FreshnessPolicy::default()
+    });
     let series = SeriesRef::new(40501, "Batman", 1940, "", 1, None).unwrap();
-    // The stale list does not serve: the call goes online and the
-    // empty server surfaces the failure.
     assert!(cv.query_issue_refs(&series, &mut no_cancel_issue).is_err());
     assert!(counter.load(Ordering::Relaxed) >= 1);
+    drop(_guard);
+}
+
+#[test]
+fn manual_mode_serves_a_stale_open_volume_with_zero_requests() {
+    let (base, counter, _guard) = serve_counted(&[]);
+    let cache = Arc::new(SqliteCache::in_memory().unwrap());
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap()
+        .as_secs() as i64;
+    cache
+        .put_volumes(&[VolumeRow {
+            volume_id: 40501,
+            name: Some("Batman".into()),
+            count_of_issues: Some(1),
+            last_cover_date: Some("2026-09-01".into()),
+            fetched_at: now - 2 * 86_400,
+            ..Default::default()
+        }])
+        .unwrap();
+    cache
+        .put_issues(&[IssueSkeleton {
+            issue_id: 400001,
+            volume_id: 40501,
+            issue_number: "1".into(),
+            name: Some("The Cached Issue".into()),
+            ..Default::default()
+        }])
+        .unwrap();
+    let mut cv = client_for(&base);
+    cv.client.set_cache(Arc::clone(&cache) as Arc<dyn CvCache>);
+    // MANUAL mode is the default: an open volume serves from the
+    // cache like a closed one, with no probe and no re-page (ADR-071).
+    let series = SeriesRef::new(40501, "Batman", 1940, "", 1, None).unwrap();
+    let refs = cv.query_issue_refs(&series, &mut no_cancel_issue).unwrap();
+    assert_eq!(refs.len(), 1);
+    assert_eq!(refs[0].issue_key, 400001);
+    assert_eq!(refs[0].title, "The Cached Issue");
+    assert_eq!(counter.load(Ordering::Relaxed), 0);
+    drop(_guard);
+}
+
+#[test]
+fn offline_mode_blocks_the_chokepoint_and_still_serves_the_cache() {
+    static CANNED: &[Canned] = &[Canned {
+        path: "/issue/4000-",
+        status: 200,
+        body: ISSUE_DETAILS,
+    }];
+    let (base, counter, _guard) = serve_counted(CANNED);
+    let cache = Arc::new(SqliteCache::in_memory().unwrap());
+
+    // Offline, with nothing cached: the detail query refuses before
+    // any network work.
+    let mut cv = client_for(&base);
+    cv.client.set_cache(Arc::clone(&cache) as Arc<dyn CvCache>);
+    cv.client.set_offline(true);
+    let issue_ref = IssueRef::new("½", 400011, "", None);
+    let error = cv.query_issue(&issue_ref, false).unwrap_err();
+    assert!(error.to_string().contains("offline"), "{error}");
+    assert_eq!(counter.load(Ordering::Relaxed), 0);
+
+    // The cache fills (directly, as a complete update would): the
+    // detail JSON and the volume row the parse needs.
+    cache
+        .put_issue_detail(400011, r#"{"id":400011,"name":" The Half Issue ","issue_number":"½","cover_date":"2011-05-14","store_date":"2011-04-20","volume":{"id":"40501","name":"Batman","start_year":"1940","publisher":{"id":10,"name":"Vertigo"}},"image":{"small_url":"http://img/i11-small.jpg"}}"#)
+        .unwrap();
+    cache
+        .put_volumes(&[VolumeRow {
+            volume_id: 40501,
+            name: Some("Batman".into()),
+            publisher: Some("Vertigo".into()),
+            start_year: Some(1940),
+            fetched_at: 1,
+            ..Default::default()
+        }])
+        .unwrap();
+
+    // Offline, with the detail cached: the cache serves, zero
+    // requests (ADR-071).
+    let issue = cv.query_issue(&issue_ref, false).unwrap();
+    assert_eq!(issue.title, "The Half Issue");
+    assert_eq!(issue.publisher, "DC Comics");
+    assert_eq!(counter.load(Ordering::Relaxed), 0);
     drop(_guard);
 }
 

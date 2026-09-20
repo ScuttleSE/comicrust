@@ -7,7 +7,7 @@ use std::io::{Read, Write};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-use cr_scrape::cache::freshness::{self, FreshnessPolicy, Verdict};
+use cr_scrape::cache::freshness::{self, FreshnessPolicy, RefreshMode, Verdict};
 use cr_scrape::cache::{CvCache, IssueSkeleton, SqliteCache, VolumeRow};
 use cr_scrape::cv::connection::CvClient;
 
@@ -202,15 +202,15 @@ fn an_unchanged_open_volume_makes_one_request() {
     server.reply("/volume/4050-771", volume_body(3, "2013-06-02 00:00:00"));
     let cache = SqliteCache::in_memory().expect("cache");
     seed_open(&cache);
+    // AUTO mode: the probe runs. Manual (the default) would serve
+    // the cache with zero requests.
+    let policy = FreshnessPolicy {
+        refresh: RefreshMode::Auto,
+        ..FreshnessPolicy::default()
+    };
 
-    let (issues, report) = freshness::issues_of_volume(
-        &server.client(),
-        &cache,
-        771,
-        &FreshnessPolicy::default(),
-        NOW,
-    )
-    .expect("read");
+    let (issues, report) =
+        freshness::issues_of_volume(&server.client(), &cache, 771, &policy, NOW).expect("read");
 
     assert_eq!(report.verdict_was, Some(Verdict::Revalidate));
     assert!(!report.repaged, "the probe found no change");
@@ -228,15 +228,15 @@ fn a_changed_open_volume_repages_its_issue_list() {
     server.reply("/issues/", issues_body(1, 4, 4, "2019-12-01"));
     let cache = SqliteCache::in_memory().expect("cache");
     seed_open(&cache);
+    // AUTO mode: the probe runs. Manual (the default) would serve
+    // the cache with zero requests.
+    let policy = FreshnessPolicy {
+        refresh: RefreshMode::Auto,
+        ..FreshnessPolicy::default()
+    };
 
-    let (issues, report) = freshness::issues_of_volume(
-        &server.client(),
-        &cache,
-        771,
-        &FreshnessPolicy::default(),
-        NOW,
-    )
-    .expect("read");
+    let (issues, report) =
+        freshness::issues_of_volume(&server.client(), &cache, 771, &policy, NOW).expect("read");
 
     assert_eq!(report.verdict_was, Some(Verdict::Revalidate));
     assert!(report.repaged);

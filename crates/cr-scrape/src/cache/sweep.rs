@@ -72,6 +72,10 @@ pub fn run(
     cancel: &AtomicBool,
     mut on_progress: impl FnMut(SweepProgress),
 ) -> Result<SweepReport, CvError> {
+    // Offline mode refuses before any work (ADR-071).
+    if client.is_offline() {
+        return Err(CvError::Offline);
+    }
     let stored = cache.sweep_state().ok().flatten();
     let resume =
         stored.filter(|s| s.start_date == options.start_date && s.end_date == options.end_date);

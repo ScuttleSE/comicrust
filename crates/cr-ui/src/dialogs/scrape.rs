@@ -785,6 +785,7 @@ pub fn show_scrape_dialog(
             // The local-first issue-list read applies the same
             // freshness keys as the budget (ADR-071).
             client.set_freshness(cr_scrape::cache::policies_from(worker_config.advanced()).1);
+            client.set_offline(worker_config.advanced().cache_offline_only);
             if let Some(cache) = enabled_cache {
                 client.set_cache(cache);
             }

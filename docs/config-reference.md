@@ -431,6 +431,8 @@ name to the right name.
 | `CACHE_REVALIDATE_HOURS` | 24 | How often an open volume is revalidated. One request. Clamped to 1-8760. |
 | `CACHE_WARM_ENABLED` | false | Runs the cache warm task. |
 | `CACHE_WARM_MAX_REQUESTS` | 50 | The request cap of one warm run. Clamped to 1-10000. |
+| `CACHE_REFRESH_MODE` | manual | `manual` never revalidates: an open volume serves from the cache like a closed one, until an explicit update runs. `auto` probes an open volume after `CACHE_REVALIDATE_HOURS` (one request). Anything that is not `auto` is manual. |
+| `CACHE_OFFLINE_ONLY` | false | When true, every request dies at the client chokepoint. Only cached data serves; the warm task, the sweep, and the cache-manager API operations refuse. |
 
 The cache file is
 `$XDG_DATA_HOME/comicrust/plugins/comic-vine-scraper/cvcache.sqlite`.

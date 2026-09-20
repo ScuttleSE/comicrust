@@ -70,6 +70,14 @@ pub struct AdvancedSettings {
     pub cache_warm_enabled: bool,
     /// `CACHE_WARM_MAX_REQUESTS` — default 50, parsed clamp 1..10000.
     pub cache_warm_max_requests: i32,
+    /// `CACHE_REFRESH_MODE` — `manual` (default) or `auto`. Manual
+    /// never revalidates: an open volume serves from the cache like a
+    /// closed one (ADR-071).
+    pub cache_refresh_auto: bool,
+    /// `CACHE_OFFLINE_ONLY` — default false. When true, every request
+    /// dies at the client chokepoint and only cached data serves
+    /// (ADR-071).
+    pub cache_offline_only: bool,
 }
 
 impl AdvancedSettings {
@@ -97,6 +105,8 @@ impl AdvancedSettings {
             cache_revalidate_hours: 24,
             cache_warm_enabled: false,
             cache_warm_max_requests: 50,
+            cache_refresh_auto: false,
+            cache_offline_only: false,
         }
     }
 }
@@ -260,7 +270,7 @@ pub fn parse_advanced(raw: &str) -> AdvancedSettings {
 
 /// The advanced-settings line keys (the C# `Configuration` parses
 /// one line per key). Public so the doc drift gate can walk them.
-pub const ADVANCED_KEYS: [&str; 22] = [
+pub const ADVANCED_KEYS: [&str; 24] = [
     "IGNORE_PUBLISHER",
     "IGNORE_SEARCHTERM",
     "IGNORE_BEFORE_YEAR",
@@ -285,6 +295,9 @@ pub const ADVANCED_KEYS: [&str; 22] = [
     "CACHE_REVALIDATE_HOURS",
     "CACHE_WARM_ENABLED",
     "CACHE_WARM_MAX_REQUESTS",
+    // The local-first switches (ADR-071).
+    "CACHE_REFRESH_MODE",
+    "CACHE_OFFLINE_ONLY",
 ];
 
 fn parse_line(line: &str, a: &mut AdvancedSettings) {
@@ -389,6 +402,9 @@ fn apply(key: &str, value: &str, a: &mut AdvancedSettings) {
                 a.cache_warm_max_requests = n.clamp(1, 10_000);
             }
         }
+        // Anything that is not `auto` is manual (ADR-071).
+        "CACHE_REFRESH_MODE" => a.cache_refresh_auto = value.trim().eq_ignore_ascii_case("auto"),
+        "CACHE_OFFLINE_ONLY" => a.cache_offline_only = is_true(value),
         _ => {}
     }
 }
@@ -449,6 +465,22 @@ fn split_arrow(value: &str) -> Option<(String, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_cache_switches_parse() {
+        let on = parse_advanced("CACHE_REFRESH_MODE=auto\nCACHE_OFFLINE_ONLY=true\n");
+        assert!(on.cache_refresh_auto);
+        assert!(on.cache_offline_only);
+        // `manual` and anything unrecognized are manual (ADR-071).
+        let manual = parse_advanced("CACHE_REFRESH_MODE=manual\n");
+        assert!(!manual.cache_refresh_auto);
+        let garbage = parse_advanced("CACHE_REFRESH_MODE=sometimes\n");
+        assert!(!garbage.cache_refresh_auto);
+        // The defaults: manual refresh, online.
+        let defaults = parse_advanced("");
+        assert!(!defaults.cache_refresh_auto);
+        assert!(!defaults.cache_offline_only);
+    }
 
     #[test]
     fn advanced_defaults_parse_from_an_empty_string() {
