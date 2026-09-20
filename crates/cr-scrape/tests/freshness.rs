@@ -143,6 +143,7 @@ fn seed_open(cache: &SqliteCache) {
                     issue_number: id.to_string(),
                     cover_date: Some("2019-12-01".into()),
                     name: None,
+                    ..Default::default()
                 })
                 .collect::<Vec<_>>(),
         )
@@ -169,6 +170,7 @@ fn seed_closed(cache: &SqliteCache) {
                     issue_number: id.to_string(),
                     cover_date: Some("2013-06-01".into()),
                     name: None,
+                    ..Default::default()
                 })
                 .collect::<Vec<_>>(),
         )

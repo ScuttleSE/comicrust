@@ -319,6 +319,7 @@ fn collect(dom: &Value, volume_id: i64) -> Vec<IssueSkeleton> {
                     .and_then(Value::as_str)
                     .map(str::to_string),
                 name: item.get("name").and_then(Value::as_str).map(str::to_string),
+                ..Default::default()
             })
         })
         .collect()

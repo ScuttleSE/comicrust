@@ -326,6 +326,7 @@ fn fetch_details(
                 .get("name")
                 .and_then(Value::as_str)
                 .map(str::to_string),
+            ..Default::default()
         };
         let json = serde_json::to_string(result)
             .map_err(|error| CvError::BadResponse(format!("issue JSON: {error}")))?;

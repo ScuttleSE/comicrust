@@ -321,6 +321,7 @@ impl Cv {
                 issue_number: issue.issue_num.clone(),
                 cover_date: None,
                 name: (!issue.title.is_empty()).then(|| issue.title.clone()),
+                ..Default::default()
             })
             .collect();
         self.client.cache_issues(&cached);

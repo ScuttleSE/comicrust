@@ -62,7 +62,8 @@ pub struct VolumeRow {
     pub fetched_at: i64,
 }
 
-/// One issue in the skeleton layer.
+/// One issue in the skeleton layer. The v4 list-level fields (ADR-072)
+/// stay unknown until a sweep or an API write fills them.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct IssueSkeleton {
     pub issue_id: i64,
@@ -72,6 +73,16 @@ pub struct IssueSkeleton {
     pub issue_number: String,
     pub cover_date: Option<String>,
     pub name: Option<String>,
+    pub deck: Option<String>,
+    pub description: Option<String>,
+    pub store_date: Option<String>,
+    pub image_url: Option<String>,
+    pub date_added: Option<String>,
+    pub date_last_updated: Option<String>,
+    pub api_detail_url: Option<String>,
+    pub site_detail_url: Option<String>,
+    /// Unix seconds. Zero means never written by an API read.
+    pub fetched_at: i64,
 }
 
 /// One related resource in the cache (ADR-070). `detail_json` stays

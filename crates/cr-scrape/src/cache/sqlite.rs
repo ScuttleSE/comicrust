@@ -21,7 +21,7 @@ use crate::cv::queries::parse_image_url;
 
 /// The schema version stored in `PRAGMA user_version`. Raise it and
 /// add a migration arm when the schema changes.
-const SCHEMA_VERSION: i32 = 3;
+const SCHEMA_VERSION: i32 = 4;
 
 const SCHEMA_V1: &str = r"
 CREATE TABLE IF NOT EXISTS volume (
@@ -208,6 +208,21 @@ CREATE INDEX IF NOT EXISTS credit_owner
     ON credit (owner_kind, owner_id);
 ";
 
+/// Schema v4 (ADR-072): the sweep's list-level fields land on the
+/// skeleton. The rolling build may already have written v3 files, so
+/// the columns ride a new version instead of editing v3 in place.
+const SCHEMA_V4: &str = r"
+ALTER TABLE issue_skeleton ADD COLUMN deck TEXT;
+ALTER TABLE issue_skeleton ADD COLUMN description TEXT;
+ALTER TABLE issue_skeleton ADD COLUMN store_date TEXT;
+ALTER TABLE issue_skeleton ADD COLUMN image_url TEXT;
+ALTER TABLE issue_skeleton ADD COLUMN date_added TEXT;
+ALTER TABLE issue_skeleton ADD COLUMN date_last_updated TEXT;
+ALTER TABLE issue_skeleton ADD COLUMN api_detail_url TEXT;
+ALTER TABLE issue_skeleton ADD COLUMN site_detail_url TEXT;
+ALTER TABLE issue_skeleton ADD COLUMN fetched_at INTEGER NOT NULL DEFAULT 0;
+";
+
 fn db(e: rusqlite::Error) -> CacheError {
     CacheError::Db(e.to_string())
 }
@@ -228,6 +243,9 @@ pub(crate) fn migrate_connection(conn: &Connection) -> Result<(), CacheError> {
     if version < 3 {
         conn.execute_batch(SCHEMA_V3).map_err(db)?;
         backfill_v3(conn)?;
+    }
+    if version < 4 {
+        conn.execute_batch(SCHEMA_V4).map_err(db)?;
     }
     if version != SCHEMA_VERSION {
         conn.pragma_update(None, "user_version", SCHEMA_VERSION)
@@ -751,13 +769,24 @@ impl CvCache for SqliteCache {
             let mut stmt = tx
                 .prepare(
                     "INSERT INTO issue_skeleton
-                       (issue_id, volume_id, issue_number, cover_date, name)
-                     VALUES (?1, ?2, ?3, ?4, ?5)
+                       (issue_id, volume_id, issue_number, cover_date, name,
+                        deck, description, store_date, image_url, date_added,
+                        date_last_updated, api_detail_url, site_detail_url, fetched_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
                      ON CONFLICT(issue_id) DO UPDATE SET
                        volume_id    = excluded.volume_id,
                        issue_number = excluded.issue_number,
                        cover_date   = COALESCE(excluded.cover_date, cover_date),
-                       name         = COALESCE(excluded.name, name)",
+                       name         = COALESCE(excluded.name, name),
+                       deck         = COALESCE(excluded.deck, deck),
+                       description  = COALESCE(excluded.description, description),
+                       store_date   = COALESCE(excluded.store_date, store_date),
+                       image_url    = COALESCE(excluded.image_url, image_url),
+                       date_added   = COALESCE(excluded.date_added, date_added),
+                       date_last_updated = COALESCE(excluded.date_last_updated, date_last_updated),
+                       api_detail_url = COALESCE(excluded.api_detail_url, api_detail_url),
+                       site_detail_url = COALESCE(excluded.site_detail_url, site_detail_url),
+                       fetched_at   = MAX(excluded.fetched_at, fetched_at)",
                 )
                 .map_err(db)?;
             for i in issues {
@@ -767,6 +796,15 @@ impl CvCache for SqliteCache {
                     i.issue_number,
                     i.cover_date,
                     i.name,
+                    i.deck,
+                    i.description,
+                    i.store_date,
+                    i.image_url,
+                    i.date_added,
+                    i.date_last_updated,
+                    i.api_detail_url,
+                    i.site_detail_url,
+                    i.fetched_at,
                 ])
                 .map_err(db)?;
             }
@@ -778,7 +816,9 @@ impl CvCache for SqliteCache {
         let conn = self.lock();
         let mut stmt = conn
             .prepare(
-                "SELECT issue_id, volume_id, issue_number, cover_date, name
+                "SELECT issue_id, volume_id, issue_number, cover_date, name,
+                        deck, description, store_date, image_url, date_added,
+                        date_last_updated, api_detail_url, site_detail_url, fetched_at
                    FROM issue_skeleton WHERE volume_id = ?1 ORDER BY issue_id",
             )
             .map_err(db)?;
@@ -790,6 +830,15 @@ impl CvCache for SqliteCache {
                     issue_number: r.get(2)?,
                     cover_date: r.get(3)?,
                     name: r.get(4)?,
+                    deck: r.get(5)?,
+                    description: r.get(6)?,
+                    store_date: r.get(7)?,
+                    image_url: r.get(8)?,
+                    date_added: r.get(9)?,
+                    date_last_updated: r.get(10)?,
+                    api_detail_url: r.get(11)?,
+                    site_detail_url: r.get(12)?,
+                    fetched_at: r.get(13)?,
                 })
             })
             .map_err(db)?;

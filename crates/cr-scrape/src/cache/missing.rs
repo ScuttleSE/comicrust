@@ -483,6 +483,7 @@ mod tests {
             issue_number: "1".into(),
             cover_date: Some("2000-11-01".into()),
             name: Some("Quelque part entre les ombres".into()),
+            ..Default::default()
         }];
         let got = missing_issues(&volume, &[]);
         assert_eq!(got[0].issue_id, 92_469);

@@ -15,10 +15,10 @@ local-first scrape reads with a refresh switch and an offline mode; a
 backupable, mergeable cache file; the sweep expansion plus Python
 build and import scripts.
 
-T1 (schema v3) through T6 (the cache-manager dialog operations) are
-done. Phase 20 stays implemented with open user test 26. The user
-declined the offered real-cache user tests (2026-09-20); the real
-v2-file migration check remains unperformed.
+T1 (schema v3) through T7 (the sweep expansion, schema v4) are done.
+Phase 20 stays implemented with open user test 26. The user declined
+the offered real-cache user tests (2026-09-20); the real v2-file
+migration check remains unperformed.
 
 ## Latest user finding
 
@@ -42,10 +42,10 @@ scrape matched the selected book and three other books in the same series.
 
 ## Current task for the next context
 
-Phase 21 T7: the sweep expansion (ADR-072). The widened `field_list`,
-the new column fills, image URL storage, and volume name records.
-Acceptance: a mock-server test holds the request count at one per
-page and shows the new columns filled. Follow
+Phase 21 T8: the Python scripts (ADR-072). `scripts/cvcache/` with the
+merge engine, build, merge, one adapter shape, and the schema pin
+test; the gated CI hook. Acceptance: a script-built file opens and
+merges in the app; an app-written file opens in a script. Follow
 `docs/phases/phase-21.md`.
 
 When the user tests first: the `2000 AD` number `2498` retest (test 24)
@@ -95,27 +95,22 @@ licenses` is not a CI gate.
 
 ## Latest verification
 
-Phase 21 T5 and T6 passed on 2026-09-20.
+Phase 21 T7 passed on 2026-09-20.
 
 - `cargo fmt --all`: passed.
 - `cargo clippy --workspace --all-targets -- -D warnings`: passed.
 - `cargo test --workspace`: passed (60 suites ok).
-- `MEASURED`: the import merge gates — newer-wins with the base row's
-  own stamp, empty-never-erases, a tie that keeps the stored row
-  exactly, blobs on fetched_at alone, request rows append, the sweep
-  state takes the newer updated_at, a rejected newer schema leaves
-  the live file untouched, and a v1 file migrates in the temp copy.
-- `MEASURED`: the backup round trips through an import into a fresh
-  cache; the checkpoint leaves a complete main file.
-- `MEASURED`: the related-resources mock test walks the credits,
-  reads each detail URL prefix from the volume's stored
-  `api_detail_url` fields, fetches one request per resource, and a
-  second run finds nothing left to fetch.
-- `UNKNOWN`: whether real credit items carry `api_detail_url` (the
-  mock fixtures assert the shape the code reads). A real response
-  settles it; until then the fetch reports misses honestly.
-- Open: the T6 release-probe acceptance (a probe drives all three
-  dialog operations).
+- `MEASURED`: the widened sweep page fills every list-level skeleton
+  column with ONE request for the page, records the inline volume
+  name, and upserts the inline publisher as a resource row.
+- `MEASURED`: the v1→v2→v3→v4 chain passes; a fresh open lands on
+  `user_version` 4; the v4 columns read back cleanly over pre-v4
+  rows (`fetched_at` is NOT NULL with a 0 default).
+- `UNKNOWN`: the exact inline sub-fields of the `volume` object in
+  `/issues` responses. The reader takes `name` and a `publisher`
+  sub-object when present; a real response settles the rest.
+- Still open from T6: the release-probe acceptance (a probe drives
+  all three dialog operations).
 
 ## Environment notes
 

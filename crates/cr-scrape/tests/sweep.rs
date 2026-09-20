@@ -110,6 +110,82 @@ fn the_fixture_pages_match_the_generator() {
     assert_eq!(PAGE_100.trim(), page(101, 250).trim());
 }
 
+/// The ADR-072 page: the widened field list fills the skeleton's
+/// list-level columns, the inline volume objects become volume name
+/// records and publisher rows, and the request count stays at one
+/// per page.
+#[test]
+fn the_widened_page_fills_the_list_columns_with_one_request() {
+    use cr_scrape::cache::ResourceKind;
+
+    static RICH_PAGE: &str = r#"{
+      "status_code":1,"number_of_total_results":2,"number_of_page_results":2,
+      "results":[
+        {"id":501,"issue_number":"1","volume":{"id":806,"name":"Rich Series",
+          "publisher":{"id":7,"name":"Rich Press"}},
+         "name":"First","cover_date":"2001-01-01","deck":"A deck",
+         "description":"Full text","store_date":"2000-12-10",
+         "image":{"small_url":"http://img/501-small.jpg"},
+         "date_added":"2026-01-01 00:00:00","date_last_updated":"2026-09-20 00:00:00",
+         "site_detail_url":"http://site/501","api_detail_url":"http://api/501"},
+        {"id":502,"issue_number":"2","volume":{"id":806,"name":"Rich Series"},
+         "name":"Second","cover_date":"2001-02-01"}
+      ]
+    }"#;
+    static PAGES: &[Canned] = &[Canned {
+        path: "offset=0",
+        body: RICH_PAGE,
+    }];
+    let (base, served) = serve(PAGES);
+    let cache = SqliteCache::in_memory().expect("cache");
+    let report = sweep::run(
+        &client(&base),
+        &cache,
+        &options(),
+        &AtomicBool::new(false),
+        |_| {},
+    )
+    .expect("sweep");
+
+    // One request, one page, and the run completes.
+    assert_eq!(served.load(Ordering::Relaxed), 1);
+    assert_eq!(report.pages, 1);
+    assert!(report.complete);
+    assert_eq!(report.issues, 2);
+
+    // The list-level columns filled.
+    let issues = cache.issues_of_volume(806).expect("read");
+    assert_eq!(issues.len(), 2);
+    let first = issues.iter().find(|i| i.issue_id == 501).expect("501");
+    assert_eq!(first.name.as_deref(), Some("First"));
+    assert_eq!(first.cover_date.as_deref(), Some("2001-01-01"));
+    assert_eq!(first.deck.as_deref(), Some("A deck"));
+    assert_eq!(first.description.as_deref(), Some("Full text"));
+    assert_eq!(first.store_date.as_deref(), Some("2000-12-10"));
+    assert_eq!(first.image_url.as_deref(), Some("http://img/501-small.jpg"));
+    assert_eq!(first.date_added.as_deref(), Some("2026-01-01 00:00:00"));
+    assert_eq!(
+        first.date_last_updated.as_deref(),
+        Some("2026-09-20 00:00:00")
+    );
+    assert_eq!(first.site_detail_url.as_deref(), Some("http://site/501"));
+    assert_eq!(first.api_detail_url.as_deref(), Some("http://api/501"));
+    assert!(first.fetched_at > 0);
+    // The second issue carries only what its page row had.
+    let second = issues.iter().find(|i| i.issue_id == 502).expect("502");
+    assert_eq!(second.deck, None);
+
+    // The inline volume object became a volume name record.
+    let volume = cache.volume(806).expect("read").expect("volume");
+    assert_eq!(volume.name.as_deref(), Some("Rich Series"));
+    // ...and the inline publisher object became a publisher row.
+    let publisher = cache
+        .resource(ResourceKind::Publisher, 7)
+        .expect("read")
+        .expect("publisher");
+    assert_eq!(publisher.name.as_deref(), Some("Rich Press"));
+}
+
 #[test]
 fn a_sweep_pages_to_the_end_and_fills_the_skeleton() {
     let (base, served) = serve(THREE_PAGES);

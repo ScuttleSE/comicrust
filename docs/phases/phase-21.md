@@ -2,8 +2,18 @@
 
 ## Status
 
-In progress. T1 through T6 are implemented and verified. T7 through
-T9 remain.
+In progress. T1 through T7 are implemented and verified. T8 and T9
+remain.
+
+T7 implementation notes:
+- The sweep columns land as schema v4 (the correction note is in
+  `docs/decisions.md`): `issue_skeleton` gains `deck`, `description`,
+  `store_date`, `image_url`, `date_added`, `date_last_updated`,
+  `api_detail_url`, `site_detail_url`, and `fetched_at`. The v3→v4
+  migration is a plain ALTER batch with no backfill.
+- The reader takes `name` and a `publisher` sub-object from the inline
+  `volume` object when the response carries them; the exact sub-field
+  set remains UNKNOWN and the merge rule protects stored values.
 
 T4 implementation notes:
 - The Missing Issues dialog keeps `FreshnessPolicy::default()`, which
@@ -176,7 +186,7 @@ fields, and Python scripts build and import cache files.
       (budget-bound, cancellable, resumable through the pending-queue
       pattern). Offline mode disables the API buttons. Acceptance: a
       release probe drives all three operations.
-- [ ] **T7 — Sweep expansion** (ADR-072): the widened `field_list`, the
+- [x] **T7 — Sweep expansion** (ADR-072): the widened `field_list`, the
       new column fills, image URL storage, and volume name records.
       Acceptance: a mock-server test holds the request count at one per
       page and shows the new columns filled.

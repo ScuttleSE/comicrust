@@ -915,3 +915,16 @@ v0.1.0 and every rolling build after it, and one manual reinstall clears it.
   wider pages raise the per-page response size only. The script merge
   and the app import share one rule, so a file built by a script merges
   cleanly in the app.
+
+**Correction (2026-09-20, at T7 implementation).** The sweep's
+list-level fields need columns the v3 schema does not carry. Because the
+rolling build publishes every commit on main, a real cache file may
+already carry v3, so the columns land as schema v4 instead of editing
+v3 in place: `issue_skeleton` gains `deck`, `description`, `store_date`,
+`image_url`, `date_added`, `date_last_updated`, `api_detail_url`,
+`site_detail_url`, and `fetched_at` (NOT NULL, default 0). The ADR-072
+"issue list columns" therefore live on `issue_skeleton`; the
+`issue_detail` typed columns stay the detail-time extraction of
+ADR-070. The exact sub-fields of the inline `volume` object remain
+UNKNOWN; the reader takes `name` and a `publisher` sub-object when the
+response carries them, and the merge rule protects stored values.

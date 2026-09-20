@@ -116,6 +116,7 @@ fn summary_update_replaces_membership_and_preserves_retained_detail() {
                 issue_number: "1".into(),
                 cover_date: Some("2000-01-01".into()),
                 name: Some("Kept detail".into()),
+                ..Default::default()
             },
             IssueSkeleton {
                 issue_id: 173_407,

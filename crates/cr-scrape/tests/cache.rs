@@ -198,7 +198,7 @@ fn a_v2_cache_with_stored_details_backfills_the_typed_columns() {
     let version: i32 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .expect("version");
-    assert_eq!(version, 3);
+    assert_eq!(version, 4);
 
     let (aliases, deck, description, image_url, api_url, site_url, date_added, first_id, last_id): VolumeColumns =
         conn
@@ -297,7 +297,7 @@ fn a_v2_cache_with_stored_details_backfills_the_typed_columns() {
 }
 
 #[test]
-fn the_v1_to_v3_chain_backfills_issue_details() {
+fn the_v1_to_v4_chain_backfills_issue_details() {
     let dir = tempdir();
     let path = dir.join("cvcache.sqlite");
     {
@@ -310,14 +310,14 @@ fn the_v1_to_v3_chain_backfills_issue_details() {
         )
         .expect("insert issue detail");
     }
-    SqliteCache::open(&path).expect("the v1 file migrates through v2 to v3");
+    SqliteCache::open(&path).expect("the v1 file migrates through v2, v3, and v4");
     drop(SqliteCache::open(&path).expect("reopen"));
 
     let conn = rusqlite::Connection::open(&path).expect("inspect");
     let version: i32 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .expect("version");
-    assert_eq!(version, 3);
+    assert_eq!(version, 4);
     let (volume_id, issue_number, cover_date, name): (
         Option<i64>,
         Option<String>,
@@ -355,7 +355,7 @@ fn malformed_detail_json_keeps_null_columns_and_still_migrates() {
     let version: i32 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .expect("version");
-    assert_eq!(version, 3);
+    assert_eq!(version, 4);
     let (aliases, first_id): (Option<String>, Option<i64>) = conn
         .query_row(
             "SELECT aliases, first_issue_id FROM volume WHERE volume_id = 771",
@@ -511,20 +511,20 @@ fn a_reimport_of_the_same_credits_is_idempotent() {
 }
 
 #[test]
-fn a_fresh_cache_opens_at_version_three() {
+fn a_fresh_cache_opens_at_version_four() {
     let dir = tempdir();
     let path = dir.join("cvcache.sqlite");
     {
         let cache = SqliteCache::open(&path).expect("fresh open");
         cache
             .put_volumes(&[vol(771)])
-            .expect("write through the v3 schema");
+            .expect("write through the current schema");
     }
     let conn = rusqlite::Connection::open(&path).expect("inspect");
     let version: i32 = conn
         .query_row("PRAGMA user_version", [], |r| r.get(0))
         .expect("version");
-    assert_eq!(version, 3);
+    assert_eq!(version, 4);
     std::fs::remove_dir_all(&dir).ok();
 }
 
@@ -641,9 +641,11 @@ fn a_cheap_issue_write_does_not_erase_the_cover_date() {
         issue_number: "1".into(),
         cover_date: Some("1998-03-01".into()),
         name: Some("Somewhere Within the Shadows".into()),
+        ..Default::default()
     }])
     .expect("write");
-    // The sweep asks for `id,issue_number,volume` only (ADR-038).
+    // A cheap write (the old sweep's `id,issue_number,volume` list)
+    // never erases the list fields (ADR-072).
     c.put_issues(&[issue(5, 100, "1")]).expect("write");
     let got = c.issues_of_volume(100).expect("read");
     assert_eq!(got[0].cover_date.as_deref(), Some("1998-03-01"));
@@ -822,6 +824,7 @@ fn an_mcl_import_erases_no_api_data() {
         issue_number: "1".into(),
         cover_date: Some("2000-11-01".into()),
         name: Some("Quelque part entre les ombres".into()),
+        ..Default::default()
     }])
     .expect("write");
 

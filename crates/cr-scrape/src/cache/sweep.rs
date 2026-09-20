@@ -19,8 +19,18 @@ use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde_json::Value;
 
+use super::resources::{ResourceKind, ResourceRef};
 use super::{CvCache, IssueSkeleton, SweepState, VolumeRow};
 use crate::cv::connection::{CvClient, CvError};
+use crate::cv::queries::parse_image_url;
+
+/// The current time in unix seconds.
+fn unix_now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or(0)
+}
 
 /// The API caps a page at 100 results for `/issues`.
 pub const PAGE_SIZE: i64 = 100;
@@ -114,10 +124,10 @@ pub fn run(
             .and_then(Value::as_i64)
             .unwrap_or(state.total);
 
-        let rows = collect(&dom);
+        let (rows, inline_volumes) = collect(&dom);
         let page_len = rows.len() as i64;
         if !rows.is_empty() {
-            let (volumes, issues) = split(rows);
+            let (volumes, issues, publishers) = split(rows, inline_volumes);
             report.volumes += volumes.len();
             report.issues += issues.len();
             // A cache write failure must not lose the offset, so the
@@ -125,6 +135,11 @@ pub fn run(
             cache
                 .put_volumes(&volumes)
                 .map_err(|e| CvError::BadResponse(e.to_string()))?;
+            if !publishers.is_empty() {
+                cache
+                    .put_resources(&publishers)
+                    .map_err(|e| CvError::BadResponse(e.to_string()))?;
+            }
             cache
                 .put_issues(&issues)
                 .map_err(|e| CvError::BadResponse(e.to_string()))?;
@@ -152,11 +167,17 @@ pub fn run(
     Ok(report)
 }
 
-/// The query one page uses. The field list is the smallest that names
-/// an issue and its volume, which keeps the response small.
+/// The query one page uses. The field list is the ADR-072 expansion:
+/// every list-level field the `/issues` resource documents, beside
+/// the id and volume the skeleton needs. The page count does not
+/// change; only the response size grows.
 fn issues_dom(client: &CvClient, options: &SweepOptions, offset: i64) -> Result<Value, CvError> {
     let mut query = client.base_query();
-    query.push(("field_list", "id,issue_number,volume".to_string()));
+    query.push((
+        "field_list",
+        "id,issue_number,volume,name,cover_date,deck,description,store_date,image,date_added,date_last_updated,site_detail_url,api_detail_url"
+            .to_string(),
+    ));
     query.push((
         "filter",
         format!(
@@ -170,53 +191,125 @@ fn issues_dom(client: &CvClient, options: &SweepOptions, offset: i64) -> Result<
     client.get_dom("/issues/", &query)
 }
 
-/// The `(issue id, volume id, issue number)` rows of one page.
-fn collect(dom: &Value) -> Vec<(i64, i64, String)> {
+/// One inline volume object of a page. The exact sub-fields are
+/// UNKNOWN (ADR-072): the reader takes what is there, and the merge
+/// rule protects stored values.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+struct InlineVolume {
+    volume_id: i64,
+    name: Option<String>,
+    publisher: Option<(i64, String)>,
+}
+
+/// The rows of one page: the skeleton data plus the inline volume
+/// objects.
+fn collect(dom: &Value) -> (Vec<IssueSkeleton>, Vec<InlineVolume>) {
     let Some(results) = dom.get("results").and_then(Value::as_array) else {
-        return Vec::new();
+        return (Vec::new(), Vec::new());
     };
-    let mut out = Vec::with_capacity(results.len());
+    let mut issues = Vec::with_capacity(results.len());
+    let mut volumes: BTreeMap<i64, InlineVolume> = BTreeMap::new();
     for item in results {
         let Some(issue_id) = item.get("id").and_then(Value::as_i64) else {
             continue;
         };
-        let Some(volume_id) = item
-            .get("volume")
-            .and_then(|v| v.get("id"))
-            .and_then(Value::as_i64)
-        else {
+        let volume = item.get("volume");
+        let Some(volume_id) = volume.and_then(|v| v.get("id")).and_then(Value::as_i64) else {
             // An issue with no volume cannot join the skeleton.
             continue;
         };
+        let inline = volumes.entry(volume_id).or_insert_with(|| InlineVolume {
+            volume_id,
+            ..Default::default()
+        });
+        if inline.name.is_none() {
+            inline.name = volume
+                .and_then(|v| v.get("name"))
+                .and_then(Value::as_str)
+                .map(str::to_string);
+        }
+        if inline.publisher.is_none() {
+            inline.publisher = volume.and_then(|v| v.get("publisher")).and_then(|p| {
+                let id = p.get("id").and_then(Value::as_i64)?;
+                let name = p.get("name").and_then(Value::as_str)?;
+                Some((id, name.to_string()))
+            });
+        }
         let number = item
             .get("issue_number")
             .and_then(Value::as_str)
             .unwrap_or("")
             .trim()
             .to_string();
-        out.push((issue_id, volume_id, number));
-    }
-    out
-}
-
-/// Splits the page rows into the two cache writes. The volume rows
-/// carry only the id, so the merge rule erases nothing.
-fn split(rows: Vec<(i64, i64, String)>) -> (Vec<VolumeRow>, Vec<IssueSkeleton>) {
-    let mut volumes: BTreeMap<i64, VolumeRow> = BTreeMap::new();
-    let mut issues = Vec::with_capacity(rows.len());
-    for (issue_id, volume_id, issue_number) in rows {
-        volumes.entry(volume_id).or_insert(VolumeRow {
-            volume_id,
-            ..Default::default()
-        });
         issues.push(IssueSkeleton {
             issue_id,
             volume_id,
-            issue_number,
-            ..Default::default()
+            issue_number: number,
+            name: item.get("name").and_then(Value::as_str).map(str::to_string),
+            cover_date: item
+                .get("cover_date")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            deck: item.get("deck").and_then(Value::as_str).map(str::to_string),
+            description: item
+                .get("description")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            store_date: item
+                .get("store_date")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            image_url: parse_image_url(item),
+            date_added: item
+                .get("date_added")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            date_last_updated: item
+                .get("date_last_updated")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            api_detail_url: item
+                .get("api_detail_url")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            site_detail_url: item
+                .get("site_detail_url")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            fetched_at: unix_now(),
         });
     }
-    (volumes.into_values().collect(), issues)
+    (issues, volumes.into_values().collect())
+}
+
+/// Splits the page rows into the three cache writes: the volume rows
+/// (id and name records only, so the merge rule erases nothing), the
+/// publisher resource rows, and the skeletons.
+fn split(
+    issues: Vec<IssueSkeleton>,
+    inline_volumes: Vec<InlineVolume>,
+) -> (Vec<VolumeRow>, Vec<IssueSkeleton>, Vec<ResourceRef>) {
+    let mut volumes: BTreeMap<i64, VolumeRow> = BTreeMap::new();
+    let mut publishers: BTreeMap<i64, ResourceRef> = BTreeMap::new();
+    for volume in inline_volumes {
+        volumes.entry(volume.volume_id).or_insert(VolumeRow {
+            volume_id: volume.volume_id,
+            name: volume.name,
+            ..Default::default()
+        });
+        if let Some((publisher_id, publisher_name)) = volume.publisher {
+            publishers.entry(publisher_id).or_insert(ResourceRef {
+                kind: ResourceKind::Publisher,
+                id: Some(publisher_id),
+                name: Some(publisher_name),
+            });
+        }
+    }
+    (
+        volumes.into_values().collect(),
+        issues,
+        publishers.into_values().collect(),
+    )
 }
 
 #[cfg(test)]
@@ -234,34 +327,77 @@ mod tests {
                 {"id":2,"issue_number":"2"},
                 {"issue_number":"3","volume":{"id":10}}
             ]}"#);
-        assert_eq!(collect(&d), vec![(1, 10, "1".to_string())]);
+        let (issues, volumes) = collect(&d);
+        assert_eq!(
+            issues.iter().map(|i| i.issue_id).collect::<Vec<_>>(),
+            vec![1]
+        );
+        assert_eq!(volumes.len(), 1);
     }
 
     #[test]
     fn a_missing_issue_number_reads_as_empty() {
         let d = dom(r#"{"results":[{"id":1,"volume":{"id":10}}]}"#);
-        assert_eq!(collect(&d), vec![(1, 10, String::new())]);
+        let (issues, _) = collect(&d);
+        assert_eq!(issues[0].issue_number, String::new());
     }
 
     #[test]
     fn a_page_with_no_results_collects_nothing() {
-        assert!(collect(&dom(r#"{"status_code":1}"#)).is_empty());
-        assert!(collect(&dom(r#"{"results":[]}"#)).is_empty());
+        assert!(collect(&dom(r#"{"status_code":1}"#)).0.is_empty());
+        assert!(collect(&dom(r#"{"results":[]}"#)).0.is_empty());
     }
 
     #[test]
-    fn the_split_makes_one_volume_row_per_volume() {
-        let (volumes, issues) = split(vec![
-            (1, 10, "1".into()),
-            (2, 10, "2".into()),
-            (3, 20, "1".into()),
-        ]);
+    fn the_split_makes_one_row_per_volume_and_publisher() {
+        let (issues, inline) = collect(&dom(r#"{"results":[
+                {"id":1,"issue_number":"1","volume":{"id":10,"name":"Ten",
+                  "publisher":{"id":7,"name":"Press"}}},
+                {"id":2,"issue_number":"2","volume":{"id":10,
+                  "publisher":{"id":7,"name":"Press"}}},
+                {"id":3,"issue_number":"1","volume":{"id":20}}
+            ]}"#));
+        let (volumes, issues, publishers) = split(issues, inline);
         assert_eq!(
             volumes.iter().map(|v| v.volume_id).collect::<Vec<_>>(),
             vec![10, 20]
         );
-        // The volume rows carry the id only, so nothing is erased.
-        assert!(volumes.iter().all(|v| v.name.is_none()));
+        // The volume name record rides the inline object when the
+        // response carries one; the merge rule protects stored values.
+        assert_eq!(volumes[0].name.as_deref(), Some("Ten"));
+        assert_eq!(volumes[1].name, None);
         assert_eq!(issues.len(), 3);
+        // One publisher row per publisher.
+        assert_eq!(publishers.len(), 1);
+        assert_eq!(publishers[0].kind, ResourceKind::Publisher);
+        assert_eq!(publishers[0].id, Some(7));
+        assert_eq!(publishers[0].name.as_deref(), Some("Press"));
+    }
+
+    #[test]
+    fn the_list_fields_fill_the_skeleton() {
+        let (issues, _) = collect(&dom(r#"{"results":[
+                {"id":1,"issue_number":"1","volume":{"id":10},
+                 "name":"The Title","cover_date":"2001-01-01",
+                 "deck":"A deck","description":"Text","store_date":"2000-12-10",
+                 "image":{"small_url":"http://img/s.jpg"},"date_added":"2026-01-01 00:00:00",
+                 "date_last_updated":"2026-09-20 00:00:00",
+                 "site_detail_url":"http://site/1","api_detail_url":"http://api/1"}
+            ]}"#));
+        let issue = &issues[0];
+        assert_eq!(issue.name.as_deref(), Some("The Title"));
+        assert_eq!(issue.cover_date.as_deref(), Some("2001-01-01"));
+        assert_eq!(issue.deck.as_deref(), Some("A deck"));
+        assert_eq!(issue.description.as_deref(), Some("Text"));
+        assert_eq!(issue.store_date.as_deref(), Some("2000-12-10"));
+        assert_eq!(issue.image_url.as_deref(), Some("http://img/s.jpg"));
+        assert_eq!(issue.date_added.as_deref(), Some("2026-01-01 00:00:00"));
+        assert_eq!(
+            issue.date_last_updated.as_deref(),
+            Some("2026-09-20 00:00:00")
+        );
+        assert_eq!(issue.site_detail_url.as_deref(), Some("http://site/1"));
+        assert_eq!(issue.api_detail_url.as_deref(), Some("http://api/1"));
+        assert!(issue.fetched_at > 0);
     }
 }
