@@ -744,6 +744,56 @@ pub fn cv_configure(
     client.set_offline(advanced.cache_offline_only);
 }
 
+/// Checkpoints the cache WAL on a worker, then runs `done` on the
+/// main loop (the close chain pattern). A clean close calls this
+/// once, so a plain file copy of the cache is complete afterwards
+/// (ADR-069).
+pub fn checkpoint_cv_cache_for_close(done: impl FnOnce() + 'static) {
+    let Some(cache) = cv_cache() else {
+        done();
+        return;
+    };
+    let mut done = Some(done);
+    let (tx, rx) = std::sync::mpsc::channel::<Result<(), String>>();
+    let spawn = std::thread::Builder::new()
+        .name("cv-cache-checkpoint".into())
+        .spawn(move || {
+            let result = cache.checkpoint().map_err(|error| error.to_string());
+            let _ = tx.send(result);
+        });
+    if let Err(error) = spawn {
+        crate::trace::trace(format!(
+            "the cache checkpoint worker could not start: {error}"
+        ));
+        if let Some(done) = done.take() {
+            done();
+        }
+        return;
+    }
+    glib::timeout_add_local(std::time::Duration::from_millis(50), move || {
+        match rx.try_recv() {
+            Ok(result) => {
+                if let Err(error) = result {
+                    // A failed checkpoint must not block the close;
+                    // the WAL stays until the next open cleans it.
+                    crate::trace::trace(format!("the cache checkpoint failed: {error}"));
+                }
+                if let Some(done) = done.take() {
+                    done();
+                }
+                glib::ControlFlow::Break
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                if let Some(done) = done.take() {
+                    done();
+                }
+                glib::ControlFlow::Break
+            }
+        }
+    });
+}
+
 /// The per-resource request budget over the shared cache, built from
 /// the scraper configuration. `None` means no budget: either the cache
 /// is off, or its file could not open.

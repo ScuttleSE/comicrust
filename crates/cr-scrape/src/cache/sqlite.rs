@@ -9,6 +9,7 @@ use std::sync::Mutex;
 use rusqlite::{params, Connection, OptionalExtension};
 use serde_json::Value;
 
+use super::import::{self, ImportReport};
 use super::resources::{
     self, CreditMarker, CreditRef, OwnerKind, References, ResourceKind, ResourceRef,
 };
@@ -211,6 +212,121 @@ fn db(e: rusqlite::Error) -> CacheError {
     CacheError::Db(e.to_string())
 }
 
+/// The migration chain over one connection, shared by the live open
+/// and the import's temp copy (ADR-069). A version newer than the
+/// build's schema is the caller's business; this chain only moves up.
+pub(crate) fn migrate_connection(conn: &Connection) -> Result<(), CacheError> {
+    let version: i32 = conn
+        .query_row("PRAGMA user_version", [], |r| r.get(0))
+        .map_err(db)?;
+    if version < 1 {
+        conn.execute_batch(SCHEMA_V1).map_err(db)?;
+    }
+    if version < 2 {
+        conn.execute_batch(SCHEMA_V2).map_err(db)?;
+    }
+    if version < 3 {
+        conn.execute_batch(SCHEMA_V3).map_err(db)?;
+        backfill_v3(conn)?;
+    }
+    if version != SCHEMA_VERSION {
+        conn.pragma_update(None, "user_version", SCHEMA_VERSION)
+            .map_err(db)?;
+    }
+    Ok(())
+}
+
+/// Fills the v3 typed columns from the stored detail JSON (the
+/// v2→v3 backfill of ADR-070). The raw JSON text never moves or
+/// rewrites. A row whose JSON does not parse keeps NULL columns
+/// and does not fail the migration.
+fn backfill_v3(conn: &Connection) -> Result<(), CacheError> {
+    let volume_rows: Vec<(i64, String)> = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT volume_id, detail_json FROM volume
+                  WHERE detail_json IS NOT NULL",
+            )
+            .map_err(db)?;
+        let rows = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .map_err(db)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(db)?
+    };
+    {
+        let mut stmt = conn
+            .prepare(
+                "UPDATE volume SET
+                    aliases = ?2, deck = ?3, description = ?4,
+                    image_url = ?5, api_detail_url = ?6,
+                    site_detail_url = ?7, date_added = ?8,
+                    first_issue_id = ?9, last_issue_id = ?10
+                  WHERE volume_id = ?1",
+            )
+            .map_err(db)?;
+        for (volume_id, json) in &volume_rows {
+            let Some(columns) = volume_detail_columns(json) else {
+                continue;
+            };
+            stmt.execute(params![
+                volume_id,
+                columns.aliases,
+                columns.deck,
+                columns.description,
+                columns.image_url,
+                columns.api_detail_url,
+                columns.site_detail_url,
+                columns.date_added,
+                columns.first_issue_id,
+                columns.last_issue_id,
+            ])
+            .map_err(db)?;
+        }
+    }
+
+    let issue_rows: Vec<(i64, String)> = {
+        let mut stmt = conn
+            .prepare(
+                "SELECT issue_id, json FROM issue_detail
+                  WHERE json IS NOT NULL",
+            )
+            .map_err(db)?;
+        let rows = stmt
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .map_err(db)?;
+        rows.collect::<Result<Vec<_>, _>>().map_err(db)?
+    };
+    {
+        let mut stmt = conn
+            .prepare(
+                "UPDATE issue_detail SET
+                    volume_id = ?2, issue_number = ?3, cover_date = ?4,
+                    name = ?5, store_date = ?6, image_url = ?7,
+                    date_added = ?8, date_last_updated = ?9
+                  WHERE issue_id = ?1",
+            )
+            .map_err(db)?;
+        for (issue_id, json) in &issue_rows {
+            let Some(columns) = issue_detail_columns(json) else {
+                continue;
+            };
+            stmt.execute(params![
+                issue_id,
+                columns.volume_id,
+                columns.issue_number,
+                columns.cover_date,
+                columns.name,
+                columns.store_date,
+                columns.image_url,
+                columns.date_added,
+                columns.date_last_updated,
+            ])
+            .map_err(db)?;
+        }
+    }
+    Ok(())
+}
+
 /// The Comic Vine cache on disk.
 pub struct SqliteCache {
     conn: Mutex<Connection>,
@@ -248,121 +364,87 @@ impl SqliteCache {
 
     fn migrate(&self) -> Result<(), CacheError> {
         let conn = self.lock();
-        let version: i32 = conn
-            .query_row("PRAGMA user_version", [], |r| r.get(0))
-            .map_err(db)?;
-        if version < 1 {
-            conn.execute_batch(SCHEMA_V1).map_err(db)?;
-        }
-        if version < 2 {
-            conn.execute_batch(SCHEMA_V2).map_err(db)?;
-        }
-        if version < 3 {
-            conn.execute_batch(SCHEMA_V3).map_err(db)?;
-            Self::backfill_v3(&conn)?;
-        }
-        if version != SCHEMA_VERSION {
-            conn.pragma_update(None, "user_version", SCHEMA_VERSION)
-                .map_err(db)?;
-        }
-        Ok(())
-    }
-
-    /// Fills the v3 typed columns from the stored detail JSON (the
-    /// v2→v3 backfill of ADR-070). The raw JSON text never moves or
-    /// rewrites. A row whose JSON does not parse keeps NULL columns
-    /// and does not fail the migration.
-    fn backfill_v3(conn: &Connection) -> Result<(), CacheError> {
-        let volume_rows: Vec<(i64, String)> = {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT volume_id, detail_json FROM volume
-                      WHERE detail_json IS NOT NULL",
-                )
-                .map_err(db)?;
-            let rows = stmt
-                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
-                .map_err(db)?;
-            rows.collect::<Result<Vec<_>, _>>().map_err(db)?
-        };
-        {
-            let mut stmt = conn
-                .prepare(
-                    "UPDATE volume SET
-                        aliases = ?2, deck = ?3, description = ?4,
-                        image_url = ?5, api_detail_url = ?6,
-                        site_detail_url = ?7, date_added = ?8,
-                        first_issue_id = ?9, last_issue_id = ?10
-                      WHERE volume_id = ?1",
-                )
-                .map_err(db)?;
-            for (volume_id, json) in &volume_rows {
-                let Some(columns) = volume_detail_columns(json) else {
-                    continue;
-                };
-                stmt.execute(params![
-                    volume_id,
-                    columns.aliases,
-                    columns.deck,
-                    columns.description,
-                    columns.image_url,
-                    columns.api_detail_url,
-                    columns.site_detail_url,
-                    columns.date_added,
-                    columns.first_issue_id,
-                    columns.last_issue_id,
-                ])
-                .map_err(db)?;
-            }
-        }
-
-        let issue_rows: Vec<(i64, String)> = {
-            let mut stmt = conn
-                .prepare(
-                    "SELECT issue_id, json FROM issue_detail
-                      WHERE json IS NOT NULL",
-                )
-                .map_err(db)?;
-            let rows = stmt
-                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
-                .map_err(db)?;
-            rows.collect::<Result<Vec<_>, _>>().map_err(db)?
-        };
-        {
-            let mut stmt = conn
-                .prepare(
-                    "UPDATE issue_detail SET
-                        volume_id = ?2, issue_number = ?3, cover_date = ?4,
-                        name = ?5, store_date = ?6, image_url = ?7,
-                        date_added = ?8, date_last_updated = ?9
-                      WHERE issue_id = ?1",
-                )
-                .map_err(db)?;
-            for (issue_id, json) in &issue_rows {
-                let Some(columns) = issue_detail_columns(json) else {
-                    continue;
-                };
-                stmt.execute(params![
-                    issue_id,
-                    columns.volume_id,
-                    columns.issue_number,
-                    columns.cover_date,
-                    columns.name,
-                    columns.store_date,
-                    columns.image_url,
-                    columns.date_added,
-                    columns.date_last_updated,
-                ])
-                .map_err(db)?;
-            }
-        }
-        Ok(())
+        migrate_connection(&conn)
     }
 
     /// A poisoned cache mutex must not stop a scrape, so the guard is
     /// taken back from the poison.
     fn lock(&self) -> std::sync::MutexGuard<'_, Connection> {
         self.conn.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Writes one complete, standalone snapshot of the cache to
+    /// `path` while the live connection stays open (ADR-069). The
+    /// snapshot carries no `-wal`/`-shm` companions, and the target
+    /// must not exist.
+    pub fn backup(&self, path: &Path) -> Result<(), CacheError> {
+        if path.exists() {
+            return Err(CacheError::Path(format!(
+                "{}: the backup file already exists",
+                path.display()
+            )));
+        }
+        let target = path.to_string_lossy().to_string();
+        self.lock()
+            .execute("VACUUM INTO ?1", params![target])
+            .map(|_| ())
+            .map_err(db)
+    }
+
+    /// Checkpoints the WAL, so a plain file copy of the cache is
+    /// complete afterwards (ADR-069).
+    pub fn checkpoint(&self) -> Result<(), CacheError> {
+        let conn = self.lock();
+        conn.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| {
+            Ok((r.get::<_, i64>(0)?, r.get::<_, i64>(2)?))
+        })
+        .map_err(db)?;
+        Ok(())
+    }
+
+    /// Imports a cache file (ADR-069): the file copies to a temp
+    /// path, the copy migrates through the normal chain, and the
+    /// newer-stamp merge applies. The live file stays untouched until
+    /// the merge succeeds. A file whose schema is newer than this
+    /// build is rejected.
+    pub fn import(&self, path: &Path) -> Result<ImportReport, CacheError> {
+        if !path.is_file() {
+            return Err(CacheError::Import(format!(
+                "{} is not a file",
+                path.display()
+            )));
+        }
+        let temp = std::env::temp_dir().join(format!(
+            "comicrust-cache-import-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0)
+        ));
+        std::fs::copy(path, &temp).map_err(|e| CacheError::Import(format!("copy: {e}")))?;
+        let result = self.import_from_temp(&temp);
+        let _ = std::fs::remove_file(&temp);
+        result
+    }
+
+    fn import_from_temp(&self, temp: &Path) -> Result<ImportReport, CacheError> {
+        let source = Connection::open(temp).map_err(db)?;
+        let version: i32 = source
+            .query_row("PRAGMA user_version", [], |r| r.get(0))
+            .map_err(db)?;
+        if version > SCHEMA_VERSION {
+            return Err(CacheError::Import(format!(
+                "the file uses cache schema {version}, newer than this build's schema {SCHEMA_VERSION}"
+            )));
+        }
+        // An older file migrates inside the temp copy first.
+        migrate_connection(&source)?;
+        let mut conn = self.lock();
+        let tx = conn.transaction().map_err(db)?;
+        let report = import::merge(&tx, &source)?;
+        tx.commit().map_err(db)?;
+        Ok(report)
     }
     /// Reads one cache-manager record. An unknown id returns `None`.
     pub fn managed_volume(&self, volume_id: i64) -> Result<Option<ManagedVolume>, CacheError> {

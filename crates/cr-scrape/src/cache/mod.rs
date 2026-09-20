@@ -14,6 +14,7 @@
 
 pub mod budget;
 pub mod freshness;
+pub mod import;
 pub mod link;
 pub mod manage;
 pub mod mcl;
@@ -37,6 +38,8 @@ pub enum CacheError {
     Db(String),
     #[error("cache path: {0}")]
     Path(String),
+    #[error("cache import: {0}")]
+    Import(String),
 }
 
 /// One volume in the skeleton layer. Every optional field is unknown

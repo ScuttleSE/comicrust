@@ -397,9 +397,11 @@ fn save_and_finish_close(
     library::save_for_close_async(move |result| match result {
         Ok(true) => {
             library::save_settings();
-            if barrier.borrow_mut().coordinator_became_idle() {
-                window.close();
-            }
+            library::checkpoint_cv_cache_for_close(move || {
+                if barrier.borrow_mut().coordinator_became_idle() {
+                    window.close();
+                }
+            });
         }
         Ok(false) => save_and_finish_close(window, barrier),
         Err(error) => {
