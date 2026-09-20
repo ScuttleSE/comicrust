@@ -8,7 +8,7 @@ Do not append history. Git and `docs/archive/` hold history.
 **Phase 21: Comic Vine cache expansion.**
 
 In progress. The phase file is `docs/phases/phase-21.md`. The decisions
-are ADR-069 through ADR-074.
+are ADR-069 through ADR-075.
 
 Four parts: schema v3 with every comic resource and row stamps;
 local-first scrape reads with a refresh switch and an offline mode; a
@@ -26,27 +26,25 @@ Schema grew past the phase's original v4: v5 added the `issue_image`
 gallery (ADR-073), v6 added ComicTagger cover hashes (ADR-074), v7
 added the per-endpoint sync watermark (ADR-075). The full `localcv.db`
 is imported into the live cache (verified by the user). T9 (user
-tests) stays open. Phase 20 stays implemented with open user test 26.
+tests) is largely verified; the automatcher parity test, a backup-import
+round trip, and a cached-series scrape remain. Phase 20 is implemented
+and its cache-manager user test (26) passed.
 
 ## Latest user finding
 
-`MEASURED` (user, 2026-09-19): The new trace identified the CPU and UI stall.
-The Incoming gap worker parsed 88,129 paths while it held the global proposed-
-value cache mutex for 7.25 seconds. GTK operations waited on that mutex for up
-to 6.62 seconds. The 100,000-entry cache cleared repeatedly while the active
-Library and Incoming catalogs contained up to 105,825 paths. Cached Comic Vine
-series propagation itself changed three books in approximately 7 ms.
+`PASS` (user, 2026-09-20): a batch of Phase 19-21 user tests passed —
+Missing Issues gap report and its scoped-series regression (test 22),
+Link Series from Cache (23), Incoming setup and review (17), Find
+Missing Issues in Incoming including the real `2000 AD` `2498` retest
+(24), the Comic Vine cache manager in both API modes (26), and the new
+"Update Comic Vine Cache…" pre-flight, capped run, and run-to-completion
+(27). No library book changed in any case.
 
-`CODE-READ`: the fix removes the fixed cache limit, reserves for all active
-paths at startup, and parses through per-path `OnceLock` values outside the
-global map lock. String matchers request proposed values only for Series,
-Title, and Format. Gauge evaluation runs on a worker. A new generation cancels
-obsolete Incoming gap work.
-
-`MEASURED` (user, 2026-09-19): The same real-library workflow completed in one
-to two seconds after the fix. The user reports that it is much better. The
-scrape matched the selected book and three other books in the same series.
-`UNKNOWN`: peak memory use was not measured.
+`MEASURED` (user key, live API, 2026-09-20): the `date_last_updated`
+filter narrows all four update endpoints (publishers 4, people 126,
+volumes 144, issues 985 in 2026-08-01|2026-08-05, against unfiltered
+9,855 / 89,713 / 160,561 / 1,139,988; dates in-window). This is the
+evidence the all-endpoint update rests on.
 
 ## Current task for the next context
 
@@ -79,13 +77,12 @@ under ADR-075. Read the "Task C detail" section of
 people 126, volumes 144, issues 985 in 2026-08-01|2026-08-05, against
 unfiltered 9,855 / 89,713 / 160,561 / 1,139,988; dates in-window).
 
-**Not yet run (T9 user tests):** the app "Update Comic Vine Cache…"
-against a real cache with the request log watched — does the pre-flight
-show sensible counts, does a capped run stop at the page cap and hold
-the watermark, does a full run fill `date_last_updated` and advance
-every `sync_state` watermark. The automatcher parity test, a
-backup-import round trip, and a cached-series scrape stay open from
-before.
+**T9 user tests — Update command verified (user, 2026-09-20):** the app
+"Update Comic Vine Cache…" pre-flight, a capped run, and a
+run-to-completion passed on a real cache with no library book changed
+(user test 27). Remaining T9 user tests: the automatcher parity test
+(does the ComicTagger hash still auto-match correctly, ADR-074), a
+backup-import round trip, and a cached-series scrape.
 
 **Validation done (MEASURED, user session 2026-09-20):** a live-API
 check of 18 items (2-3 each of volume, issue, publisher, person,
@@ -121,10 +118,9 @@ The one-off localcv import is available now:
 of the live cache first. The publisher filter flags are optional and
 reserved for the Task C probe workflow.
 
-When the user tests first: the `2000 AD` number `2498` retest (test 24)
-and the Missing Issues scope test (test 22) stay first in line, and
-user test 26 (the phase-20 cache manager against a real volume) is
-still open.
+When the user tests first: tests 1, 4, 9, and 25 stay open. Test 25's
+Proposed Number regression already passes on the real library; the rest
+of test 25 (the propagation report) still needs a check.
 
 ## Open user tests
 
@@ -135,17 +131,8 @@ The procedures are in `docs/open-user-tests.md`.
 - Test 4: Select Worst Duplicates is passable. `UNKNOWN`: the requested
   improvement is not specified.
 - Test 9: Library Organizer simulation showed no report.
-- Test 17: Incoming folder setup and review views have a partial pass.
-- Test 22: Missing Issues gap report is not complete.
-- Test 23: Link Series from Cache is not complete.
-- Test 24: Find Missing Issues in Incoming has a bounded-match fix. The real
-  `2000 AD` number `2498` retest is pending.
 - Test 25: Cached series metadata propagation is not complete. The Proposed
   Number regression now passes on the real library.
-- Test 26: Comic Vine cache manager is not complete. Test both API modes
-  against a real volume.
-- Test 27: Update Comic Vine Cache pre-flight and page cap is not complete.
-  Test the pre-flight counts, a capped run, and a run-to-completion.
 
 ## Other open work
 

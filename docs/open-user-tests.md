@@ -60,9 +60,12 @@ the saved and reset states persist.
 
 ## 22. Missing Issues gap report
 
-Not yet run. See `docs/phases/phase-19.md` and ADR-059. A 2026-09-19 user
-test found and fixed a real bug in the scoped case (below) — the fixed
-scenario still needs a user confirmation on real data.
+`PASS` (user, 2026-09-20): verified on real data, including the
+scoped-series regression below. The Comic Vine volume link resolves from
+the whole library even when the scoped smart list holds no linked copy;
+the book count stayed unchanged.
+
+See `docs/phases/phase-19.md` and ADR-059 for the procedure.
 
 Import a Comic Vine MCL file (Preferences ▸ Comic Vine Scraper, or the
 Import Comic Vine MCL File command) for a series already in the library.
@@ -107,9 +110,11 @@ not contain file paths or book IDs.
 
 ## 23. Link Series from Cache
 
-Not yet run. See ADR-060. Built in response to a real case found while
-testing #22: a series with an MCL-imported cache but no book ever linked to
-Comic Vine.
+`PASS` (user, 2026-09-20): batch link across multiple series worked;
+unselected books stayed unchanged; a linked series made no search
+request and an unlinked series made at most one.
+
+See ADR-060 for the procedure.
 
 Open a view that contains books from two or more series. Select multiple books
 from each series. Leave at least one visible book unselected. Choose **Link
@@ -126,8 +131,8 @@ does not process the remaining groups.
 
 ## 17. Incoming folder setup and review views
 
-`PARTIAL PASS` on 2026-09-18 (user): "So far so good." No failure reported,
-but the full checklist is not yet confirmed complete.
+`PASS` (user, 2026-09-20): the Incoming folder setup and review views
+are confirmed working.
 
 In Preferences, change a scratch Library folder to Incoming. Confirm the count
 before conversion. Cancel once and confirm that nothing changes. Repeat and
@@ -139,7 +144,10 @@ the same state.
 
 ## 24. Find Missing Issues in Incoming
 
-Not yet run. See ADR-061.
+`PASS` (user, 2026-09-20): matching, adoption, and the counts are
+confirmed, including the real `2000 AD` number `2498` retest.
+
+See ADR-061 for the procedure.
 
 Create a Library Organizer Move profile that targets a scratch Library folder.
 Open **Preferences > Libraries**. Select that profile in **Gap Fill adoption
@@ -197,7 +205,12 @@ user check.
 
 ## 26. Comic Vine cache manager
 
-Not yet run. See `docs/phases/phase-20.md` and ADR-064.
+`PASS` (user, 2026-09-20): both API modes verified against a real
+volume — metadata persists across reopen, the API update creates and
+fills the volume, and a canceled Complete Update resumes to zero
+remaining details with no library book changed.
+
+See `docs/phases/phase-20.md` and ADR-064 for the procedure.
 
 Open **File > Manage Comic Vine Cache...**. Enter a volume ID from the imported
 MCL file and select **Search**. Confirm that the dialog shows the issue IDs and
@@ -218,7 +231,10 @@ no library book changes.
 
 ## 27. Update Comic Vine Cache — pre-flight and page cap
 
-Not yet run. See ADR-075.
+`PASS` (user, 2026-09-20): the pre-flight counts, a capped run, and a
+run-to-completion are confirmed; no library book changed.
+
+See ADR-075 for the procedure.
 
 Always test against a copy of the cache, never the live library.
 

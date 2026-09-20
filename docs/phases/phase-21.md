@@ -207,11 +207,15 @@ fields, and Python scripts build and import cache files.
       pipeline that maintains cvcache, plus the in-app incremental
       refresh) remains open.
 - [ ] **T9 — Docs and user tests**: `docs/config-reference.md` rows for
-      the config keys are DONE (the two cache keys and the two
-      `MATCH_*` keys of ADR-074). Remaining: user-test procedures in
-      `docs/open-user-tests.md` — chiefly the automatcher parity test
-      (does the ComicTagger hash still auto-match correctly, ADR-074),
-      a backup-import round trip, and a cached-series scrape.
+      the config keys are DONE (the two cache keys, the two `MATCH_*`
+      keys of ADR-074, and `CACHE_UPDATE_MAX_PAGES` of ADR-075). User
+      tests DONE (user, 2026-09-20): the Update command pre-flight,
+      capped run, and run-to-completion (test 27); Missing Issues (22);
+      Link Series from Cache (23); Incoming setup (17); Find Missing
+      Issues in Incoming (24); the cache manager (26). Remaining: the
+      automatcher parity test (does the ComicTagger hash still
+      auto-match correctly, ADR-074), a backup-import round trip, and a
+      cached-series scrape.
 - [x] **Task C — Update pipeline** (ADR-075): schema v7 `sync_state`,
       the all-endpoint update-only script command, seeding from
       `cv_sync_metadata`, the publisher filter, and the in-app "Update
