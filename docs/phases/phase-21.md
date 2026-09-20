@@ -213,15 +213,86 @@ fields, and Python scripts build and import cache files.
 - `UNKNOWN`: whether the Comic Vine API terms permit redistribution of
   a populated cache file. Check before any populated file ships.
 - `UNKNOWN`: the inline sub-fields of the `volume` object inside
-  `/issues` responses. One real response settles it at T7.
+  `/issues` responses. T7 shipped a tolerant reader that takes `name`
+  and a `publisher` sub-object when present; one real response settles
+  the rest.
 - `UNKNOWN`: the detail URL prefixes for the resources beyond `volume`
-  (4050) and `issue` (4000). Read them from real responses or the docs
-  at T2.
+  (4050) and `issue` (4000). T6 shipped a reader that takes each
+  resource's detail path from the volume's stored `api_detail_url`
+  fields; the numeric prefixes stay unverified until a real volume
+  with credits is fetched.
 - `UNKNOWN`: whether the CI image carries `python3`. Try the gated test
   at T8.
+- The user has an import source they want the T8 adapter to support and
+  has not described it yet. The first adapter waits on their answers
+  and a sample file (see "T8 detail" below).
 - The image layer can grow large once the scrape stores every cover
   (one blob per issue). A prune command is NOT in this phase. Record
   the need when a measurement shows it.
+
+## T8 detail (written 2026-09-20, before any code)
+
+This is the takeover brief for T8. ADR-072 carries the decisions; this
+section carries the implementation order and the blocked part.
+
+Structure: a Python 3 package at `scripts/cvcache/`, standard library
+only (no pip dependencies). One merge engine, two commands, one adapter
+seam, two pin directions.
+
+1. **The merge engine** implements the ADR-069 rule exactly as
+   `crates/cr-scrape/src/cache/import.rs` does. Read that file first:
+   the engine mirrors its per-table order and its counts (added,
+   updated, skipped, rejected). The rule: per row the newer stamp is
+   the base (the API `date_last_updated` parses to a timestamp first;
+   where either side has none, `fetched_at` decides); an empty value
+   never erases; an empty stored value takes the incoming value; two
+   non-empty values take the base row's value; a tie keeps the stored
+   row; image blobs compare on `fetched_at` alone; `request_log` rows
+   append as-is; `sweep_state` takes the newer `updated_at`. The
+   `fetched_at` field follows the base row (the same `merge_stamp`
+   behavior as `import.rs`).
+2. **`build`**: MCL files in, a fresh distributable `cvcache.sqlite`
+   out — skeleton only, zero API requests. The MCL reader follows the
+   phase-15 rules pinned in `crates/cr-scrape/src/cache/mcl.rs` and its
+   fixtures: volumes sorted, issues by issue id, the number list's
+   trailing comma, the `.&@1`/`.&@2` escapes (read them, never write
+   them), and the accepted quoted form.
+3. **`merge`**: new MCL data into an existing file, through the same
+   engine.
+4. **The adapter seam**: an adapter turns one source format into
+   staged rows (table, values, stamps) in the v4 shape, and the merge
+   engine applies them. Contract: the input is file paths plus
+   options; the output is staged rows; stamps come from the source's
+   own last-updated field when it has one, else the adapter sets
+   `fetched_at` to the import time and leaves `date_last_updated`
+   empty. A validation pass runs first (id shapes, value types,
+   required keys); a failed row is reported, never merged. The v4
+   schema of reference is `SCHEMA_V4` in
+   `crates/cr-scrape/src/cache/sqlite.rs`.
+5. **The schema pin**: two directions. The scripts open a file the app
+   wrote, and the app opens a file the scripts wrote (the app side
+   rides a gated cargo test). Both directions, so the two DDLs cannot
+   drift.
+6. **The CI gate**: the script tests run behind a gated cargo test
+   that shells `python3` and skips when it is absent (the
+   `CR_FORMAT_TESTS` environment-gate pattern in
+   `docs/guides/verification.md`). Whether the CI image carries
+   `python3` is UNKNOWN until tried.
+
+**Blocked on user input — the first adapter.** The user has data they
+want to import and has not described it yet. Ask, and record the
+answers here:
+1. What is the data, and which tool produced it?
+2. A sample file — even one small, redacted example. The adapter is
+   designed against real bytes, not a description.
+3. What each row carries (ids, names, dates), and whether it has a
+   per-row last-updated stamp — that decides how the merge orders it
+   against app-side data.
+4. Where it should land: skeleton rows only, or the richer v4 columns.
+
+The MCL `build`/`merge` half does not depend on that input and can
+start without it. No populated cache file ships before the terms check
+(the first open issue).
 
 ## Completion record
 

@@ -42,11 +42,12 @@ scrape matched the selected book and three other books in the same series.
 
 ## Current task for the next context
 
-Phase 21 T8: the Python scripts (ADR-072). `scripts/cvcache/` with the
-merge engine, build, merge, one adapter shape, and the schema pin
-test; the gated CI hook. Acceptance: a script-built file opens and
-merges in the app; an app-written file opens in a script. Follow
-`docs/phases/phase-21.md`.
+Phase 21 T8: the Python scripts (ADR-072). Read the "T8 detail"
+section of `docs/phases/phase-21.md` first — it carries the
+implementation order, the code of reference, and the blocked part:
+the user has an import source they want the first adapter to support
+and has not described it yet; the four asks are in the phase file.
+The MCL `build`/`merge` half can start without their input.
 
 When the user tests first: the `2000 AD` number `2498` retest (test 24)
 and the Missing Issues scope test (test 22) stay first in line, and
