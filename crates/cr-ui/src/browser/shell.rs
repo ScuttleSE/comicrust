@@ -5072,7 +5072,69 @@ impl ShellState {
                     move |_window, result| done(result),
                 )
             });
-        crate::dialogs::cache_manager::show(&self.window, cache, starter);
+        // The related-resources fetch runs in the same job slot, with
+        // the same budget (ADR-070).
+        let related_state = Rc::downgrade(self);
+        let related_cache = std::sync::Arc::clone(&cache);
+        let related_starter: crate::dialogs::cache_manager::RelatedStarter =
+            Rc::new(move |volume_id, done| {
+                let Some(sh) = related_state.upgrade() else {
+                    return false;
+                };
+                let config = library::scraper_config();
+                if !config.has_api_key() {
+                    done(Err(
+                        "No Comic Vine API key is set. Set it in Preferences ▸ Comic Vine Scraper."
+                            .to_string(),
+                    ));
+                    return false;
+                }
+                let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+                let api_key = config.api_key.clone();
+                let budget_config = config.clone();
+                let cache = std::sync::Arc::clone(&related_cache);
+                let worker_cancel = std::sync::Arc::clone(&cancel);
+                sh.run_cv_job(
+                    library::CvJobKind::CacheManager,
+                    "Manage Comic Vine Cache",
+                    cancel,
+                    move |progress| {
+                        let mut client = cr_scrape::cv::connection::CvClient::new(&api_key);
+                        library::cv_configure(&mut client, &budget_config);
+                        if let Some(budget) = library::cv_budget(
+                            &budget_config,
+                            std::sync::Arc::clone(&cache),
+                            std::sync::Arc::clone(&worker_cancel),
+                            Some(wait_reporter(progress.clone())),
+                        ) {
+                            client.set_budget(budget);
+                        }
+                        cr_scrape::cache::manage::fetch_related_resources(
+                            &client,
+                            cache.as_ref(),
+                            volume_id,
+                            &worker_cancel,
+                            |step| {
+                                let _ = progress.send(CvProgressMsg::Step {
+                                    detail: format!(
+                                        "{} {}: detail {} of {}",
+                                        step.kind,
+                                        step.id,
+                                        step.done + 1,
+                                        step.total
+                                    ),
+                                    done: step.done as i64,
+                                    total: step.total as i64,
+                                });
+                            },
+                        )
+                        .map_err(|error| error.to_string())
+                    },
+                    move |_window, result| done(result),
+                )
+            });
+        let offline = library::scraper_config().advanced().cache_offline_only;
+        crate::dialogs::cache_manager::show(&self.window, cache, starter, related_starter, offline);
     }
 
     /// "Import Comic Vine MCL File…" (ADR-038): an `.mcl` snapshot

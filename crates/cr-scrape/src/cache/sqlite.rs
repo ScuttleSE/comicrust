@@ -1079,6 +1079,36 @@ impl CvCache for SqliteCache {
         .optional()
         .map_err(db)
     }
+
+    fn put_resource_detail(&self, row: &ResourceRow) -> Result<(), CacheError> {
+        let table = row.kind.as_str();
+        self.lock()
+            .execute(
+                &format!(
+                    "INSERT INTO {table} (id, name, image_url, date_last_updated,
+                        date_added, fetched_at, detail_json)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                     ON CONFLICT(id) DO UPDATE SET
+                       name = COALESCE(excluded.name, name),
+                       image_url = COALESCE(excluded.image_url, image_url),
+                       date_last_updated = COALESCE(excluded.date_last_updated, date_last_updated),
+                       date_added = COALESCE(excluded.date_added, date_added),
+                       fetched_at = MAX(excluded.fetched_at, fetched_at),
+                       detail_json = COALESCE(excluded.detail_json, detail_json)"
+                ),
+                params![
+                    row.id,
+                    row.name,
+                    row.image_url,
+                    row.date_last_updated,
+                    row.date_added,
+                    row.fetched_at,
+                    row.detail_json,
+                ],
+            )
+            .map(|_| ())
+            .map_err(db)
+    }
 }
 
 /// The current time in unix seconds.

@@ -15,8 +15,7 @@ local-first scrape reads with a refresh switch and an offline mode; a
 backupable, mergeable cache file; the sweep expansion plus Python
 build and import scripts.
 
-T1 (schema v3), T2 (inline credits and resource upserts), T3
-(local-first reads), and T4 (the refresh switch and offline mode) are
+T1 (schema v3) through T6 (the cache-manager dialog operations) are
 done. Phase 20 stays implemented with open user test 26. The user
 declined the offered real-cache user tests (2026-09-20); the real
 v2-file migration check remains unperformed.
@@ -43,12 +42,10 @@ scrape matched the selected book and three other books in the same series.
 
 ## Current task for the next context
 
-Phase 21 T5: backup and import (ADR-069). The `VACUUM INTO` backup
-command, the close checkpoint, and the temp-copy import with
-validation, the newer-stamp merge, and the per-table report.
-Acceptance: unit tests cover newer-wins, empty-never-erases, the blob
-rule, a tie that keeps the stored row, a rejected newer schema, and a
-v1 file that migrates in the temp copy. Follow
+Phase 21 T7: the sweep expansion (ADR-072). The widened `field_list`,
+the new column fills, image URL storage, and volume name records.
+Acceptance: a mock-server test holds the request count at one per
+page and shows the new columns filled. Follow
 `docs/phases/phase-21.md`.
 
 When the user tests first: the `2000 AD` number `2498` retest (test 24)
@@ -98,28 +95,27 @@ licenses` is not a CI gate.
 
 ## Latest verification
 
-Phase 21 T4 passed on 2026-09-20.
+Phase 21 T5 and T6 passed on 2026-09-20.
 
 - `cargo fmt --all`: passed.
 - `cargo clippy --workspace --all-targets -- -D warnings`: passed.
-- `cargo test --workspace`: passed (59 suites ok).
-- `MEASURED`: manual mode (the new default) serves a stale open
-  volume's issue list from the cache with zero requests; auto mode
-  still probes and re-pages (the two freshness integration tests
-  moved to an explicit auto policy).
-- `MEASURED`: offline mode refuses a cache miss with
-  `CvError::Offline` before any connection, and still serves a cached
-  detail parse with zero requests.
-- `MEASURED`: the config parse accepts `CACHE_REFRESH_MODE=auto` and
-  anything unrecognized is manual; `CACHE_OFFLINE_ONLY` parses like
-  the other boolean flags. The doc drift gate passes with the two new
-  `docs/config-reference.md` rows.
-- `UNKNOWN`: the real API JSON shape of the `volume` `aliases` field
-  (string vs array). The v3 column stores it verbatim, which is
-  lossless either way. A real response settles it.
-- `UNKNOWN`: whether any real cache file has already migrated to v3.
-  The user declined the migration check, so T7 must treat v3 as
-  possibly deployed when it widens the schema.
+- `cargo test --workspace`: passed (60 suites ok).
+- `MEASURED`: the import merge gates — newer-wins with the base row's
+  own stamp, empty-never-erases, a tie that keeps the stored row
+  exactly, blobs on fetched_at alone, request rows append, the sweep
+  state takes the newer updated_at, a rejected newer schema leaves
+  the live file untouched, and a v1 file migrates in the temp copy.
+- `MEASURED`: the backup round trips through an import into a fresh
+  cache; the checkpoint leaves a complete main file.
+- `MEASURED`: the related-resources mock test walks the credits,
+  reads each detail URL prefix from the volume's stored
+  `api_detail_url` fields, fetches one request per resource, and a
+  second run finds nothing left to fetch.
+- `UNKNOWN`: whether real credit items carry `api_detail_url` (the
+  mock fixtures assert the shape the code reads). A real response
+  settles it; until then the fetch reports misses honestly.
+- Open: the T6 release-probe acceptance (a probe drives all three
+  dialog operations).
 
 ## Environment notes
 

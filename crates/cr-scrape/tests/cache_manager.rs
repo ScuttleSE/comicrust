@@ -246,6 +246,43 @@ const CREDITS_ISSUES: &str = r#"{
   ]
 }"#;
 
+/// The volume detail for the related-fetch test. The credit items
+/// carry their own `api_detail_url`, which is where the fetch reads
+/// each resource's detail path from.
+const RELATED_VOLUME: &str = r#"{
+  "status_code":1,
+  "results":{
+    "id":806,"name":"Related Series","start_year":"2001",
+    "count_of_issues":1,"date_last_updated":"2026-09-20 12:00:00",
+    "publisher":{"id":7,"name":"Example Press"},
+    "character_credits":[{"id":9,"name":"Hero",
+      "api_detail_url":"https://comicvine.gamespot.com/api/character/4005-9/"}],
+    "person_credits":{"person":[{"id":12,"name":"Writer","role":"writer",
+      "api_detail_url":"https://comicvine.gamespot.com/api/person/4040-12/"}]}
+  }
+}"#;
+
+const RELATED_ISSUES: &str = r#"{
+  "status_code":1,"number_of_total_results":1,
+  "results":[{"id":92643,"issue_number":"1","volume":{"id":806}}]
+}"#;
+
+const CHARACTER_DETAIL: &str = r#"{
+  "status_code":1,
+  "results":{"id":9,"name":"Detail Hero","date_added":"2026-01-01 00:00:00",
+    "date_last_updated":"2026-09-20 08:00:00",
+    "image":{"small_url":"http://img/hero-small.jpg"},
+    "description":"The character detail text."}
+}"#;
+
+const PERSON_DETAIL: &str = r#"{
+  "status_code":1,
+  "results":{"id":12,"name":"Detail Writer","date_added":"2026-01-01 00:00:00",
+    "date_last_updated":"2026-09-20 09:00:00",
+    "image":{"small_url":"http://img/writer-small.jpg"},
+    "description":"The person detail text."}
+}"#;
+
 /// One issue detail carrying every credit marker. The list shapes
 /// vary on purpose: the wrapped object form, the plain array, and a
 /// lone reference object all occur.
@@ -286,6 +323,81 @@ static CREDITS_RESPONSES: &[Canned] = &[
         body: CREDITS_ISSUE,
     },
 ];
+
+#[test]
+fn the_related_fetch_walks_credits_and_resumes() {
+    use cr_scrape::cache::manage;
+    use cr_scrape::cache::ResourceKind;
+
+    static RESPONSES: &[Canned] = &[
+        Canned {
+            path: "/volume/4050-806/",
+            body: RELATED_VOLUME,
+        },
+        Canned {
+            path: "/issues/",
+            body: RELATED_ISSUES,
+        },
+        Canned {
+            path: "/character/4005-",
+            body: CHARACTER_DETAIL,
+        },
+        Canned {
+            path: "/person/4040-",
+            body: PERSON_DETAIL,
+        },
+    ];
+    let cache = SqliteCache::in_memory().expect("cache");
+    let base = serve(RESPONSES);
+    // A summary update stores the volume detail JSON and its credits.
+    manage::update_volume(
+        &client(&base),
+        &cache,
+        806,
+        UpdateMode::Summary,
+        &AtomicBool::new(false),
+        |_| {},
+    )
+    .expect("summary update");
+
+    let report = manage::fetch_related_resources(
+        &client(&base),
+        &cache,
+        806,
+        &AtomicBool::new(false),
+        |_| {},
+    )
+    .expect("related fetch");
+    assert_eq!(report.targets, 2);
+    assert_eq!(report.fetched, 2);
+    assert_eq!(report.no_url, 0);
+    assert_eq!(report.requests, 2);
+
+    let character = cache
+        .resource(ResourceKind::Character, 9)
+        .expect("read")
+        .expect("character detail");
+    assert_eq!(character.name.as_deref(), Some("Detail Hero"));
+    assert!(character.detail_json.is_some());
+    assert!(character.date_last_updated.is_some());
+    let person = cache
+        .resource(ResourceKind::Person, 12)
+        .expect("read")
+        .expect("person detail");
+    assert_eq!(person.name.as_deref(), Some("Detail Writer"));
+
+    // The resume: a second run finds nothing left to fetch.
+    let report = manage::fetch_related_resources(
+        &client(&base),
+        &cache,
+        806,
+        &AtomicBool::new(false),
+        |_| {},
+    )
+    .expect("resume");
+    assert_eq!(report.targets, 0);
+    assert_eq!(report.fetched, 0);
+}
 
 #[test]
 fn a_complete_update_stores_every_credit_marker() {

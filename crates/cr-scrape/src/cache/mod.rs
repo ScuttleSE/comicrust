@@ -209,6 +209,11 @@ pub trait CvCache: Send + Sync {
 
     /// One stored resource row, or `None`.
     fn resource(&self, kind: ResourceKind, id: i64) -> Result<Option<ResourceRow>, CacheError>;
+
+    /// Stores one fetched resource detail (ADR-070): the full
+    /// response text fills `detail_json`, and the row's fields merge
+    /// under the store rule (an empty incoming value never erases).
+    fn put_resource_detail(&self, row: &ResourceRow) -> Result<(), CacheError>;
 }
 
 /// The cache policies that the scraper configuration asks for

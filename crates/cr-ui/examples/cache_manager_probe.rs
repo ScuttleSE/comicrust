@@ -59,7 +59,14 @@ fn main() {
             .build();
         window.present();
         let starter: cr_ui::dialogs::cache_manager::UpdateStarter = Rc::new(|_, _, _| false);
-        let handle = cr_ui::dialogs::cache_manager::show(&window, Arc::clone(&cache), starter);
+        let related_starter: cr_ui::dialogs::cache_manager::RelatedStarter = Rc::new(|_, _| false);
+        let handle = cr_ui::dialogs::cache_manager::show(
+            &window,
+            Arc::clone(&cache),
+            starter,
+            related_starter,
+            false,
+        );
         handle.set_series_id(806);
         handle.search();
 

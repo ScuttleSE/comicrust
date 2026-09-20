@@ -5,13 +5,18 @@
 //! commits one detail at a time and keeps a durable queue, so a later run can
 //! resume after cancellation or failure.
 
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::atomic::{AtomicBool, Ordering};
 
 use serde_json::Value;
 
-use super::{CvCache, IssueSkeleton, SqliteCache, VolumeRow};
+use super::resources::ref_list;
+use super::resources::{OwnerKind, ResourceKind};
+use super::{
+    CacheError, CvCache, IssueSkeleton, ManagedVolume, ResourceRow, SqliteCache, VolumeRow,
+};
 use crate::cv::connection::{CvClient, CvError};
+use crate::cv::queries::parse_image_url;
 
 const PAGE_SIZE: i64 = 100;
 const VOLUME_FIELDS: &str = "aliases,api_detail_url,character_credits,concept_credits,count_of_issues,date_added,date_last_updated,deck,description,first_issue,id,image,last_issue,location_credits,name,object_credits,person_credits,publisher,site_detail_url,start_year,team_credits";
@@ -368,4 +373,187 @@ fn value_i32(value: Option<&Value>) -> Option<i32> {
 
 fn cache_error(error: super::CacheError) -> CvError {
     CvError::BadResponse(error.to_string())
+}
+
+// --- related resources (ADR-070) ---
+
+/// One step of the related-resources fetch.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RelatedProgress {
+    pub done: usize,
+    pub total: usize,
+    pub kind: &'static str,
+    pub id: i64,
+}
+
+/// What one related-resources fetch did.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RelatedReport {
+    pub volume_id: i64,
+    pub targets: usize,
+    pub fetched: usize,
+    /// Resources whose detail URL is unknown: the volume's stored
+    /// detail JSON names no detail URL for their kind.
+    pub no_url: usize,
+    pub requests: usize,
+    pub stopped: bool,
+}
+
+/// Fetches the full detail of every resource the volume's credits
+/// reference that has no detail yet (ADR-070). One request per
+/// resource, through that resource's own budget bucket. Resumable:
+/// the `detail_json` a run writes is the resume marker, so a later
+/// run recomputes only the rest.
+pub fn fetch_related_resources(
+    client: &CvClient,
+    cache: &SqliteCache,
+    volume_id: i64,
+    cancel: &AtomicBool,
+    mut on_progress: impl FnMut(RelatedProgress),
+) -> Result<RelatedReport, CvError> {
+    if client.is_offline() {
+        return Err(CvError::Offline);
+    }
+    let credits = cache
+        .credits_of(OwnerKind::Volume, volume_id)
+        .map_err(cache_error)?;
+    let prefixes = detail_prefixes(cache, volume_id).map_err(cache_error)?;
+
+    let mut targets: Vec<(ResourceKind, i64)> = Vec::new();
+    let mut seen: BTreeSet<(ResourceKind, i64)> = BTreeSet::new();
+    for credit in credits {
+        if credit.resource_id <= 0 || !seen.insert((credit.kind, credit.resource_id)) {
+            continue;
+        }
+        let no_detail = cache
+            .resource(credit.kind, credit.resource_id)
+            .map_err(cache_error)?
+            .and_then(|row| row.detail_json)
+            .is_none();
+        if no_detail {
+            targets.push((credit.kind, credit.resource_id));
+        }
+    }
+
+    let mut report = RelatedReport {
+        volume_id,
+        targets: targets.len(),
+        ..Default::default()
+    };
+    for (index, (kind, id)) in targets.into_iter().enumerate() {
+        if cancel.load(Ordering::Relaxed) {
+            report.stopped = true;
+            break;
+        }
+        on_progress(RelatedProgress {
+            done: index,
+            total: report.targets,
+            kind: kind.as_str(),
+            id,
+        });
+        let Some(prefix) = prefixes.get(kind.as_str()) else {
+            report.no_url += 1;
+            continue;
+        };
+        let query = client.base_query();
+        let dom = client.get_dom(&format!("{prefix}{id}/"), &query)?;
+        report.requests += 1;
+        let results = dom
+            .get("results")
+            .filter(|value| value.is_object())
+            .ok_or_else(|| {
+                CvError::BadResponse(format!("no details for {} {id}", kind.as_str()))
+            })?;
+        let returned_id = value_i64(results.get("id")).unwrap_or(id);
+        if returned_id != id {
+            return Err(CvError::BadResponse(format!(
+                "{} {id} returned id {returned_id}",
+                kind.as_str()
+            )));
+        }
+        let row = ResourceRow {
+            kind,
+            id,
+            name: results
+                .get("name")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            image_url: parse_image_url(results),
+            date_last_updated: results
+                .get("date_last_updated")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            date_added: results
+                .get("date_added")
+                .and_then(Value::as_str)
+                .map(str::to_string),
+            fetched_at: chrono::Utc::now().timestamp(),
+            detail_json: Some(
+                serde_json::to_string(results)
+                    .map_err(|error| CvError::BadResponse(format!("resource JSON: {error}")))?,
+            ),
+        };
+        cache.put_resource_detail(&row).map_err(cache_error)?;
+        report.fetched += 1;
+    }
+    Ok(report)
+}
+
+/// The detail URL prefix per resource kind, read from the volume's
+/// stored detail JSON: a credit item's `api_detail_url` names the
+/// resource's own detail path. A kind the JSON does not name stays
+/// out of the map, and its resources report a miss instead of a
+/// guessed URL.
+fn detail_prefixes(
+    cache: &SqliteCache,
+    volume_id: i64,
+) -> Result<HashMap<String, String>, CacheError> {
+    let record: Option<ManagedVolume> = cache.managed_volume(volume_id)?;
+    let Some(json) = record.and_then(|record| record.detail_json) else {
+        return Ok(HashMap::new());
+    };
+    let value: Value = serde_json::from_str(&json)
+        .map_err(|e| CacheError::Db(format!("volume detail JSON: {e}")))?;
+    let mut map = HashMap::new();
+    for (field, kind) in [
+        ("person_credits", ResourceKind::Person),
+        ("character_credits", ResourceKind::Character),
+        ("team_credits", ResourceKind::Team),
+        ("location_credits", ResourceKind::Location),
+        ("concept_credits", ResourceKind::Concept),
+        ("object_credits", ResourceKind::Object),
+    ] {
+        for item in ref_list(
+            value.get(field),
+            &[
+                "person",
+                "character",
+                "team",
+                "location",
+                "concept",
+                "object",
+            ],
+        ) {
+            let Some(url) = item.get("api_detail_url").and_then(Value::as_str) else {
+                continue;
+            };
+            if let Some(prefix) = detail_prefix(url) {
+                map.entry(kind.as_str().to_string()).or_insert(prefix);
+            }
+        }
+    }
+    Ok(map)
+}
+
+/// `https://comicvine.gamespot.com/api/character/4005-1258/` becomes
+/// `/character/4005-`. A URL that does not carry that shape yields
+/// nothing.
+fn detail_prefix(url: &str) -> Option<String> {
+    static PREFIX: std::sync::LazyLock<fancy_regex::Regex> = std::sync::LazyLock::new(|| {
+        fancy_regex::Regex::new(r"/api/([a-z_]+)/(\d+)-\d+/?\z").unwrap()
+    });
+    let caps = PREFIX.captures(url).ok().flatten()?;
+    let kind = caps.get(1)?.as_str();
+    let prefix = caps.get(2)?.as_str();
+    Some(format!("/{kind}/{prefix}-"))
 }

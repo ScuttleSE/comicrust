@@ -9,7 +9,7 @@ use serde_json::Value;
 
 /// The related-resource kinds of ADR-070. `as_str` is also the table
 /// name, so the store can build its SQL from a fixed whitelist.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum ResourceKind {
     Character,
     Person,
@@ -293,7 +293,7 @@ fn push_credits(
 /// The items of one reference field. The wrapped object form holds
 /// the list under one of the `inner` keys; a bare array holds the
 /// items directly; a lone object with a name or an id is one item.
-fn ref_list<'a>(field: Option<&'a Value>, inner: &[&str]) -> Vec<&'a Value> {
+pub(crate) fn ref_list<'a>(field: Option<&'a Value>, inner: &[&str]) -> Vec<&'a Value> {
     let Some(value) = field else {
         return Vec::new();
     };

@@ -1,19 +1,22 @@
-//! The Comic Vine cache manager (ADR-064).
+//! The Comic Vine cache manager (ADR-064, ADR-069, ADR-070).
 
 use std::rc::Rc;
 use std::sync::Arc;
 
-use cr_scrape::cache::manage::{UpdateMode, UpdateReport};
+use cr_scrape::cache::import::ImportReport;
+use cr_scrape::cache::manage::{RelatedReport, UpdateMode, UpdateReport};
 use cr_scrape::cache::{ManagedVolume, SqliteCache};
 use gtk4::glib;
 use gtk4::prelude::*;
 use gtk4::{
-    ApplicationWindow, Box as GtkBox, Button, Dialog, Entry, Grid, Label, Orientation,
-    ScrolledWindow, TextView,
+    ApplicationWindow, Box as GtkBox, Button, Dialog, Entry, FileChooserAction, FileChooserNative,
+    FileFilter, Grid, Label, Orientation, ScrolledWindow, TextView,
 };
 
 pub type UpdateDone = Box<dyn Fn(Result<UpdateReport, String>)>;
 pub type UpdateStarter = Rc<dyn Fn(i64, UpdateMode, UpdateDone) -> bool>;
+pub type RelatedDone = Box<dyn Fn(Result<RelatedReport, String>)>;
+pub type RelatedStarter = Rc<dyn Fn(i64, RelatedDone) -> bool>;
 
 /// A small test seam for the isolated release probe.
 #[derive(Clone)]
@@ -80,6 +83,7 @@ struct Widgets {
     save: Button,
     update: Button,
     complete: Button,
+    related: Button,
 }
 
 struct DisplayRecord {
@@ -110,6 +114,7 @@ impl Widgets {
         self.save.set_sensitive(!busy);
         self.update.set_sensitive(!busy);
         self.complete.set_sensitive(!busy);
+        self.related.set_sensitive(!busy);
     }
 
     fn show_record(&self, volume_id: i64, record: Option<DisplayRecord>) {
@@ -152,6 +157,8 @@ pub fn show(
     parent: &ApplicationWindow,
     cache: Arc<SqliteCache>,
     start_update: UpdateStarter,
+    start_related: RelatedStarter,
+    offline: bool,
 ) -> CacheManagerHandle {
     let dialog = Dialog::builder()
         .title("Manage Comic Vine Cache")
@@ -199,10 +206,21 @@ pub fn show(
     let save = Button::with_label("Save Metadata");
     let update = Button::with_label("Update from API");
     let complete = Button::with_label("Complete Update from API");
+    let related = Button::with_label("Fetch Related Details");
     action_row.append(&save);
     action_row.append(&update);
     action_row.append(&complete);
+    action_row.append(&related);
     root.append(&action_row);
+
+    // The backup and import of the whole cache file (ADR-069). They
+    // are local file operations and stay available in offline mode.
+    let file_row = GtkBox::new(Orientation::Horizontal, 8);
+    let backup = Button::with_label("Back up cache…");
+    let import = Button::with_label("Import cache from file…");
+    file_row.append(&backup);
+    file_row.append(&import);
+    root.append(&file_row);
 
     let summary_row = GtkBox::new(Orientation::Horizontal, 16);
     let issue_count = Label::new(Some("0 cached issues"));
@@ -252,7 +270,19 @@ pub fn show(
         save,
         update,
         complete,
+        related,
     };
+
+    if offline {
+        // The API buttons refuse in offline mode (ADR-071); the local
+        // file operations stay available.
+        widgets.update.set_sensitive(false);
+        widgets.complete.set_sensitive(false);
+        widgets.related.set_sensitive(false);
+        widgets
+            .status
+            .set_text("Offline mode is on: only the local file operations are available.");
+    }
 
     {
         let widgets = widgets.clone();
@@ -346,6 +376,9 @@ pub fn show(
         start_update,
         UpdateMode::Complete,
     );
+    connect_related(&widgets.related, widgets.clone(), start_related);
+    connect_backup(&backup, widgets.clone(), Arc::clone(&cache), parent.clone());
+    connect_import(&import, widgets.clone(), Arc::clone(&cache), parent.clone());
 
     dialog.connect_response(|dialog, _| dialog.close());
     dialog.present();
@@ -490,4 +523,181 @@ fn connect_update(
             widgets.set_busy(false);
         }
     });
+}
+
+fn connect_related(button: &Button, widgets: Widgets, start_related: RelatedStarter) {
+    button.connect_clicked(move |_| {
+        let volume_id = match widgets.volume_id() {
+            Ok(id) => id,
+            Err(error) => {
+                widgets.status.set_text(&error);
+                return;
+            }
+        };
+        widgets.set_busy(true);
+        widgets.status.set_text("Fetching related resource details...");
+        let done_widgets = widgets.clone();
+        let started = start_related(
+            volume_id,
+            Box::new(move |result| {
+                done_widgets.set_busy(false);
+                match result {
+                    Ok(report) => {
+                        let tail = if report.stopped {
+                            format!(
+                                "Stopped. {} of {} resource detail(s) remain; the next run resumes.",
+                                report.targets - report.fetched - report.no_url,
+                                report.targets
+                            )
+                        } else {
+                            format!(
+                                "Fetched {} resource detail(s) with {} request(s); {} had no known detail URL.",
+                                report.fetched, report.requests, report.no_url
+                            )
+                        };
+                        done_widgets.status.set_text(&tail);
+                    }
+                    Err(error) => done_widgets
+                        .status
+                        .set_text(&format!("The related fetch failed: {error}")),
+                }
+            }),
+        );
+        if !started {
+            widgets.set_busy(false);
+        }
+    });
+}
+
+fn connect_backup(
+    button: &Button,
+    widgets: Widgets,
+    cache: Arc<SqliteCache>,
+    parent: ApplicationWindow,
+) {
+    button.connect_clicked(move |_| {
+        let chooser = FileChooserNative::builder()
+            .title("Back Up Comic Vine Cache")
+            .action(FileChooserAction::Save)
+            .transient_for(&parent)
+            .modal(true)
+            .build();
+        let filter = FileFilter::new();
+        filter.set_name(Some("SQLite cache"));
+        filter.add_pattern("*.sqlite");
+        chooser.add_filter(&filter);
+        let widgets = widgets.clone();
+        let cache = Arc::clone(&cache);
+        chooser.connect_response(move |chooser, response| {
+            if response != gtk4::ResponseType::Accept {
+                return;
+            }
+            let Some(path) = chooser.file().and_then(|file| file.path()) else {
+                return;
+            };
+            let message_path = path.clone();
+            let cache = Arc::clone(&cache);
+            run_file_operation(
+                &widgets,
+                move || cache.backup(&path).map_err(|error| error.to_string()),
+                move |result| match result {
+                    Ok(()) => format!("The cache backed up to {}.", message_path.display()),
+                    Err(error) => format!("The backup failed: {error}"),
+                },
+            );
+        });
+        chooser.show();
+    });
+}
+
+fn connect_import(
+    button: &Button,
+    widgets: Widgets,
+    cache: Arc<SqliteCache>,
+    parent: ApplicationWindow,
+) {
+    button.connect_clicked(move |_| {
+        let chooser = FileChooserNative::builder()
+            .title("Import Comic Vine Cache")
+            .action(FileChooserAction::Open)
+            .transient_for(&parent)
+            .modal(true)
+            .build();
+        let filter = FileFilter::new();
+        filter.set_name(Some("SQLite cache"));
+        filter.add_pattern("*.sqlite");
+        chooser.add_filter(&filter);
+        let widgets = widgets.clone();
+        let cache = Arc::clone(&cache);
+        chooser.connect_response(move |chooser, response| {
+            if response != gtk4::ResponseType::Accept {
+                return;
+            }
+            let Some(path) = chooser.file().and_then(|file| file.path()) else {
+                return;
+            };
+            let cache = Arc::clone(&cache);
+            run_file_operation(
+                &widgets,
+                move || cache.import(&path).map_err(|error| error.to_string()),
+                |result| match result {
+                    Ok(report) => format!("Imported. {}", format_import_report(&report)),
+                    Err(error) => format!("The import failed: {error}"),
+                },
+            );
+        });
+        chooser.show();
+    });
+}
+
+/// Runs one local cache file operation on a worker and reports on the
+/// main loop (the dialog's own worker pattern).
+fn run_file_operation<T, F, M>(widgets: &Widgets, work: F, message: M)
+where
+    T: Send + 'static,
+    F: FnOnce() -> Result<T, String> + Send + 'static,
+    M: FnOnce(Result<T, String>) -> String + 'static,
+{
+    widgets.set_busy(true);
+    widgets.status.set_text("Working on the cache file...");
+    let (tx, rx) = std::sync::mpsc::channel::<Result<T, String>>();
+    std::thread::spawn(move || {
+        let _ = tx.send(work());
+    });
+    let widgets = widgets.clone();
+    let mut message = Some(message);
+    glib::timeout_add_local(std::time::Duration::from_millis(50), move || {
+        match rx.try_recv() {
+            Ok(result) => {
+                widgets.set_busy(false);
+                if let Some(message) = message.take() {
+                    widgets.status.set_text(&message(result));
+                }
+                glib::ControlFlow::Break
+            }
+            Err(std::sync::mpsc::TryRecvError::Empty) => glib::ControlFlow::Continue,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                widgets.set_busy(false);
+                widgets.status.set_text("The cache worker stopped.");
+                glib::ControlFlow::Break
+            }
+        }
+    });
+}
+
+fn format_import_report(report: &ImportReport) -> String {
+    let mut parts = Vec::new();
+    for table in &report.tables {
+        if table.added + table.updated + table.skipped + table.rejected > 0 {
+            parts.push(format!(
+                "{}: {} added, {} updated, {} skipped, {} rejected",
+                table.name, table.added, table.updated, table.skipped, table.rejected
+            ));
+        }
+    }
+    if parts.is_empty() {
+        "the file held nothing to import.".to_string()
+    } else {
+        parts.join("; ")
+    }
 }

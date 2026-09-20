@@ -2,7 +2,7 @@
 
 ## Status
 
-In progress. T1 through T4 are implemented and verified. T5 through
+In progress. T1 through T6 are implemented and verified. T7 through
 T9 remain.
 
 T4 implementation notes:
@@ -13,6 +13,17 @@ T4 implementation notes:
   returns `Result<WarmReport, String>`; the sweep and the
   cache-manager updates refuse inside their own functions and surface
   `CvError::Offline` through their existing error paths.
+
+T6 implementation notes:
+- The related-resources fetch needs no new schema: the resume marker
+  is the `detail_json` a run writes, so a later run recomputes only
+  the rest. The detail URL prefixes come from the volume's stored
+  detail JSON credit items (`api_detail_url`); a kind the JSON does
+  not name reports a miss instead of a guessed URL. Real-data
+  validation is pending (the user declined the real-cache tests).
+- The T6 release-probe acceptance (a probe drives all three
+  operations) is still open; the engine paths carry mock-server
+  tests.
 
 T3 implementation notes:
 - The scrape's issue list short-circuits on a `Fresh` verdict only.
@@ -160,7 +171,7 @@ fields, and Python scripts build and import cache files.
       newer-wins, empty-never-erases, the blob rule, a tie that keeps
       the stored row, a rejected newer schema, and a v1 file that
       migrates in the temp copy.
-- [ ] **T6 — Cache-manager dialog**: "Back up cache…", "Import cache
+- [x] **T6 — Cache-manager dialog**: "Back up cache…", "Import cache
       from file…", and the per-volume related-resources fetch
       (budget-bound, cancellable, resumable through the pending-queue
       pattern). Offline mode disables the API buttons. Acceptance: a
