@@ -1326,7 +1326,6 @@ def run_all(
                 report.reached_deadline = True
                 break
             capped = []
-            progressed = False
             for phase, resource, budget_key, store, runner in units:
                 if past_deadline():
                     report.reached_deadline = True
@@ -1335,8 +1334,6 @@ def run_all(
                     on_phase(phase, resource)
                 r = runner(resource)
                 _accumulate(store, resource, r)
-                if r.credited > 0 or r.skipped_missing > 0:
-                    progressed = True
                 if r.stopped_capped and r.remaining > 0:
                     # Capped with work left; keep for the next cycle.
                     capped.append((phase, resource, budget_key,
@@ -1344,19 +1341,15 @@ def run_all(
             units = capped
             if report.reached_deadline or not units:
                 break
-            if progressed:
-                # At least one unit advanced this cycle; loop again
-                # without sleeping — another unit's window may be free.
-                continue
-            # Every remaining unit is capped. Sleep until the earliest
-            # window frees, then resume.
+            # Every unit still queued is capped (a unit that drained or
+            # caught up is no longer here). Re-running one now would only
+            # spend a request to rediscover its cap, so sleep until the
+            # earliest queued resource's window frees before the next
+            # cycle.
             frees = [t for t in
                      (timer.next_free_at(u[2]) for u in units)
                      if t is not None]
-            if not frees:
-                # No cap is recorded (nothing left to do); stop.
-                break
-            wake = min(frees)
+            wake = min(frees) if frees else _wall() + RATE_WINDOW_SECONDS
             now = _wall()
             wait = wake - now
             if wait <= 0:

@@ -649,6 +649,65 @@ class RunAllSchedulerTest(unittest.TestCase):
         self.assertEqual(rep.backfill["issues"].credited, 5)
         self.assertFalse(rep.reached_deadline)
 
+    def test_a_capped_unit_is_not_rerun_before_its_window_frees(self):
+        # A cycle where one resource drains while another stays capped
+        # must sleep before re-running the capped unit, not spin on it
+        # and burn requests rediscovering the cap.
+        import os
+        from pathlib import Path
+        path = self._tmpdb()
+        R = update.RichReport
+        # All forwards done. person backfill is done on the first try;
+        # character backfill is capped once, then done. So cycle 1 makes
+        # progress (person) yet leaves character capped.
+        script = {
+            "story_arc-f": [R(total=0)], "location-f": [R(total=0)],
+            "team-f": [R(total=0)], "person-f": [R(total=0)],
+            "volume-f": [R(total=0)], "character-f": [R(total=0)],
+            "issues-b": [R(total=0)],
+            "story_arc-b": [R(total=0)], "location-b": [R(total=0)],
+            "team-b": [R(total=0)],
+            "person-b": [R(total=4, fetched=4, credited=4)],
+            "volume-b": [R(total=0)],
+            "character-b": [R(total=6, fetched=2, credited=2,
+                              stopped_capped=True),
+                            R(total=4, fetched=4, credited=4)],
+        }
+        idx = {k: 0 for k in script}
+        order = []
+
+        def _serve(key):
+            i = idx[key]
+            idx[key] = min(i + 1, len(script[key]) - 1)
+            order.append(key)
+            return script[key][i]
+
+        orig = (update.rich_resource_forward, update.rich_issue_backfill,
+                update.rich_resource_backfill, update.CvClient.next_free_at)
+        clock = _FakeClock()
+        update.rich_resource_forward = (
+            lambda live_path, resource, **k: _serve(f"{resource}-f"))
+        update.rich_issue_backfill = (
+            lambda live_path, **k: _serve("issues-b"))
+        update.rich_resource_backfill = (
+            lambda live_path, resource, **k: _serve(f"{resource}-b"))
+        update.CvClient.next_free_at = (
+            lambda self, res: clock.now() + 50 if res == "character" else None)
+        try:
+            update.run_all(
+                Path(path), api_key="k", make_backup=False,
+                _sleep=clock.sleep, _wall=clock.now,
+            )
+        finally:
+            (update.rich_resource_forward, update.rich_issue_backfill,
+             update.rich_resource_backfill, update.CvClient.next_free_at) = orig
+            os.remove(path)
+        # It slept once (the character window) before re-running it.
+        self.assertEqual(clock.slept, [50.0])
+        # character backfill ran exactly twice: capped, then done after
+        # the sleep — never spun mid-cycle.
+        self.assertEqual(sum(1 for k in order if k == "character-b"), 2)
+
 
 if __name__ == "__main__":
     unittest.main()
