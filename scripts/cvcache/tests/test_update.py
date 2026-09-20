@@ -351,6 +351,20 @@ class RichDetailTest(unittest.TestCase):
         )
         self.assertEqual(update._issue_api_path(None, 99), "issue/4000-99")
 
+    def test_resource_detail_path(self):
+        self.assertEqual(
+            update._detail_path(update._RICH_RESOURCES["character"], 1443),
+            "character/4005-1443",
+        )
+        self.assertEqual(
+            update._detail_path(update._RICH_RESOURCES["person"], 40450),
+            "person/4040-40450",
+        )
+        self.assertEqual(
+            update._detail_path(update._RICH_RESOURCES["volume"], 85759),
+            "volume/4050-85759",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -146,38 +146,53 @@ def _cmd_usage(args) -> int:
 
 
 def _cmd_rich(args) -> int:
-    if args.mode == "issues-backfill":
-        def progress(report, issue_id):
-            print(
-                f"  issue {issue_id:>8}  fetched={report.fetched} "
-                f"credited={report.credited} missing={report.skipped_missing}",
-                flush=True,
-            )
-
-        def on_wait(resource, seconds):
-            print(f"  {resource}: hourly cap reached, waiting {int(seconds)}s",
-                  flush=True)
-
-        report = update_mod.rich_issue_backfill(
-            Path(args.into),
-            api_key=args.api_key,
-            max_pages=args.max_pages,
-            delay_seconds=args.delay,
-            max_per_hour=args.max_per_hour,
-            on_cap=args.on_cap,
-            make_backup=not args.no_backup,
-            on_progress=None if args.quiet else progress,
-            on_wait=None if args.quiet else on_wait,
-        )
-        state = "stopped early (resumable)" if report.stopped_capped else "done"
+    def progress(report, rid):
         print(
-            f"issues-backfill: fetched={report.fetched} "
-            f"credited={report.credited} missing={report.skipped_missing} "
-            f"— {state}"
+            f"  {args.mode} {rid:>9}  fetched={report.fetched} "
+            f"stored={report.credited} missing={report.skipped_missing}",
+            flush=True,
         )
-        return 0
-    print(f"unknown rich mode {args.mode!r}")
-    return 2
+
+    def on_wait(resource, seconds):
+        print(f"  {resource}: hourly cap reached, waiting {int(seconds)}s",
+              flush=True)
+
+    prog = None if args.quiet else progress
+    wait = None if args.quiet else on_wait
+    common = dict(
+        delay_seconds=args.delay,
+        max_per_hour=args.max_per_hour,
+        on_cap=args.on_cap,
+        make_backup=not args.no_backup,
+        on_progress=prog,
+        on_wait=wait,
+    )
+    if args.mode == "issues-backfill":
+        report = update_mod.rich_issue_backfill(
+            Path(args.into), api_key=args.api_key,
+            max_pages=args.max_pages, **common,
+        )
+    elif args.mode.endswith("-backfill"):
+        resource = args.mode[: -len("-backfill")]
+        report = update_mod.rich_resource_backfill(
+            Path(args.into), api_key=args.api_key, resource=resource,
+            max_pages=args.max_pages, **common,
+        )
+    elif args.mode.endswith("-forward"):
+        resource = args.mode[: -len("-forward")]
+        report = update_mod.rich_resource_forward(
+            Path(args.into), api_key=args.api_key, resource=resource,
+            since=args.since, max_pages=args.max_pages, **common,
+        )
+    else:
+        print(f"unknown rich mode {args.mode!r}")
+        return 2
+    state = "stopped early (resumable)" if report.stopped_capped else "done"
+    print(
+        f"{args.mode}: fetched={report.fetched} stored={report.credited} "
+        f"missing={report.skipped_missing} — {state}"
+    )
+    return 0
 
 
 def main(argv=None) -> int:
@@ -277,9 +292,17 @@ def main(argv=None) -> int:
     p_rich.add_argument("--api-key", required=True)
     p_rich.add_argument(
         "--mode",
-        choices=("issues-backfill",),
+        choices=(
+            "issues-backfill",
+            "person-backfill", "character-backfill", "volume-backfill",
+            "person-forward", "character-forward", "volume-forward",
+        ),
         default="issues-backfill",
         help="which rich pass to run (default issues-backfill)",
+    )
+    p_rich.add_argument(
+        "--since",
+        help="forward modes only: override the rich_forward watermark",
     )
     p_rich.add_argument(
         "--max-pages",

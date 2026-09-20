@@ -143,6 +143,31 @@ ledger with every other run. A deleted or unknown id is skipped, not
 fatal. This is a slow background job — one request per issue — meant for
 a cron slice under the rate limit.
 
+### rich — enrich person, character, and volume detail
+
+```sh
+# initial backfill: fill detail_json for rows that have none, newest first
+python3 -m scripts.cvcache rich --into cvcache.sqlite --api-key YOUR_KEY \
+    --mode character-backfill --max-pages 190 --on-cap stop
+
+# forward: re-fetch only rows changed since the rich_forward watermark
+python3 -m scripts.cvcache rich --into cvcache.sqlite --api-key YOUR_KEY \
+    --mode character-forward
+```
+
+`<resource>-backfill` (person, character, volume) fills the `detail_json`
+column for rows that have none, walking ids newest-first, resumable
+through the per-resource `rich_backfill` cursor. `<resource>-forward`
+uses the list endpoint's `date_last_updated` filter to find rows changed
+since the `rich_forward` watermark and re-fetches only the rows the cache
+already holds, advancing the watermark when caught up. Both store the
+full CV detail JSON (real_name, powers, origin, bio, birth/death, etc.)
+as-is. Each detail fetch uses the singular path budget (`/character`,
+`/person`, `/volume`), separate from the list budgets, shared through
+`request_log`. A deleted id is skipped. The initial backfill is large
+(tens to hundreds of thousands of rows) and is meant to run as a cron
+slice over many sessions; forward is cheap and keeps the data current.
+
 ## Publisher lists (optional, for a future probe workflow)
 
 The batch import does not need these; it takes the whole database. The

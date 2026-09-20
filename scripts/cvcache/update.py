@@ -823,3 +823,198 @@ def rich_issue_backfill(
     finally:
         live.close()
     return report
+
+
+# Rich resource config: local table -> (list endpoint for forward,
+# detail path prefix). CV detail paths use a resource-type prefix
+# (person 4040, character 4005, volume 4050); the stored resource rows
+# have no api_detail_url, so we build the path from the id prefix.
+_RICH_RESOURCES = {
+    "person": {"list": "people", "prefix": "4040", "path": "person"},
+    "character": {"list": "characters", "prefix": "4005", "path": "character"},
+    "volume": {"list": "volumes", "prefix": "4050", "path": "volume"},
+}
+
+
+def _detail_path(cfg: dict, rid: int) -> str:
+    return f"{cfg['path']}/{cfg['prefix']}-{rid}"
+
+
+def rich_resource_backfill(
+    live_path: Path,
+    api_key: str,
+    resource: str,
+    max_pages: int | None = None,
+    delay_seconds: float = 1.0,
+    max_per_hour: int = MAX_PER_HOUR,
+    on_cap: str = "wait",
+    make_backup: bool = True,
+    on_progress=None,
+    on_wait=None,
+) -> RichReport:
+    """Fills `detail_json` for resource rows that have none yet (person,
+    character, volume). Walks ids downward, resumable through the
+    `<resource>` `rich_backfill` cursor. One detail request per row,
+    keyed to the singular detail path budget, shared through
+    request_log."""
+    cfg = _RICH_RESOURCES[resource]
+    report = RichReport()
+    live = commands.open_v4(live_path)
+    if make_backup:
+        commands.backup(live_path)
+    client = CvClient(
+        api_key=api_key,
+        delay_seconds=delay_seconds,
+        max_per_hour=max_per_hour,
+        on_cap=on_cap,
+        on_wait=on_wait,
+        ledger=live,
+    )
+    id_col = "volume_id" if resource == "volume" else "id"
+    try:
+        _, cursor = _read_watermark(live, resource, "rich_backfill")
+        floor = cursor if cursor else 1 << 62
+        while True:
+            if max_pages is not None and report.fetched >= max_pages:
+                report.stopped_capped = True
+                break
+            row = live.execute(
+                f"SELECT {id_col} FROM {resource} "
+                f"WHERE {id_col} < ? AND detail_json IS NULL "
+                f"ORDER BY {id_col} DESC LIMIT 1",
+                (floor,),
+            ).fetchone()
+            if row is None:
+                break
+            rid = int(row[0])
+            try:
+                detail = client.get_detail(_detail_path(cfg, rid))
+            except RateLimitReached:
+                report.stopped_capped = True
+                break
+            report.fetched += 1
+            floor = rid
+            if detail is None:
+                report.skipped_missing += 1
+            else:
+                live.execute(
+                    f"UPDATE {resource} SET detail_json = ?, "
+                    "date_last_updated = COALESCE(?, date_last_updated), "
+                    f"fetched_at = ? WHERE {id_col} = ?",
+                    (json.dumps(detail, separators=(",", ":")),
+                     detail.get("date_last_updated"), int(time.time()), rid),
+                )
+                report.credited += 1
+            _write_watermark(live, resource, "", {"offset": floor},
+                             "rich_backfill")
+            live.commit()
+            if on_progress is not None:
+                on_progress(report, rid)
+    finally:
+        live.close()
+    return report
+
+
+def rich_resource_forward(
+    live_path: Path,
+    api_key: str,
+    resource: str,
+    since: str | None = None,
+    max_pages: int | None = None,
+    delay_seconds: float = 1.0,
+    max_per_hour: int = MAX_PER_HOUR,
+    on_cap: str = "wait",
+    make_backup: bool = True,
+    on_progress=None,
+    on_wait=None,
+) -> RichReport:
+    """Re-fetches `detail_json` for resource rows changed since the
+    `rich_forward` watermark, using the list endpoint's
+    `date_last_updated` filter to find them. Advances the watermark to
+    today when caught up. Keeps enriched data current after the initial
+    backfill."""
+    cfg = _RICH_RESOURCES[resource]
+    report = RichReport()
+    live = commands.open_v4(live_path)
+    if make_backup:
+        commands.backup(live_path)
+    client = CvClient(
+        api_key=api_key,
+        delay_seconds=delay_seconds,
+        max_per_hour=max_per_hour,
+        on_cap=on_cap,
+        on_wait=on_wait,
+        ledger=live,
+    )
+    id_col = "volume_id" if resource == "volume" else "id"
+    now = _today()
+    try:
+        watermark, offset = _read_watermark(live, resource, "rich_forward")
+        if since is not None:
+            watermark = since
+            offset = 0
+        while True:
+            if max_pages is not None and report.fetched >= max_pages:
+                report.stopped_capped = True
+                _write_watermark(live, resource, watermark, {"offset": offset},
+                                 "rich_forward")
+                live.commit()
+                break
+            try:
+                page = client.get(cfg["list"], {
+                    "field_list": "id",
+                    "filter": f"date_last_updated:{watermark}|{now}",
+                    "sort": "date_last_updated:asc",
+                    "limit": PAGE_SIZE,
+                    "offset": offset,
+                })
+            except RateLimitReached:
+                report.stopped_capped = True
+                _write_watermark(live, resource, watermark, {"offset": offset},
+                                 "rich_forward")
+                live.commit()
+                break
+            results = page.get("results") or []
+            for item in results:
+                rid = _to_int(item.get("id"))
+                if rid is None:
+                    continue
+                have = live.execute(
+                    f"SELECT 1 FROM {resource} WHERE {id_col} = ?", (rid,)
+                ).fetchone()
+                if have is None:
+                    continue
+                try:
+                    detail = client.get_detail(_detail_path(cfg, rid))
+                except RateLimitReached:
+                    report.stopped_capped = True
+                    _write_watermark(live, resource, watermark,
+                                     {"offset": offset}, "rich_forward")
+                    live.commit()
+                    return report
+                report.fetched += 1
+                if detail is None:
+                    report.skipped_missing += 1
+                    continue
+                live.execute(
+                    f"UPDATE {resource} SET detail_json = ?, "
+                    "date_last_updated = COALESCE(?, date_last_updated), "
+                    f"fetched_at = ? WHERE {id_col} = ?",
+                    (json.dumps(detail, separators=(",", ":")),
+                     detail.get("date_last_updated"), int(time.time()), rid),
+                )
+                report.credited += 1
+                if on_progress is not None:
+                    on_progress(report, rid)
+            offset += len(results)
+            total = _to_int(page.get("number_of_total_results")) or 0
+            if len(results) < PAGE_SIZE or offset >= total:
+                _write_watermark(live, resource, now, None, "rich_forward")
+                live.commit()
+                break
+            _write_watermark(live, resource, watermark, {"offset": offset},
+                             "rich_forward")
+            live.commit()
+    finally:
+        live.close()
+    return report
