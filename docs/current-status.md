@@ -69,8 +69,15 @@ suites, 37 script tests, `cvcache_schema_pin` both directions at v8):
    through a `hash_backfill` cursor. Pillow added to
    `scripts/requirements.txt`.
 
-The user will start the long backfills now that the full set exists.
-The passes are resumable, rate-aware, and cron-friendly.
+The user is running the long backfills. The `rich` command has a
+combined **`all` mode** with an **`--until` deadline** built for one
+daily cron job: forward for every resource first (keeps current), then
+backfill history until the deadline, then stop cleanly (resumable). A
+budget wait that would pass the deadline stops instead of sleeping.
+`hashes` is a separate job (CDN, no API budget). Each pass prints a
+`remaining=<n>` count so the backlog scale is visible. The cron setup
+is documented in `scripts/cvcache/README.md` "Running as a daily cron
+job".
 
 ## Previous user finding
 `PASS` (user, 2026-09-20): a batch of Phase 19-21 user tests passed —
@@ -102,7 +109,11 @@ rate-aware — see `scripts/cvcache/README.md`):**
 - `rich --mode issues-backfill` — issue credits + gallery images.
 - `rich --mode <resource>-backfill|-forward` — person / character /
   volume / team / location / story_arc `detail_json`.
-- `hashes` — ComicTagger cover hashes (Pillow; no API budget cost).
+- `rich --mode all --until "HH:MM"` — the combined daily job: forward
+  every resource, then backfill until the deadline. `--for N` is the
+  minutes-from-now alternative. Each pass prints `remaining=<n>`.
+- `hashes` — ComicTagger cover hashes (Pillow; no API budget cost;
+  run as a separate cron job).
 - `usage` — the shared budget report.
 
 **Open, honest, not yet done:**
@@ -230,9 +241,10 @@ amendments) passed on 2026-09-20.
 - `CR_FORMAT_TESTS=1 cargo test -p cr-scrape --test
   cvcache_schema_pin`: passed (app and scripts agree on the v8 DDL,
   both directions, including `sync_state (endpoint, mode)`).
-- `python3 -m unittest discover -s scripts/cvcache/tests`: 37 ok
+- `python3 -m unittest discover -s scripts/cvcache/tests`: 43 ok
   (includes the rich decomposition, the resource detail paths, the
-  DB-backed shared budget, and the ComicTagger cover-hash golden test
+  DB-backed shared budget, the `--until` deadline stop, the
+  `remaining`/`total` count, and the ComicTagger cover-hash golden test
   at Hamming 0).
 - `MEASURED` (live CV, 2026-09-20): stock Pillow reproduces
   `localcv.db` `ct_ahash`/`ct_phash` at Hamming 0, from real CDN

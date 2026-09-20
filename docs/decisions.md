@@ -1227,3 +1227,19 @@ response carries them, and the merge rule protects stored values.
      status page). Front cover only by default (the lowest `image_id`
      per issue); `--all-images` hashes the gallery. Pillow is added to
      `scripts/requirements.txt`, guarded like `rich`.
+  5. **The combined daily job (`rich --mode all`) and the `--until`
+     deadline.** For one cron entry: `all` runs the forward pass for
+     every resource first (keeps current, `on_cap=wait` so it finishes),
+     then backfills issues and every resource until a wall-clock
+     deadline (`--until "HH:MM"`, rolling to tomorrow if past, or
+     `--for N` minutes). The deadline is threaded into every pass and
+     checked per item, and into `CvClient` so a budget wait that would
+     pass the deadline stops instead of sleeping past it; backfill uses
+     `on_cap=stop` so the deadline is authoritative. There is no
+     API-counter reset and none is needed — the 200/hour is CV's own
+     rolling-hour count that `request_log` mirrors, and requests age out
+     3600s after they are made, so stopping the backfill an hour before
+     the next forward run leaves the budget nearly full by then. Each
+     pass reports a `remaining=<n>` count (rows still needing
+     enrichment). `hashes` stays a separate job. The cron setup is in
+     `scripts/cvcache/README.md`.

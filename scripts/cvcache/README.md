@@ -215,6 +215,29 @@ python3 -m scripts.cvcache rich --into cvcache.sqlite --api-key YOUR_KEY \
 - The backlog drains across many days; each run continues from the
   per-resource cursors. When every resource is caught up, `all` finishes
   quickly and only the forward pass does real work.
+- Progress is visible: each pass prints `remaining=<n>` per item and a
+  `remaining=<n> (of <total>)` summary, where the total is the rows still
+  needing enrichment (a `detail_json IS NULL` / credit-less count). So a
+  first run of `character-backfill` shows `remaining` near 167k and
+  counts down over the days.
+
+Example crontab (daily forward+backfill at 05:00, hashes at 06:00):
+
+```cron
+0 5 * * *  cd /path/to/comicrust && python3 -m scripts.cvcache rich \
+    --into ~/.local/share/comicrust/plugins/comic-vine-scraper/cvcache.sqlite \
+    --api-key YOUR_KEY --mode all --until "04:00" --quiet >> ~/cvcache.log 2>&1
+0 6 * * *  cd /path/to/comicrust && python3 -m scripts.cvcache hashes \
+    --into ~/.local/share/comicrust/plugins/comic-vine-scraper/cvcache.sqlite \
+    --delay 0.3 --quiet >> ~/cvhash.log 2>&1
+```
+
+Check the shared budget any time (the app and every run write the same
+`request_log` ledger):
+
+```sh
+python3 -m scripts.cvcache usage --into cvcache.sqlite
+```
 
 Run **`hashes` as a separate job** — it uses the image CDN, not the API,
 so it does not share or spend the API budget:
