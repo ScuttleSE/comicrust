@@ -48,7 +48,9 @@ blobs, and almost no per-row `date_last_updated`):
 - Issues → `issue_skeleton` only (never `issue_detail`).
 - Credit JSON → `credit` rows plus resource-table rows (`character`,
   `person`, `team`, `location`, `story_arc`).
-- `associated_images` → `issue_image` rows (ADR-073, schema v5).
+- `associated_images` → `issue_image` rows (ADR-073, schema v5); the
+  ComicTagger cover hashes from `comic_covers` attach as `ahash`/`phash`
+  (ADR-074, schema v6).
 - `cv_publisher`, `cv_person` → resource rows.
 - Stamps: `fetched_at` = import time, `date_last_updated` empty, except
   issues in `cv_issue_last_seen` which take that stamp. A later real

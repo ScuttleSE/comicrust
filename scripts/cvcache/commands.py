@@ -38,6 +38,9 @@ def _migrate_to_v4(conn: sqlite3.Connection) -> None:
     the v3 typed-column backfill). v5 adds the `issue_image` table,
     which `create_schema` creates directly."""
     version = schema.user_version(conn)
+    # Add columns to pre-existing tables FIRST, so the index DDL in
+    # create_schema (e.g. on issue_image.ahash) finds its columns.
+    _add_missing_columns(conn, version)
     schema.create_schema(conn)
     _add_missing_columns(conn, version)
     conn.execute(f"PRAGMA user_version = {schema.SCHEMA_VERSION}")
@@ -81,11 +84,20 @@ def _add_missing_columns(conn: sqlite3.Connection, from_version: int) -> None:
             ("date_added", "TEXT"),
             ("date_last_updated", "TEXT"),
         ],
+        "issue_image": [
+            ("ahash", "TEXT"),
+            ("dhash", "TEXT"),
+            ("phash", "TEXT"),
+        ],
     }
     for table, columns in wanted.items():
         existing = {
             r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()
         }
+        if not existing:
+            # The table does not exist yet (a fresh file); create_schema
+            # builds it with every column.
+            continue
         for column, decl in columns:
             if column not in existing:
                 conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")

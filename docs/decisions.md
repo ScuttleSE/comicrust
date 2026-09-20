@@ -996,3 +996,65 @@ response carries them, and the merge rule protects stored values.
   image. No new API request: the scrape already fetches the issue
   detail, and the import already reads the localcv row. A prune command
   is still not in scope.
+
+---
+
+## ADR-074: Schema v6 — ComicTagger cover hashes, one hash algorithm
+
+- **Status:** accepted (2026-09-20).
+- **Context:** The reference `localcv.db` carries perceptual cover
+  hashes in `comic_covers` (`ct_ahash`, `ct_phash`) — a great "is this
+  my book?" signal keyed per cover image URL. MEASURED: the Comic Vine
+  API supplies NO hashes (a live `/issue` call returns only image
+  URLs); the hashes are computed locally. MEASURED: the `ct_` hashes
+  are produced by ComicTagger's `ImageHasher` — reproduced to Hamming
+  distance 0 on two real covers for both `average_hash` and
+  `perception_hash`. The app's own `matching/imagehash.rs` was a
+  faithful ComicRack port (a DIFFERENT average-hash: bicubic,
+  0.3/0.59/0.11 luma, column-major, LSB-first), which does NOT match
+  ComicTagger (18-28 bits off). The ComicRack hash was never stored —
+  it was computed on the fly for the automatcher and discarded.
+- **Decision:**
+  1. **One hash algorithm: ComicTagger.** Port ComicTagger's
+     `average_hash`, `difference_hash`, and `perception_hash` into
+     `cr_image::comictagger_hash`, and replace the automatcher's hash
+     (`matching/imagehash.rs` now delegates to it). Both sides of every
+     cover comparison hash the same way, so the similarity score stays
+     meaningful. Because the ComicRack hash was never persisted, no
+     stored data or file format tied to it; the switch loses nothing on
+     disk.
+  2. **Bit-exact resample, documented decoder tolerance.** The port
+     reproduces Pillow's Lanczos resample and `L` grayscale exactly
+     (fixed-point, `PRECISION_BITS = 22`, the `Resample.c` order). The
+     one residual: the Rust JPEG decoder can differ from libjpeg by a
+     pixel, shifting at most about one hash bit (ahash) or two (phash,
+     32x32 grid). MEASURED and far inside the match threshold;
+     bundling libjpeg for the last bit was rejected (heavy dependency,
+     zero matching benefit).
+  3. **Schema v6: hashes on `issue_image`.** Add `ahash`, `dhash`,
+     `phash` as TEXT (the values are unsigned 64-bit and can exceed a
+     signed-64-bit column; TEXT is lossless and matches the localcv
+     format), plus indexes on `ahash` and `phash` for reverse lookup.
+     `dhash` is app-computed only (localcv carries `ahash`/`phash`).
+     The v5->v6 migration is a plain ALTER + CREATE INDEX, no backfill.
+  4. **Two writers.** The localcv import joins `comic_covers` to
+     `issue_image` by the cover URL and fills `ahash`/`phash`. The live
+     scrape, when it hashes a cover it fetched, writes the same
+     columns. Merge is id-keyed, `fetched_at` newer-wins,
+     empty-never-erases, in both the Rust and Python engines; the
+     schema pin adds `issue_image`.
+  5. **Configurable thresholds.** `MATCH_THRESHOLD` (default 0.87) and
+     `MATCH_SIMILARITY_MARGIN` (default 0.10) become advanced-settings
+     keys (clamped 0.0-1.0), read by the automatcher instead of the old
+     constants, so the switch can be tuned without a rebuild. A port
+     addition, not a ComicRack key.
+- **Parity note.** The automatcher's auto-match behavior can shift with
+  the new hash algorithm. Whether it still matches correctly is decided
+  by a user test, not by a passing build. The golden vectors
+  (issue 7 -> ahash 51290160142786527, phash 10756634926609361816;
+  issue 8 -> ahash 17730933771727232, phash 14921684108427048273) lock
+  the hash port; the match-quality test is separate.
+- **Consequences:** One hash family across the app, the cache, and the
+  import — ComicTagger-compatible. Roughly 172 MB of hashes join the
+  imported gallery. The automatcher reading the cached hash to skip a
+  cover download is a NOTED follow-up, not in this change.

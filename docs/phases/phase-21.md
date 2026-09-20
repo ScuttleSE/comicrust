@@ -306,8 +306,10 @@ imported issues); no image blobs; no `concept`/`object` credits; no
 volume `deck`/`first_issue_id`/`last_issue_id`. Dropped with no
 target: publisher `country`, and numberless issues (28 in the sampled
 `localcv.db`; their ids are reported). The `associated_images` gallery
-is now imported into the v5 `issue_image` table (ADR-073), no longer
-dropped.
+imports into the v5 `issue_image` table (ADR-073), and the
+`comic_covers` ComicTagger hashes (`ct_ahash`/`ct_phash`) import into
+the v6 `ahash`/`phash` columns (ADR-074). The API supplies no hashes
+(MEASURED); they come from localcv or from the app hashing a cover.
 
 **Task B (publisher filter) — DONE, for future probe use.**
 `scripts/cvcache/publishers.py` reads the four `# ID, Name` list files;

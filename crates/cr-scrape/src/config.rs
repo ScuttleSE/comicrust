@@ -78,6 +78,14 @@ pub struct AdvancedSettings {
     /// dies at the client chokepoint and only cached data serves
     /// (ADR-071).
     pub cache_offline_only: bool,
+    /// `MATCH_THRESHOLD` — default 0.87, parsed clamp 0.0..1.0. The
+    /// minimum cover-hash similarity for an auto-match (ADR-074; a
+    /// port addition, not a ComicRack key).
+    pub match_threshold: f64,
+    /// `MATCH_SIMILARITY_MARGIN` — default 0.10, parsed clamp
+    /// 0.0..1.0. Subtracted from `match_threshold` for the first-issue
+    /// "too similar" bail-out (ADR-074).
+    pub match_similarity_margin: f64,
 }
 
 impl AdvancedSettings {
@@ -107,6 +115,8 @@ impl AdvancedSettings {
             cache_warm_max_requests: 50,
             cache_refresh_auto: false,
             cache_offline_only: false,
+            match_threshold: 0.87,
+            match_similarity_margin: 0.10,
         }
     }
 }
@@ -270,7 +280,7 @@ pub fn parse_advanced(raw: &str) -> AdvancedSettings {
 
 /// The advanced-settings line keys (the C# `Configuration` parses
 /// one line per key). Public so the doc drift gate can walk them.
-pub const ADVANCED_KEYS: [&str; 24] = [
+pub const ADVANCED_KEYS: [&str; 26] = [
     "IGNORE_PUBLISHER",
     "IGNORE_SEARCHTERM",
     "IGNORE_BEFORE_YEAR",
@@ -298,6 +308,9 @@ pub const ADVANCED_KEYS: [&str; 24] = [
     // The local-first switches (ADR-071).
     "CACHE_REFRESH_MODE",
     "CACHE_OFFLINE_ONLY",
+    // The cover-match thresholds (ADR-074).
+    "MATCH_THRESHOLD",
+    "MATCH_SIMILARITY_MARGIN",
 ];
 
 fn parse_line(line: &str, a: &mut AdvancedSettings) {
@@ -405,6 +418,16 @@ fn apply(key: &str, value: &str, a: &mut AdvancedSettings) {
         // Anything that is not `auto` is manual (ADR-071).
         "CACHE_REFRESH_MODE" => a.cache_refresh_auto = value.trim().eq_ignore_ascii_case("auto"),
         "CACHE_OFFLINE_ONLY" => a.cache_offline_only = is_true(value),
+        "MATCH_THRESHOLD" => {
+            if let Some(f) = as_float(value) {
+                a.match_threshold = f.clamp(0.0, 1.0);
+            }
+        }
+        "MATCH_SIMILARITY_MARGIN" => {
+            if let Some(f) = as_float(value) {
+                a.match_similarity_margin = f.clamp(0.0, 1.0);
+            }
+        }
         _ => {}
     }
 }
@@ -440,6 +463,10 @@ fn extract_value<'a>(line: &'a str, key: &str) -> Option<&'a str> {
 
 fn as_int(value: &str) -> Option<i32> {
     value.trim().parse::<f64>().ok().map(|f| f as i32)
+}
+
+fn as_float(value: &str) -> Option<f64> {
+    value.trim().parse::<f64>().ok()
 }
 
 fn is_true(value: &str) -> bool {

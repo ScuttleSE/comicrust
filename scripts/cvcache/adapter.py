@@ -69,6 +69,9 @@ STAGE_COLUMNS = {
         "caption",
         "image_tags",
         "fetched_at",
+        "ahash",
+        "dhash",
+        "phash",
     ),
 }
 for _name in schema.RESOURCE_TABLES:

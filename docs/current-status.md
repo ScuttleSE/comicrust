@@ -8,7 +8,7 @@ Do not append history. Git and `docs/archive/` hold history.
 **Phase 21: Comic Vine cache expansion.**
 
 In progress. The phase file is `docs/phases/phase-21.md`. The decisions
-are ADR-069 through ADR-073.
+are ADR-069 through ADR-074.
 
 Four parts: schema v3 with every comic resource and row stamps;
 local-first scrape reads with a refresh switch and an offline mode; a
@@ -99,6 +99,10 @@ The procedures are in `docs/open-user-tests.md`.
 5. AppStream metadata has no hosted screenshot URLs.
 6. Phase 16, Comic Vine scraper quality of life, remains planned.
 7. Phase 9, the library SQLite backend, remains deferred.
+8. Automatcher cover-hash cache read: on a match, read
+   `issue_image.ahash` instead of downloading the CV cover (skip the
+   fetch). Deferred from ADR-074; the hashes are stored, the matcher
+   still recomputes.
 
 ## Open risk
 
@@ -109,23 +113,26 @@ licenses` is not a CI gate.
 
 ## Latest verification
 
-Phase 21 T8 + schema v5 (ADR-073) passed on 2026-09-20.
+Phase 21 schema v6 (ADR-074, ComicTagger cover hashes) passed on
+2026-09-20.
 
 - `cargo fmt --all`, `cargo clippy --workspace --all-targets --
-  -D warnings`, `cargo test --workspace` (61 suites ok): passed.
+  -D warnings`, `cargo test --workspace` (62 suites ok): passed.
 - `CR_FORMAT_TESTS=1 cargo test -p cr-scrape --test
-  cvcache_schema_pin`: passed (app and scripts agree on the v5 DDL,
-  both directions).
+  cvcache_schema_pin`: passed (app and scripts agree on the v6 DDL).
 - `python3 -m unittest discover -s scripts/cvcache/tests`: 15 ok.
+- `MEASURED`: the ComicTagger hash port reproduces the reference
+  `localcv.db` hashes to Hamming distance 0 (ahash) / <=2 (phash,
+  decoder tolerance) on two real covers — golden test in
+  `cr-image/tests/comictagger_hash.rs`.
 - `MEASURED`: a full localcv import on a copy of the live cache filled
-  the v5 `issue_image` table (156,084 gallery rows; one multi-image
-  issue carried 80), reported the 28 numberless issue ids, and left
-  `PRAGMA integrity_check = ok` at `user_version` 5.
-- `UNKNOWN`: the exact inline sub-fields of the `volume` object in
-  `/issues` responses. The reader takes `name` and a `publisher`
-  sub-object when present; a real response settles the rest.
-- Still open from T6: the release-probe acceptance (a probe drives
-  all three dialog operations).
+  `issue_image.ahash`/`phash` on 154,395 of 156,084 gallery rows;
+  image 7's imported ahash equals localcv's stored value;
+  `PRAGMA integrity_check = ok` at `user_version` 6.
+- `UNKNOWN`: whether the automatcher still auto-matches correctly with
+  the ComicTagger hash. Needs a user test (parity is not proven by a
+  build). The automatcher reading the cached hash to skip a cover
+  download is a noted follow-up.
 
 ## Environment notes
 

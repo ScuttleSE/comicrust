@@ -15,11 +15,7 @@ use crate::cv::models::SeriesRef;
 use crate::cv::queries::{Cv, SeriesProgressFn};
 use crate::matching::imagehash::{hash, similarity};
 use crate::matching::matchscore::MatchScore;
-use crate::matching::{filter_series_refs, strip_back_cover, MATCH_THRESHOLD};
-
-/// The threshold the first-issue "too similar" bail-out uses
-/// (threshold - 0.10, the C# constant).
-const SIMILARITY_THRESHOLD: f64 = MATCH_THRESHOLD - 0.10;
+use crate::matching::{filter_series_refs, strip_back_cover};
 
 /// `find_series_ref`: the best auto-matched series for the book, or
 /// None. `page0` is the book's decoded front cover.
@@ -34,6 +30,9 @@ pub fn find_series_ref(
 ) -> Result<Option<SeriesRef>, CvError> {
     // 1. the series search + the preference filters
     let advanced = config.advanced();
+    let match_threshold = advanced.match_threshold;
+    let similarity_threshold =
+        (advanced.match_threshold - advanced.match_similarity_margin).max(0.0);
     let ignored: Vec<String> = advanced.ignored_searchterms.iter().cloned().collect();
     let series_refs = cv.query_series_refs(
         &book.series,
@@ -50,7 +49,14 @@ pub fn find_series_ref(
     );
 
     // 2. the best series guess (with the trade-paperback bail-out)
-    let Some(series_ref) = find_best_series(book, score, current_year, series_refs, cv) else {
+    let Some(series_ref) = find_best_series(
+        book,
+        score,
+        current_year,
+        series_refs,
+        cv,
+        similarity_threshold,
+    ) else {
         return Ok(None);
     };
 
@@ -67,13 +73,13 @@ pub fn find_series_ref(
     match &issue_ref {
         Some(issue_ref) => {
             if let Some(thumb) = &issue_ref.thumb_url {
-                matches = similarity(hash_local, remote_hash(cv, thumb)) > MATCH_THRESHOLD;
+                matches = similarity(hash_local, remote_hash(cv, thumb)) > match_threshold;
             }
             // an IssueRef also tries the alternate cover images
             if !matches {
                 let issue = cv.query_issue(issue_ref, true)?;
                 for url in &issue.image_urls {
-                    if similarity(hash_local, remote_hash(cv, url)) > MATCH_THRESHOLD {
+                    if similarity(hash_local, remote_hash(cv, url)) > match_threshold {
                         matches = true;
                         break;
                     }
@@ -82,7 +88,7 @@ pub fn find_series_ref(
         }
         None => {
             if let Some(thumb) = &series_ref.thumb_url {
-                matches = similarity(hash_local, remote_hash(cv, thumb)) > MATCH_THRESHOLD;
+                matches = similarity(hash_local, remote_hash(cv, thumb)) > match_threshold;
             }
         }
     }
@@ -98,6 +104,7 @@ fn find_best_series(
     current_year: i32,
     series_refs: Vec<SeriesRef>,
     cv: &mut Cv,
+    similarity_threshold: f64,
 ) -> Option<SeriesRef> {
     if series_refs.is_empty() {
         return None;
@@ -151,9 +158,9 @@ fn find_best_series(
             let hash1 = cover_hash(primary_ref, cv);
             let hash2 = cover_hash(secondary_ref, cv);
             let hash3 = tertiary.as_ref().and_then(|t| cover_hash(t, cv));
-            let too_similar = similarity(hash1, hash2) > SIMILARITY_THRESHOLD
+            let too_similar = similarity(hash1, hash2) > similarity_threshold
                 || hash3
-                    .map(|h3| similarity(hash1, Some(h3)) > SIMILARITY_THRESHOLD)
+                    .map(|h3| similarity(hash1, Some(h3)) > similarity_threshold)
                     .unwrap_or(false);
             if too_similar {
                 return None;

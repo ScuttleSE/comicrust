@@ -16,6 +16,7 @@
 //!   GDI+'s internal 8-bit rounding differs slightly.
 
 pub mod adjust;
+pub mod comictagger_hash;
 pub mod decode;
 pub mod disk;
 pub mod error;

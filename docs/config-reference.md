@@ -433,6 +433,8 @@ name to the right name.
 | `CACHE_WARM_MAX_REQUESTS` | 50 | The request cap of one warm run. Clamped to 1-10000. |
 | `CACHE_REFRESH_MODE` | manual | `manual` never revalidates: an open volume serves from the cache like a closed one, until an explicit update runs. `auto` probes an open volume after `CACHE_REVALIDATE_HOURS` (one request). Anything that is not `auto` is manual. |
 | `CACHE_OFFLINE_ONLY` | false | When true, every request dies at the client chokepoint. Only cached data serves; the warm task, the sweep, and the cache-manager API operations refuse. |
+| `MATCH_THRESHOLD` | 0.87 | The minimum cover-hash similarity (0.0-1.0) for an auto-match. A port addition (ADR-074), not a ComicRack key. Raise it to demand closer covers, lower it to match more loosely. |
+| `MATCH_SIMILARITY_MARGIN` | 0.10 | Subtracted from `MATCH_THRESHOLD` for the first-issue "too similar" bail-out (ADR-074). Clamped to 0.0-1.0. |
 
 The cache file is
 `$XDG_DATA_HOME/comicrust/plugins/comic-vine-scraper/cvcache.sqlite`.

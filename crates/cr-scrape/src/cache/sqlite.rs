@@ -21,7 +21,7 @@ use crate::cv::queries::parse_image_url;
 
 /// The schema version stored in `PRAGMA user_version`. Raise it and
 /// add a migration arm when the schema changes.
-const SCHEMA_VERSION: i32 = 5;
+const SCHEMA_VERSION: i32 = 6;
 
 const SCHEMA_V1: &str = r"
 CREATE TABLE IF NOT EXISTS volume (
@@ -240,6 +240,18 @@ CREATE INDEX IF NOT EXISTS issue_image_issue
     ON issue_image (issue_id);
 ";
 
+/// Schema v6 (ADR-074): the ComicTagger cover hashes on the image
+/// gallery. Stored as TEXT decimals because the values are unsigned
+/// 64-bit and can exceed a signed-64-bit column. `dhash` is
+/// app-computed only (the localcv import carries `ahash` and `phash`).
+const SCHEMA_V6: &str = r"
+ALTER TABLE issue_image ADD COLUMN ahash TEXT;
+ALTER TABLE issue_image ADD COLUMN dhash TEXT;
+ALTER TABLE issue_image ADD COLUMN phash TEXT;
+CREATE INDEX IF NOT EXISTS issue_image_ahash ON issue_image (ahash);
+CREATE INDEX IF NOT EXISTS issue_image_phash ON issue_image (phash);
+";
+
 fn db(e: rusqlite::Error) -> CacheError {
     CacheError::Db(e.to_string())
 }
@@ -266,6 +278,9 @@ pub(crate) fn migrate_connection(conn: &Connection) -> Result<(), CacheError> {
     }
     if version < 5 {
         conn.execute_batch(SCHEMA_V5).map_err(db)?;
+    }
+    if version < 6 {
+        conn.execute_batch(SCHEMA_V6).map_err(db)?;
     }
     if version != SCHEMA_VERSION {
         conn.pragma_update(None, "user_version", SCHEMA_VERSION)

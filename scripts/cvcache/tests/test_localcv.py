@@ -28,6 +28,8 @@ def _make_localcv(path: Path):
             story_arc_credits TEXT, associated_images TEXT);
         CREATE TABLE cv_issue_last_seen(issue_id INTEGER PRIMARY KEY,
             date_last_updated TEXT);
+        CREATE TABLE comic_covers(id INTEGER PRIMARY KEY, cvid INTEGER,
+            ct_phash TEXT, ct_ahash TEXT, cv_url TEXT);
         """
     )
     c.execute("INSERT INTO cv_publisher VALUES (31,'Marvel','i','s','US')")
@@ -57,6 +59,9 @@ def _make_localcv(path: Path):
         "'[]','[]','[]','[]','[]',NULL)"
     )
     c.execute("INSERT INTO cv_issue_last_seen VALUES (1000,'2026-07-28 04:47:13')")
+    c.execute(
+        "INSERT INTO comic_covers VALUES (1, 1000, '111', '222', 'http://iimg/assoc.jpg')"
+    )
     c.commit()
     c.close()
 
@@ -93,13 +98,14 @@ class LocalCvImportTest(unittest.TestCase):
         )
         self.assertEqual(ad.dropped.get("issue_no_number"), 1)
         self.assertEqual(ad.numberless_issue_ids, [1001])
-        # associated_images landed as issue_image rows (ADR-073).
+        # associated_images landed as issue_image rows (ADR-073) with
+        # the ComicTagger cover hashes attached (ADR-074).
         self.assertEqual(
             v.execute(
-                "SELECT image_id, issue_id, original_url, image_tags "
+                "SELECT image_id, issue_id, original_url, image_tags, ahash, phash "
                 "FROM issue_image"
             ).fetchall(),
-            [(7, 1000, "http://iimg/assoc.jpg", "All Images,Covers")],
+            [(7, 1000, "http://iimg/assoc.jpg", "All Images,Covers", "222", "111")],
         )
         # last_seen stamp landed on the issue.
         self.assertEqual(

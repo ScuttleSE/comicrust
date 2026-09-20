@@ -9,7 +9,9 @@ per-row `date_last_updated`. So:
 - The credit JSON becomes `credit` rows plus resource-table rows
   (character, person, team, location, story_arc).
 - `cv_publisher` and `cv_person` become resource rows.
-- The `associated_images` JSON list becomes `issue_image` rows (ADR-073).
+- The `associated_images` JSON list becomes `issue_image` rows (ADR-073),
+  with the ComicTagger cover hashes from `comic_covers` attached as
+  `ahash`/`phash` (ADR-074).
 - Every row's `date_last_updated` is empty and `fetched_at` is the
   import time, except issues found in `cv_issue_last_seen`, which take
   that stamp. A later real API fetch always wins on merge.
@@ -51,6 +53,7 @@ class LocalCvAdapter:
         conn = sqlite3.connect(f"file:{self.db_path}?mode=ro", uri=True)
         conn.row_factory = sqlite3.Row
         try:
+            self._load_cover_hashes(conn)
             allowed_volumes = self._emit_volumes_and_publishers(conn)
             yield from self._pending_publishers
             yield from self._pending_volumes
@@ -58,6 +61,24 @@ class LocalCvAdapter:
             yield from self._emit_issues(conn, allowed_volumes)
         finally:
             conn.close()
+
+    def _load_cover_hashes(self, conn) -> None:
+        """Builds a cover-URL -> (ahash, phash) map from comic_covers
+        (ADR-074). The hashes are ComicTagger average/perception
+        hashes, stored per cover image URL."""
+        self._cover_hashes = {}
+        try:
+            cursor = conn.execute(
+                "SELECT cv_url, ct_ahash, ct_phash FROM comic_covers "
+                "WHERE cv_url IS NOT NULL"
+            )
+        except sqlite3.OperationalError:
+            # A localcv without the cover-hash table: no hashes to add.
+            return
+        for r in cursor:
+            # The last write wins for a duplicated url; the hashes of one
+            # image are identical whichever row carries them.
+            self._cover_hashes[r["cv_url"]] = (r["ct_ahash"], r["ct_phash"])
 
     # -- volumes + their publishers --
 
@@ -238,6 +259,7 @@ class LocalCvAdapter:
             url = entry.get("original_url")
             if image_id is None or not url:
                 continue
+            ahash, phash = self._cover_hashes.get(url, (None, None))
             yield StagedRow(
                 "issue_image",
                 {
@@ -247,6 +269,9 @@ class LocalCvAdapter:
                     "caption": entry.get("caption"),
                     "image_tags": entry.get("image_tags"),
                     "fetched_at": self.fetched_at,
+                    "ahash": str(ahash) if ahash is not None else None,
+                    "dhash": None,
+                    "phash": str(phash) if phash is not None else None,
                 },
             )
 

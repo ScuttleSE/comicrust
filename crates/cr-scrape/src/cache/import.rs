@@ -1070,6 +1070,9 @@ type StoredIssueImage = (
     Option<String>,
     Option<String>,
     i64,
+    Option<String>,
+    Option<String>,
+    Option<String>,
 );
 
 fn merge_issue_images(
@@ -1080,7 +1083,8 @@ fn merge_issue_images(
     let table = report.table("issue_image");
     let mut stmt = source
         .prepare(
-            "SELECT image_id, issue_id, original_url, caption, image_tags, fetched_at
+            "SELECT image_id, issue_id, original_url, caption, image_tags, fetched_at,
+                    ahash, dhash, phash
                FROM issue_image",
         )
         .map_err(db)?;
@@ -1093,12 +1097,24 @@ fn merge_issue_images(
                 r.get::<_, Option<String>>(3)?,
                 r.get::<_, Option<String>>(4)?,
                 r.get::<_, i64>(5)?,
+                r.get::<_, Option<String>>(6)?,
+                r.get::<_, Option<String>>(7)?,
+                r.get::<_, Option<String>>(8)?,
             ))
         })
         .map_err(db)?;
     for row in rows {
-        let (image_id, issue_id, original_url, caption, image_tags, fetched_at) =
-            row.map_err(db)?;
+        let (
+            image_id,
+            issue_id,
+            original_url,
+            caption,
+            image_tags,
+            fetched_at,
+            ahash,
+            dhash,
+            phash,
+        ) = row.map_err(db)?;
         let (Some(image_id), Some(issue_id), Some(original_url)) =
             (image_id, issue_id, original_url)
         else {
@@ -1107,25 +1123,42 @@ fn merge_issue_images(
         };
         let stored: Option<StoredIssueImage> = live
             .query_row(
-                "SELECT issue_id, original_url, caption, image_tags, fetched_at
+                "SELECT issue_id, original_url, caption, image_tags, fetched_at,
+                        ahash, dhash, phash
                    FROM issue_image WHERE image_id = ?1",
                 params![image_id],
-                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)),
+                |r| {
+                    Ok((
+                        r.get(0)?,
+                        r.get(1)?,
+                        r.get(2)?,
+                        r.get(3)?,
+                        r.get(4)?,
+                        r.get(5)?,
+                        r.get(6)?,
+                        r.get(7)?,
+                    ))
+                },
             )
             .optional()
             .map_err(db)?;
-        let Some((s_issue, s_url, s_caption, s_tags, s_at)) = stored else {
+        let Some((s_issue, s_url, s_caption, s_tags, s_at, s_ahash, s_dhash, s_phash)) = stored
+        else {
             live.execute(
                 "INSERT INTO issue_image
-                   (image_id, issue_id, original_url, caption, image_tags, fetched_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                   (image_id, issue_id, original_url, caption, image_tags, fetched_at,
+                    ahash, dhash, phash)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
                 params![
                     image_id,
                     issue_id,
                     original_url,
                     caption,
                     image_tags,
-                    fetched_at
+                    fetched_at,
+                    ahash,
+                    dhash,
+                    phash
                 ],
             )
             .map_err(db)?;
@@ -1139,18 +1172,25 @@ fn merge_issue_images(
         let merged_url = merge_text(&s_url, &Some(original_url), base_is_incoming);
         let merged_caption = merge_text(&s_caption, &caption, base_is_incoming);
         let merged_tags = merge_text(&s_tags, &image_tags, base_is_incoming);
+        let merged_ahash = merge_text(&s_ahash, &ahash, base_is_incoming);
+        let merged_dhash = merge_text(&s_dhash, &dhash, base_is_incoming);
+        let merged_phash = merge_text(&s_phash, &phash, base_is_incoming);
         let merged_at = if base_is_incoming { fetched_at } else { s_at };
         let same = s_issue == merged_issue
             && s_url == merged_url
             && s_caption == merged_caption
             && s_tags == merged_tags
+            && s_ahash == merged_ahash
+            && s_dhash == merged_dhash
+            && s_phash == merged_phash
             && s_at == merged_at;
         if same {
             table.skipped += 1;
         } else {
             live.execute(
                 "UPDATE issue_image SET issue_id = ?2, original_url = ?3,
-                   caption = ?4, image_tags = ?5, fetched_at = ?6
+                   caption = ?4, image_tags = ?5, fetched_at = ?6,
+                   ahash = ?7, dhash = ?8, phash = ?9
                  WHERE image_id = ?1",
                 params![
                     image_id,
@@ -1158,7 +1198,10 @@ fn merge_issue_images(
                     merged_url,
                     merged_caption,
                     merged_tags,
-                    merged_at
+                    merged_at,
+                    merged_ahash,
+                    merged_dhash,
+                    merged_phash
                 ],
             )
             .map_err(db)?;

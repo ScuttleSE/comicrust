@@ -470,23 +470,44 @@ def _merge_credits(live, source, report):
 def _merge_issue_images(live, source, report):
     table = report.table("issue_image")
     rows = source.execute(
-        "SELECT image_id, issue_id, original_url, caption, image_tags, fetched_at "
-        "FROM issue_image"
+        "SELECT image_id, issue_id, original_url, caption, image_tags, fetched_at, "
+        "ahash, dhash, phash FROM issue_image"
     ).fetchall()
-    for image_id, issue_id, original_url, caption, image_tags, fetched_at in rows:
+    for (
+        image_id,
+        issue_id,
+        original_url,
+        caption,
+        image_tags,
+        fetched_at,
+        ahash,
+        dhash,
+        phash,
+    ) in rows:
         if image_id is None or issue_id is None or _empty_text(original_url):
             table.rejected += 1
             continue
         stored = live.execute(
-            "SELECT issue_id, original_url, caption, image_tags, fetched_at "
-            "FROM issue_image WHERE image_id = ?",
+            "SELECT issue_id, original_url, caption, image_tags, fetched_at, "
+            "ahash, dhash, phash FROM issue_image WHERE image_id = ?",
             (image_id,),
         ).fetchone()
         if stored is None:
             live.execute(
                 "INSERT INTO issue_image (image_id, issue_id, original_url, caption, "
-                "image_tags, fetched_at) VALUES (?, ?, ?, ?, ?, ?)",
-                (image_id, issue_id, original_url, caption, image_tags, fetched_at),
+                "image_tags, fetched_at, ahash, dhash, phash) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    image_id,
+                    issue_id,
+                    original_url,
+                    caption,
+                    image_tags,
+                    fetched_at,
+                    ahash,
+                    dhash,
+                    phash,
+                ),
             )
             table.added += 1
             continue
@@ -498,13 +519,17 @@ def _merge_issue_images(live, source, report):
             merge_text(stored[2], caption, base),
             merge_text(stored[3], image_tags, base),
             fetched_at if base else stored[4],
+            merge_text(stored[5], ahash, base),
+            merge_text(stored[6], dhash, base),
+            merge_text(stored[7], phash, base),
         )
         if merged == stored:
             table.skipped += 1
         else:
             live.execute(
                 "UPDATE issue_image SET issue_id = ?, original_url = ?, caption = ?, "
-                "image_tags = ?, fetched_at = ? WHERE image_id = ?",
+                "image_tags = ?, fetched_at = ?, ahash = ?, dhash = ?, phash = ? "
+                "WHERE image_id = ?",
                 (*merged, image_id),
             )
             table.updated += 1
