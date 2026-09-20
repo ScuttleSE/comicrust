@@ -215,3 +215,27 @@ and reopen the dialog, select the same ID, and confirm that it shows unfinished
 issue details. Select **Complete Update from API** again. Confirm that it
 resumes the unfinished issues and reaches zero remaining details. Confirm that
 no library book changes.
+
+## 27. Update Comic Vine Cache — pre-flight and page cap
+
+Not yet run. See ADR-075.
+
+Always test against a copy of the cache, never the live library.
+
+Open **File > Update Comic Vine Cache...** with an API key set. Confirm the
+pre-flight dialog appears and shows, per resource (publishers, people, volumes,
+issues), the number of rows changed since the cache last synced that resource,
+plus a rough time estimate and a "resumable" note. Confirm the "Stop after N
+pages per resource" field defaults to 20 (or the last value you chose).
+
+Set the cap to 1 and select **Start**. Confirm the run stops after one page per
+resource and the report says the page cap was reached. Reopen the command and
+confirm the pre-flight now shows fewer remaining rows (the watermark did not
+advance for a capped resource, but the resume offset moved). Confirm no library
+book changes.
+
+Set the cap to 0 (run to completion) on a small window and select **Start**.
+Watch the cache request log. Confirm the run fills `date_last_updated` on the
+touched rows and that every resource reports "complete". If the rate limit is
+reached, confirm the progress line reads that it is waiting until a clock time,
+and that the run is resumable.

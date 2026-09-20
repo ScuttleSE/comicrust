@@ -61,11 +61,15 @@ under ADR-075. Read the "Task C detail" section of
 - The `sync_state` merge arm in both engines (Rust `import.rs`, Python
   `merge.py`): newer `last_sync` wins.
 - The localcv adapter seeds `sync_state` from `cv_sync_metadata`.
-- The in-app "Update Comic Vine Cache" command now walks all four
+- The in-app "Update Comic Vine Cache…" command now walks all four
   endpoints (publishers, people, volumes, issues) through
   `cr-scrape` `cache::update::run`, stamping rows with the real API
   `date_last_updated`, resumable through `sync_state.resume_state`,
-  gated by offline/refresh (ADR-071), on a worker thread.
+  gated by offline/refresh (ADR-071), on a worker thread. It is
+  pre-flighted and bounded: a cheap probe shows the changed-row count
+  and a time estimate, and a per-endpoint page cap
+  (`CACHE_UPDATE_MAX_PAGES`, default 20) stops a run that a far-behind
+  user would otherwise leave running for hours. The cap persists.
 - The standalone `python3 -m scripts.cvcache update --into <cache>
   --api-key <key>` command for a slow backfill; `--max-pages`,
   `--since`, `--delay`, `--endpoint`, and the publisher filter apply.
@@ -75,12 +79,13 @@ under ADR-075. Read the "Task C detail" section of
 people 126, volumes 144, issues 985 in 2026-08-01|2026-08-05, against
 unfiltered 9,855 / 89,713 / 160,561 / 1,139,988; dates in-window).
 
-**Not yet run (T9 user tests):** the app "Update Comic Vine Cache"
-against a real cache with the request log watched (does it fill
-`date_last_updated` and advance every `sync_state` watermark), and a
-standalone backfill slice with `--max-pages`. The automatcher parity
-test, a backup-import round trip, and a cached-series scrape stay open
-from before.
+**Not yet run (T9 user tests):** the app "Update Comic Vine Cache…"
+against a real cache with the request log watched — does the pre-flight
+show sensible counts, does a capped run stop at the page cap and hold
+the watermark, does a full run fill `date_last_updated` and advance
+every `sync_state` watermark. The automatcher parity test, a
+backup-import round trip, and a cached-series scrape stay open from
+before.
 
 **Validation done (MEASURED, user session 2026-09-20):** a live-API
 check of 18 items (2-3 each of volume, issue, publisher, person,
@@ -139,6 +144,8 @@ The procedures are in `docs/open-user-tests.md`.
   Number regression now passes on the real library.
 - Test 26: Comic Vine cache manager is not complete. Test both API modes
   against a real volume.
+- Test 27: Update Comic Vine Cache pre-flight and page cap is not complete.
+  Test the pre-flight counts, a capped run, and a run-to-completion.
 
 ## Other open work
 
@@ -167,25 +174,26 @@ licenses` is not a CI gate.
 
 ## Latest verification
 
-Phase 21 Task C / schema v7 (ADR-075, the per-endpoint update
-watermark and the all-endpoint update) passed on 2026-09-20.
+Phase 21 Task C / schema v7 (ADR-075) and the bounded, pre-flighted
+"Update Comic Vine Cache…" command passed on 2026-09-20.
 
 - `cargo fmt --all`, `cargo clippy --workspace --all-targets --
-  -D warnings`, `cargo test --workspace`: passed.
+  -D warnings`, `cargo test --workspace` (63 suites): passed.
 - `CR_FORMAT_TESTS=1 cargo test -p cr-scrape --test
   cvcache_schema_pin`: passed (app and scripts agree on the v7 DDL,
   both directions).
-- `python3 -m unittest discover -s scripts/cvcache/tests`: 22 ok
-  (adds the `sync_state` merge arm, the localcv seed, and the update
-  stagers).
+- `python3 -m unittest discover -s scripts/cvcache/tests`: 22 ok.
+- New tests: the page cap stops an endpoint and holds its watermark,
+  the pre-flight probe reports the changed count per endpoint
+  (`cr-scrape/tests/update.rs`); `CACHE_UPDATE_MAX_PAGES` parses and
+  clamps (`config.rs`); the dialog time estimate
+  (`cr-ui` `dialogs::cv_update`).
 - `MEASURED` (user key, live API, 2026-09-20): the
   `date_last_updated` filter narrows all four update endpoints —
   publishers 4, people 126, volumes 144, issues 985 changed in
-  2026-08-01|2026-08-05, against unfiltered 9,855 / 89,713 /
-  160,561 / 1,139,988; every returned date fell in-window.
-- `UNKNOWN`: the app "Update Comic Vine Cache" against a real cache is
-  not yet user-run (does it fill `date_last_updated` and advance every
-  `sync_state` watermark). A build does not prove it.
+  2026-08-01|2026-08-05.
+- `UNKNOWN`: the app "Update Comic Vine Cache…" dialog and run against
+  a real cache are not yet user-run. A build does not prove the UI.
 
 ## Environment notes
 

@@ -5208,12 +5208,12 @@ impl ShellState {
         });
     }
 
-    /// "Update Comic Vine Cache" (ADR-075): one incremental pass over
-    /// every endpoint (publishers, people, volumes, issues) that
-    /// changed since each endpoint's `sync_state` watermark. It stamps
-    /// rows with the real API `date_last_updated` and is resumable, so
-    /// a user weeks behind runs it across several sessions. Offline
-    /// mode refuses before any request (ADR-071).
+    /// "Update Comic Vine Cache…" (ADR-075): the pre-flight step. It
+    /// probes each endpoint for the changed-row count since its
+    /// `sync_state` watermark (one cheap request per endpoint), then
+    /// opens a dialog that shows the scale and lets the user bound the
+    /// run with a per-endpoint page cap before it starts. Offline mode
+    /// refuses before any request (ADR-071).
     fn update_cv_cache(self: &Rc<ShellState>) {
         let config = library::scraper_config();
         if !config.has_api_key() {
@@ -5237,6 +5237,96 @@ impl ShellState {
         let api_key = config.api_key.clone();
         let worker_cancel = std::sync::Arc::clone(&cancel);
         let budget_config = config.clone();
+        let state = Rc::downgrade(self);
+        self.run_cv_job(
+            library::CvJobKind::Sweep,
+            "Update Comic Vine Cache",
+            cancel,
+            move |progress| -> Result<Vec<cr_scrape::cache::update::EndpointEstimate>, String> {
+                let mut client = cr_scrape::cv::connection::CvClient::new(&api_key);
+                library::cv_configure(&mut client, &budget_config);
+                if let Some(budget) = library::cv_budget(
+                    &budget_config,
+                    std::sync::Arc::clone(&cache),
+                    std::sync::Arc::clone(&worker_cancel),
+                    Some(wait_reporter(progress.clone())),
+                ) {
+                    client.set_budget(budget);
+                }
+                let _ = progress.send(CvProgressMsg::Step {
+                    detail: "checking how much changed…".to_string(),
+                    done: 0,
+                    total: 0,
+                });
+                cr_scrape::cache::update::preflight(
+                    &client,
+                    cache.as_ref(),
+                    cr_scrape::cache::update::ENDPOINTS,
+                )
+                .map_err(|e| e.to_string())
+            },
+            move |window, outcome| match outcome {
+                Ok(estimates) => {
+                    let total: i64 = estimates.iter().map(|e| e.changed.max(0)).sum();
+                    if total == 0 {
+                        show_report_dialog(
+                            window,
+                            "Update Comic Vine Cache",
+                            "The cache is already current. Nothing changed since the last update.",
+                        );
+                        return;
+                    }
+                    let config = library::scraper_config();
+                    let default_cap = config.advanced().cache_update_max_pages;
+                    let rate_limit = config.advanced().cache_rate_limit;
+                    let state = state.clone();
+                    crate::dialogs::cv_update::show(
+                        window,
+                        estimates,
+                        default_cap,
+                        rate_limit,
+                        move |choice| {
+                            let Some(cap) = choice else {
+                                return;
+                            };
+                            if let Some(sh) = state.upgrade() {
+                                sh.persist_update_cap(cap);
+                                sh.run_cv_update(cap);
+                            }
+                        },
+                    );
+                }
+                Err(reason) => show_failure_dialog(window, "Update Comic Vine Cache", &reason),
+            },
+        );
+    }
+
+    /// Persists the chosen page cap as `CACHE_UPDATE_MAX_PAGES` so the
+    /// next Update dialog defaults to it (ADR-075). `None` (run to
+    /// completion) stores zero.
+    fn persist_update_cap(self: &Rc<ShellState>, cap: crate::dialogs::cv_update::UpdateChoice) {
+        let pages = cap.map(|n| n as i32).unwrap_or(0);
+        library::set_scraper_update_max_pages(pages);
+    }
+
+    /// The main update run, with the user's per-endpoint page cap
+    /// (`None` = run to completion). It walks every endpoint over the
+    /// `date_last_updated` window since each `sync_state` watermark,
+    /// stamps rows with the real API date, and is resumable.
+    fn run_cv_update(self: &Rc<ShellState>, cap: crate::dialogs::cv_update::UpdateChoice) {
+        let config = library::scraper_config();
+        let Some(cache) = library::cv_cache() else {
+            show_failure_dialog(
+                &self.window,
+                "Update Comic Vine Cache",
+                "The Comic Vine cache file could not be opened.",
+            );
+            return;
+        };
+        let cancel = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let api_key = config.api_key.clone();
+        let worker_cancel = std::sync::Arc::clone(&cancel);
+        let budget_config = config.clone();
         self.run_cv_job(
             library::CvJobKind::Sweep,
             "Update Comic Vine Cache",
@@ -5256,6 +5346,7 @@ impl ShellState {
                     &client,
                     cache.as_ref(),
                     cr_scrape::cache::update::ENDPOINTS,
+                    cap,
                     &worker_cancel,
                     |p| {
                         let _ = progress.send(CvProgressMsg::Step {
@@ -5270,13 +5361,15 @@ impl ShellState {
             move |window, outcome| match outcome {
                 Ok(report) => {
                     let mut lines = Vec::new();
-                    let mut all_complete = true;
+                    let mut any_more = false;
                     for ep in &report.endpoints {
                         if !ep.complete {
-                            all_complete = false;
+                            any_more = true;
                         }
                         let state = if ep.complete {
                             "complete"
+                        } else if ep.capped {
+                            "page cap reached (run again to continue)"
                         } else {
                             "stopped early (run again to continue)"
                         };
@@ -5285,10 +5378,10 @@ impl ShellState {
                             ep.endpoint, ep.fetched, ep.pages, ep.last_sync
                         ));
                     }
-                    let tail = if all_complete {
-                        "Every endpoint is current."
+                    let tail = if any_more {
+                        "Some resources have more to fetch. Run the command again to continue."
                     } else {
-                        "Some endpoints stopped early. Run the command again to continue."
+                        "Every resource is current."
                     };
                     show_report_dialog(
                         window,

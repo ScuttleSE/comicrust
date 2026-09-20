@@ -70,6 +70,13 @@ pub struct AdvancedSettings {
     pub cache_warm_enabled: bool,
     /// `CACHE_WARM_MAX_REQUESTS` — default 50, parsed clamp 1..10000.
     pub cache_warm_max_requests: i32,
+    /// `CACHE_UPDATE_MAX_PAGES` — the default per-endpoint page cap for
+    /// the "Update Comic Vine Cache" command, default 20, parsed clamp
+    /// 0..100000. Zero means run to the end of the window (ADR-075). A
+    /// page is 100 rows; 20 pages is roughly one 200-request budget
+    /// window, so a first run finishes in a predictable time and the
+    /// resumable watermark continues the rest later.
+    pub cache_update_max_pages: i32,
     /// `CACHE_REFRESH_MODE` — `manual` (default) or `auto`. Manual
     /// never revalidates: an open volume serves from the cache like a
     /// closed one (ADR-071).
@@ -113,6 +120,7 @@ impl AdvancedSettings {
             cache_revalidate_hours: 24,
             cache_warm_enabled: false,
             cache_warm_max_requests: 50,
+            cache_update_max_pages: 20,
             cache_refresh_auto: false,
             cache_offline_only: false,
             match_threshold: 0.87,
@@ -280,7 +288,7 @@ pub fn parse_advanced(raw: &str) -> AdvancedSettings {
 
 /// The advanced-settings line keys (the C# `Configuration` parses
 /// one line per key). Public so the doc drift gate can walk them.
-pub const ADVANCED_KEYS: [&str; 26] = [
+pub const ADVANCED_KEYS: [&str; 27] = [
     "IGNORE_PUBLISHER",
     "IGNORE_SEARCHTERM",
     "IGNORE_BEFORE_YEAR",
@@ -305,6 +313,7 @@ pub const ADVANCED_KEYS: [&str; 26] = [
     "CACHE_REVALIDATE_HOURS",
     "CACHE_WARM_ENABLED",
     "CACHE_WARM_MAX_REQUESTS",
+    "CACHE_UPDATE_MAX_PAGES",
     // The local-first switches (ADR-071).
     "CACHE_REFRESH_MODE",
     "CACHE_OFFLINE_ONLY",
@@ -413,6 +422,11 @@ fn apply(key: &str, value: &str, a: &mut AdvancedSettings) {
         "CACHE_WARM_MAX_REQUESTS" => {
             if let Some(n) = as_int(value) {
                 a.cache_warm_max_requests = n.clamp(1, 10_000);
+            }
+        }
+        "CACHE_UPDATE_MAX_PAGES" => {
+            if let Some(n) = as_int(value) {
+                a.cache_update_max_pages = n.clamp(0, 100_000);
             }
         }
         // Anything that is not `auto` is manual (ADR-071).
@@ -631,6 +645,23 @@ mod tests {
         let a = parse_advanced("SCRAPE_DELAY=5000\nMAX_SEARCH_RESULTS=99999\n");
         assert_eq!(a.scrape_delay, 3600);
         assert_eq!(a.max_search_results, 5000);
+    }
+
+    #[test]
+    fn cache_update_max_pages_parses_and_clamps() {
+        let a = parse_advanced("CACHE_UPDATE_MAX_PAGES=20\n");
+        assert_eq!(a.cache_update_max_pages, 20);
+        // Zero is allowed (run to completion).
+        let a = parse_advanced("CACHE_UPDATE_MAX_PAGES=0\n");
+        assert_eq!(a.cache_update_max_pages, 0);
+        // A negative value clamps to zero; a huge one clamps down.
+        let a = parse_advanced("CACHE_UPDATE_MAX_PAGES=-5\n");
+        assert_eq!(a.cache_update_max_pages, 0);
+        let a = parse_advanced("CACHE_UPDATE_MAX_PAGES=999999\n");
+        assert_eq!(a.cache_update_max_pages, 100_000);
+        // The default when the key is absent.
+        let a = parse_advanced("");
+        assert_eq!(a.cache_update_max_pages, 20);
     }
 
     #[test]

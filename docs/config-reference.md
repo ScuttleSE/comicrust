@@ -431,6 +431,7 @@ name to the right name.
 | `CACHE_REVALIDATE_HOURS` | 24 | How often an open volume is revalidated. One request. Clamped to 1-8760. |
 | `CACHE_WARM_ENABLED` | false | Runs the cache warm task. |
 | `CACHE_WARM_MAX_REQUESTS` | 50 | The request cap of one warm run. Clamped to 1-10000. |
+| `CACHE_UPDATE_MAX_PAGES` | 20 | The default per-endpoint page cap for the "Update Comic Vine Cache" command (ADR-075). A page is 100 rows; 20 pages is roughly one 200-request budget window, so a first run finishes in a predictable time and the resumable watermark continues the rest later. Zero runs to the end of the window. Clamped to 0-100000. The Update dialog reads this as its default and writes back the chosen value. |
 | `CACHE_REFRESH_MODE` | manual | `manual` never revalidates: an open volume serves from the cache like a closed one, until an explicit update runs. `auto` probes an open volume after `CACHE_REVALIDATE_HOURS` (one request). Anything that is not `auto` is manual. |
 | `CACHE_OFFLINE_ONLY` | false | When true, every request dies at the client chokepoint. Only cached data serves; the warm task, the sweep, and the cache-manager API operations refuse. |
 | `MATCH_THRESHOLD` | 0.87 | The minimum cover-hash similarity (0.0-1.0) for an auto-match. A port addition (ADR-074), not a ComicRack key. Raise it to demand closer covers, lower it to match more loosely. |

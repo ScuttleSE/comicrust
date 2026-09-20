@@ -649,6 +649,29 @@ pub fn store_scraper_config(config: &cr_scrape::config::Configuration) {
     save_settings();
 }
 
+/// Persists the "Update Comic Vine Cache" page cap as the
+/// `CACHE_UPDATE_MAX_PAGES` advanced key (ADR-075), so the next Update
+/// dialog defaults to the user's last choice. The advanced settings are
+/// a raw KEY=VALUE text blob; this replaces the one line or appends it,
+/// leaving every other key untouched.
+pub fn set_scraper_update_max_pages(pages: i32) {
+    const KEY: &str = "CACHE_UPDATE_MAX_PAGES";
+    let mut config = scraper_config();
+    let mut lines: Vec<String> = config
+        .advanced_settings
+        .lines()
+        .filter(|line| {
+            // Drop any existing line for this key (the parser matches
+            // the key as a line prefix).
+            !line.trim_start().starts_with(KEY)
+        })
+        .map(str::to_string)
+        .collect();
+    lines.push(format!("{KEY}={pages}"));
+    config.set_advanced_settings(&lines.join("\n"));
+    store_scraper_config(&config);
+}
+
 /// The incoming-folder section name in the unified config.
 pub const INCOMING_PLUGIN: &str = "incoming";
 

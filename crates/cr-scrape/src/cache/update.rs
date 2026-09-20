@@ -47,6 +47,9 @@ pub struct EndpointReport {
     pub fetched: usize,
     pub pages: usize,
     pub complete: bool,
+    /// True when the page cap stopped this endpoint before the window
+    /// ended. The watermark did not advance; the next run resumes.
+    pub capped: bool,
     /// The window end this endpoint is now caught up through.
     pub last_sync: String,
 }
@@ -63,6 +66,51 @@ pub struct UpdateProgress {
     pub endpoint: String,
     pub fetched: usize,
     pub total: i64,
+}
+
+/// The changed-row count one endpoint would fetch on the next update,
+/// read cheaply before committing to the full run.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct EndpointEstimate {
+    pub endpoint: String,
+    /// The window start (this endpoint's `sync_state` watermark).
+    pub since: String,
+    /// `number_of_total_results` for `date_last_updated:<since>|<now>`.
+    pub changed: i64,
+}
+
+/// A cheap pre-flight: one `limit=1` request per endpoint reads the
+/// changed-row count since each watermark, so the user sees the scale
+/// before the full run (ADR-075). Costs one request per endpoint.
+/// Offline mode refuses before any request.
+pub fn preflight(
+    client: &CvClient,
+    cache: &dyn CvCache,
+    endpoints: &[&str],
+) -> Result<Vec<EndpointEstimate>, CvError> {
+    if client.is_offline() {
+        return Err(CvError::Offline);
+    }
+    let now = today();
+    let mut out = Vec::with_capacity(endpoints.len());
+    for endpoint in endpoints {
+        let (since, _) = watermark(cache, endpoint);
+        let mut query = client.base_query();
+        query.push(("field_list", "id".to_string()));
+        query.push(("filter", format!("date_last_updated:{since}|{now}")));
+        query.push(("limit", "1".to_string()));
+        let dom = client.get_dom(&format!("/{endpoint}/"), &query)?;
+        let changed = dom
+            .get("number_of_total_results")
+            .and_then(Value::as_i64)
+            .unwrap_or(0);
+        out.push(EndpointEstimate {
+            endpoint: endpoint.to_string(),
+            since,
+            changed,
+        });
+    }
+    Ok(out)
 }
 
 /// The list-level field list per endpoint. Only cache-stored fields
@@ -116,12 +164,16 @@ fn save_watermark(cache: &dyn CvCache, endpoint: &str, last_sync: &str, offset: 
 }
 
 /// Runs a full update over every endpoint in `endpoints`. Offline mode
-/// refuses before any request. `on_progress` runs after each page and
-/// must not block (the run is on a worker thread, Rule 9).
+/// refuses before any request. `max_pages` caps the pages one endpoint
+/// reads in this run (`None` runs to the end of each window); a capped
+/// endpoint stops and its resumable watermark continues on the next
+/// run. `on_progress` runs after each page and must not block (the run
+/// is on a worker thread, Rule 9).
 pub fn run(
     client: &CvClient,
     cache: &dyn CvCache,
     endpoints: &[&str],
+    max_pages: Option<usize>,
     cancel: &AtomicBool,
     mut on_progress: impl FnMut(UpdateProgress),
 ) -> Result<UpdateReport, CvError> {
@@ -134,7 +186,15 @@ pub fn run(
         if cancel.load(Ordering::Relaxed) {
             break;
         }
-        let one = update_endpoint(client, cache, endpoint, &now, cancel, &mut on_progress)?;
+        let one = update_endpoint(
+            client,
+            cache,
+            endpoint,
+            &now,
+            max_pages,
+            cancel,
+            &mut on_progress,
+        )?;
         report.endpoints.push(one);
     }
     Ok(report)
@@ -145,6 +205,7 @@ fn update_endpoint(
     cache: &dyn CvCache,
     endpoint: &str,
     now: &str,
+    max_pages: Option<usize>,
     cancel: &AtomicBool,
     on_progress: &mut impl FnMut(UpdateProgress),
 ) -> Result<EndpointReport, CvError> {
@@ -159,6 +220,15 @@ fn update_endpoint(
             // Stopped early: hold `since`, keep the resume offset.
             save_watermark(cache, endpoint, &since, Some(offset));
             return Ok(report);
+        }
+        if let Some(cap) = max_pages {
+            if report.pages >= cap {
+                // The page cap stopped this endpoint: hold `since`, save
+                // the offset, and let the next run resume.
+                save_watermark(cache, endpoint, &since, Some(offset));
+                report.capped = true;
+                return Ok(report);
+            }
         }
         let dom = page(client, endpoint, &since, now, offset)?;
         report.pages += 1;

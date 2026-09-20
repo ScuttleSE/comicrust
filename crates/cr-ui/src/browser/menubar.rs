@@ -99,7 +99,7 @@ pub const FILE: &[MenuNode] = &[
     // The C# plugin had no cache, so it needed no command.
     Item("Manage Comic Vine Cache...", "win.cv-cache-manager", "", ""),
     Item("Import Comic Vine MCL File...", "win.cv-import-mcl", "", ""),
-    Item("Update Comic Vine Cache", "win.cv-update", "", ""),
+    Item("Update Comic Vine Cache...", "win.cv-update", "", ""),
     Item("Warm Comic Vine Cache", "win.cv-warm", "", ""),
     Sep,
     // The Library Organizer (Phase 17): the addon's @Hook Library and

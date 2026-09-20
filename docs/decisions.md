@@ -1124,3 +1124,22 @@ response carries them, and the merge rule protects stored values.
   columns `put_volumes` stores; the richer volume detail columns come
   from the cache-manager detail fetch (ADR-070), unchanged. The one
   proven filter stays `date_last_updated`; no other filter is assumed.
+- **Amendment (2026-09-20, same ADR): the app update is bounded and
+  pre-flighted.** A user far behind can trigger a run of many hours,
+  because the budget waits out the hour rather than failing. To make
+  the cost visible and bounded:
+  1. **Pre-flight probe.** `cache::update::preflight` reads
+     `number_of_total_results` for each endpoint's
+     `date_last_updated:<watermark>|<now>` window with one `limit=1`
+     request per endpoint (four requests). The "Update Comic Vine
+     Cache…" command runs this first and shows the per-endpoint changed
+     count and a rough time-at-rate-limit figure before any full run.
+  2. **Per-endpoint page cap.** `cache::update::run` takes
+     `max_pages: Option<usize>`. A capped endpoint stops, marks itself
+     `capped`, and holds its watermark and resume offset, so the next
+     run continues. The pre-flight dialog defaults the cap to
+     `CACHE_UPDATE_MAX_PAGES` (default 20 pages ≈ one 200-request budget
+     window); zero runs to completion. The chosen value writes back to
+     `CACHE_UPDATE_MAX_PAGES`.
+  3. **Menu wording.** The item is "Update Comic Vine Cache…" (the
+     ellipsis marks the dialog), matching the other Comic Vine items.
