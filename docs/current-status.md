@@ -32,6 +32,29 @@ and its cache-manager user test (26) passed.
 
 ## Latest user finding
 
+`DONE` (2026-09-20): rich Comic Vine enrichment for the cvcache script
+(ADR-075 amendments). Five phases, all shipped and verified:
+1. The script rate budget now uses the shared `request_log` ledger
+   (same as the app), keyed per path segment; independent cron runs
+   share one durable budget. New `usage` command reports it.
+2. Schema v8: `sync_state` gained a `mode` column
+   (`list`/`rich_forward`/`rich_backfill`); v7->v8 migration preserves
+   the four watermarks (MEASURED on a copy of the live cache). The
+   live cache was migrated to v8 by the user's app run.
+3. `rich --mode issues-backfill` fills credits + images for
+   skeleton-only issues (~12.5k of the 20k newest lack credits).
+4. `rich --mode <resource>-backfill|-forward` for person, character,
+   volume: fills/refreshes `detail_json` (no schema change; the column
+   already existed).
+5. team, location, story_arc added to the same machinery.
+All verified live against a copy of the cache: credits/images and
+detail_json landed, per-resource cursors persisted, resume continued,
+and the singular detail-path budgets are separate from the list
+budgets. The user will not start backfilling until the full set was
+available; it now is. cvcache_schema_pin passes both directions at v8;
+63 cargo suites and 35 script tests pass.
+
+## Previous user finding
 `PASS` (user, 2026-09-20): a batch of Phase 19-21 user tests passed —
 Missing Issues gap report and its scoped-series regression (test 22),
 Link Series from Cache (23), Incoming setup and review (17), Find
