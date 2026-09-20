@@ -430,6 +430,11 @@ fn failed_close_save_returns_the_barrier_to_idle() {
 
 #[test]
 fn operation_stays_active_through_landing_and_blocks_another_start() {
+    // The operation flag is a process global: serialize against the
+    // other operation test, exactly like the guard tests do.
+    let _mutation_test = MUTATION_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     assert!(!operation_active());
     let operation = try_begin_operation().expect("start operation");
     assert!(operation_active());
@@ -448,6 +453,11 @@ fn operation_stays_active_through_landing_and_blocks_another_start() {
 
 #[test]
 fn dropping_operation_without_landing_releases_exclusive_start() {
+    // The operation flag is a process global: serialize against the
+    // other operation test, exactly like the guard tests do.
+    let _mutation_test = MUTATION_TEST_LOCK
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
     assert!(!operation_active());
     let operation = try_begin_operation().expect("start operation");
     drop(operation);
