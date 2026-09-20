@@ -833,6 +833,9 @@ _RICH_RESOURCES = {
     "person": {"list": "people", "prefix": "4040", "path": "person"},
     "character": {"list": "characters", "prefix": "4005", "path": "character"},
     "volume": {"list": "volumes", "prefix": "4050", "path": "volume"},
+    "team": {"list": "teams", "prefix": "4060", "path": "team"},
+    "location": {"list": "locations", "prefix": "4020", "path": "location"},
+    "story_arc": {"list": "story_arcs", "prefix": "4045", "path": "story_arc"},
 }
 
 

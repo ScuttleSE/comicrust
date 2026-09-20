@@ -295,7 +295,9 @@ def main(argv=None) -> int:
         choices=(
             "issues-backfill",
             "person-backfill", "character-backfill", "volume-backfill",
+            "team-backfill", "location-backfill", "story_arc-backfill",
             "person-forward", "character-forward", "volume-forward",
+            "team-forward", "location-forward", "story_arc-forward",
         ),
         default="issues-backfill",
         help="which rich pass to run (default issues-backfill)",
