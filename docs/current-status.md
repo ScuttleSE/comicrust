@@ -16,43 +16,61 @@ backupable, mergeable cache file; the sweep expansion plus Python
 build and import scripts.
 
 T1 through T7 are done. T8 (`scripts/cvcache/`) is done. Task C (the
-update pipeline, ADR-075) is done: schema v7 `sync_state`, the
-all-endpoint update in the app ("Update Comic Vine Cache" now walks
-publishers, people, volumes, issues) and the standalone
-`scripts/cvcache update` backfill command, and the localcv
-`sync_state` seed. A live API probe (MEASURED, user key, 2026-09-20)
-confirmed the `date_last_updated` filter narrows all four endpoints.
-Schema grew past the phase's original v4: v5 added the `issue_image`
-gallery (ADR-073), v6 added ComicTagger cover hashes (ADR-074), v7
-added the per-endpoint sync watermark (ADR-075). The full `localcv.db`
-is imported into the live cache (verified by the user). T9 (user
-tests) is largely verified; the automatcher parity test, a backup-import
-round trip, and a cached-series scrape remain. Phase 20 is implemented
-and its cache-manager user test (26) passed.
+update pipeline, ADR-075) is done. The cache schema is now **v8**: v5
+added the `issue_image` gallery (ADR-073), v6 the ComicTagger cover
+hashes (ADR-074), v7 the per-endpoint sync watermark (ADR-075), v8 the
+`sync_state.mode` column for the rich-enrichment cursors (ADR-075
+amendment). The full `localcv.db` is imported into the live cache
+(verified by the user), which the user migrated to v8 by opening the
+app. T9 (user tests) is largely verified; the automatcher parity test,
+a backup-import round trip, and a cached-series scrape remain. Phase 20
+is implemented and its cache-manager user test (26) passed.
 
 ## Latest user finding
 
-`DONE` (2026-09-20): rich Comic Vine enrichment for the cvcache script
-(ADR-075 amendments). Five phases, all shipped and verified:
-1. The script rate budget now uses the shared `request_log` ledger
-   (same as the app), keyed per path segment; independent cron runs
-   share one durable budget. New `usage` command reports it.
-2. Schema v8: `sync_state` gained a `mode` column
-   (`list`/`rich_forward`/`rich_backfill`); v7->v8 migration preserves
-   the four watermarks (MEASURED on a copy of the live cache). The
-   live cache was migrated to v8 by the user's app run.
-3. `rich --mode issues-backfill` fills credits + images for
-   skeleton-only issues (~12.5k of the 20k newest lack credits).
-4. `rich --mode <resource>-backfill|-forward` for person, character,
-   volume: fills/refreshes `detail_json` (no schema change; the column
-   already existed).
-5. team, location, story_arc added to the same machinery.
-All verified live against a copy of the cache: credits/images and
-detail_json landed, per-resource cursors persisted, resume continued,
-and the singular detail-path budgets are separate from the list
-budgets. The user will not start backfilling until the full set was
-available; it now is. cvcache_schema_pin passes both directions at v8;
-63 cargo suites and 35 script tests pass.
+`DONE` (2026-09-20): the standalone `scripts/cvcache` enrichment
+toolset is complete. Six phases, all shipped and verified (63 cargo
+suites, 37 script tests, `cvcache_schema_pin` both directions at v8):
+
+1. **Shared budget.** The script rate budget uses the shared
+   `request_log` ledger (same as the app), keyed by the request path's
+   first segment lowercased; independent cron runs share one durable
+   budget. New `usage` command reports per-resource last-hour,
+   remaining, total, and last-request time. A list fetch (`issues`) and
+   a detail fetch (`issue`) are separate budgets, matching CV's
+   per-path cap.
+2. **Schema v8: `sync_state (endpoint, mode)`.** Modes
+   `list`/`rich_forward`/`rich_backfill`/`hash_backfill`. v7->v8
+   migration rebuilds the table and re-inserts old rows as `list`
+   (MEASURED on a copy: the four watermarks survive). Cross-crate:
+   Rust DDL/migration/accessors/merge and Python
+   schema/merge/update/adapter move together.
+3. **`rich --mode issues-backfill`.** Fills credits + gallery images
+   for skeleton-only issues (the ~12.5k of the newest 20k that the list
+   update added without credits). Decomposes the live `/issue/<id>/`
+   detail like the localcv import; reuses the credit/issue_image merge.
+4. **`rich --mode <resource>-backfill|-forward`** for person,
+   character, volume. Fills/refreshes `detail_json` (real_name, powers,
+   origin, bio, birth/death, etc.). No schema change — the column
+   already existed. Backfill walks never-enriched rows newest-first;
+   forward re-fetches only rows changed since the `rich_forward`
+   watermark via the list `date_last_updated` filter.
+5. **team, location, story_arc** added to the same rich machinery
+   (detail path prefixes verified live: team 4060, location 4020,
+   story_arc 4045).
+6. **`hashes`.** Standalone ComicTagger cover-hash pass. A new
+   `imagehasher.py` reimplements average/difference/perception hashes
+   on Pillow (the library ComicTagger uses), so values are
+   byte-identical to the stored `localcv.db` hashes (MEASURED: Hamming
+   0, golden test + real CDN downloads). No ComicTagger code is copied
+   (it is Apache-2.0). Image downloads hit the CV CDN, not the API, so
+   the pass does NOT spend the API budget (MEASURED: no API counter
+   moves). Front cover by default, `--all-images` opt-in. Resumable
+   through a `hash_backfill` cursor. Pillow added to
+   `scripts/requirements.txt`.
+
+The user will start the long backfills now that the full set exists.
+The passes are resumable, rate-aware, and cron-friendly.
 
 ## Previous user finding
 `PASS` (user, 2026-09-20): a batch of Phase 19-21 user tests passed —
@@ -71,17 +89,37 @@ evidence the all-endpoint update rests on.
 
 ## Current task for the next context
 
-Phase 21 T9 (user tests). Task C (the update pipeline) is implemented
-under ADR-075. Read the "Task C detail" section of
-`docs/phases/phase-21.md` and ADR-075 for what shipped.
+Phase 21 T9 (user tests) is the remaining Phase 21 work. The full
+cvcache script enrichment toolset (see "Latest user finding") is done
+and verified; the user is running the long backfills.
 
-**What Task C shipped (do not redo):**
-- Schema v7 `sync_state` (per-endpoint watermark), pinned in the Rust
-  migration chain and `scripts/cvcache/schema.py`; the gated
-  `cvcache_schema_pin` passes both directions at v7.
-- The `sync_state` merge arm in both engines (Rust `import.rs`, Python
-  `merge.py`): newer `last_sync` wins.
-- The localcv adapter seeds `sync_state` from `cv_sync_metadata`.
+**The `scripts/cvcache` commands (all standalone Python, resumable,
+rate-aware — see `scripts/cvcache/README.md`):**
+- `update` — the list-level sweep of all endpoints (publishers,
+  people, volumes, issues), shared `request_log` budget, pre-flight
+  changed-row counts, `--dry-run`. Also in the app as "Update Comic
+  Vine Cache".
+- `rich --mode issues-backfill` — issue credits + gallery images.
+- `rich --mode <resource>-backfill|-forward` — person / character /
+  volume / team / location / story_arc `detail_json`.
+- `hashes` — ComicTagger cover hashes (Pillow; no API budget cost).
+- `usage` — the shared budget report.
+
+**Open, honest, not yet done:**
+- `UNKNOWN`: whether the app already computes cover hashes on demand
+  when the automatcher first sees an issue. Does not block the script
+  `hashes` pass; decides only whether the bulk run is necessary or a
+  convenience. One code trace in `cr-scrape` resolves it.
+- `UNKNOWN`: the exact CV throttle payload (HTTP 429 / status_code 107
+  are handled to the documented forms; a real throttle in a long run
+  will confirm the string).
+- The plan of record for the enrichment work is
+  `/home/scuttle/.opencode/plan/rich-enrichment.md`.
+
+**Task C (the in-app update pipeline) shipped earlier under ADR-075;**
+read its "Task C detail" in `docs/phases/phase-21.md` and ADR-075.
+
+**What the in-app update shipped (do not redo):**
 - The in-app "Update Comic Vine Cache…" command now walks all four
   endpoints (publishers, people, volumes, issues) through
   `cr-scrape` `cache::update::run`, stamping rows with the real API
@@ -184,26 +222,28 @@ licenses` is not a CI gate.
 
 ## Latest verification
 
-Phase 21 Task C / schema v7 (ADR-075) and the bounded, pre-flighted
-"Update Comic Vine Cache…" command passed on 2026-09-20.
+The cvcache script enrichment toolset and schema v8 (ADR-075
+amendments) passed on 2026-09-20.
 
 - `cargo fmt --all`, `cargo clippy --workspace --all-targets --
   -D warnings`, `cargo test --workspace` (63 suites): passed.
 - `CR_FORMAT_TESTS=1 cargo test -p cr-scrape --test
-  cvcache_schema_pin`: passed (app and scripts agree on the v7 DDL,
-  both directions).
-- `python3 -m unittest discover -s scripts/cvcache/tests`: 22 ok.
-- New tests: the page cap stops an endpoint and holds its watermark,
-  the pre-flight probe reports the changed count per endpoint
-  (`cr-scrape/tests/update.rs`); `CACHE_UPDATE_MAX_PAGES` parses and
-  clamps (`config.rs`); the dialog time estimate
-  (`cr-ui` `dialogs::cv_update`).
-- `MEASURED` (user key, live API, 2026-09-20): the
-  `date_last_updated` filter narrows all four update endpoints —
-  publishers 4, people 126, volumes 144, issues 985 changed in
-  2026-08-01|2026-08-05.
-- `UNKNOWN`: the app "Update Comic Vine Cache…" dialog and run against
-  a real cache are not yet user-run. A build does not prove the UI.
+  cvcache_schema_pin`: passed (app and scripts agree on the v8 DDL,
+  both directions, including `sync_state (endpoint, mode)`).
+- `python3 -m unittest discover -s scripts/cvcache/tests`: 37 ok
+  (includes the rich decomposition, the resource detail paths, the
+  DB-backed shared budget, and the ComicTagger cover-hash golden test
+  at Hamming 0).
+- `MEASURED` (live CV, 2026-09-20): stock Pillow reproduces
+  `localcv.db` `ct_ahash`/`ct_phash` at Hamming 0, from real CDN
+  downloads; image downloads are not counted on any API path (user
+  status page).
+- `MEASURED` (user session, 2026-09-20): the v7->v8 migration on a copy
+  of the live cache preserved the four `list` watermarks; the rich
+  passes stored credits/images/detail_json against a copy and resumed
+  from their cursors; the singular detail-path budgets (`/character`,
+  `/person`, `/issue`) are separate from the list budgets on the CV
+  status page.
 
 ## Environment notes
 

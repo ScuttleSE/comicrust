@@ -1200,3 +1200,30 @@ response carries them, and the merge rule protects stored values.
      `sqlite.rs` DDL/migration/accessors, the `import.rs` merge arm, and
      the Python `schema.py`/`merge.py`/`update.py`/`adapter.py` all move
      together, because the DDL is pinned across the app and the script.
+  3. **The rich passes (`scripts/cvcache rich`).** With v8 in place, the
+     script gained standalone enrichment: `--mode issues-backfill`
+     fetches the live `/issue/<id>/` detail for credit-less issues and
+     decomposes it into `credit`/`issue_image` rows (the localcv shape);
+     `--mode <resource>-backfill|-forward` fills/refreshes the
+     `detail_json` column (already present on every resource table) for
+     person, character, volume, team, location, story_arc. Backfill
+     walks never-enriched local rows through the `rich_backfill` cursor;
+     forward re-fetches only rows changed since the `rich_forward`
+     date watermark, found through the list `date_last_updated` filter.
+     Detail fetches use the singular path budget (`/issue`, `/person`,
+     `/character`), separate from the list budgets, matching CV's
+     per-path cap. A deleted id (CV status_code 101 / "not found") is
+     skipped, not fatal.
+  4. **The cover-hash pass (`scripts/cvcache hashes`), mode
+     `hash_backfill`.** A standalone `imagehasher.py` reimplements
+     ComicTagger's average/difference/perception hashes on Pillow — the
+     same library ComicTagger runs on — so the values are byte-identical
+     to the stored `localcv.db` hashes (MEASURED: Hamming 0, a golden
+     test on the same fixtures the Rust `cr-image` port uses, plus real
+     CDN downloads). No ComicTagger code is copied (it is Apache-2.0;
+     ADR-074 likewise re-implemented rather than copied). Image
+     downloads hit the CV image CDN, not the API, so the pass does NOT
+     spend the API budget (MEASURED: no API path counter moves on the CV
+     status page). Front cover only by default (the lowest `image_id`
+     per issue); `--all-images` hashes the gallery. Pillow is added to
+     `scripts/requirements.txt`, guarded like `rich`.
