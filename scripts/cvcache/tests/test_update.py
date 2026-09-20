@@ -179,6 +179,91 @@ class RateLimitTest(unittest.TestCase):
         c._throttle_for_budget("people")  # must not raise
 
 
+class Http420Test(unittest.TestCase):
+    def _client_with_transport(self, clock, responses):
+        # responses: list of either an HTTPError code (int) to raise, or
+        # a dict body (served as JSON). Consumed in order.
+        c = _client(clock, on_cap="wait", max_per_hour=100)
+        calls = {"i": 0}
+
+        class _Resp:
+            def __init__(self, body):
+                self._body = body
+
+            def read(self):
+                return self._body.encode("utf-8")
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        def fake_urlopen(request, timeout=60):
+            i = calls["i"]
+            calls["i"] += 1
+            item = responses[i]
+            if isinstance(item, int):
+                raise update.urllib.error.HTTPError(
+                    "u", item, "throttle", {}, None)
+            return _Resp(update.json.dumps(item))
+
+        c._urlopen = fake_urlopen
+        return c, calls
+
+    def test_420_backs_off_on_the_ladder_then_succeeds(self):
+        clock = _FakeClock()
+        ok = {"error": "OK", "results": {"id": 1}}
+        c, _ = self._client_with_transport(clock, [420, 420, ok])
+        orig = update.urllib.request.urlopen
+        update.urllib.request.urlopen = c._urlopen
+        try:
+            data = c.get("issue/4000-1", {})
+        finally:
+            update.urllib.request.urlopen = orig
+        self.assertEqual(data["results"]["id"], 1)
+        self.assertEqual(clock.slept, [3.0, 5.0])
+
+    def test_420_past_ladder_raises_rate_limit(self):
+        clock = _FakeClock()
+        c, _ = self._client_with_transport(clock, [420, 420, 420, 420])
+        orig = update.urllib.request.urlopen
+        update.urllib.request.urlopen = c._urlopen
+        try:
+            with self.assertRaises(update.RateLimitReached):
+                c.get("issue/4000-1", {})
+        finally:
+            update.urllib.request.urlopen = orig
+        self.assertEqual(clock.slept, [3.0, 5.0, 10.0])
+
+    def test_420_ladder_is_per_resource_and_resets_on_success(self):
+        clock = _FakeClock()
+        ok = {"error": "OK", "results": {"id": 1}}
+        c, _ = self._client_with_transport(clock, [420, ok, 420, ok])
+        orig = update.urllib.request.urlopen
+        update.urllib.request.urlopen = c._urlopen
+        try:
+            c.get("issue/4000-1", {})
+            c.get("issue/4000-2", {})
+        finally:
+            update.urllib.request.urlopen = orig
+        # Each success reset the ladder, so the second 420 also slept 3s.
+        self.assertEqual(clock.slept, [3.0, 3.0])
+
+    def test_420_backoff_past_deadline_raises_without_sleeping(self):
+        clock = _FakeClock()
+        c, _ = self._client_with_transport(clock, [420, {"error": "OK"}])
+        c.deadline = clock.now() + 1  # a 3s backoff would pass it
+        orig = update.urllib.request.urlopen
+        update.urllib.request.urlopen = c._urlopen
+        try:
+            with self.assertRaises(update.RateLimitReached):
+                c.get("issue/4000-1", {})
+        finally:
+            update.urllib.request.urlopen = orig
+        self.assertEqual(clock.slept, [])
+
+
 class ResourceKeyTest(unittest.TestCase):
     def test_resource_of_first_segment_lowercased(self):
         self.assertEqual(update.resource_of("issues"), "issues")
@@ -486,6 +571,83 @@ class ForwardTotalTest(unittest.TestCase):
             self.assertEqual(seen[0], 3, "total must be set before item 1")
         finally:
             os.remove(path)
+
+
+class RunAllSchedulerTest(unittest.TestCase):
+    def _tmpdb(self):
+        import tempfile, os, sqlite3 as _sq
+        fd, path = tempfile.mkstemp(suffix=".sqlite")
+        os.close(fd)
+        c = _sq.connect(path)
+        schema.create_schema(c)
+        c.commit()
+        c.close()
+        return path
+
+    def test_cycles_resources_then_sleeps_until_all_done(self):
+        import os
+        from pathlib import Path
+        path = self._tmpdb()
+        # Scripted returns per resource key. Each entry is a list of
+        # RichReport results served in call order.
+        R = update.RichReport
+        script = {
+            # forward units: all immediately done (nothing to enrich).
+            "story_arc-f": [R(total=0)],
+            "location-f": [R(total=0)],
+            "team-f": [R(total=0)],
+            "person-f": [R(total=0)],
+            "volume-f": [R(total=0)],
+            "character-f": [R(total=0)],
+            # issues backfill: capped with no room left this hour, then
+            # done after the window frees.
+            "issues-b": [R(total=5, fetched=0, credited=0, stopped_capped=True),
+                         R(total=5, fetched=5, credited=5)],
+            # resource backfills: all done first try.
+            "story_arc-b": [R(total=0)],
+            "location-b": [R(total=0)],
+            "team-b": [R(total=0)],
+            "person-b": [R(total=0)],
+            "volume-b": [R(total=0)],
+            "character-b": [R(total=0)],
+        }
+        idx = {k: 0 for k in script}
+        order = []
+
+        def _serve(key):
+            i = idx[key]
+            idx[key] = min(i + 1, len(script[key]) - 1)
+            order.append(key)
+            return script[key][i]
+
+        orig = (update.rich_resource_forward, update.rich_issue_backfill,
+                update.rich_resource_backfill, update.CvClient.next_free_at)
+        clock = _FakeClock()
+        update.rich_resource_forward = (
+            lambda live_path, resource, **k: _serve(f"{resource}-f"))
+        update.rich_issue_backfill = (
+            lambda live_path, **k: _serve("issues-b"))
+        update.rich_resource_backfill = (
+            lambda live_path, resource, **k: _serve(f"{resource}-b"))
+        # When issues is capped, report it frees 100s from now.
+        update.CvClient.next_free_at = (
+            lambda self, res: clock.now() + 100 if res == "issue" else None)
+        try:
+            rep = update.run_all(
+                Path(path), api_key="k", make_backup=False,
+                _sleep=clock.sleep, _wall=clock.now,
+            )
+        finally:
+            (update.rich_resource_forward, update.rich_issue_backfill,
+             update.rich_resource_backfill, update.CvClient.next_free_at) = orig
+            os.remove(path)
+        # It slept once, for the issue window (100s).
+        self.assertEqual(clock.slept, [100.0])
+        # Issues backfill ran twice (capped, then done after the sleep).
+        self.assertEqual(sum(1 for k in order if k == "issues-b"), 2)
+        # The combined issue total credited across cycles.
+        self.assertEqual(rep.backfill["issues"].credited, 5)
+        self.assertFalse(rep.reached_deadline)
 
 
 if __name__ == "__main__":

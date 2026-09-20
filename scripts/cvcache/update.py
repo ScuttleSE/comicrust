@@ -47,6 +47,10 @@ ENDPOINTS = ("publishers", "people", "volumes", "issues")
 MAX_PER_HOUR = 200
 SAFETY_MARGIN = 5
 RATE_WINDOW_SECONDS = 3600.0
+# HTTP 420 is CV's transport throttle. Per resource, back off on this
+# escalating ladder; a 420 past the last step raises RateLimitReached.
+# A successful request on the resource resets its position to the start.
+HTTP_420_BACKOFF = (3.0, 5.0, 10.0)
 
 # The list-level field_list per endpoint. Only fields the cvcache
 # schema stores are requested, to keep the response small.
@@ -118,6 +122,7 @@ class CvClient:
     ledger: object = None
     _last_call: float = 0.0
     _mem_calls: dict = field(default_factory=dict)  # fallback only
+    _420_steps: dict = field(default_factory=dict)  # per-resource 420 ladder index
     # Injectable for tests; real code uses the wall/monotonic clock.
     _mono: object = time.monotonic
     _wall: object = time.time
@@ -188,25 +193,62 @@ class CvClient:
                 self.on_wait(resource, wait)
             self._sleep(wait)
 
+    def _backoff_420(self, resource: str) -> None:
+        """Handles one HTTP 420 for a resource on the escalating ladder.
+        Sleeps the next ladder step; a 420 past the last step raises
+        RateLimitReached. A sleep that would pass the deadline raises
+        instead of sleeping past it."""
+        step = self._420_steps.get(resource, 0)
+        if step >= len(HTTP_420_BACKOFF):
+            raise RateLimitReached(resource, "(HTTP 420, backoff exhausted)")
+        wait = HTTP_420_BACKOFF[step]
+        self._420_steps[resource] = step + 1
+        now = self._wall()
+        if self.deadline and now + wait >= self.deadline:
+            raise RateLimitReached(resource, "(HTTP 420, deadline before retry)")
+        if self.on_wait is not None:
+            self.on_wait(resource, wait)
+        self._sleep(wait)
+
+    def next_free_at(self, resource: str) -> float | None:
+        """Wall-clock time when `resource` next drops below budget, or
+        None when it is already below budget now. Uses the shared
+        request_log window."""
+        now = int(self._wall())
+        since = now - int(RATE_WINDOW_SECONDS)
+        if self._used_since(resource, since) < self._budget():
+            return None
+        oldest = self._oldest_since(resource, since) or now
+        return oldest + RATE_WINDOW_SECONDS + 1
+
     def get(self, endpoint: str, params: dict) -> dict:
         resource = resource_of(endpoint)
-        self._throttle_for_budget(resource)
         query = {"api_key": self.api_key, "format": "json", **params}
         url = f"{API_BASE}/{endpoint}/?" + urllib.parse.urlencode(query)
-        # A gentle self-imposed spacing avoids a burst inside the budget.
-        wait = self.delay_seconds - (self._mono() - self._last_call)
-        if wait > 0:
-            self._sleep(wait)
-        request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
-        try:
-            with urllib.request.urlopen(request, timeout=60) as response:
-                body = response.read().decode("utf-8", "replace")
-        except urllib.error.HTTPError as exc:
-            # HTTP 429 is the transport-level throttle. Treat it as a
-            # rate-limit stop for this endpoint, not a fatal error.
-            if exc.code == 429:
-                raise RateLimitReached(resource, "(HTTP 429)") from exc
-            raise CvError(f"{endpoint}: HTTP {exc.code}") from exc
+        while True:
+            self._throttle_for_budget(resource)
+            # A gentle self-imposed spacing avoids a burst inside the budget.
+            wait = self.delay_seconds - (self._mono() - self._last_call)
+            if wait > 0:
+                self._sleep(wait)
+            request = urllib.request.Request(url, headers={"User-Agent": USER_AGENT})
+            try:
+                with urllib.request.urlopen(request, timeout=60) as response:
+                    body = response.read().decode("utf-8", "replace")
+            except urllib.error.HTTPError as exc:
+                # HTTP 429 is the transport-level throttle. Treat it as a
+                # rate-limit stop for this endpoint, not a fatal error.
+                if exc.code == 429:
+                    raise RateLimitReached(resource, "(HTTP 429)") from exc
+                # HTTP 420 is CV's own throttle: back off on the ladder
+                # and retry the same request.
+                if exc.code == 420:
+                    self._backoff_420(resource)
+                    continue
+                raise CvError(f"{endpoint}: HTTP {exc.code}") from exc
+            break
+        # A successful request clears the resource's 420 ladder.
+        self._420_steps.pop(resource, None)
         self._last_call = self._mono()
         self._record(resource, int(self._wall()))
         try:
@@ -1190,6 +1232,20 @@ class AllReport:
     reached_deadline: bool = False
 
 
+def _accumulate(store: dict, key: str, r: RichReport) -> None:
+    """Folds a sub-run report into the running total for a unit across
+    the cycles of a `run_all` pass."""
+    prev = store.get(key)
+    if prev is None:
+        store[key] = r
+        return
+    prev.fetched += r.fetched
+    prev.credited += r.credited
+    prev.skipped_missing += r.skipped_missing
+    prev.total = r.total
+    prev.stopped_capped = r.stopped_capped
+
+
 def run_all(
     live_path: Path,
     api_key: str,
@@ -1201,58 +1257,116 @@ def run_all(
     on_phase=None,
     on_progress=None,
     on_wait=None,
+    _sleep=time.sleep,
+    _wall=time.time,
 ) -> AllReport:
-    """One combined enrichment run: forward first (keep current), then
-    backfill (fill history) until `deadline`. Forward always uses
-    `on_cap=wait` so it finishes; backfill uses `backfill_on_cap`
-    (default `stop`) and honors the deadline, so a daily job drains the
-    backlog in the window left after forward and stops cleanly before
-    the next run. hashes are a separate command and not run here."""
+    """One combined enrichment run that drains every resource. Each unit
+    (forward and backfill, per resource) runs with `on_cap=stop`, so a
+    unit that hits its hourly cap yields instead of blocking on one
+    resource. The scheduler cycles the units that still have work; when
+    every remaining unit is capped it sleeps until the earliest resource
+    window frees, then resumes. It ends when no unit has work left, or at
+    the `deadline` when one is set. Forward units run first so "stay
+    current" wins the budget. `backfill_on_cap` is accepted for call
+    compatibility; the scheduler always drives units in stop mode.
+    hashes are a separate command and not run here."""
+    del backfill_on_cap  # the scheduler owns cap handling
     report = AllReport()
 
-    # Phase 1: forward for every resource (issues have no forward pass;
-    # the `update` command's issues sweep is the issue forward).
-    for resource in _RICH_ORDER:
-        if on_phase is not None:
-            on_phase("forward", resource)
-        r = rich_resource_forward(
+    def past_deadline() -> bool:
+        return deadline is not None and _wall() >= deadline
+
+    # A unit: (phase, resource, budget_key, runner). budget_key is the
+    # request_log resource the unit spends, used to time the sleep when
+    # everything is capped.
+    def run_forward(resource):
+        return rich_resource_forward(
             live_path, api_key=api_key, resource=resource,
             delay_seconds=delay_seconds, max_per_hour=max_per_hour,
-            on_cap="wait", make_backup=make_backup,
+            on_cap="stop", make_backup=False,
             on_progress=on_progress, on_wait=on_wait, deadline=deadline,
         )
-        report.forward[resource] = r
-        make_backup = False  # one backup per run is enough
-        if deadline is not None and time.time() >= deadline:
-            report.reached_deadline = True
-            return report
 
-    # Phase 2: backfill. Issues first (the heavy set that also grows the
-    # resource tables), then each resource.
-    if on_phase is not None:
-        on_phase("backfill", "issues")
-    ri = rich_issue_backfill(
-        live_path, api_key=api_key, delay_seconds=delay_seconds,
-        max_per_hour=max_per_hour, on_cap=backfill_on_cap,
-        make_backup=False, on_progress=on_progress, on_wait=on_wait,
-        deadline=deadline,
-    )
-    report.backfill["issues"] = ri
-    if deadline is not None and time.time() >= deadline:
-        report.reached_deadline = True
-        return report
+    def run_issue_backfill(_resource):
+        return rich_issue_backfill(
+            live_path, api_key=api_key, delay_seconds=delay_seconds,
+            max_per_hour=max_per_hour, on_cap="stop", make_backup=False,
+            on_progress=on_progress, on_wait=on_wait, deadline=deadline,
+        )
 
-    for resource in _RICH_ORDER:
-        if on_phase is not None:
-            on_phase("backfill", resource)
-        r = rich_resource_backfill(
+    def run_resource_backfill(resource):
+        return rich_resource_backfill(
             live_path, api_key=api_key, resource=resource,
             delay_seconds=delay_seconds, max_per_hour=max_per_hour,
-            on_cap=backfill_on_cap, make_backup=False,
+            on_cap="stop", make_backup=False,
             on_progress=on_progress, on_wait=on_wait, deadline=deadline,
         )
-        report.backfill[resource] = r
-        if deadline is not None and time.time() >= deadline:
-            report.reached_deadline = True
-            return report
+
+    if make_backup:
+        commands.backup(live_path)
+
+    units = []
+    for resource in _RICH_ORDER:
+        units.append(("forward", resource,
+                      resource_of(_RICH_RESOURCES[resource]["list"]),
+                      report.forward, run_forward))
+    units.append(("backfill", "issues", "issue",
+                  report.backfill, run_issue_backfill))
+    for resource in _RICH_ORDER:
+        units.append(("backfill", resource,
+                      _RICH_RESOURCES[resource]["path"],
+                      report.backfill, run_resource_backfill))
+
+    # A shared client, ledger-backed, only to time the all-capped sleep.
+    ledger = commands.open_v4(live_path)
+    timer = CvClient(api_key=api_key, max_per_hour=max_per_hour, ledger=ledger)
+    try:
+        while units:
+            if past_deadline():
+                report.reached_deadline = True
+                break
+            capped = []
+            progressed = False
+            for phase, resource, budget_key, store, runner in units:
+                if past_deadline():
+                    report.reached_deadline = True
+                    break
+                if on_phase is not None:
+                    on_phase(phase, resource)
+                r = runner(resource)
+                _accumulate(store, resource, r)
+                if r.credited > 0 or r.skipped_missing > 0:
+                    progressed = True
+                if r.stopped_capped and r.remaining > 0:
+                    # Capped with work left; keep for the next cycle.
+                    capped.append((phase, resource, budget_key,
+                                   store, runner))
+            units = capped
+            if report.reached_deadline or not units:
+                break
+            if progressed:
+                # At least one unit advanced this cycle; loop again
+                # without sleeping — another unit's window may be free.
+                continue
+            # Every remaining unit is capped. Sleep until the earliest
+            # window frees, then resume.
+            frees = [t for t in
+                     (timer.next_free_at(u[2]) for u in units)
+                     if t is not None]
+            if not frees:
+                # No cap is recorded (nothing left to do); stop.
+                break
+            wake = min(frees)
+            now = _wall()
+            wait = wake - now
+            if wait <= 0:
+                continue
+            if deadline is not None and wake >= deadline:
+                report.reached_deadline = True
+                break
+            if on_wait is not None:
+                on_wait("all", wait)
+            _sleep(wait)
+    finally:
+        ledger.close()
     return report

@@ -28,7 +28,7 @@ The `rich` modes:
 
 | `--mode` | Fills | Direction |
 |---|---|---|
-| `all` | forward every resource, then backfill until `--until` | both |
+| `all` | forward every resource, then backfill every resource; cycles resources and drains the whole backlog | both |
 | `issues-backfill` | issue `credit` + `issue_image` rows | backfill |
 | `person-backfill` `character-backfill` `volume-backfill` `team-backfill` `location-backfill` `story_arc-backfill` | resource `detail_json` for rows that have none | backfill |
 | `person-forward` `character-forward` `volume-forward` `team-forward` `location-forward` `story_arc-forward` | resource `detail_json` for rows changed since the watermark | forward |
@@ -268,7 +268,12 @@ forward only touches what changed. Do the heavy filling with the
 The `rich` command has a combined `all` mode built for one cron entry:
 it runs the **forward** pass for every resource first (keeps the
 enriched data current — cheap, finishes in minutes), then **backfills**
-history until a deadline you set with `--until`.
+history for every resource. It drives every unit in stop-on-cap mode and
+cycles the units that still have work: when one resource reaches its
+hourly cap it moves to the next resource, and it sleeps only when every
+remaining resource is capped, until the earliest window frees. With no
+`--until` it drains the whole backlog in one long-running process; with
+`--until` it stops cleanly at the deadline (resumable).
 
 ```sh
 # 05:00 daily: forward everything, then backfill until 04:00 (one hour
@@ -281,9 +286,19 @@ python3 -m scripts.cvcache rich --into cvcache.sqlite --api-key YOUR_KEY \
 > `--mode all`, or its forward phase will start from the 1970 floor and
 > do a large list walk on that first run.
 
-- **Forward always runs to completion** (`on_cap=wait` internally) so
-  "stay current" wins the budget; **backfill honors the deadline** and
-  uses `--on-cap stop` by default, so it never sleeps past the deadline.
+- **`all` drains every resource in one run.** A resource that reaches its
+  hourly cap yields to the next resource instead of blocking; the run
+  sleeps only when all remaining resources are capped, then resumes at
+  the earliest freed window. Forward units run before backfill units, so
+  "stay current" wins the budget. `--on-cap` does not apply to `all`; the
+  scheduler owns cap handling. (For the single-resource modes, `--on-cap
+  wait` sleeps until the window frees and `--on-cap stop` returns a
+  resumable stop.)
+- **HTTP 420** is CV's transport throttle. The client backs off per
+  resource on a fixed ladder — 3s, then 5s, then 10s — and retries; a
+  420 past the last step is treated as a rate-limit stop for that
+  resource (resumable), not a crash. A successful request resets the
+  ladder.
 - `--until "HH:MM"` that is already past today rolls to tomorrow, so a
   05:00 job with `--until "04:00"` targets the next 04:00, not an instant
   stop. `--for <minutes>` is an alternative (stop N minutes from now).

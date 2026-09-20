@@ -396,7 +396,10 @@ def main(argv=None) -> int:
                         help="minimum seconds between API calls")
     p_rich.add_argument("--max-per-hour", type=int,
                         default=update_mod.MAX_PER_HOUR)
-    p_rich.add_argument("--on-cap", choices=("wait", "stop"), default="wait")
+    p_rich.add_argument("--on-cap", choices=("wait", "stop"), default="wait",
+                        help="single-resource modes only; ignored by 'all', "
+                             "which cycles resources and sleeps only when all "
+                             "are capped")
     p_rich.add_argument("--quiet", action="store_true")
     p_rich.add_argument("--no-backup", action="store_true")
     p_rich.set_defaults(func=_cmd_rich)

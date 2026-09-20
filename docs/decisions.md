@@ -1243,3 +1243,37 @@ response carries them, and the merge rule protects stored values.
      pass reports a `remaining=<n>` count (rows still needing
      enrichment). `hashes` stays a separate job. The cron setup is in
      `scripts/cvcache/README.md`.
+
+## ADR-076: `rich --mode all` drains every resource; HTTP 420 backoff
+
+Context: The combined `all` job (ADR-075) ran the forward pass, then the
+backfills, once each in a straight line. In `on_cap=wait` it slept on the
+first capped resource until that resource's window freed, so it drained
+one resource at a time and did not spend the free budget of the other
+resources meanwhile. Separately, CV returns `HTTP 420` (a transport
+throttle that is not documented for the API) which the client mapped to a
+fatal `CvError`; this crashed a running `all` job (MEASURED: a live run
+stopped on `issue/4000-1193423: HTTP 420`).
+
+Decision:
+
+1. **`all` cycles resources and sleeps only when all are capped.** Every
+   unit (forward per resource, then issue backfill, then backfill per
+   resource) runs with `on_cap=stop`. A unit that reaches its hourly cap
+   yields; the scheduler keeps the units that still have work and cycles
+   them. When every remaining unit is capped, it sleeps until the
+   earliest resource window frees (computed from `request_log`), then
+   resumes. It ends when no unit has work left, or at the `--until`
+   deadline. Forward units run before backfill units, so "stay current"
+   still wins the budget. `--on-cap` no longer applies to `all` (the
+   scheduler owns cap handling); it still applies to the
+   single-resource modes.
+
+2. **HTTP 420 is a per-resource backoff, not a crash.** On a 420 the
+   client sleeps on a fixed ladder — 3s, then 5s, then 10s — and retries
+   the same request. A 420 past the last step raises `RateLimitReached`
+   for that resource (a resumable stop), not a fatal error. The ladder is
+   tracked per resource and resets on the resource's next success. A
+   backoff sleep that would pass the deadline raises instead of sleeping
+   past it, matching the budget-wait rule. The ladder value is a fixed
+   choice; CV does not document 420, so no `Retry-After` is assumed.
