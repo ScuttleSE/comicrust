@@ -177,6 +177,9 @@ pub struct AuditApply {
     /// The losing library book to remove first when the fix takes a
     /// path currently held by another library book.
     pub remove_loser: Option<cr_core::xml::scalar::CrGuid>,
+    /// Delete this audited (wrong-place) book instead of moving it —
+    /// the existing copy at the planned path won the collision.
+    pub delete_audited: bool,
 }
 
 /// A colliding row's resolution. `Unresolved` rows are not applied.
@@ -186,7 +189,7 @@ enum Resolution {
     None,
     /// Move the audited book; remove the losing existing book.
     KeepAudited,
-    /// Leave the audited book where it is (skip this row).
+    /// The existing book wins; delete the audited (wrong-place) book.
     KeepExisting,
     /// A collision the user has not decided yet.
     Unresolved,
@@ -630,22 +633,25 @@ fn show_audit_results(
                 }
                 let item = &items[row_index];
                 let book_id = books[item.book_index].id;
-                let remove_loser = match row.resolution.get() {
-                    Resolution::None => None,
+                let (remove_loser, delete_audited) = match row.resolution.get() {
+                    Resolution::None => (None, false),
                     Resolution::KeepAudited => match &item.collision {
                         Some(cr_organize::engine::AuditCollision::LibraryBook { book_index }) => {
-                            Some(books[*book_index].id)
+                            (Some(books[*book_index].id), false)
                         }
                         // AnotherAudited: no library loser to remove.
-                        _ => None,
+                        _ => (None, false),
                     },
-                    // KeepExisting / Unresolved / Blocked never apply.
+                    // The existing copy won: delete the wrong-place book.
+                    Resolution::KeepExisting => (None, true),
+                    // Unresolved / Blocked never apply.
                     _ => continue,
                 };
                 if seen.insert(book_id) {
                     applies.push(AuditApply {
                         book_id,
                         remove_loser,
+                        delete_audited,
                     });
                 }
             }
@@ -676,9 +682,9 @@ fn apply_resolution(
             status.set_text("Duplicate: keep this copy; remove the existing one.");
         }
         Resolution::KeepExisting => {
-            check.set_sensitive(false);
-            check.set_active(false);
-            status.set_text("Duplicate: keep the existing copy; this move is skipped.");
+            check.set_sensitive(true);
+            check.set_active(true);
+            status.set_text("Duplicate: remove this wrong-place copy; keep the existing one.");
         }
         _ => {}
     }
@@ -729,7 +735,7 @@ fn show_audit_compare(
 
     let keep_audited = gtk4::Button::with_label("Keep Audited (remove existing)");
     keep_audited.add_css_class("suggested-action");
-    let keep_existing = gtk4::Button::with_label("Keep Existing (skip move)");
+    let keep_existing = gtk4::Button::with_label("Keep Existing (delete this copy)");
     let cancel = gtk4::Button::with_label("Cancel");
     let button_row = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
     button_row.append(&keep_audited);

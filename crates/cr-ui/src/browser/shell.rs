@@ -5750,24 +5750,36 @@ impl ShellState {
         );
     }
 
-    /// Applies the audit fixes: remove each losing library book first
-    /// (so the destination is free), then run a Move over the chosen
-    /// books.
+    /// Applies the audit fixes: trash and remove each losing/wrong-place
+    /// book first (so destinations are free), then run a Move over the
+    /// remaining chosen books.
     fn apply_audit_fixes(
         self: &Rc<ShellState>,
         applies: Vec<crate::dialogs::organize::AuditApply>,
         profiles: Vec<cr_organize::profile::Profile>,
     ) {
-        let losers: Vec<CrGuid> = applies.iter().filter_map(|a| a.remove_loser).collect();
-        if !losers.is_empty() {
+        // Every book to delete: a losing existing copy of a Keep-Audited
+        // row, plus the wrong-place book of a Keep-Existing row.
+        let mut remove_ids: Vec<CrGuid> = Vec::new();
+        for apply in &applies {
+            if let Some(loser) = apply.remove_loser {
+                remove_ids.push(loser);
+            }
+            if apply.delete_audited {
+                remove_ids.push(apply.book_id);
+            }
+        }
+        remove_ids.sort_unstable_by_key(|id| id.to_d_string());
+        remove_ids.dedup();
+
+        if !remove_ids.is_empty() {
             if let Some(operation) = cr_engine::incoming_transaction::try_begin_operation() {
-                // The loser sits at the exact planned path; trash its
-                // file so the following Move lands cleanly, then drop it
-                // from the library.
+                // Trash each file so a following Move lands cleanly, then
+                // drop the book from the library.
                 let paths: Vec<String> = {
                     let lib = library::session();
                     let l = lib.borrow();
-                    losers
+                    remove_ids
                         .iter()
                         .filter_map(|id| {
                             l.database()
@@ -5785,7 +5797,7 @@ impl ShellState {
                             .status();
                     }
                 }
-                for id in &losers {
+                for id in &remove_ids {
                     library::remove_book_from_organizer(id, &operation);
                 }
                 drop(operation);
@@ -5799,10 +5811,14 @@ impl ShellState {
                 return;
             }
         }
-        // Re-snapshot after the removals so the indexes are valid.
+        // Re-snapshot after the removals so the indexes are valid. Only
+        // the rows that MOVE a book (not the delete-audited rows) run.
         let (books, _) = Self::audit_snapshot(&profiles);
-        let chosen_ids: std::collections::HashSet<CrGuid> =
-            applies.iter().map(|a| a.book_id).collect();
+        let chosen_ids: std::collections::HashSet<CrGuid> = applies
+            .iter()
+            .filter(|a| !a.delete_audited)
+            .map(|a| a.book_id)
+            .collect();
         let selected: Vec<usize> = books
             .iter()
             .enumerate()
