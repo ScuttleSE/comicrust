@@ -104,7 +104,38 @@ evidence the all-endpoint update rests on.
 
 ## Current task for the next context
 
-Phase 21 T9 (user tests) is the remaining Phase 21 work. The full
+**Handover (2026-09-27): two defect fixes shipped, awaiting user
+retest.** Both are UI behavior, so a passing build does not close them —
+the user must run the procedures in `docs/open-user-tests.md` (tests 1
+and 9). Commit `76634cc`.
+
+1. **Test 1 — library-tree gauge badges (real logic bug).** The three
+   gauges were mutually exclusive by age, so Unread read 0 and New
+   equaled Total on a recent library. They are now INDEPENDENT counts:
+   Total = all books, Unread = not read (`ReadPercentage < 95`, any
+   age), New = added within the window (any read state).
+   - `crates/cr-engine/src/gauges.rs`: `is_unread` + `is_new` replace
+     `classify`/`BookClass`.
+   - `crates/cr-ui/src/browser/navigator.rs`: removed the render merge
+     that folded New into Unread.
+   - New window is configurable: Preferences ▸ Advanced ▸ Library Tree
+     ("Show books as New for (days)", the `IsRecentInDays` engine key).
+     Persist path added: `EngineConfiguration::global_mut()` and
+     `cr_core::settings::unified::update_engine_keys` (the engine-section
+     analogue of `update_extended_keys`).
+   - MEASURED: `gauges_probe` on the real shell passes all five gates
+     with the new counts.
+
+2. **Test 9 — Library Organizer simulate report (dropped output).** The
+   run completion callback bound the report as `_report` and never
+   showed it. Now it calls `show_report_dialog`
+   (`crates/cr-ui/src/browser/shell.rs`), and the per-operation log
+   lines are collected during the run and appended to the report text
+   (`crates/cr-ui/src/dialogs/organize.rs`) so the planned moves survive
+   the window close. Open question for the user: whether the report
+   shape (count summary + per-file lines) is what they want.
+
+**Phase 21 T9 (user tests) is the remaining Phase 21 work.** The full
 cvcache script enrichment toolset (see "Latest user finding") is done
 and verified; the user is running the long backfills.
 
@@ -243,6 +274,15 @@ not claim that the present combination is permissible. `cargo deny check
 licenses` is not a CI gate.
 
 ## Latest verification
+
+The gauge-badge and organizer-report defect fixes (tests 1 and 9)
+passed the gates on 2026-09-27:
+
+- `cargo fmt --all`, `cargo clippy --workspace --all-targets --
+  -D warnings`, `cargo test --workspace`: passed.
+- `MEASURED` (2026-09-27): `gauges_probe` on the real shell under Xvfb
+  passed all five gates (A startup, E New-flag-off, D master-off, B
+  read-move, C delete) with the independent-count model.
 
 The cvcache script enrichment toolset and schema v8 (ADR-075
 amendments) passed on 2026-09-20.
