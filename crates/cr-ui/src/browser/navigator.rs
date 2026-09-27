@@ -1430,13 +1430,7 @@ pub fn row_markup(
         out.push_str(&badge(BADGE_TOTAL_BG, base.book_count));
     }
     if flag_unread {
-        // The New badge carries its own count when shown; merged here
-        // when not (`DrawMarkers` lines 81-85).
-        let mut n = base.unread_book_count;
-        if !flag_new {
-            n += base.new_book_count;
-        }
-        out.push_str(&badge(BADGE_UNREAD_BG, n));
+        out.push_str(&badge(BADGE_UNREAD_BG, base.unread_book_count));
     }
     if flag_new {
         out.push_str(&badge(BADGE_NEW_BG, base.new_book_count));
@@ -1554,17 +1548,18 @@ mod tests {
     }
 
     #[test]
-    fn zero_and_flagged_out_badges_hide_and_new_merges_into_unread() {
-        // A zero badge hides (the C# `DrawMarkers` flag conditions).
+    fn zero_and_flagged_out_badges_hide_and_counts_are_independent() {
+        // A zero badge hides (the flag conditions). base(total, new, unread).
         let m = row_markup("L", &base(5, 0, 2), true, ALL);
         assert!(m.contains("#008000"));
         assert!(m.contains("#ffa500"));
         assert!(!m.contains("#ff0000"));
-        // New flag off → its count merges into the Unread badge.
+        // New flag off → the red badge hides; Unread is unchanged
+        // (the counts no longer merge). base(5, 3, 2): new 3, unread 2.
         let no_new = cr_core::settings::enums::LibraryGauges(0x1006);
         let m = row_markup("L", &base(5, 3, 2), true, no_new);
         assert!(m.contains("#008000"));
-        assert!(m.contains("#ffa500\" foreground=\"#ffffff\" size=\"7680\"> 5 </span>"));
+        assert!(m.contains("#ffa500\" foreground=\"#ffffff\" size=\"7680\"> 2 </span>"));
         assert!(!m.contains("#ff0000"));
         // Unread flag off, New on → only total and new.
         let no_unread = cr_core::settings::enums::LibraryGauges(0x1005);

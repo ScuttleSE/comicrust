@@ -392,6 +392,12 @@ impl EngineConfiguration {
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         EngineConfigurationGuard(guard)
     }
+
+    pub fn global_mut() -> std::sync::RwLockWriteGuard<'static, EngineConfiguration> {
+        let lock = GLOBAL.get_or_init(|| std::sync::RwLock::new(EngineConfiguration::default()));
+        lock.write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
 }
 
 /// The read guard for the [`EngineConfiguration`] global (the

@@ -4,8 +4,8 @@
 //! boots the real shell, and gates:
 //!   A  the startup pass fills Total/Unread/New for the Library root,
 //!      a folder (combined from children), and two reading lists
-//!   E  the `LibraryGaugesFormat` flag matrix (New off → merges into
-//!      the Unread badge)
+//!   E  the `LibraryGaugesFormat` flag matrix (New off → the red
+//!      badge hides; Unread is unchanged)
 //!   D  `DisplayLibraryGauges=false` hides every badge
 //!   B  a read commit moves a book out of New
 //!   C  a delete drops the counters
@@ -72,8 +72,8 @@ fn main() {
         std::fs::remove_dir_all(db_dir).unwrap();
     }
 
-    // Six books: b1 read; b2 + b5 unread-fresh (New); b3, b4, b6
-    // unread-old (Unread).
+    // Six books: b1 read (and new); b2 + b5 unread-fresh (New too);
+    // b3, b4, b6 unread-old.
     let b1 = seed_book("g-read", Some((19, 20)), 1.0);
     let b2 = seed_book("g-new", None, 1.0);
     let b3 = seed_book("g-old1", None, 30.0);
@@ -82,10 +82,10 @@ fn main() {
     let b6 = seed_book("g-old3", None, 30.0);
     let (b2_id,) = (b2.id,);
 
-    // A = [b1, b2, b3] → total 3, new 1, unread 1
-    // B = [b2, b4]      → total 2, new 1, unread 0
-    // Folder F(Or)[A, B] → total 4, new 1, unread 1
-    // Library root      → total 6, new 1, unread 4
+    // A = [b1, b2, b3] → total 3, unread 2 (b2,b3), new 2 (b1,b2)
+    // B = [b2, b4]      → total 2, unread 2 (b2,b4), new 1 (b2)
+    // Folder F(Or)[A, B] → total 4, unread 3, new 2
+    // Library root      → total 6, unread 5, new 3
     let a = id_list("gauge A", &[b1.id, b2.id, b3.id]);
     let b = id_list("gauge B", &[b2.id, b4.id]);
     let folder = ComicListItem::Folder(FolderItem {
@@ -187,20 +187,19 @@ fn main() {
                 let ok = check_rows(
                     &shell,
                     &[
-                        // b5 is also New: Library = 6 total, 3 unread
-                        // (b3, b4, b6), 2 new (b2, b5), 1 read (b1).
-                        ("Library", &[&green(6), &orange(3), &red(2)]),
-                        // F = A ∪ B = {b1, b2, b3, b4}: 4 total,
-                        // unread b3 + b4 = 2, new b2 = 1.
-                        ("gauge folder", &[&green(4), &orange(2), &red(1)]),
-                        ("gauge A", &[&green(3), &orange(1), &red(1)]),
-                        // B = {b2, b4}: 2 total, 1 unread, 1 new.
-                        ("gauge B", &[&green(2), &orange(1), &red(1)]),
+                        // Counts are independent: Total = all, Unread
+                        // = not read (any age), New = added < 14d (any
+                        // read state). b1 is read AND new.
+                        ("Library", &[&green(6), &orange(5), &red(3)]),
+                        ("gauge folder", &[&green(4), &orange(3), &red(2)]),
+                        ("gauge A", &[&green(3), &orange(2), &red(2)]),
+                        ("gauge B", &[&green(2), &orange(2), &red(1)]),
                     ],
                     &[],
                 );
                 println!("A badges-after-startup ok={ok}");
-                // ---- Gate E: the New flag off merges New into Unread.
+                // ---- Gate E: the New flag off hides the red badge;
+                // Unread is unchanged (the counts no longer merge).
                 cr_ui::library::settings()
                     .borrow_mut()
                     .library_gauges_format =
@@ -211,9 +210,9 @@ fn main() {
                 let ok_e = check_rows(
                     &shell,
                     &[("Library", &[&green(6), &orange(5)])],
-                    &[("Library", &[&red(1)]), ("gauge A", &[&red(1)])],
+                    &[("Library", &[&red(3)]), ("gauge A", &[&red(2)])],
                 );
-                println!("E no-new-flag merge ok={ok_e}");
+                println!("E no-new-flag hides red ok={ok_e}");
                 // ---- Gate D: the master switch hides every badge.
                 cr_ui::library::settings()
                     .borrow_mut()
@@ -261,16 +260,13 @@ fn main() {
                     let ok = check_rows(
                         &shell_b,
                         &[
-                            ("Library", &[&green(6), &orange(3), &red(1)]),
-                            ("gauge folder", &[&green(4), &orange(2)]),
-                            ("gauge A", &[&green(3), &orange(1)]),
-                            ("gauge B", &[&green(2), &orange(1)]),
+                            // b2 now read: leaves Unread, stays New.
+                            ("Library", &[&green(6), &orange(4), &red(3)]),
+                            ("gauge folder", &[&green(4), &orange(2), &red(2)]),
+                            ("gauge A", &[&green(3), &orange(1), &red(2)]),
+                            ("gauge B", &[&green(2), &orange(1), &red(1)]),
                         ],
-                        &[
-                            ("gauge folder", &[&red(1)]),
-                            ("gauge A", &[&red(1)]),
-                            ("gauge B", &[&red(1)]),
-                        ],
+                        &[],
                     );
                     println!("B read-move ok={ok}");
 
@@ -282,12 +278,12 @@ fn main() {
                         let ok = check_rows(
                             &shell_c,
                             &[
-                                ("Library", &[&green(5), &orange(3), &red(1)]),
-                                ("gauge folder", &[&green(3), &orange(2)]),
-                                ("gauge A", &[&green(2), &orange(1)]),
+                                ("Library", &[&green(5), &orange(4), &red(2)]),
+                                ("gauge folder", &[&green(3), &orange(2), &red(1)]),
+                                ("gauge A", &[&green(2), &orange(1), &red(1)]),
                                 ("gauge B", &[&green(1), &orange(1)]),
                             ],
-                            &[],
+                            &[("gauge B", &[&red(1)])],
                         );
                         println!("C delete-drop ok={ok}");
                         let all = ok;

@@ -206,11 +206,14 @@ of test 25 (the propagation report) still needs a check.
 
 The procedures are in `docs/open-user-tests.md`.
 
-- Test 1: Library-tree gauge badges failed. No orange Unread badge appeared,
-  and red New equaled green Total.
+- Test 1: Library-tree gauge badges. `FIX APPLIED` (2026-09-27, awaiting
+  user retest): the three gauges are now independent counts, and the "New"
+  window is configurable in Preferences ▸ Advanced ▸ Library Tree.
 - Test 4: Select Worst Duplicates is passable. `UNKNOWN`: the requested
   improvement is not specified.
-- Test 9: Library Organizer simulation showed no report.
+- Test 9: Library Organizer simulation. `FIX APPLIED` (2026-09-27, awaiting
+  user retest): the dropped simulate report now shows, with the planned
+  operations listed.
 - Test 25: Cached series metadata propagation is not complete. The Proposed
   Number regression now passes on the real library.
 

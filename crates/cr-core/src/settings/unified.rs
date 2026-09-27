@@ -416,6 +416,28 @@ fn data_section() -> DataSection {
 /// (the old ini merge-writer's replacement; takes effect on the next
 /// save/boot). The key match is case-insensitive like the ini was —
 /// a stored key keeps its position, the canonical spelling replaces.
+/// Updates the in-memory `[engine]` section keys (case-insensitive).
+/// The saved document reads this section back, so a later save
+/// persists the change. Callers also update
+/// `EngineConfiguration::global_mut()` for the live value.
+pub fn update_engine_keys<'a>(keys: &[(&'a str, &'a str)]) {
+    let mut sec = ENGINE_SECTION
+        .write()
+        .unwrap_or_else(std::sync::PoisonError::into_inner);
+    for (key, value) in keys {
+        let existing = sec.keys().find(|k| k.eq_ignore_ascii_case(key)).cloned();
+        match existing {
+            Some(k) => {
+                sec.remove(&k);
+                sec.insert(k, text_to_value(value));
+            }
+            None => {
+                sec.insert(key.to_string(), text_to_value(value));
+            }
+        }
+    }
+}
+
 pub fn update_extended_keys<'a>(keys: &[(&'a str, &'a str)]) {
     let mut sec = EXTENDED_SECTION
         .write()

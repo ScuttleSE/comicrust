@@ -18,14 +18,20 @@ partial pass.
 
 ## 1. Library-tree gauge badges
 
-`FAIL` on 2026-09-18 (user): Only the red (New) and green (Total) badges
-appear. The orange (Unread) badge never renders. The red and green badges
-always show the same number. See Outstanding issue in `docs/current-status.md`.
+`FIX APPLIED` (2026-09-27, awaiting user retest): the three gauges are
+now INDEPENDENT counts — Total = all books, Unread = not read
+(`ReadPercentage < 95`, any age), New = added within the "New" window
+(any read state). Before, New and Unread were mutually exclusive by
+age, so Unread read 0 and New equaled Total on a recent library. The
+"New for (days)" window is configurable in Preferences ▸ Advanced ▸
+Library Tree (`IsRecentInDays`, default 14).
 
 Open lists, folders, and the Library root. Confirm that green Total, orange
 Unread, and red New badges match known counts. A zero count must be hidden.
 Read a book to 100%, then delete one book. Confirm that the badges update.
 Restart and confirm that the last counts appear before the refresh completes.
+Change the "New for (days)" value in Preferences and confirm the red New
+count changes.
 
 ## 4. Select Worst Duplicates
 
@@ -41,8 +47,11 @@ unselected.
 
 ## 9. Library Organizer simulation
 
-`FAIL` on 2026-09-18 (user): Simulate ran but no report appeared. See
-Outstanding issue in `docs/current-status.md`.
+`FIX APPLIED` (2026-09-27, awaiting user retest): the run completion
+callback dropped the report text (bound as `_report`), so no report
+appeared. It now shows the report through `show_report_dialog`, and the
+per-operation log lines (the planned moves) are collected during the run
+and appended to the report so they survive the window close.
 
 Open Library Organizer for a book. Confirm the Default profile and templates.
 Select Simulate and a scratch base folder. Run it. Confirm that the report

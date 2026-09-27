@@ -9,13 +9,18 @@
 //! C# `BookCount` / `NewBookCount` / `UnreadBookCount` fields the
 //! port already round-trips in `ListItemBase`.
 //!
-//! The classification is per book over the LIST's book set:
-//! `HasBeenRead` (`ReadPercentage >= 95`) → read, counts nowhere
-//! except Total; otherwise `(now - AddedTime).TotalDays <
-//! IsRecentInDays` (default 14) → New, else Unread. `now` is
-//! snapshotted by the caller per pass (the C# snapshots it per cache
-//! commit). An `AddedTime` of MinValue is ancient and classifies as
-//! Unread.
+//! The classification is per book over the LIST's book set, with
+//! three INDEPENDENT counts:
+//! - Total: every book.
+//! - Unread: `!HasBeenRead` (`ReadPercentage < 95`), any age.
+//! - New: added within the recent window
+//!   (`(now - AddedTime).TotalDays < IsRecentInDays`, default 14),
+//!   any read state.
+//!
+//! A book can count in more than one gauge (a recently added, not yet
+//! read book counts in both Unread and New). `now` is snapshotted by
+//! the caller per pass. An `AddedTime` of MinValue is ancient and is
+//! not New.
 
 use std::collections::HashSet;
 
@@ -28,19 +33,8 @@ use cr_core::xml::scalar::{CrDateTime, CrGuid};
 use crate::lists::evaluate_list;
 use crate::matcher::book_view;
 
-/// The `CreateBookCacheStatus` class of one book.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum BookClass {
-    /// `HasBeenRead` — counts toward Total only.
-    Read,
-    /// Unread and added longer ago than the recent window.
-    Unread,
-    /// Unread and added within the recent window.
-    New,
-}
-
-/// The per-list counters (`ComicListItem.BookCount` /
-/// `NewBookCount` / `UnreadBookCount`).
+/// The per-list counters. Total / Unread / New are independent: a
+/// book can count in more than one.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Gauges {
     pub total: i32,
@@ -48,25 +42,21 @@ pub struct Gauges {
     pub unread: i32,
 }
 
-/// `ComicListItem.CreateBookCacheStatus`: the class of one book
-/// against the `now` snapshot and the `IsRecentInDays` window.
-pub fn classify(book: &ComicBook, now: &CrDateTime, recent_days: i32) -> BookClass {
-    if book_view::has_been_read(book) {
-        return BookClass::Read;
-    }
-    // `(now - cb.AddedTime).TotalDays < IsRecentInDays`. A fractional
-    // day comparison (the C# TimeSpan.TotalDays), so a book added
-    // 13.5 days ago is still New. A future AddedTime gives a negative
-    // span and classifies as New — the C# compares the same way.
-    let days = (now.naive - book.added_time.naive).num_seconds() as f64 / 86400.0;
-    if days < f64::from(recent_days) {
-        BookClass::New
-    } else {
-        BookClass::Unread
-    }
+/// True when the book is not yet read (`ReadPercentage < 95`).
+pub fn is_unread(book: &ComicBook) -> bool {
+    !book_view::has_been_read(book)
 }
 
-/// Counts the classes over one list's book set (one pass).
+/// True when the book was added within the recent window
+/// (`(now - AddedTime).TotalDays < recent_days`). A fractional day
+/// comparison, so a book added 13.5 days ago with a 14-day window is
+/// New. A future AddedTime gives a negative span and is New.
+pub fn is_new(book: &ComicBook, now: &CrDateTime, recent_days: i32) -> bool {
+    let days = (now.naive - book.added_time.naive).num_seconds() as f64 / 86400.0;
+    days < f64::from(recent_days)
+}
+
+/// Counts the three independent gauges over one list's book set.
 pub fn gauge_counts<'a>(
     books: impl IntoIterator<Item = &'a ComicBook>,
     now: &CrDateTime,
@@ -75,10 +65,11 @@ pub fn gauge_counts<'a>(
     let mut g = Gauges::default();
     for book in books {
         g.total += 1;
-        match classify(book, now, recent_days) {
-            BookClass::Read => {}
-            BookClass::New => g.new += 1,
-            BookClass::Unread => g.unread += 1,
+        if is_unread(book) {
+            g.unread += 1;
+        }
+        if is_new(book, now, recent_days) {
+            g.new += 1;
         }
     }
     g
@@ -165,51 +156,57 @@ mod tests {
     }
 
     #[test]
-    fn classification_matches_the_c_sharp_predicate() {
+    fn classification_matches_the_independent_gauges() {
         let now = CrDateTime::now();
-        // ReadPercentage (19+1)*100/20 = 100 → read, regardless of age.
+        // ReadPercentage (19+1)*100/20 = 100 → read (not Unread), any age.
         let read = book_at(now, Some((19, 20)), 1.0);
-        assert_eq!(classify(&read, &now, 14), BookClass::Read);
-        // ReadPercentage 40 → not read; added 1 day ago → New.
+        assert!(!is_unread(&read));
+        assert!(is_new(&read, &now, 14)); // added 1 day ago → still New
+                                          // ReadPercentage 40 → not read → Unread; added 1 day → New too.
         let fresh_unread = book_at(now, Some((3, 10)), 1.0);
-        assert_eq!(classify(&fresh_unread, &now, 14), BookClass::New);
-        // Unread, added 30 days ago → Unread.
+        assert!(is_unread(&fresh_unread));
+        assert!(is_new(&fresh_unread, &now, 14));
+        // Unread, added 30 days ago → Unread, not New.
         let old_unread = book_at(now, Some((3, 10)), 30.0);
-        assert_eq!(classify(&old_unread, &now, 14), BookClass::Unread);
-        // The boundary: EXACTLY 14 days is not < 14 → Unread.
+        assert!(is_unread(&old_unread));
+        assert!(!is_new(&old_unread, &now, 14));
+        // The boundary: EXACTLY 14 days is not < 14 → not New.
         let edge = book_at(now, Some((0, 10)), 14.0);
-        assert_eq!(classify(&edge, &now, 14), BookClass::Unread);
+        assert!(!is_new(&edge, &now, 14));
         // Fractional: 13.5 days is still New.
         let frac = book_at(now, Some((0, 10)), 13.5);
-        assert_eq!(classify(&frac, &now, 14), BookClass::New);
-        // MinValue AddedTime is ancient → Unread.
+        assert!(is_new(&frac, &now, 14));
+        // MinValue AddedTime is ancient → not New.
         let mut ancient = book_at(now, Some((0, 10)), 0.0);
         ancient.added_time = CrDateTime::min_value();
-        assert_eq!(classify(&ancient, &now, 14), BookClass::Unread);
+        assert!(!is_new(&ancient, &now, 14));
         // A future AddedTime gives a negative span → New.
         let mut future = book_at(now, Some((0, 10)), 0.0);
         future.added_time = CrDateTime {
             naive: now.naive + chrono::Duration::days(2),
             kind: cr_core::xml::scalar::DateKind::Unspecified,
         };
-        assert_eq!(classify(&future, &now, 14), BookClass::New);
+        assert!(is_new(&future, &now, 14));
     }
 
     #[test]
-    fn gauge_counts_totals_the_three_classes() {
+    fn gauge_counts_totals_the_three_independent_gauges() {
         let now = CrDateTime::now();
         let books = vec![
-            book_at(now, Some((19, 20)), 1.0), // read
-            book_at(now, Some((0, 10)), 1.0),  // new
-            book_at(now, Some((0, 10)), 1.0),  // new
-            book_at(now, Some((0, 10)), 30.0), // unread
+            book_at(now, Some((19, 20)), 1.0), // read, new
+            book_at(now, Some((0, 10)), 1.0),  // unread, new
+            book_at(now, Some((0, 10)), 1.0),  // unread, new
+            book_at(now, Some((0, 10)), 30.0), // unread, not new
         ];
+        // Total 4; Unread = 3 (all but the read one); New = 3 (all but
+        // the 30-day-old one). The read+new book counts in New but not
+        // Unread; the old unread book counts in Unread but not New.
         assert_eq!(
             gauge_counts(&books, &now, 14),
             Gauges {
                 total: 4,
-                new: 2,
-                unread: 1
+                new: 3,
+                unread: 3
             }
         );
     }

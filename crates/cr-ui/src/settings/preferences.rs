@@ -241,6 +241,13 @@ fn spin_row(title: &str, min: f64, max: f64, step: f64, value: f64) -> (GtkBox, 
     (row, spin)
 }
 
+/// A labeled integer `SpinButton` row (digits 0).
+fn int_spin_row(title: &str, min: i32, max: i32, value: i32) -> (GtkBox, SpinButton) {
+    let (row, spin) = spin_row(title, min as f64, max as f64, 1.0, value as f64);
+    spin.set_digits(0);
+    (row, spin)
+}
+
 /// The Reader page: the navigation options (`MainForm.UpdateSettings`
 /// reads these from the settings on every change).
 fn build_reader_page(settings: &SettingsRef) -> GtkBox {
@@ -865,6 +872,25 @@ fn build_advanced_page(settings: &SettingsRef) -> GtkBox {
     page.set_margin_bottom(8);
     page.set_margin_start(8);
     page.set_margin_end(8);
+
+    page.append(&section_label("Library Tree"));
+    // The "New" gauge window: a book added within this many days
+    // counts in the red New badge. Writes the engine ini key and the
+    // live global at change time; the tree re-counts on OK.
+    let (row, days_spin) = int_spin_row(
+        "Show books as New for (days)",
+        1,
+        3650,
+        cr_core::settings::EngineConfiguration::global().is_recent_in_days,
+    );
+    days_spin.connect_value_changed(move |sp| {
+        let days = sp.value_as_int();
+        cr_core::settings::EngineConfiguration::global_mut().is_recent_in_days = days;
+        cr_core::settings::unified::update_engine_keys(&[("IsRecentInDays", &days.to_string())]);
+        library::save_settings();
+        crate::gauges::invalidate();
+    });
+    page.append(&row);
 
     page.append(&section_label("Memory Caches"));
     let (row, spin) = {

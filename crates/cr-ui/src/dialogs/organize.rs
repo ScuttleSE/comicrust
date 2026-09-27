@@ -485,6 +485,10 @@ fn show_window(
     let parent_pump = parent.upcast_ref::<gtk4::Window>().clone();
     let mut on_done_pump = Some(on_done);
     let mut operation = operation;
+    // The per-operation log lines are shown live in the window, which
+    // closes on Done. Collect them here so the completion report can
+    // list the planned operations after the window is gone.
+    let mut collected_log: Vec<String> = Vec::new();
     glib::timeout_add_local(Duration::from_millis(50), move || {
         loop {
             let request = match rx.try_recv() {
@@ -498,9 +502,11 @@ fn show_window(
             };
             match request {
                 UiRequest::Log(entry) => {
+                    let line = log_line(&entry);
                     let buffer = log_pump.buffer();
                     let mut end = buffer.end_iter();
-                    buffer.insert(&mut end, &format!("{}\n", log_line(&entry)));
+                    buffer.insert(&mut end, &format!("{line}\n"));
+                    collected_log.push(line);
                     // Keep the newest line in view.
                     log_pump.scroll_to_mark(
                         &buffer.create_mark(None, &end, true),
@@ -519,8 +525,11 @@ fn show_window(
                 UiRequest::AskMultiValue(ask) => {
                     ask_multi_value(&parent_pump, *ask, &answer_tx_pump);
                 }
-                UiRequest::Done(outcome) => {
+                UiRequest::Done(mut outcome) => {
                     window_pump.close();
+                    if !collected_log.is_empty() {
+                        outcome.text = format!("{}\n\n{}", outcome.text, collected_log.join("\n"));
+                    }
                     if let Some(active) = operation.take() {
                         active.finish(|active| {
                             if let Some(on_done) = on_done_pump.take() {

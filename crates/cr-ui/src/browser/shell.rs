@@ -5669,9 +5669,11 @@ impl ShellState {
             profiles,
             Some(undo_path),
             Some(pool),
-            move |_report| {
+            move |report| {
+                let report = report.to_string();
                 if let Some(sh) = refresh_state.upgrade() {
                     sh.refresh_view_from_list();
+                    show_report_dialog(&sh.window, "Library Organizer", &report);
                     let weak = Rc::downgrade(&sh);
                     glib::idle_add_local_once(move || {
                         if let Some(sh) = weak.upgrade() {
