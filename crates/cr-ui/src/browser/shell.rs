@@ -340,6 +340,20 @@ fn live_snapshot(
     }
 }
 
+/// Normalizes a BaseFolder for a path-prefix test: forward slashes,
+/// lowercased, and a trailing separator so `/comics` does not match
+/// `/comics-extra`.
+fn normalize_base(base: &str) -> String {
+    if base.is_empty() {
+        return String::new();
+    }
+    let mut b = base.replace('\\', "/").to_lowercase();
+    if !b.ends_with('/') {
+        b.push('/');
+    }
+    b
+}
+
 fn apply_organizer_results(
     database: &mut cr_core::database::comic_database::ComicDatabase,
     applies: &[cr_organize::engine::Apply],
@@ -5643,6 +5657,123 @@ impl ShellState {
         }
     }
 
+    /// The Library Organizer Audit entry: pick profile(s), scan every
+    /// library book under the chosen profiles' BaseFolder, and show the
+    /// books the profile would now move somewhere else. The user checks
+    /// the ones to fix; the fix is a normal Move run over those books.
+    fn open_organize_audit(self: &Rc<ShellState>) {
+        if cr_engine::incoming_transaction::operation_active() {
+            show_failure_dialog(
+                &self.window,
+                "Library Organizer — Audit",
+                "Another operation is active. Try again after it finishes.",
+            );
+            return;
+        }
+        let settings = library::organize_settings();
+        if settings.profiles.is_empty() {
+            return;
+        }
+        let names: Vec<String> = settings.profiles.iter().map(|p| p.name.clone()).collect();
+        let last_used = settings.last_used.clone();
+        let state = Rc::downgrade(self);
+        crate::dialogs::organize::show_profile_selector(
+            &self.window,
+            &names,
+            &last_used,
+            move |result| {
+                let Some(chosen) = result else {
+                    return;
+                };
+                let Some(sh) = state.upgrade() else {
+                    return;
+                };
+                let profiles: Vec<cr_organize::profile::Profile> = chosen
+                    .iter()
+                    .filter_map(|name| settings.profiles.iter().find(|p| &p.name == name).cloned())
+                    .collect();
+                if profiles.is_empty() {
+                    return;
+                }
+                if profiles.iter().any(|p| p.base_folder.is_empty()) {
+                    crate::browser::shell::show_report_dialog(
+                        &sh.window,
+                        "BaseFolder empty",
+                        "Audit needs a BaseFolder on every selected profile. Set it in the Configure dialog first.",
+                    );
+                    return;
+                }
+                let mut store = settings.clone();
+                store.last_used = chosen;
+                library::store_organize_settings(&store);
+                sh.run_organize_audit(profiles);
+            },
+        );
+    }
+
+    /// Runs the read-only audit over every book under the profiles'
+    /// BaseFolder, then opens the results window.
+    fn run_organize_audit(self: &Rc<ShellState>, profiles: Vec<cr_organize::profile::Profile>) {
+        let (books, selected) = Self::audit_snapshot(&profiles);
+        if selected.is_empty() {
+            crate::browser::shell::show_report_dialog(
+                &self.window,
+                "Library Organizer — Audit",
+                "No library books were found under the selected profile(s) BaseFolder.",
+            );
+            return;
+        }
+        let pool = Arc::clone(&self.pool);
+        let state = Rc::downgrade(self);
+        crate::dialogs::organize::show_audit_dialog(
+            &self.window,
+            books,
+            selected,
+            profiles,
+            Some(pool),
+            move |indexes, profiles| {
+                if let Some(sh) = state.upgrade() {
+                    // The audit skips copy profiles; force a Move fix.
+                    let move_profiles: Vec<cr_organize::profile::Profile> = profiles
+                        .into_iter()
+                        .map(|mut p| {
+                            p.mode = cr_organize::profile::MODE_MOVE.to_string();
+                            p
+                        })
+                        .collect();
+                    let (books, _) = Self::audit_snapshot(&move_profiles);
+                    sh.run_organize(books, indexes, move_profiles);
+                }
+            },
+        );
+    }
+
+    /// The full library snapshot plus the indexes of every book whose
+    /// current file path sits under any of the profiles' BaseFolders.
+    fn audit_snapshot(profiles: &[cr_organize::profile::Profile]) -> (Vec<ComicBook>, Vec<usize>) {
+        let lib = library::session();
+        let l = lib.borrow();
+        let books: Vec<ComicBook> = l.database().books.clone();
+        let bases: Vec<String> = profiles
+            .iter()
+            .map(|p| normalize_base(&p.base_folder))
+            .filter(|b| !b.is_empty())
+            .collect();
+        let selected: Vec<usize> = books
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| {
+                if b.file_path.is_empty() {
+                    return false;
+                }
+                let path = b.file_path.replace('\\', "/").to_lowercase();
+                bases.iter().any(|base| path.starts_with(base))
+            })
+            .map(|(i, _)| i)
+            .collect();
+        (books, selected)
+    }
+
     /// Runs the organizer over `selected` indexes of `books`.
     fn run_organize(
         self: &Rc<ShellState>,
@@ -7341,6 +7472,7 @@ any value with at least one character.)",
         // hooks).
         self.add_simple(&group, "organize-books", ShellState::open_organize);
         self.add_simple(&group, "organize-quick", ShellState::open_organize_quick);
+        self.add_simple(&group, "organize-audit", ShellState::open_organize_audit);
         self.add_simple(
             &group,
             "organize-configure",
@@ -8541,6 +8673,11 @@ fn show_context_menu(state: &std::rc::Weak<ShellState>, target: Option<CrGuid>, 
                     // The Library Organizer Quick: no config step.
                     sh.open_organize_quick();
                 }
+                "organize-audit" => {
+                    // The Library Organizer Audit: read-only scan then
+                    // an opt-in fix run.
+                    sh.open_organize_audit();
+                }
                 "remove" => {
                     run_remove_books(&state);
                 }
@@ -8616,6 +8753,7 @@ fn show_context_menu(state: &std::rc::Weak<ShellState>, target: Option<CrGuid>, 
         add_item(&box_, "Scrape from Comic Vine…", "scrape");
         add_item(&box_, "Library Organizer…", "organize");
         add_item(&box_, "Library Organizer (Quick)", "organize-quick");
+        add_item(&box_, "Library Organizer — Audit…", "organize-audit");
         add_item(&box_, "Fill Missing Issues…", "fill-missing");
         add_item(&box_, "Link Series from Cache…", "link-series-from-cache");
         add_item(&box_, "Select Worst Duplicates", "select-worst-duplicates");

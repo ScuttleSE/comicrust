@@ -18,8 +18,8 @@ use gtk4::{gdk, glib, CheckButton, DropDown, Label, StringList, TextView};
 
 use cr_core::model::comic_book::ComicBook;
 use cr_organize::engine::{
-    Apply, CoverSource, DuplicateAction, DuplicateAnswer, DuplicateAsk, DuplicateBookInfo,
-    LogEntry, OrganizeUi, RunContext, UndoCollection,
+    Apply, AuditItem, AuditReport, CoverSource, DuplicateAction, DuplicateAnswer, DuplicateAsk,
+    DuplicateBookInfo, LogEntry, OrganizeUi, RunContext, UndoCollection,
 };
 use cr_organize::profile::Profile;
 use cr_organize::template::{MultiValueAnswer, MultiValueAsk, MultiValueAsker};
@@ -167,6 +167,339 @@ fn apply_to_library(apply: &Apply, operation: &cr_engine::incoming_transaction::
         Apply::Remove(id) => {
             crate::library::remove_book_from_organizer(id, operation);
         }
+    }
+}
+
+/// Runs a read-only audit on a worker thread, then opens the results
+/// window. Each mismatch has a checkbox; `on_apply` receives the book
+/// indexes the user checked (deduplicated) so the caller can run the
+/// normal Organizer over exactly those books.
+pub fn show_audit_dialog(
+    parent: &impl IsA<gtk4::Window>,
+    books: Vec<ComicBook>,
+    selected: Vec<usize>,
+    profiles: Vec<Profile>,
+    pool: Option<Arc<cr_engine::image_pool::ImagePool>>,
+    on_apply: impl Fn(Vec<usize>, Vec<Profile>) + 'static,
+) -> bool {
+    if books.is_empty() || selected.is_empty() || profiles.is_empty() {
+        return false;
+    }
+    let worker_cover = Arc::new(PoolCover { pool });
+    let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let worker_cancel = Arc::clone(&cancel);
+    let profiles_run = profiles.clone();
+
+    let (tx, rx) = std::sync::mpsc::channel::<AuditRequest>();
+    let (answer_tx, answer_rx) = std::sync::mpsc::channel::<UiAnswer>();
+
+    std::thread::Builder::new()
+        .name("Library Organizer Audit".into())
+        .spawn(move || {
+            let done_tx = tx.clone();
+            let mut ui = ChannelUi {
+                tx: audit_bridge(tx),
+                answer_rx,
+            };
+            let trash = |_p: &str| false;
+            let ctx = RunContext {
+                books: &books,
+                selected: &selected,
+                profiles: &profiles,
+                trash: &trash,
+                filesystem_effects: None,
+                cover: worker_cover.as_ref(),
+                undo_path: None,
+                cancel: &worker_cancel,
+                move_landing: cr_organize::engine::MoveLanding::UpdateExisting,
+            };
+            let report = cr_organize::engine::audit(ctx, &mut ui);
+            let _ = done_tx.send(AuditRequest::Done(Box::new((report, books))));
+        })
+        .expect("spawn the organizer audit worker");
+
+    // A small progress window while the audit runs.
+    let window = gtk4::Window::builder()
+        .title("Library Organizer — Audit")
+        .transient_for(parent)
+        .default_width(420)
+        .default_height(120)
+        .build();
+    let progress_label = Label::new(Some("Auditing…"));
+    progress_label.set_halign(gtk4::Align::Start);
+    progress_label.set_margin_top(12);
+    progress_label.set_margin_bottom(12);
+    progress_label.set_margin_start(12);
+    progress_label.set_margin_end(12);
+    let cancel_btn = gtk4::Button::with_label("Cancel");
+    cancel_btn.set_margin_bottom(12);
+    cancel_btn.set_margin_end(12);
+    cancel_btn.set_halign(gtk4::Align::End);
+    let content = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
+    content.append(&progress_label);
+    content.append(&cancel_btn);
+    window.set_child(Some(&content));
+    window.present();
+    {
+        let stop = Arc::clone(&cancel);
+        cancel_btn.connect_clicked(move |_| stop.store(true, Ordering::Relaxed));
+    }
+    {
+        let stop = Arc::clone(&cancel);
+        window.connect_close_request(move |_w| {
+            stop.store(true, Ordering::Relaxed);
+            glib::Propagation::Proceed
+        });
+    }
+
+    let window_pump = window;
+    let progress_pump = progress_label;
+    let answer_tx_pump = answer_tx;
+    let parent_pump = parent.upcast_ref::<gtk4::Window>().clone();
+    let profiles_pump = profiles_run;
+    let mut on_apply = Some(on_apply);
+    glib::timeout_add_local(Duration::from_millis(50), move || {
+        loop {
+            let request = match rx.try_recv() {
+                Ok(request) => request,
+                Err(std::sync::mpsc::TryRecvError::Empty) => break,
+                Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                    window_pump.close();
+                    return ControlFlow::Break;
+                }
+            };
+            match request {
+                AuditRequest::Progress { done, total } => {
+                    progress_pump.set_text(&format!("Auditing… {done} of {total}"));
+                }
+                AuditRequest::AskMultiValue(ask) => {
+                    ask_multi_value(&window_pump, *ask, &answer_tx_pump);
+                }
+                AuditRequest::Done(payload) => {
+                    let (report, books) = *payload;
+                    window_pump.close();
+                    if let Some(cb) = on_apply.take() {
+                        show_audit_results(&parent_pump, report, books, profiles_pump.clone(), cb);
+                    }
+                    return ControlFlow::Break;
+                }
+            }
+        }
+        ControlFlow::Continue
+    });
+    true
+}
+
+/// The audit worker's channel messages.
+enum AuditRequest {
+    AskMultiValue(Box<MultiValueAsk>),
+    Progress {
+        done: usize,
+        total: usize,
+    },
+    /// The report and the book snapshot (for display names).
+    Done(Box<(AuditReport, Vec<ComicBook>)>),
+}
+
+/// Adapts an `AuditRequest` sender to the `UiRequest` sender the shared
+/// `ChannelUi` expects. Only `Log`, `Progress` and `AskMultiValue`
+/// arrive during an audit; log lines are dropped (the results window
+/// shows the outcome, not the trace).
+fn audit_bridge(tx: std::sync::mpsc::Sender<AuditRequest>) -> std::sync::mpsc::Sender<UiRequest> {
+    let (bridge_tx, bridge_rx) = std::sync::mpsc::channel::<UiRequest>();
+    std::thread::Builder::new()
+        .name("audit-bridge".into())
+        .spawn(move || {
+            while let Ok(request) = bridge_rx.recv() {
+                match request {
+                    UiRequest::Progress { done, total } => {
+                        if tx.send(AuditRequest::Progress { done, total }).is_err() {
+                            break;
+                        }
+                    }
+                    UiRequest::AskMultiValue(ask) => {
+                        if tx.send(AuditRequest::AskMultiValue(ask)).is_err() {
+                            break;
+                        }
+                    }
+                    UiRequest::Log(_) | UiRequest::AskDuplicate(_) => {}
+                    UiRequest::Done(_) => break,
+                }
+            }
+        })
+        .expect("spawn the audit bridge");
+    bridge_tx
+}
+
+/// The audit results window: one checkbox row per mismatch, with the
+/// current path and the path the profile would produce. Apply Selected
+/// hands the checked books back to the caller.
+fn show_audit_results(
+    parent: &impl IsA<gtk4::Window>,
+    report: AuditReport,
+    books: Vec<ComicBook>,
+    profiles: Vec<Profile>,
+    on_apply: impl Fn(Vec<usize>, Vec<Profile>) + 'static,
+) {
+    let window = gtk4::Window::builder()
+        .title("Library Organizer — Audit Results")
+        .transient_for(parent)
+        .modal(true)
+        .default_width(720)
+        .default_height(480)
+        .build();
+
+    let content = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
+    content.set_margin_top(8);
+    content.set_margin_bottom(8);
+    content.set_margin_start(8);
+    content.set_margin_end(8);
+
+    let summary = Label::new(Some(&format!(
+        "{} of {} book(s) do not match the selected profile(s).",
+        report.items.len(),
+        report.scanned,
+    )));
+    summary.set_halign(gtk4::Align::Start);
+    content.append(&summary);
+
+    let list_box = gtk4::ListBox::new();
+    list_box.set_selection_mode(gtk4::SelectionMode::None);
+    let checks: std::rc::Rc<std::cell::RefCell<Vec<(usize, CheckButton)>>> =
+        std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+
+    let multi_profile = profiles.len() > 1;
+    for item in &report.items {
+        let row_box = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
+        row_box.set_margin_top(4);
+        row_box.set_margin_bottom(4);
+        row_box.set_margin_start(4);
+        row_box.set_margin_end(4);
+        let check = CheckButton::new();
+        check.set_active(true);
+        check.set_valign(gtk4::Align::Center);
+        row_box.append(&check);
+
+        let text_box = gtk4::Box::new(gtk4::Orientation::Vertical, 2);
+        let name = book_display_name(&books, item);
+        let title = if multi_profile {
+            format!("{name}  [{}]", item.profile_name)
+        } else {
+            name
+        };
+        let title_label = Label::new(Some(&title));
+        title_label.set_halign(gtk4::Align::Start);
+        title_label.set_wrap(true);
+        text_box.append(&title_label);
+        let detail = Label::new(Some(&format!(
+            "current: {}\nplanned: {}",
+            display_path(&item.current_path),
+            item.planned_path,
+        )));
+        detail.set_halign(gtk4::Align::Start);
+        detail.set_wrap(true);
+        detail.add_css_class("dim-label");
+        text_box.append(&detail);
+        row_box.append(&text_box);
+
+        list_box.append(&row_box);
+        checks.borrow_mut().push((item.book_index, check));
+    }
+
+    let scroll = gtk4::ScrolledWindow::builder()
+        .child(&list_box)
+        .vexpand(true)
+        .hexpand(true)
+        .build();
+    content.append(&scroll);
+
+    let button_row = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
+    let select_all = gtk4::Button::with_label("Select All");
+    let select_none = gtk4::Button::with_label("Select None");
+    let spacer = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+    spacer.set_hexpand(true);
+    let apply_btn = gtk4::Button::with_label("Apply Selected");
+    apply_btn.add_css_class("suggested-action");
+    let close_btn = gtk4::Button::with_label("Close");
+    button_row.append(&select_all);
+    button_row.append(&select_none);
+    button_row.append(&spacer);
+    button_row.append(&close_btn);
+    button_row.append(&apply_btn);
+    content.append(&button_row);
+
+    apply_btn.set_sensitive(!report.items.is_empty());
+    {
+        let checks = std::rc::Rc::clone(&checks);
+        select_all.connect_clicked(move |_| {
+            for (_, c) in checks.borrow().iter() {
+                c.set_active(true);
+            }
+        });
+    }
+    {
+        let checks = std::rc::Rc::clone(&checks);
+        select_none.connect_clicked(move |_| {
+            for (_, c) in checks.borrow().iter() {
+                c.set_active(false);
+            }
+        });
+    }
+    {
+        let window = window.clone();
+        close_btn.connect_clicked(move |_| window.close());
+    }
+    {
+        let checks = std::rc::Rc::clone(&checks);
+        let window = window.clone();
+        apply_btn.connect_clicked(move |_| {
+            let mut indexes: Vec<usize> = checks
+                .borrow()
+                .iter()
+                .filter(|(_, c)| c.is_active())
+                .map(|(i, _)| *i)
+                .collect();
+            indexes.sort_unstable();
+            indexes.dedup();
+            window.close();
+            if !indexes.is_empty() {
+                on_apply(indexes, profiles.clone());
+            }
+        });
+    }
+
+    window.set_child(Some(&content));
+    window.present();
+}
+
+/// A book's display name for a results row (its file name, or the
+/// series/number stand-in for a fileless book).
+fn book_display_name(books: &[ComicBook], item: &AuditItem) -> String {
+    let book = &books[item.book_index];
+    if !book.file_path.is_empty() {
+        return std::path::Path::new(&book.file_path)
+            .file_name()
+            .map(|f| f.to_string_lossy().into_owned())
+            .unwrap_or_else(|| book.file_path.clone());
+    }
+    let mut text = book.info.series.clone();
+    if !book.info.number.is_empty() {
+        if !text.is_empty() {
+            text.push(' ');
+        }
+        text.push_str(&book.info.number);
+    }
+    if text.is_empty() {
+        text = format!("Book {}", book.id.to_d_string());
+    }
+    text
+}
+
+fn display_path(path: &str) -> String {
+    if path.is_empty() {
+        "(fileless)".to_string()
+    } else {
+        path.to_string()
     }
 }
 

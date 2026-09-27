@@ -66,6 +66,7 @@ pub const COMMANDS: &[CommandSpec] = &[
     // entries (organize / organize-quick) share the win.* ids.
     cmd("organize-books", &[]),
     cmd("organize-quick", &[]),
+    cmd("organize-audit", &[]),
     cmd("organize-configure", &[]),
     cmd("organize-undo", &[]),
     cmd("new-book-entry", &["<Control><Shift>n"]),

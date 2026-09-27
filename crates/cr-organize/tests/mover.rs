@@ -9,9 +9,9 @@ use std::sync::Mutex;
 
 use cr_core::model::comic_book::ComicBook;
 use cr_organize::engine::{
-    adoption_manifest_path, AdoptionManifest, AdoptionManifestEntry, Apply, DuplicateAction,
-    DuplicateAnswer, DuplicateAsk, FilesystemEffects, LogEntry, MoveLanding, OrganizeReport,
-    OrganizeUi, RunContext,
+    adoption_manifest_path, AdoptionManifest, AdoptionManifestEntry, Apply, AuditReport,
+    DuplicateAction, DuplicateAnswer, DuplicateAsk, FilesystemEffects, LogEntry, MoveLanding,
+    OrganizeReport, OrganizeUi, RunContext,
 };
 use cr_organize::mover::{run_undo, UndoCollection};
 use cr_organize::profile::Profile;
@@ -1026,4 +1026,102 @@ fn organize_reports_recovery_pair_save_failures() {
         .as_deref()
         .is_some_and(|error| error.contains("adoption manifest")));
     let _ = std::fs::remove_dir_all(tmp);
+}
+
+fn audit_ctx<'a>(
+    books: &'a [ComicBook],
+    selected: &'a [usize],
+    profiles: &'a [Profile],
+    trash: &'a impl Fn(&str) -> bool,
+) -> RunContext<'a> {
+    ctx(books, selected, profiles, trash)
+}
+
+#[test]
+fn audit_flags_only_books_not_at_their_planned_path() {
+    let tmp = std::env::temp_dir().join(format!("lo-audit-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    let dst = tmp.join("lib");
+
+    // Book A already sits at its planned path (default folder template
+    // is the series when the publisher is empty).
+    let a_path = dst.join("Batman").join("Batman Vol.1 #05.cbz");
+    write(&a_path);
+    // Book B sits in the wrong place.
+    let b_path = tmp.join("loose").join("Superman 001.cbz");
+    write(&b_path);
+
+    let books = vec![
+        book("Batman", "5", 1, &a_path.to_string_lossy()),
+        book("Superman", "1", 1, &b_path.to_string_lossy()),
+    ];
+    let p = profile("Audit", "Move", &dst);
+    let selected = vec![0, 1];
+
+    let mut ui = StubUi::new();
+    let report: AuditReport = cr_organize::engine::audit(
+        audit_ctx(&books, &selected, std::slice::from_ref(&p), &no_trash),
+        &mut ui,
+    );
+
+    assert_eq!(report.scanned, 2);
+    assert_eq!(report.items.len(), 1, "only the misplaced book");
+    let item = &report.items[0];
+    assert_eq!(item.book_index, 1);
+    assert_eq!(item.current_path, b_path.to_string_lossy());
+    assert_eq!(
+        item.planned_path,
+        dst.join("Superman")
+            .join("Superman Vol.1 #01.cbz")
+            .to_string_lossy()
+    );
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[test]
+fn audit_writes_nothing() {
+    let tmp = std::env::temp_dir().join(format!("lo-audit-ro-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    let dst = tmp.join("lib");
+    let src = tmp.join("loose").join("Superman 001.cbz");
+    write(&src);
+
+    let books = vec![book("Superman", "1", 1, &src.to_string_lossy())];
+    let p = profile("Audit", "Move", &dst);
+    let selected = vec![0];
+
+    let mut ui = StubUi::new();
+    let report = cr_organize::engine::audit(
+        audit_ctx(&books, &selected, std::slice::from_ref(&p), &no_trash),
+        &mut ui,
+    );
+    assert_eq!(report.items.len(), 1);
+    // The source is untouched and no destination was created.
+    assert!(src.exists());
+    assert!(!dst.exists());
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[test]
+fn audit_skips_copy_profiles() {
+    let tmp = std::env::temp_dir().join(format!("lo-audit-copy-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    let dst = tmp.join("lib");
+    let src = tmp.join("loose").join("Superman 001.cbz");
+    write(&src);
+
+    let books = vec![book("Superman", "1", 1, &src.to_string_lossy())];
+    let p = profile("Copy", "Copy", &dst);
+    let selected = vec![0];
+
+    let mut ui = StubUi::new();
+    let report = cr_organize::engine::audit(
+        audit_ctx(&books, &selected, std::slice::from_ref(&p), &no_trash),
+        &mut ui,
+    );
+    assert!(report.items.is_empty(), "copy profiles are not audited");
+
+    let _ = std::fs::remove_dir_all(&tmp);
 }

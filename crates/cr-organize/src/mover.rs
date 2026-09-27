@@ -393,6 +393,13 @@ pub struct OrganizeReport {
     pub persistence_error: Option<String>,
 }
 
+/// True when the planned path is where the book already sits. Mirrors
+/// `check_path_problems`: an exact match, or a case-only difference
+/// (which a real run resolves as an in-place rename, not a move).
+fn paths_match(planned: &str, current: &str) -> bool {
+    planned == current || planned.to_lowercase() == current.to_lowercase()
+}
+
 /// One planned move (`BookToMove`).
 #[derive(Clone, Debug)]
 struct BookToMove {
@@ -464,6 +471,37 @@ pub fn run(ctx: RunContext, ui: &mut dyn OrganizeUi) -> OrganizeReport {
         }
     }
     report
+}
+
+/// One mismatch found by an audit pass: a book whose current path is
+/// not the path the profile would produce now.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AuditItem {
+    pub book_index: usize,
+    pub profile_index: usize,
+    pub profile_name: String,
+    pub current_path: String,
+    pub planned_path: String,
+}
+
+/// The audit outcome: the mismatches, the count of books scanned, and
+/// the plan log lines.
+#[derive(Clone, Debug, Default)]
+pub struct AuditReport {
+    pub items: Vec<AuditItem>,
+    pub scanned: usize,
+    pub log: Vec<LogEntry>,
+}
+
+/// Runs a read-only audit. For each selected book and profile it
+/// computes the destination the profile would produce now (the same
+/// `create_book_path` a real run uses) and records a mismatch when the
+/// planned path is not the book's current path. No filesystem write,
+/// no session mutation, and no undo record happen. Copy-mode profiles
+/// are skipped (a copy has no single current path to compare).
+pub fn audit(ctx: RunContext, ui: &mut dyn OrganizeUi) -> AuditReport {
+    let mut mover = Mover::new(ctx, ui);
+    mover.audit_books()
 }
 
 struct Mover<'a> {
@@ -691,6 +729,68 @@ impl<'a> Mover<'a> {
             applies: std::mem::take(&mut self.applies),
             undo: std::mem::take(&mut self.undo),
             persistence_error: None,
+        }
+    }
+
+    // ------------------------------------------------------------------
+    // Audit (read-only)
+    // ------------------------------------------------------------------
+
+    /// The read-only audit pass. Mirrors `create_book_paths`, but
+    /// instead of building a move plan it records a mismatch whenever a
+    /// non-copy profile would place a book somewhere other than its
+    /// current path. Nothing is written.
+    fn audit_books(&mut self) -> AuditReport {
+        self.reports = self
+            .profiles
+            .iter()
+            .map(|p| ProfileReport {
+                name: p.name.clone(),
+                mode: p.mode.clone(),
+                total: self.selected.len(),
+                success: 0,
+                failed: 0,
+                skipped: 0,
+            })
+            .collect();
+
+        let mut items: Vec<AuditItem> = Vec::new();
+        let mut log: Vec<LogEntry> = Vec::new();
+        let total = self.selected.len();
+        let mut done = 0usize;
+
+        for &book_index in self.selected {
+            if self.cancelled() {
+                break;
+            }
+            done += 1;
+            self.ui.progress(done, total);
+
+            for index in 0..self.profiles.len() {
+                if self.profiles[index].mode == MODE_COPY {
+                    continue;
+                }
+                let (result, logs, _failed_fields) = self.create_book_path(book_index, index);
+                log.extend(logs);
+                if let PlanResult::Path(planned) = result {
+                    let current = self.books[book_index].file_path.clone();
+                    if !paths_match(&planned, &current) {
+                        items.push(AuditItem {
+                            book_index,
+                            profile_index: index,
+                            profile_name: self.profiles[index].name.clone(),
+                            current_path: current,
+                            planned_path: planned,
+                        });
+                    }
+                }
+            }
+        }
+
+        AuditReport {
+            items,
+            scanned: total,
+            log,
         }
     }
 

@@ -128,14 +128,21 @@ pub trait FilesystemEffects: Send + Sync {
 
 pub use crate::mover::{
     adoption_manifest_path, missing_manifest_is_unsafe, run_undo, AdoptionManifest,
-    AdoptionManifestEntry, MoveLanding, OrganizeReport, RunContext, UndoCollection, UndoEntry,
-    UndoReport,
+    AdoptionManifestEntry, AuditItem, AuditReport, MoveLanding, OrganizeReport, RunContext,
+    UndoCollection, UndoEntry, UndoReport,
 };
 
 /// Runs the organizer (`WorkerForm`'s worker body). The profiles run
 /// in order; returns the report and the session mutations.
 pub fn organize(ctx: RunContext, ui: &mut dyn OrganizeUi) -> OrganizeReport {
     crate::mover::run(ctx, ui)
+}
+
+/// Runs a read-only audit (no filesystem writes, no session
+/// mutations). Returns the mismatches between each book's current path
+/// and the path the profiles would produce now.
+pub fn audit(ctx: RunContext, ui: &mut dyn OrganizeUi) -> AuditReport {
+    crate::mover::audit(ctx, ui)
 }
 
 /// Runs the undo pass (`WorkerFormUndo`).
