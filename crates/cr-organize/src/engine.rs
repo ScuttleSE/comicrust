@@ -128,8 +128,8 @@ pub trait FilesystemEffects: Send + Sync {
 
 pub use crate::mover::{
     adoption_manifest_path, missing_manifest_is_unsafe, run_undo, AdoptionManifest,
-    AdoptionManifestEntry, AuditItem, AuditReport, MoveLanding, OrganizeReport, RunContext,
-    UndoCollection, UndoEntry, UndoReport,
+    AdoptionManifestEntry, AuditCollision, AuditItem, AuditReport, MoveLanding, OrganizeReport,
+    RunContext, UndoCollection, UndoEntry, UndoReport,
 };
 
 /// Runs the organizer (`WorkerForm`'s worker body). The profiles run

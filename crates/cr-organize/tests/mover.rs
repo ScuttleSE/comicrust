@@ -9,9 +9,9 @@ use std::sync::Mutex;
 
 use cr_core::model::comic_book::ComicBook;
 use cr_organize::engine::{
-    adoption_manifest_path, AdoptionManifest, AdoptionManifestEntry, Apply, AuditReport,
-    DuplicateAction, DuplicateAnswer, DuplicateAsk, FilesystemEffects, LogEntry, MoveLanding,
-    OrganizeReport, OrganizeUi, RunContext,
+    adoption_manifest_path, AdoptionManifest, AdoptionManifestEntry, Apply, AuditCollision,
+    AuditReport, DuplicateAction, DuplicateAnswer, DuplicateAsk, FilesystemEffects, LogEntry,
+    MoveLanding, OrganizeReport, OrganizeUi, RunContext,
 };
 use cr_organize::mover::{run_undo, UndoCollection};
 use cr_organize::profile::Profile;
@@ -1069,6 +1069,7 @@ fn audit_flags_only_books_not_at_their_planned_path() {
     let item = &report.items[0];
     assert_eq!(item.book_index, 1);
     assert_eq!(item.current_path, b_path.to_string_lossy());
+    assert_eq!(item.collision, None);
     assert_eq!(
         item.planned_path,
         dst.join("Superman")
@@ -1122,6 +1123,73 @@ fn audit_skips_copy_profiles() {
         &mut ui,
     );
     assert!(report.items.is_empty(), "copy profiles are not audited");
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[test]
+fn audit_marks_a_collision_with_a_library_book() {
+    let tmp = std::env::temp_dir().join(format!("lo-audit-lib-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    let dst = tmp.join("lib");
+
+    // Book A already sits at the planned path for a Batman #5.
+    let a_path = dst.join("Batman").join("Batman Vol.1 #05.cbz");
+    write(&a_path);
+    // Book B is another Batman #5 sitting elsewhere: its planned path
+    // is A's current path.
+    let b_path = tmp.join("loose").join("dup.cbz");
+    write(&b_path);
+
+    let books = vec![
+        book("Batman", "5", 1, &a_path.to_string_lossy()),
+        book("Batman", "5", 1, &b_path.to_string_lossy()),
+    ];
+    let p = profile("Audit", "Move", &dst);
+    let selected = vec![0, 1];
+
+    let mut ui = StubUi::new();
+    let report: AuditReport = cr_organize::engine::audit(
+        audit_ctx(&books, &selected, std::slice::from_ref(&p), &no_trash),
+        &mut ui,
+    );
+
+    // Only B is misplaced; it collides with library book A (index 0).
+    assert_eq!(report.items.len(), 1);
+    let item = &report.items[0];
+    assert_eq!(item.book_index, 1);
+    assert_eq!(
+        item.collision,
+        Some(AuditCollision::LibraryBook { book_index: 0 })
+    );
+
+    let _ = std::fs::remove_dir_all(&tmp);
+}
+
+#[test]
+fn audit_marks_a_bare_file_collision() {
+    let tmp = std::env::temp_dir().join(format!("lo-audit-bare-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    let dst = tmp.join("lib");
+
+    // A bare file (no library owner) already occupies the planned path.
+    let planned = dst.join("Batman").join("Batman Vol.1 #05.cbz");
+    write(&planned);
+    let b_path = tmp.join("loose").join("Batman 005.cbz");
+    write(&b_path);
+
+    let books = vec![book("Batman", "5", 1, &b_path.to_string_lossy())];
+    let p = profile("Audit", "Move", &dst);
+    let selected = vec![0];
+
+    let mut ui = StubUi::new();
+    let report = cr_organize::engine::audit(
+        audit_ctx(&books, &selected, std::slice::from_ref(&p), &no_trash),
+        &mut ui,
+    );
+
+    assert_eq!(report.items.len(), 1);
+    assert_eq!(report.items[0].collision, Some(AuditCollision::BareFile));
 
     let _ = std::fs::remove_dir_all(&tmp);
 }

@@ -5724,6 +5724,8 @@ impl ShellState {
             return;
         }
         let pool = Arc::clone(&self.pool);
+        let rules =
+            cr_engine::duplicates::DuplicateRules::from_settings(&library::settings().borrow());
         let state = Rc::downgrade(self);
         crate::dialogs::organize::show_audit_dialog(
             &self.window,
@@ -5731,7 +5733,8 @@ impl ShellState {
             selected,
             profiles,
             Some(pool),
-            move |indexes, profiles| {
+            rules,
+            move |applies, profiles| {
                 if let Some(sh) = state.upgrade() {
                     // The audit skips copy profiles; force a Move fix.
                     let move_profiles: Vec<cr_organize::profile::Profile> = profiles
@@ -5741,11 +5744,75 @@ impl ShellState {
                             p
                         })
                         .collect();
-                    let (books, _) = Self::audit_snapshot(&move_profiles);
-                    sh.run_organize(books, indexes, move_profiles);
+                    sh.apply_audit_fixes(applies, move_profiles);
                 }
             },
         );
+    }
+
+    /// Applies the audit fixes: remove each losing library book first
+    /// (so the destination is free), then run a Move over the chosen
+    /// books.
+    fn apply_audit_fixes(
+        self: &Rc<ShellState>,
+        applies: Vec<crate::dialogs::organize::AuditApply>,
+        profiles: Vec<cr_organize::profile::Profile>,
+    ) {
+        let losers: Vec<CrGuid> = applies.iter().filter_map(|a| a.remove_loser).collect();
+        if !losers.is_empty() {
+            if let Some(operation) = cr_engine::incoming_transaction::try_begin_operation() {
+                // The loser sits at the exact planned path; trash its
+                // file so the following Move lands cleanly, then drop it
+                // from the library.
+                let paths: Vec<String> = {
+                    let lib = library::session();
+                    let l = lib.borrow();
+                    losers
+                        .iter()
+                        .filter_map(|id| {
+                            l.database()
+                                .books
+                                .iter()
+                                .find(|b| &b.id == id)
+                                .map(|b| b.file_path.clone())
+                        })
+                        .collect()
+                };
+                for path in paths {
+                    if !path.is_empty() {
+                        let _ = std::process::Command::new("gio")
+                            .args(["trash", &path])
+                            .status();
+                    }
+                }
+                for id in &losers {
+                    library::remove_book_from_organizer(id, &operation);
+                }
+                drop(operation);
+                self.refresh_view_from_list();
+            } else {
+                show_failure_dialog(
+                    &self.window,
+                    "Library Organizer — Audit",
+                    "Another operation is active. Try again after it finishes.",
+                );
+                return;
+            }
+        }
+        // Re-snapshot after the removals so the indexes are valid.
+        let (books, _) = Self::audit_snapshot(&profiles);
+        let chosen_ids: std::collections::HashSet<CrGuid> =
+            applies.iter().map(|a| a.book_id).collect();
+        let selected: Vec<usize> = books
+            .iter()
+            .enumerate()
+            .filter(|(_, b)| chosen_ids.contains(&b.id))
+            .map(|(i, _)| i)
+            .collect();
+        if selected.is_empty() {
+            return;
+        }
+        self.run_organize(books, selected, profiles);
     }
 
     /// The full library snapshot plus the indexes of every book whose

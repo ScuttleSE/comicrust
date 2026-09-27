@@ -170,6 +170,30 @@ fn apply_to_library(apply: &Apply, operation: &cr_engine::incoming_transaction::
     }
 }
 
+/// One book the user chose to fix in the audit results window.
+#[derive(Clone, Debug)]
+pub struct AuditApply {
+    pub book_id: cr_core::xml::scalar::CrGuid,
+    /// The losing library book to remove first when the fix takes a
+    /// path currently held by another library book.
+    pub remove_loser: Option<cr_core::xml::scalar::CrGuid>,
+}
+
+/// A colliding row's resolution. `Unresolved` rows are not applied.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Resolution {
+    /// No collision — a plain relocation.
+    None,
+    /// Move the audited book; remove the losing existing book.
+    KeepAudited,
+    /// Leave the audited book where it is (skip this row).
+    KeepExisting,
+    /// A collision the user has not decided yet.
+    Unresolved,
+    /// A bare-file collision — cannot be applied.
+    Blocked,
+}
+
 /// Runs a read-only audit on a worker thread, then opens the results
 /// window. Each mismatch has a checkbox; `on_apply` receives the book
 /// indexes the user checked (deduplicated) so the caller can run the
@@ -180,12 +204,13 @@ pub fn show_audit_dialog(
     selected: Vec<usize>,
     profiles: Vec<Profile>,
     pool: Option<Arc<cr_engine::image_pool::ImagePool>>,
-    on_apply: impl Fn(Vec<usize>, Vec<Profile>) + 'static,
+    rules: cr_engine::duplicates::DuplicateRules,
+    on_apply: impl Fn(Vec<AuditApply>, Vec<Profile>) + 'static,
 ) -> bool {
     if books.is_empty() || selected.is_empty() || profiles.is_empty() {
         return false;
     }
-    let worker_cover = Arc::new(PoolCover { pool });
+    let worker_cover = Arc::new(PoolCover { pool: pool.clone() });
     let cancel = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let worker_cancel = Arc::clone(&cancel);
     let profiles_run = profiles.clone();
@@ -257,6 +282,8 @@ pub fn show_audit_dialog(
     let answer_tx_pump = answer_tx;
     let parent_pump = parent.upcast_ref::<gtk4::Window>().clone();
     let profiles_pump = profiles_run;
+    let pool_pump = pool;
+    let rules_pump = rules;
     let mut on_apply = Some(on_apply);
     glib::timeout_add_local(Duration::from_millis(50), move || {
         loop {
@@ -279,7 +306,15 @@ pub fn show_audit_dialog(
                     let (report, books) = *payload;
                     window_pump.close();
                     if let Some(cb) = on_apply.take() {
-                        show_audit_results(&parent_pump, report, books, profiles_pump.clone(), cb);
+                        show_audit_results(
+                            &parent_pump,
+                            report,
+                            books,
+                            profiles_pump.clone(),
+                            pool_pump.clone(),
+                            rules_pump.clone(),
+                            cb,
+                        );
                     }
                     return ControlFlow::Break;
                 }
@@ -331,22 +366,25 @@ fn audit_bridge(tx: std::sync::mpsc::Sender<AuditRequest>) -> std::sync::mpsc::S
     bridge_tx
 }
 
-/// The audit results window: one checkbox row per mismatch, with the
-/// current path and the path the profile would produce. Apply Selected
-/// hands the checked books back to the caller.
+/// The audit results window: one row per mismatch with a checkbox, the
+/// current and planned paths, and — for a collision — a Duplicate tag,
+/// a per-row resolution, and a Compare button. Apply Selected hands the
+/// chosen fixes back to the caller.
 fn show_audit_results(
     parent: &impl IsA<gtk4::Window>,
     report: AuditReport,
     books: Vec<ComicBook>,
     profiles: Vec<Profile>,
-    on_apply: impl Fn(Vec<usize>, Vec<Profile>) + 'static,
+    pool: Option<Arc<cr_engine::image_pool::ImagePool>>,
+    rules: cr_engine::duplicates::DuplicateRules,
+    on_apply: impl Fn(Vec<AuditApply>, Vec<Profile>) + 'static,
 ) {
     let window = gtk4::Window::builder()
         .title("Library Organizer — Audit Results")
         .transient_for(parent)
         .modal(true)
-        .default_width(720)
-        .default_height(480)
+        .default_width(760)
+        .default_height(520)
         .build();
 
     let content = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
@@ -355,28 +393,44 @@ fn show_audit_results(
     content.set_margin_start(8);
     content.set_margin_end(8);
 
+    let collisions = report
+        .items
+        .iter()
+        .filter(|i| i.collision.is_some())
+        .count();
     let summary = Label::new(Some(&format!(
-        "{} of {} book(s) do not match the selected profile(s).",
+        "{} of {} book(s) do not match the selected profile(s). {} duplicate collision(s).",
         report.items.len(),
         report.scanned,
+        collisions,
     )));
     summary.set_halign(gtk4::Align::Start);
     content.append(&summary);
 
     let list_box = gtk4::ListBox::new();
     list_box.set_selection_mode(gtk4::SelectionMode::None);
-    let checks: std::rc::Rc<std::cell::RefCell<Vec<(usize, CheckButton)>>> =
+
+    // Per-row widgets and state, in report order.
+    struct Row {
+        check: CheckButton,
+        resolution: std::rc::Rc<std::cell::Cell<Resolution>>,
+        status: Label,
+    }
+    let rows: std::rc::Rc<std::cell::RefCell<Vec<Row>>> =
         std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+    let items = std::rc::Rc::new(report.items);
+    let books = std::rc::Rc::new(books);
+    let pool = std::rc::Rc::new(pool);
+    let rules = std::rc::Rc::new(rules);
 
     let multi_profile = profiles.len() > 1;
-    for item in &report.items {
+    for (row_index, item) in items.iter().enumerate() {
         let row_box = gtk4::Box::new(gtk4::Orientation::Horizontal, 8);
         row_box.set_margin_top(4);
         row_box.set_margin_bottom(4);
         row_box.set_margin_start(4);
         row_box.set_margin_end(4);
         let check = CheckButton::new();
-        check.set_active(true);
         check.set_valign(gtk4::Align::Center);
         row_box.append(&check);
 
@@ -400,10 +454,86 @@ fn show_audit_results(
         detail.set_wrap(true);
         detail.add_css_class("dim-label");
         text_box.append(&detail);
+
+        let status = Label::new(None);
+        status.set_halign(gtk4::Align::Start);
+        text_box.append(&status);
         row_box.append(&text_box);
 
+        // The resolution seed and the row controls.
+        let resolution = std::rc::Rc::new(std::cell::Cell::new(match &item.collision {
+            None => Resolution::None,
+            Some(cr_organize::engine::AuditCollision::BareFile) => Resolution::Blocked,
+            Some(_) => Resolution::Unresolved,
+        }));
+
+        match resolution.get() {
+            Resolution::None => {
+                check.set_active(true);
+                status.set_text("Will move to the planned path.");
+            }
+            Resolution::Blocked => {
+                check.set_active(false);
+                check.set_sensitive(false);
+                status.set_text(
+                    "Duplicate: the destination holds a file that is not in the library — skipped.",
+                );
+                status.add_css_class("warning");
+            }
+            Resolution::Unresolved => {
+                check.set_active(false);
+                check.set_sensitive(false);
+                status.set_text("Duplicate: choose which copy to keep.");
+                status.add_css_class("warning");
+            }
+            _ => {}
+        }
+
+        // A Compare button on a collision that has another book.
+        let compare_other = match &item.collision {
+            Some(cr_organize::engine::AuditCollision::LibraryBook { book_index })
+            | Some(cr_organize::engine::AuditCollision::AnotherAudited { book_index }) => {
+                Some(*book_index)
+            }
+            _ => None,
+        };
+        if let Some(book_index) = compare_other {
+            let compare = gtk4::Button::with_label("Compare…");
+            compare.set_valign(gtk4::Align::Center);
+            let items2 = std::rc::Rc::clone(&items);
+            let books2 = std::rc::Rc::clone(&books);
+            let pool2 = std::rc::Rc::clone(&pool);
+            let rules2 = std::rc::Rc::clone(&rules);
+            let resolution2 = std::rc::Rc::clone(&resolution);
+            let check2 = check.clone();
+            let status2 = status.clone();
+            let window2 = window.clone();
+            compare.connect_clicked(move |_| {
+                let audited = books2[items2[row_index].book_index].clone();
+                let existing = books2[book_index].clone();
+                let resolution3 = std::rc::Rc::clone(&resolution2);
+                let check3 = check2.clone();
+                let status3 = status2.clone();
+                show_audit_compare(
+                    &window2,
+                    audited,
+                    existing,
+                    (*pool2).clone(),
+                    (*rules2).clone(),
+                    move |chosen| {
+                        apply_resolution(&resolution3, &check3, &status3, chosen);
+                    },
+                );
+            });
+            row_box.append(&compare);
+        }
+
         list_box.append(&row_box);
-        checks.borrow_mut().push((item.book_index, check));
+        rows.borrow_mut().push(Row {
+            check,
+            resolution,
+            status,
+        });
     }
 
     let scroll = gtk4::ScrolledWindow::builder()
@@ -416,6 +546,7 @@ fn show_audit_results(
     let button_row = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
     let select_all = gtk4::Button::with_label("Select All");
     let select_none = gtk4::Button::with_label("Select None");
+    let select_worst = gtk4::Button::with_label("Select Worst Duplicates");
     let spacer = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
     spacer.set_hexpand(true);
     let apply_btn = gtk4::Button::with_label("Apply Selected");
@@ -423,25 +554,60 @@ fn show_audit_results(
     let close_btn = gtk4::Button::with_label("Close");
     button_row.append(&select_all);
     button_row.append(&select_none);
+    button_row.append(&select_worst);
     button_row.append(&spacer);
     button_row.append(&close_btn);
     button_row.append(&apply_btn);
     content.append(&button_row);
 
-    apply_btn.set_sensitive(!report.items.is_empty());
+    apply_btn.set_sensitive(!items.is_empty());
     {
-        let checks = std::rc::Rc::clone(&checks);
+        let rows = std::rc::Rc::clone(&rows);
         select_all.connect_clicked(move |_| {
-            for (_, c) in checks.borrow().iter() {
-                c.set_active(true);
+            for row in rows.borrow().iter() {
+                if row.check.is_sensitive() {
+                    row.check.set_active(true);
+                }
             }
         });
     }
     {
-        let checks = std::rc::Rc::clone(&checks);
+        let rows = std::rc::Rc::clone(&rows);
         select_none.connect_clicked(move |_| {
-            for (_, c) in checks.borrow().iter() {
-                c.set_active(false);
+            for row in rows.borrow().iter() {
+                row.check.set_active(false);
+            }
+        });
+    }
+    {
+        // Resolve every unresolved/collision row by the duplicate rules.
+        let rows = std::rc::Rc::clone(&rows);
+        let items = std::rc::Rc::clone(&items);
+        let books = std::rc::Rc::clone(&books);
+        let rules = std::rc::Rc::clone(&rules);
+        select_worst.connect_clicked(move |_| {
+            let rows_ref = rows.borrow();
+            for (row_index, item) in items.iter().enumerate() {
+                let other = match &item.collision {
+                    Some(cr_organize::engine::AuditCollision::LibraryBook { book_index })
+                    | Some(cr_organize::engine::AuditCollision::AnotherAudited { book_index }) => {
+                        *book_index
+                    }
+                    _ => continue,
+                };
+                let audited = &books[item.book_index];
+                let existing = &books[other];
+                let pair = [audited, existing];
+                let worst = cr_engine::duplicates::worst_duplicate_ids(&pair, &rules);
+                let chosen = if worst.len() == 1 && worst[0] == existing.id {
+                    Resolution::KeepAudited
+                } else if worst.len() == 1 && worst[0] == audited.id {
+                    Resolution::KeepExisting
+                } else {
+                    continue;
+                };
+                let row = &rows_ref[row_index];
+                apply_resolution(&row.resolution, &row.check, &row.status, chosen);
             }
         });
     }
@@ -450,26 +616,231 @@ fn show_audit_results(
         close_btn.connect_clicked(move |_| window.close());
     }
     {
-        let checks = std::rc::Rc::clone(&checks);
+        let rows = std::rc::Rc::clone(&rows);
+        let items = std::rc::Rc::clone(&items);
+        let books = std::rc::Rc::clone(&books);
         let window = window.clone();
         apply_btn.connect_clicked(move |_| {
-            let mut indexes: Vec<usize> = checks
-                .borrow()
-                .iter()
-                .filter(|(_, c)| c.is_active())
-                .map(|(i, _)| *i)
-                .collect();
-            indexes.sort_unstable();
-            indexes.dedup();
+            let mut applies: Vec<AuditApply> = Vec::new();
+            let mut seen: std::collections::HashSet<cr_core::xml::scalar::CrGuid> =
+                std::collections::HashSet::new();
+            for (row_index, row) in rows.borrow().iter().enumerate() {
+                if !row.check.is_active() {
+                    continue;
+                }
+                let item = &items[row_index];
+                let book_id = books[item.book_index].id;
+                let remove_loser = match row.resolution.get() {
+                    Resolution::None => None,
+                    Resolution::KeepAudited => match &item.collision {
+                        Some(cr_organize::engine::AuditCollision::LibraryBook { book_index }) => {
+                            Some(books[*book_index].id)
+                        }
+                        // AnotherAudited: no library loser to remove.
+                        _ => None,
+                    },
+                    // KeepExisting / Unresolved / Blocked never apply.
+                    _ => continue,
+                };
+                if seen.insert(book_id) {
+                    applies.push(AuditApply {
+                        book_id,
+                        remove_loser,
+                    });
+                }
+            }
             window.close();
-            if !indexes.is_empty() {
-                on_apply(indexes, profiles.clone());
+            if !applies.is_empty() {
+                on_apply(applies, profiles.clone());
             }
         });
     }
 
     window.set_child(Some(&content));
     window.present();
+}
+
+/// Writes a chosen resolution onto a row's controls.
+fn apply_resolution(
+    resolution: &std::rc::Rc<std::cell::Cell<Resolution>>,
+    check: &CheckButton,
+    status: &Label,
+    chosen: Resolution,
+) {
+    resolution.set(chosen);
+    status.remove_css_class("warning");
+    match chosen {
+        Resolution::KeepAudited => {
+            check.set_sensitive(true);
+            check.set_active(true);
+            status.set_text("Duplicate: keep this copy; remove the existing one.");
+        }
+        Resolution::KeepExisting => {
+            check.set_sensitive(false);
+            check.set_active(false);
+            status.set_text("Duplicate: keep the existing copy; this move is skipped.");
+        }
+        _ => {}
+    }
+}
+
+/// A two-pane compare of the audited book and the existing library
+/// book with covers, details, and a Select Worst pick. `on_choose`
+/// receives the chosen resolution (KeepAudited or KeepExisting).
+fn show_audit_compare(
+    parent: &impl IsA<gtk4::Window>,
+    audited: ComicBook,
+    existing: ComicBook,
+    pool: Option<Arc<cr_engine::image_pool::ImagePool>>,
+    rules: cr_engine::duplicates::DuplicateRules,
+    on_choose: impl Fn(Resolution) + 'static,
+) {
+    let window = gtk4::Window::builder()
+        .title("Audit — Compare Duplicates")
+        .transient_for(parent)
+        .modal(true)
+        .default_width(900)
+        .default_height(620)
+        .build();
+
+    let grid = gtk4::Grid::builder()
+        .column_spacing(16)
+        .column_homogeneous(true)
+        .hexpand(true)
+        .build();
+    let (left_box, left_pic, left_status) =
+        compare_pane("Audited book (would move here)", &audited);
+    let (right_box, right_pic, right_status) = compare_pane("Existing book at the path", &existing);
+    grid.attach(&left_box, 0, 0, 1, 1);
+    grid.attach(&right_box, 1, 0, 1, 1);
+
+    // The rule recommendation.
+    let pair = [&audited, &existing];
+    let worst = cr_engine::duplicates::worst_duplicate_ids(&pair, &rules);
+    let recommendation = if worst.len() == 1 && worst[0] == existing.id {
+        "Rules recommend: keep the audited copy."
+    } else if worst.len() == 1 && worst[0] == audited.id {
+        "Rules recommend: keep the existing copy."
+    } else {
+        "Rules find no clear worst copy."
+    };
+    let rec_label = Label::new(Some(recommendation));
+    rec_label.set_halign(gtk4::Align::Start);
+
+    let keep_audited = gtk4::Button::with_label("Keep Audited (remove existing)");
+    keep_audited.add_css_class("suggested-action");
+    let keep_existing = gtk4::Button::with_label("Keep Existing (skip move)");
+    let cancel = gtk4::Button::with_label("Cancel");
+    let button_row = gtk4::Box::new(gtk4::Orientation::Horizontal, 6);
+    button_row.append(&keep_audited);
+    button_row.append(&keep_existing);
+    let spacer = gtk4::Box::new(gtk4::Orientation::Horizontal, 0);
+    spacer.set_hexpand(true);
+    button_row.append(&spacer);
+    button_row.append(&cancel);
+
+    let content = gtk4::Box::new(gtk4::Orientation::Vertical, 12);
+    content.set_margin_top(12);
+    content.set_margin_bottom(12);
+    content.set_margin_start(12);
+    content.set_margin_end(12);
+    content.append(&grid);
+    content.append(&rec_label);
+    content.append(&button_row);
+    let scroll = gtk4::ScrolledWindow::builder().child(&content).build();
+    window.set_child(Some(&scroll));
+
+    let on_choose = std::rc::Rc::new(on_choose);
+    {
+        let window = window.clone();
+        let on_choose = std::rc::Rc::clone(&on_choose);
+        keep_audited.connect_clicked(move |_| {
+            on_choose(Resolution::KeepAudited);
+            window.close();
+        });
+    }
+    {
+        let window = window.clone();
+        let on_choose = std::rc::Rc::clone(&on_choose);
+        keep_existing.connect_clicked(move |_| {
+            on_choose(Resolution::KeepExisting);
+            window.close();
+        });
+    }
+    {
+        let window = window.clone();
+        cancel.connect_clicked(move |_| window.close());
+    }
+
+    // Load covers on the pool worker and paint them.
+    load_compare_cover(&pool, &audited, &left_pic, &left_status);
+    load_compare_cover(&pool, &existing, &right_pic, &right_status);
+
+    window.present();
+}
+
+/// One compare pane: a heading, a cover slot, and the book details.
+fn compare_pane(heading: &str, book: &ComicBook) -> (gtk4::Box, gtk4::Picture, Label) {
+    let pane = gtk4::Box::new(gtk4::Orientation::Vertical, 6);
+    let head = Label::new(Some(heading));
+    head.set_halign(gtk4::Align::Start);
+    head.add_css_class("title-4");
+    pane.append(&head);
+    let picture = gtk4::Picture::new();
+    picture.set_size_request(240, 360);
+    let status = Label::new(Some("Loading cover…"));
+    pane.append(&picture);
+    pane.append(&status);
+    let details = Label::new(Some(&crate::dialogs::incoming_compare::book_details(book)));
+    details.set_halign(gtk4::Align::Start);
+    details.set_wrap(true);
+    details.set_selectable(true);
+    pane.append(&details);
+    (pane, picture, status)
+}
+
+/// Queues a book's front-cover thumbnail on the pool and paints it.
+fn load_compare_cover(
+    pool: &Option<Arc<cr_engine::image_pool::ImagePool>>,
+    book: &ComicBook,
+    picture: &gtk4::Picture,
+    status: &Label,
+) {
+    let Some(pool) = pool else {
+        status.set_text("No cover available");
+        return;
+    };
+    if book.file_path.is_empty() && book.custom_thumbnail_key.is_none() {
+        status.set_text("No cover available");
+        return;
+    }
+    let key = cr_engine::image_pool::front_cover_thumbnail_key(book);
+    let render = Arc::clone(pool);
+    let (tx, rx) = std::sync::mpsc::channel::<Option<Vec<u8>>>();
+    pool.add_thumb_to_queue(key, None, move |key| {
+        let _ = tx.send(render.render_thumbnail(key));
+    });
+    let picture = picture.clone();
+    let status = status.clone();
+    glib::timeout_add_local(Duration::from_millis(30), move || match rx.try_recv() {
+        Ok(bytes) => {
+            if let Some(texture) = bytes
+                .as_deref()
+                .and_then(crate::dialogs::incoming_compare::texture_from_thumb_blob)
+            {
+                picture.set_paintable(Some(&texture));
+                status.set_text("");
+            } else {
+                status.set_text("No cover available");
+            }
+            ControlFlow::Break
+        }
+        Err(std::sync::mpsc::TryRecvError::Empty) => ControlFlow::Continue,
+        Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+            status.set_text("No cover available");
+            ControlFlow::Break
+        }
+    });
 }
 
 /// A book's display name for a results row (its file name, or the

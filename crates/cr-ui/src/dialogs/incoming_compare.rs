@@ -960,7 +960,7 @@ fn set_book(pane: &Pane, book: &ComicBook) {
     pane.cover_stack.set_visible_child(&pane.cover_status);
 }
 
-fn book_details(book: &ComicBook) -> String {
+pub(crate) fn book_details(book: &ComicBook) -> String {
     let published = match (book.info.year, book.info.month, book.info.day) {
         (year, month, day) if year > 0 && month > 0 && day > 0 => {
             format!("{year:04}-{month:02}-{day:02}")
@@ -1010,7 +1010,7 @@ fn queue_cover(
     });
 }
 
-fn texture_from_thumb_blob(bytes: &[u8]) -> Option<gdk::MemoryTexture> {
+pub(crate) fn texture_from_thumb_blob(bytes: &[u8]) -> Option<gdk::MemoryTexture> {
     let mut surface = crate::bitmap::surface_from_thumb_blob(bytes)?;
     let width = surface.width();
     let height = surface.height();

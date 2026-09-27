@@ -473,6 +473,18 @@ pub fn run(ctx: RunContext, ui: &mut dyn OrganizeUi) -> OrganizeReport {
     report
 }
 
+/// How a mismatch's planned path collides with something already
+/// present. `None` on a plain relocation (the path is free).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum AuditCollision {
+    /// Another library book currently sits at the planned path.
+    LibraryBook { book_index: usize },
+    /// Another audited book resolves to the same planned path.
+    AnotherAudited { book_index: usize },
+    /// A file with no library owner occupies the planned path.
+    BareFile,
+}
+
 /// One mismatch found by an audit pass: a book whose current path is
 /// not the path the profile would produce now.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -482,6 +494,8 @@ pub struct AuditItem {
     pub profile_name: String,
     pub current_path: String,
     pub planned_path: String,
+    /// Set when the planned path is already occupied.
+    pub collision: Option<AuditCollision>,
 }
 
 /// The audit outcome: the mismatches, the count of books scanned, and
@@ -759,6 +773,19 @@ impl<'a> Mover<'a> {
         let total = self.selected.len();
         let mut done = 0usize;
 
+        // A lowercased index of every library book's current path, to
+        // find a library owner of a collided destination.
+        let mut library_by_path: HashMap<String, usize> = HashMap::new();
+        for (index, book) in self.books.iter().enumerate() {
+            if !book.file_path.is_empty() {
+                library_by_path
+                    .entry(book.file_path.to_lowercase())
+                    .or_insert(index);
+            }
+        }
+        // The first audited book that claimed each planned path.
+        let mut planned_claims: HashMap<String, usize> = HashMap::new();
+
         for &book_index in self.selected {
             if self.cancelled() {
                 break;
@@ -774,15 +801,32 @@ impl<'a> Mover<'a> {
                 log.extend(logs);
                 if let PlanResult::Path(planned) = result {
                     let current = self.books[book_index].file_path.clone();
-                    if !paths_match(&planned, &current) {
-                        items.push(AuditItem {
-                            book_index,
-                            profile_index: index,
-                            profile_name: self.profiles[index].name.clone(),
-                            current_path: current,
-                            planned_path: planned,
-                        });
+                    if paths_match(&planned, &current) {
+                        continue;
                     }
+                    let key = planned.to_lowercase();
+                    let collision = if let Some(&other) = planned_claims.get(&key) {
+                        Some(AuditCollision::AnotherAudited { book_index: other })
+                    } else if let Some(&owner) = library_by_path.get(&key) {
+                        if owner == book_index {
+                            None
+                        } else {
+                            Some(AuditCollision::LibraryBook { book_index: owner })
+                        }
+                    } else if Path::new(&planned).exists() {
+                        Some(AuditCollision::BareFile)
+                    } else {
+                        None
+                    };
+                    planned_claims.entry(key).or_insert(book_index);
+                    items.push(AuditItem {
+                        book_index,
+                        profile_index: index,
+                        profile_name: self.profiles[index].name.clone(),
+                        current_path: current,
+                        planned_path: planned,
+                        collision,
+                    });
                 }
             }
         }
